@@ -6,8 +6,15 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0",
     "websockets>=12.0",
-    # V0.2 引入：langgraph, langchain, litellm, fastapi, uvicorn, sentence-transformers
+    "langgraph>=0.1",
+    "litellm>=1.0",
+    "langchain-core>=0.2",
 ]
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
