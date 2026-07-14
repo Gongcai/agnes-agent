@@ -74,6 +74,10 @@ pub struct MessageDto {
     pub status: String,
     pub parts: Vec<MessagePartDto>,
     pub created_at: String,
+    pub parent_id: Option<String>,
+    pub version_index: usize,
+    pub version_count: usize,
+    pub is_leaf: bool,
 }
 
 /// 健康检查：验证 React ↔ Rust IPC 通道。
@@ -495,12 +499,13 @@ pub async fn list_messages(
     state: tauri::State<'_, AppState>,
     session_id: String,
 ) -> AppResult<Vec<MessageDto>> {
-    let raw_msgs = state.db.list_messages_with_parts(session_id).await?;
+    let path = state.db.list_active_with_parts(session_id).await?;
     let mut msgs_dto = Vec::new();
 
-    for (msg, parts) in raw_msgs {
+    for am in path.messages {
+        let msg = am.message;
         let mut parts_dto = Vec::new();
-        for p in parts {
+        for p in am.parts {
             let mut tool_call_dto = None;
             if let Some(ref tc_id) = p.tool_call_id {
                 if let Ok(Some(tc_row)) = state.db.get_tool_call(tc_id.clone()).await {
@@ -538,10 +543,53 @@ pub async fn list_messages(
             status: msg.status,
             parts: parts_dto,
             created_at: msg.created_at,
+            parent_id: msg.parent_id,
+            version_index: am.version_index,
+            version_count: am.version_count,
+            is_leaf: am.is_leaf,
         });
     }
 
     Ok(msgs_dto)
+}
+
+/// 切换某消息的版本（prev/next 同级）。同级共享 parent_id；切换即把父的
+/// selected_child_id 指向目标同级，活动路径随之改走该同级的子树。
+#[tauri::command]
+pub async fn switch_version(
+    state: tauri::State<'_, AppState>,
+    message_id: String,
+    direction: String, // "prev" | "next"
+) -> AppResult<()> {
+    let msg = state.db.get_message(message_id.clone()).await?
+        .ok_or_else(|| AppError::Other("消息不存在".into()))?;
+    let parent_id = msg.parent_id.clone()
+        .ok_or_else(|| AppError::Other("根消息无同级版本".into()))?;
+    let all = state.db.list_messages_with_parts(msg.session_id.clone()).await?;
+    // 同级：parent_id 相同，按 seq 升序（list 已排序）
+    let siblings: Vec<String> = all.iter()
+        .filter(|(m, _)| m.parent_id.as_deref() == Some(parent_id.as_str()))
+        .map(|(m, _)| m.id.clone())
+        .collect();
+    let idx = siblings.iter().position(|id| id == &message_id)
+        .ok_or_else(|| AppError::Other("找不到当前消息".into()))?;
+    let new_idx = match direction.as_str() {
+        "prev" => if idx == 0 { return Ok(()); } else { idx - 1 },
+        "next" => if idx + 1 >= siblings.len() { return Ok(()); } else { idx + 1 },
+        _ => return Ok(()),
+    };
+    let new_id = siblings[new_idx].clone();
+    state.db.set_selected_child(parent_id, Some(new_id)).await
+}
+
+/// 创建分支：把该消息设为活动叶子（selected_child_id=NULL），其后代保留为
+/// 可切回的同级；下次发消息即从该点长新枝。
+#[tauri::command]
+pub async fn create_branch(
+    state: tauri::State<'_, AppState>,
+    message_id: String,
+) -> AppResult<()> {
+    state.db.set_selected_child(message_id, None).await
 }
 
 /// 将占位提示文本视为空，避免被当作真实记忆发送给 AI（占位仅由前端展示）。

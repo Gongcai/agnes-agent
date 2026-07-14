@@ -49,6 +49,8 @@ fn main() {
             commands::rename_session,
             commands::get_debug_prompt,
             commands::list_messages,
+            commands::switch_version,
+            commands::create_branch,
             commands::send_message,
             commands::approve_tool,
             commands::get_explicit_memories,

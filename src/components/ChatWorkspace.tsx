@@ -46,6 +46,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     sendMessage,
     approveTool,
     setSessionLlm,
+    switchVersion,
     loadProviders,
   } = useAgentStore();
 
@@ -260,6 +261,30 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                         />
                       );
                     })}
+                  </div>
+                )}
+
+                {message.version_count > 1 && (
+                  <div className="flex items-center gap-1 text-[10px] text-stone-400 mt-1">
+                    <button
+                      onClick={() => switchVersion(message.id, "prev").catch(console.error)}
+                      disabled={message.version_index === 0}
+                      className="px-1 rounded hover:bg-stone-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                      title="上一个版本"
+                    >
+                      ‹
+                    </button>
+                    <span className="font-mono">
+                      {message.version_index + 1}/{message.version_count}
+                    </span>
+                    <button
+                      onClick={() => switchVersion(message.id, "next").catch(console.error)}
+                      disabled={message.version_index + 1 >= message.version_count}
+                      className="px-1 rounded hover:bg-stone-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                      title="下一个版本"
+                    >
+                      ›
+                    </button>
                   </div>
                 )}
 

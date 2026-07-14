@@ -26,6 +26,10 @@ export interface Message {
   status: string;
   parts: MessagePart[];
   created_at: string;
+  parent_id: string | null;
+  version_index: number;
+  version_count: number;
+  is_leaf: boolean;
   /** 流式暂存：当前是否处于 <thought> 思维链中。仅用于直播渲染，不落库。 */
   _streamingInThought?: boolean;
 }
@@ -107,6 +111,8 @@ interface AgentState {
   setActiveAgentId: (agentId: string) => Promise<void>;
   setActiveSessionId: (sessionId: string) => Promise<void>;
   setSessionLlm: (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number) => Promise<void>;
+  switchVersion: (messageId: string, direction: "prev" | "next") => Promise<void>;
+  createBranch: (messageId: string) => Promise<void>;
   updateAgentModel: (agentId: string, model: string) => Promise<void>;
   upsertAgent: (agent: {
     id?: string;
@@ -248,6 +254,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       status: "complete",
       parts: [{ id: `p_u_${Date.now()}`, kind: "text", content: text }],
       created_at: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+      parent_id: get().messages.length > 0 ? get().messages[get().messages.length - 1].id : null,
+      version_index: 0,
+      version_count: 1,
+      is_leaf: false,
     };
 
     const tempAssistantMsg: Message = {
@@ -258,6 +268,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       status: "pending",
       parts: [],
       created_at: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+      parent_id: tempUserMsg.id,
+      version_index: 0,
+      version_count: 1,
+      is_leaf: true,
     };
 
     set({
@@ -312,6 +326,28 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       set({ sessions });
     } catch (e) {
       console.error("设置会话模型/思考失败", e);
+      throw e;
+    }
+  },
+
+  switchVersion: async (messageId: string, direction: "prev" | "next") => {
+    try {
+      await invoke("switch_version", { messageId, direction });
+      const { activeSessionId } = get();
+      if (activeSessionId) await get().loadMessages(activeSessionId);
+    } catch (e) {
+      console.error("切换版本失败", e);
+      throw e;
+    }
+  },
+
+  createBranch: async (messageId: string) => {
+    try {
+      await invoke("create_branch", { messageId });
+      const { activeSessionId } = get();
+      if (activeSessionId) await get().loadMessages(activeSessionId);
+    } catch (e) {
+      console.error("创建分支失败", e);
       throw e;
     }
   },
