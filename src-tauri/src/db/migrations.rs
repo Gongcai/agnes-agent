@@ -81,5 +81,19 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         conn.execute("ALTER TABLE agents ADD COLUMN thinking_budget INTEGER DEFAULT 0", [])?;
     }
 
+    // 为已存在的 sessions 表补充会话级模型/思考配置列（幂等，兼容老库）
+    let has_session_model: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'model'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_session_model {
+        conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT DEFAULT ''", [])?;
+        conn.execute("ALTER TABLE sessions ADD COLUMN thinking_mode TEXT DEFAULT ''", [])?;
+        conn.execute("ALTER TABLE sessions ADD COLUMN thinking_budget INTEGER DEFAULT 0", [])?;
+    }
+
     Ok(())
 }

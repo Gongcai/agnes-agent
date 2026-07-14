@@ -13,6 +13,9 @@ pub struct SessionRow {
     pub recency_window: i64,
     pub reserved_output_tokens: Option<i64>,
     pub summarizer_model: Option<String>,
+    pub model: Option<String>,
+    pub thinking_mode: Option<String>,
+    pub thinking_budget: Option<i64>,
     pub summary: Option<String>,
     pub summary_updated_at: Option<String>,
     pub created_at: String,
@@ -32,6 +35,9 @@ pub struct NewSession {
     pub recency_window: Option<i64>,
     pub reserved_output_tokens: Option<i64>,
     pub summarizer_model: Option<String>,
+    pub model: Option<String>,
+    pub thinking_mode: Option<String>,
+    pub thinking_budget: Option<i64>,
     pub origin_device_id: Option<String>,
 }
 
@@ -47,7 +53,8 @@ fn now() -> String {
 pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, title, context_limit, compress_threshold, recency_window, \
-         reserved_output_tokens, summarizer_model, summary, summary_updated_at, \
+         reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
+         summary, summary_updated_at, \
          created_at, updated_at, version, deleted_at, origin_device_id, pinned \
          FROM sessions \
          WHERE agent_id = ?1 AND deleted_at IS NULL \
@@ -64,14 +71,17 @@ pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
             recency_window: r.get(5)?,
             reserved_output_tokens: r.get(6)?,
             summarizer_model: r.get(7)?,
-            summary: r.get(8)?,
-            summary_updated_at: r.get(9)?,
-            created_at: r.get(10)?,
-            updated_at: r.get(11)?,
-            version: r.get(12)?,
-            deleted_at: r.get(13)?,
-            origin_device_id: r.get(14)?,
-            pinned: r.get(15)?,
+            model: r.get(8)?,
+            thinking_mode: r.get(9)?,
+            thinking_budget: r.get(10)?,
+            summary: r.get(11)?,
+            summary_updated_at: r.get(12)?,
+            created_at: r.get(13)?,
+            updated_at: r.get(14)?,
+            version: r.get(15)?,
+            deleted_at: r.get(16)?,
+            origin_device_id: r.get(17)?,
+            pinned: r.get(18)?,
         })
     })?;
 
@@ -86,7 +96,8 @@ pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
 pub fn get(conn: &Connection, id: &str) -> AppResult<Option<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, title, context_limit, compress_threshold, recency_window, \
-         reserved_output_tokens, summarizer_model, summary, summary_updated_at, \
+         reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
+         summary, summary_updated_at, \
          created_at, updated_at, version, deleted_at, origin_device_id, pinned \
          FROM sessions \
          WHERE id = ?1",
@@ -102,14 +113,17 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<SessionRow>> {
             recency_window: r.get(5)?,
             reserved_output_tokens: r.get(6)?,
             summarizer_model: r.get(7)?,
-            summary: r.get(8)?,
-            summary_updated_at: r.get(9)?,
-            created_at: r.get(10)?,
-            updated_at: r.get(11)?,
-            version: r.get(12)?,
-            deleted_at: r.get(13)?,
-            origin_device_id: r.get(14)?,
-            pinned: r.get(15)?,
+            model: r.get(8)?,
+            thinking_mode: r.get(9)?,
+            thinking_budget: r.get(10)?,
+            summary: r.get(11)?,
+            summary_updated_at: r.get(12)?,
+            created_at: r.get(13)?,
+            updated_at: r.get(14)?,
+            version: r.get(15)?,
+            deleted_at: r.get(16)?,
+            origin_device_id: r.get(17)?,
+            pinned: r.get(18)?,
         })
     }).optional()?;
 
@@ -124,9 +138,9 @@ pub fn insert(conn: &Connection, s: &NewSession) -> AppResult<String> {
 
     conn.execute(
         "INSERT INTO sessions (id, agent_id, title, context_limit, compress_threshold, \
-         recency_window, reserved_output_tokens, summarizer_model, created_at, updated_at, \
-         version, origin_device_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11)",
+         recency_window, reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
+         created_at, updated_at, version, origin_device_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14)",
         params![
             s.id,
             s.agent_id,
@@ -136,6 +150,9 @@ pub fn insert(conn: &Connection, s: &NewSession) -> AppResult<String> {
             recency_window,
             s.reserved_output_tokens,
             s.summarizer_model,
+            s.model,
+            s.thinking_mode,
+            s.thinking_budget,
             now_str,
             now_str,
             s.origin_device_id,
@@ -143,6 +160,23 @@ pub fn insert(conn: &Connection, s: &NewSession) -> AppResult<String> {
     )?;
 
     Ok(s.id.clone())
+}
+
+/// 更新会话级模型与思考配置（输入框切换模型/思考强度时调用）。
+pub fn update_llm(
+    conn: &Connection,
+    id: &str,
+    model: &str,
+    thinking_mode: &str,
+    thinking_budget: i64,
+) -> AppResult<()> {
+    let now_str = now();
+    conn.execute(
+        "UPDATE sessions SET model = ?1, thinking_mode = ?2, thinking_budget = ?3, \
+         updated_at = ?4, version = version + 1 WHERE id = ?5",
+        params![model, thinking_mode, thinking_budget, now_str, id],
+    )?;
+    Ok(())
 }
 
 /// 更新会话标题。

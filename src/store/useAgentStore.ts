@@ -36,6 +36,9 @@ export interface Session {
   created_at: string;
   updated_at: string;
   pinned?: boolean;
+  model: string;
+  thinking_mode: string;
+  thinking_budget: number;
 }
 
 export interface AgentSummary {
@@ -101,6 +104,7 @@ interface AgentState {
   approveTool: (toolCallId: string, approved: boolean) => Promise<void>;
   setActiveAgentId: (agentId: string) => Promise<void>;
   setActiveSessionId: (sessionId: string) => Promise<void>;
+  setSessionLlm: (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number) => Promise<void>;
   updateAgentModel: (agentId: string, model: string) => Promise<void>;
   upsertAgent: (agent: {
     id?: string;
@@ -294,6 +298,20 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setActiveSessionId: async (sessionId: string) => {
     set({ activeSessionId: sessionId });
     await get().loadMessages(sessionId);
+  },
+
+  setSessionLlm: async (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number) => {
+    try {
+      await invoke("set_session_llm", { sessionId, model, thinkingMode, thinkingBudget });
+      // 立即更新本地会话状态，避免等待列表刷新
+      const sessions = get().sessions.map((s) =>
+        s.id === sessionId ? { ...s, model, thinking_mode: thinkingMode, thinking_budget: thinkingBudget } : s
+      );
+      set({ sessions });
+    } catch (e) {
+      console.error("设置会话模型/思考失败", e);
+      throw e;
+    }
   },
 
   updateAgentModel: async (agentId: string, model: string) => {

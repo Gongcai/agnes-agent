@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   recency_window INTEGER DEFAULT 20,
   reserved_output_tokens INTEGER,
   summarizer_model TEXT,
+  model TEXT,                      -- 会话级模型覆盖（空 = 沿用角色卡默认）
+  thinking_mode TEXT,              -- 会话级思考模式（空 = 沿用角色卡默认）
+  thinking_budget INTEGER,         -- 会话级思考预算(token)
   summary TEXT,                    -- 会话级状态，非普通消息片段
   summary_updated_at TEXT,
   created_at TEXT,

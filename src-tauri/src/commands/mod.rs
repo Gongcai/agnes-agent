@@ -34,6 +34,9 @@ pub struct SessionDto {
     pub created_at: String,
     pub updated_at: String,
     pub pinned: bool,
+    pub model: String,
+    pub thinking_mode: String,
+    pub thinking_budget: i64,
 }
 
 /// 调试面板：当前拼装好、待发送给 LLM 的提示词。
@@ -193,6 +196,14 @@ pub async fn create_session(
     agent_id: String,
     title: String,
 ) -> AppResult<String> {
+    // 新会话沿用角色卡的默认模型与思考配置，输入框可随后覆盖
+    let agents = state.db.list_agents().await?;
+    let default_agent = agents.iter().find(|a| a.id == agent_id);
+    let (default_model, default_thinking_mode, default_thinking_budget) = match default_agent {
+        Some(a) => (a.model.clone(), a.thinking_mode.clone(), a.thinking_budget),
+        None => (String::new(), String::new(), 0),
+    };
+
     let session_id = uuid::Uuid::new_v4().to_string();
     let new_sess = NewSession {
         id: session_id.clone(),
@@ -203,6 +214,9 @@ pub async fn create_session(
         recency_window: None,
         reserved_output_tokens: None,
         summarizer_model: None,
+        model: if default_model.is_empty() { None } else { Some(default_model) },
+        thinking_mode: if default_thinking_mode.is_empty() { None } else { Some(default_thinking_mode) },
+        thinking_budget: if default_thinking_budget == 0 { None } else { Some(default_thinking_budget) },
         origin_device_id: None,
     };
     state.db.insert_session(new_sess).await?;
@@ -226,8 +240,26 @@ pub async fn list_sessions(
             created_at: r.created_at,
             updated_at: r.updated_at,
             pinned: r.pinned != 0,
+            model: r.model.unwrap_or_default(),
+            thinking_mode: r.thinking_mode.unwrap_or_default(),
+            thinking_budget: r.thinking_budget.unwrap_or(0),
         })
         .collect())
+}
+
+/// 设置会话级模型与思考配置（输入框切换模型 / 思考强度时调用）。
+#[tauri::command]
+pub async fn set_session_llm(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    model: String,
+    thinking_mode: String,
+    thinking_budget: i64,
+) -> AppResult<()> {
+    state
+        .db
+        .update_session_llm(session_id, model, thinking_mode, thinking_budget)
+        .await
 }
 
 /// 删除某个会话（软删除）。
@@ -272,12 +304,31 @@ pub async fn get_debug_prompt(
         .find(|a| a.id == agent_id)
         .ok_or_else(|| AppError::Other(format!("智能体 `{agent_id}` 不存在")))?;
 
-    // 复用 send_message 的 LLM 配置解析逻辑
-    let agent_model_str = if agent.model.is_empty() {
-        "gpt-4o".to_string()
-    } else {
-        agent.model.clone()
+    // 会话级模型/思考优先，回退角色卡默认
+    let session_opt = match &session_id {
+        Some(sid) => state.db.get_session(sid.clone()).await?,
+        None => None,
     };
+    let session_model = session_opt.as_ref().and_then(|s| s.model.clone()).unwrap_or_default();
+    let effective_model = if session_model.is_empty() {
+        if agent.model.is_empty() { "gpt-4o".to_string() } else { agent.model.clone() }
+    } else {
+        session_model
+    };
+    let effective_thinking_mode = {
+        let m = session_opt.as_ref()
+            .and_then(|s| s.thinking_mode.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| agent.thinking_mode.clone());
+        if m.is_empty() { "off".to_string() } else { m }
+    };
+    let effective_thinking_budget = session_opt.as_ref()
+        .and_then(|s| s.thinking_budget)
+        .or(Some(agent.thinking_budget))
+        .unwrap_or(0);
+
+    // 复用 send_message 的 LLM 配置解析逻辑
+    let agent_model_str = effective_model;
     let (provider_id_opt, model_name) = if let Some(idx) = agent_model_str.find('/') {
         (
             Some(agent_model_str[..idx].to_string()),
@@ -356,7 +407,7 @@ pub async fn get_debug_prompt(
             "agent": {
                 "persona": agent.persona,
                 "systemPrompt": agent.system_prompt,
-                "model": agent.model,
+                "model": agent_model_str,
                 "toolPolicy": serde_json::from_str::<serde_json::Value>(&agent.tool_policy).unwrap_or(json!({}))
             },
             "llmConfig": {
@@ -366,8 +417,8 @@ pub async fn get_debug_prompt(
                 "model": model_name,
                 "litellmModel": litellm_model,
                 "thinking": {
-                    "mode": if agent.thinking_mode.is_empty() { "off" } else { &agent.thinking_mode },
-                    "budget": agent.thinking_budget
+                    "mode": effective_thinking_mode,
+                    "budget": effective_thinking_budget
                 }
             },
             "settings": { "user_context_limit": serde_json::Value::Null },
@@ -551,8 +602,22 @@ pub async fn send_message(
     let agent = agents.iter().find(|a| a.id == session.agent_id)
         .ok_or_else(|| AppError::Other(format!("关联的智能体 `{}` 不存在", session.agent_id)))?;
 
-    // 2. 解析 LLM 配置：provider_id/model_name 或仅 model_name（使用默认 provider）
-    let agent_model_str = if agent.model.is_empty() { "gpt-4o".to_string() } else { agent.model.clone() };
+    // 2. 解析 LLM 配置：会话级模型优先，回退角色卡默认；思考配置同理。
+    let session_model = session.model.clone().unwrap_or_default();
+    let effective_model = if session_model.is_empty() {
+        if agent.model.is_empty() { "gpt-4o".to_string() } else { agent.model.clone() }
+    } else {
+        session_model
+    };
+    let effective_thinking_mode = {
+        let m = session.thinking_mode.clone().filter(|s| !s.is_empty())
+            .unwrap_or_else(|| agent.thinking_mode.clone());
+        if m.is_empty() { "off".to_string() } else { m }
+    };
+    let effective_thinking_budget = session.thinking_budget.or(Some(agent.thinking_budget)).unwrap_or(0);
+
+    // 解析 provider_id/model_name 或仅 model_name（使用默认 provider）
+    let agent_model_str = effective_model;
     let (provider_id_opt, model_name) = if let Some(idx) = agent_model_str.find('/') {
         (Some(agent_model_str[..idx].to_string()), agent_model_str[idx + 1..].to_string())
     } else {
@@ -675,7 +740,7 @@ pub async fn send_message(
             "agent": {
                 "persona": agent.persona,
                 "systemPrompt": agent.system_prompt,
-                "model": agent.model,
+                "model": agent_model_str,
                 "toolPolicy": serde_json::from_str::<serde_json::Value>(&agent.tool_policy).unwrap_or(json!({}))
             },
             "llmConfig": {
@@ -685,8 +750,8 @@ pub async fn send_message(
                 "model": model_name,
                 "litellmModel": litellm_model,
                 "thinking": {
-                    "mode": if agent.thinking_mode.is_empty() { "off" } else { &agent.thinking_mode },
-                    "budget": agent.thinking_budget
+                    "mode": effective_thinking_mode,
+                    "budget": effective_thinking_budget
                 }
             },
             "settings": {

@@ -45,6 +45,7 @@ fn main() {
             commands::list_sessions,
             commands::delete_session,
             commands::set_session_pin,
+            commands::set_session_llm,
             commands::rename_session,
             commands::get_debug_prompt,
             commands::list_messages,

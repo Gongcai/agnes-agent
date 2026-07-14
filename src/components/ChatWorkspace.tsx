@@ -7,6 +7,23 @@ import { useAgentStore } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
 import { MarkdownMessage } from "./MarkdownMessage";
 
+// 思考模式/强度选项（与角色卡编辑器保持一致）
+const THINKING_OPTIONS: { value: string; label: string; desc: string }[] = [
+  { value: "off", label: "关闭", desc: "不启用思考" },
+  { value: "auto", label: "自动", desc: "由模型决定思考深度" },
+  { value: "low", label: "轻度", desc: "浅层思考，响应更快" },
+  { value: "medium", label: "中等", desc: "常规思考深度" },
+  { value: "high", label: "深度", desc: "深入推理，消耗更多 token" },
+];
+
+const THINKING_LABEL: Record<string, string> = {
+  off: "关闭",
+  auto: "自动",
+  low: "轻度",
+  medium: "中等",
+  high: "深度",
+};
+
 interface ChatWorkspaceProps {
   isSidebarOpen: boolean;
   onToggleSidebar: () => void;
@@ -28,7 +45,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     providers,
     sendMessage,
     approveTool,
-    updateAgentModel,
+    setSessionLlm,
     loadProviders,
   } = useAgentStore();
 
@@ -44,15 +61,26 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     loadProviders().catch(console.error);
   }, [loadProviders]);
 
-  // 解析当前 Agent 绑定的模型（agents.model 形如 "provider_id/model_name"）
+  // 当前生效的模型：优先会话级覆盖，回退角色卡默认（形如 "provider_id/model_name"）
+  const effectiveModel = activeSession?.model || activeAgent?.model || "";
   const currentModel = (() => {
-    if (!activeAgent?.model) return null;
-    const idx = activeAgent.model.indexOf("/");
-    const pid = idx >= 0 ? activeAgent.model.slice(0, idx) : "";
-    const name = idx >= 0 ? activeAgent.model.slice(idx + 1) : activeAgent.model;
+    if (!effectiveModel) return null;
+    const idx = effectiveModel.indexOf("/");
+    const pid = idx >= 0 ? effectiveModel.slice(0, idx) : "";
+    const name = idx >= 0 ? effectiveModel.slice(idx + 1) : effectiveModel;
     const provider = providers.find((p) => p.id === pid);
     return { name, providerName: provider?.name ?? "" };
   })();
+
+  // 当前生效的思考模式/预算（会话级优先，回退角色卡）
+  const currentThinkingMode = activeSession?.thinking_mode || activeAgent?.thinking_mode || "off";
+  const currentThinkingBudget = activeSession?.thinking_budget ?? activeAgent?.thinking_budget ?? 0;
+
+  // 持久化会话级模型/思考配置
+  const applySessionLlm = (model: string, thinkingMode: string, thinkingBudget: number) => {
+    if (!activeSessionId) return;
+    setSessionLlm(activeSessionId, model, thinkingMode, thinkingBudget).catch(console.error);
+  };
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -289,8 +317,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   title="切换模型"
                 >
                   <Cpu className="h-3 w-3 text-[#8CA38A]" />
-                  <span className="max-w-[140px] truncate font-mono">
+                  <span className="max-w-[160px] truncate font-mono">
                     {currentModel ? currentModel.name : "选择模型"}
+                    {currentThinkingMode !== "off" && (
+                      <span className="ml-1 text-[9px] text-violet-500 not-italic font-sans">
+                        · {THINKING_LABEL[currentThinkingMode] ?? currentThinkingMode}思考
+                      </span>
+                    )}
                   </span>
                   <ChevronDown className="h-3 w-3" />
                 </button>
@@ -324,14 +357,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                             ) : (
                               p.models.map((m) => {
                                 const val = `${p.id}/${m}`;
-                                const isActive = activeAgent?.model === val;
+                                const isActive = effectiveModel === val;
                                 return (
                                   <button
                                     key={val}
                                     onClick={() => {
-                                      if (activeAgentId) {
-                                        updateAgentModel(activeAgentId, val).catch(console.error);
-                                      }
+                                      applySessionLlm(val, currentThinkingMode, currentThinkingBudget);
                                       setModelPickerOpen(false);
                                     }}
                                     className={`w-full text-left px-3 py-1.5 rounded-lg text-[11px] font-mono transition-colors ${
@@ -351,6 +382,49 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           </div>
                         ))
                       )}
+                      {/* 思考模式/强度（与模型选择并列） */}
+                      <div className="mt-2 pt-2 border-t border-stone-100">
+                        <div className="px-1 mb-1 text-[10px] font-semibold text-stone-500">
+                          思考模式 / 强度
+                        </div>
+                        <div className="grid grid-cols-5 gap-1 px-1">
+                          {THINKING_OPTIONS.map((opt) => (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              title={opt.desc}
+                              onClick={() => applySessionLlm(effectiveModel, opt.value, currentThinkingBudget)}
+                              className={`px-1 py-1 rounded-md text-[10px] font-semibold transition-colors border ${
+                                currentThinkingMode === opt.value
+                                  ? "bg-indigo-50 text-indigo-700 border-indigo-300"
+                                  : "bg-stone-50 text-stone-500 border-stone-200/60 hover:bg-stone-100"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                        {currentThinkingMode !== "off" && (
+                          <div className="mt-1.5 flex items-center gap-2 px-1">
+                            <span className="text-[10px] text-stone-500 whitespace-nowrap">预算(token)</span>
+                            <input
+                              type="number"
+                              min={0}
+                              step={512}
+                              value={currentThinkingBudget}
+                              onChange={(e) =>
+                                applySessionLlm(
+                                  effectiveModel,
+                                  currentThinkingMode,
+                                  Math.max(0, parseInt(e.target.value || "0", 10) || 0),
+                                )
+                              }
+                              placeholder="0 = 按强度自动"
+                              className="flex-1 bg-stone-50 p-1 rounded-md border border-stone-200/60 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-stone-300"
+                            />
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </>
                 )}

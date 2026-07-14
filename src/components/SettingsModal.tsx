@@ -939,7 +939,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         />
                       </div>
                       <div>
-                        <label className="font-semibold text-stone-500 block mb-1">关联模型</label>
+                        <label className="font-semibold text-stone-500 block mb-1">默认模型（新会话沿用，输入框可覆盖）</label>
                         <select
                           value={agentForm.model}
                           onChange={(e) => setAgentForm((f) => ({ ...f, model: e.target.value }))}
@@ -964,7 +964,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </select>
                       </div>
                       <div>
-                        <label className="font-semibold text-stone-500 block mb-1">思考模式 / 强度</label>
+                        <label className="font-semibold text-stone-500 block mb-1">默认思考模式 / 强度（新会话沿用，输入框可覆盖）</label>
                         <div className="grid grid-cols-5 gap-1.5">
                           {THINKING_MODE_OPTIONS.map((opt) => (
                             <button

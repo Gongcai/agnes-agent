@@ -90,6 +90,13 @@ pub enum DbCommand {
         pinned: bool,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    UpdateSessionLlm {
+        id: String,
+        model: String,
+        thinking_mode: String,
+        thinking_budget: i64,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ListMessagesWithParts {
         session_id: String,
         resp: oneshot::Sender<AppResult<Vec<(repo::messages::MessageRow, Vec<repo::messages::MessagePartRow>)>>>,
@@ -315,6 +322,25 @@ impl DbActorHandle {
     pub async fn set_session_pin(&self, id: String, pinned: bool) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::SetSessionPin { id, pinned, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn update_session_llm(
+        &self,
+        id: String,
+        model: String,
+        thinking_mode: String,
+        thinking_budget: i64,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateSessionLlm {
+            id,
+            model,
+            thinking_mode,
+            thinking_budget,
+            resp,
+        })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -549,6 +575,15 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::SetSessionPin { id, pinned, resp } => {
                     let _ = resp.send(repo::sessions::set_pin(&conn, &id, pinned));
                 }
+                DbCommand::UpdateSessionLlm { id, model, thinking_mode, thinking_budget, resp } => {
+                    let _ = resp.send(repo::sessions::update_llm(
+                        &conn,
+                        &id,
+                        &model,
+                        &thinking_mode,
+                        thinking_budget,
+                    ));
+                }
                 DbCommand::ListMessagesWithParts { session_id, resp } => {
                     let _ = resp.send(repo::messages::list_with_parts(&conn, &session_id));
                 }
@@ -682,6 +717,9 @@ mod tests {
             recency_window: Some(15),
             reserved_output_tokens: None,
             summarizer_model: None,
+            model: None,
+            thinking_mode: None,
+            thinking_budget: None,
             origin_device_id: None,
         };
         let sess_id = handle.insert_session(session).await.unwrap();
