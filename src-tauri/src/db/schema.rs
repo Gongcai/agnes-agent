@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS messages (
   model TEXT,
   token_count INTEGER,
   metadata TEXT,
+  parent_id TEXT,                  -- 父消息 id（版本树），NULL=根
+  selected_child_id TEXT,          -- 当前活动路径选中的子消息 id，NULL=叶子
   created_at TEXT,
   updated_at TEXT
 );

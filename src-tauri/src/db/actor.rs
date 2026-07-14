@@ -115,6 +115,45 @@ pub enum DbCommand {
         status: String,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    GetMessage {
+        id: String,
+        resp: oneshot::Sender<AppResult<Option<repo::messages::MessageRow>>>,
+    },
+    ListActiveWithParts {
+        session_id: String,
+        resp: oneshot::Sender<AppResult<repo::messages::ActivePathResult>>,
+    },
+    CountChildren {
+        id: String,
+        resp: oneshot::Sender<AppResult<u64>>,
+    },
+    SetSelectedChild {
+        parent_id: String,
+        child_id: Option<String>,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    DeleteMessage {
+        id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    ReplaceMessageParts {
+        message_id: String,
+        parts: Vec<repo::messages::NewMessagePart>,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    AppendUserAndAssistant {
+        session_id: String,
+        parent_id: Option<String>,
+        user_text: String,
+        model: String,
+        resp: oneshot::Sender<AppResult<(String, String)>>,
+    },
+    AppendAssistantSibling {
+        session_id: String,
+        parent_user_id: String,
+        model: String,
+        resp: oneshot::Sender<AppResult<String>>,
+    },
     InsertToolCall {
         row: repo::tools::NewToolCall,
         resp: oneshot::Sender<AppResult<()>>,
@@ -383,6 +422,65 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn get_message(&self, id: String) -> AppResult<Option<repo::messages::MessageRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetMessage { id, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_active_with_parts(&self, session_id: String) -> AppResult<repo::messages::ActivePathResult> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListActiveWithParts { session_id, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn count_children(&self, id: String) -> AppResult<u64> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::CountChildren { id, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn set_selected_child(&self, parent_id: String, child_id: Option<String>) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SetSelectedChild { parent_id, child_id, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn delete_message(&self, id: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::DeleteMessage { id, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn replace_message_parts(&self, message_id: String, parts: Vec<repo::messages::NewMessagePart>) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ReplaceMessageParts { message_id, parts, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn append_user_and_assistant(
+        &self,
+        session_id: String,
+        parent_id: Option<String>,
+        user_text: String,
+        model: String,
+    ) -> AppResult<(String, String)> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::AppendUserAndAssistant { session_id, parent_id, user_text, model, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn append_assistant_sibling(
+        &self,
+        session_id: String,
+        parent_user_id: String,
+        model: String,
+    ) -> AppResult<String> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::AppendAssistantSibling { session_id, parent_user_id, model, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn insert_tool_call(&self, row: repo::tools::NewToolCall) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::InsertToolCall { row, resp })?;
@@ -611,6 +709,110 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::UpdateMessageStatus { id, status, resp } => {
                     let _ = resp.send(repo::messages::update_status(&conn, &id, &status));
                 }
+                DbCommand::GetMessage { id, resp } => {
+                    let _ = resp.send(repo::messages::get(&conn, &id));
+                }
+                DbCommand::ListActiveWithParts { session_id, resp } => {
+                    let _ = resp.send(repo::messages::list_active_with_parts(&conn, &session_id));
+                }
+                DbCommand::CountChildren { id, resp } => {
+                    let _ = resp.send(repo::messages::count_children(&conn, &id));
+                }
+                DbCommand::SetSelectedChild { parent_id, child_id, resp } => {
+                    let _ = resp.send(repo::messages::set_selected_child(&conn, &parent_id, child_id.as_deref()));
+                }
+                DbCommand::DeleteMessage { id, resp } => {
+                    let _ = resp.send(repo::messages::delete_message(&conn, &id));
+                }
+                DbCommand::ReplaceMessageParts { message_id, parts, resp } => {
+                    let transaction_res = (|| -> AppResult<()> {
+                        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                        repo::messages::delete_parts(&tx, &message_id)?;
+                        for (i, mut p) in parts.into_iter().enumerate() {
+                            p.ordinal = i as i32;
+                            repo::messages::insert_part(&tx, &p)?;
+                        }
+                        tx.commit()?;
+                        Ok(())
+                    })();
+                    let _ = resp.send(transaction_res);
+                }
+                DbCommand::AppendUserAndAssistant { session_id, parent_id, user_text, model, resp } => {
+                    let transaction_res = (|| -> AppResult<(String, String)> {
+                        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                        let user_id = uuid::Uuid::new_v4().to_string();
+                        let seq_u = repo::messages::get_next_seq(&tx, &session_id)?;
+                        repo::messages::insert(&tx, &repo::messages::NewMessage {
+                            id: user_id.clone(),
+                            session_id: session_id.clone(),
+                            role: "user".into(),
+                            seq: seq_u,
+                            status: "complete".into(),
+                            model: None,
+                            token_count: None,
+                            metadata: None,
+                            parent_id: parent_id.clone(),
+                            selected_child_id: None,
+                        })?;
+                        let user_part_id = uuid::Uuid::new_v4().to_string();
+                        repo::messages::insert_part(&tx, &repo::messages::NewMessagePart {
+                            id: user_part_id,
+                            message_id: user_id.clone(),
+                            kind: "text".into(),
+                            ordinal: 0,
+                            mime_type: None,
+                            tool_call_id: None,
+                            content: user_text,
+                            metadata: None,
+                        })?;
+                        let ai_id = uuid::Uuid::new_v4().to_string();
+                        let seq_a = repo::messages::get_next_seq(&tx, &session_id)?;
+                        repo::messages::insert(&tx, &repo::messages::NewMessage {
+                            id: ai_id.clone(),
+                            session_id: session_id.clone(),
+                            role: "assistant".into(),
+                            seq: seq_a,
+                            status: "pending".into(),
+                            model: Some(model.clone()),
+                            token_count: None,
+                            metadata: None,
+                            parent_id: Some(user_id.clone()),
+                            selected_child_id: None,
+                        })?;
+                        // 链接：父→user→ai
+                        if let Some(ref pid) = parent_id {
+                            repo::messages::set_selected_child(&tx, pid, Some(&user_id))?;
+                        }
+                        repo::messages::set_selected_child(&tx, &user_id, Some(&ai_id))?;
+                        tx.commit()?;
+                        Ok((user_id, ai_id))
+                    })();
+                    let _ = resp.send(transaction_res);
+                }
+                DbCommand::AppendAssistantSibling { session_id, parent_user_id, model, resp } => {
+                    let transaction_res = (|| -> AppResult<String> {
+                        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                        let ai_id = uuid::Uuid::new_v4().to_string();
+                        let seq_a = repo::messages::get_next_seq(&tx, &session_id)?;
+                        repo::messages::insert(&tx, &repo::messages::NewMessage {
+                            id: ai_id.clone(),
+                            session_id: session_id.clone(),
+                            role: "assistant".into(),
+                            seq: seq_a,
+                            status: "pending".into(),
+                            model: Some(model.clone()),
+                            token_count: None,
+                            metadata: None,
+                            parent_id: Some(parent_user_id.clone()),
+                            selected_child_id: None,
+                        })?;
+                        // 把活动路径切到新 AI 同级
+                        repo::messages::set_selected_child(&tx, &parent_user_id, Some(&ai_id))?;
+                        tx.commit()?;
+                        Ok(ai_id)
+                    })();
+                    let _ = resp.send(transaction_res);
+                }
                 DbCommand::InsertToolCall { row, resp } => {
                     let _ = resp.send(repo::tools::insert(&conn, &row));
                 }
@@ -754,6 +956,8 @@ mod tests {
             model: None,
             token_count: None,
             metadata: None,
+            parent_id: None,
+            selected_child_id: None,
         };
         let part1 = repo::messages::NewMessagePart {
             id: "part-1".into(),

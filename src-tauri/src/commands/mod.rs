@@ -665,6 +665,8 @@ pub async fn send_message(
         model: None,
         token_count: None,
         metadata: None,
+        parent_id: None,
+        selected_child_id: None,
     };
     let new_user_part = NewMessagePart {
         id: uuid::Uuid::new_v4().to_string(),
@@ -689,6 +691,8 @@ pub async fn send_message(
         model: Some(model_name.clone()),
         token_count: None,
         metadata: None,
+        parent_id: None,
+        selected_child_id: None,
     };
     state.db.insert_message(new_assistant_msg, vec![]).await?;
 

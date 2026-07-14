@@ -1,5 +1,5 @@
 //! messages repo - 消息及消息片段的 CRUD 操作。
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::AppResult;
 
@@ -13,6 +13,8 @@ pub struct MessageRow {
     pub model: Option<String>,
     pub token_count: Option<i64>,
     pub metadata: Option<String>,
+    pub parent_id: Option<String>,
+    pub selected_child_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -38,6 +40,8 @@ pub struct NewMessage {
     pub model: Option<String>,
     pub token_count: Option<i64>,
     pub metadata: Option<String>,
+    pub parent_id: Option<String>,
+    pub selected_child_id: Option<String>,
 }
 
 pub struct NewMessagePart {
@@ -83,7 +87,7 @@ pub fn count(conn: &Connection, session_id: &str) -> AppResult<u64> {
 pub fn list(conn: &Connection, session_id: &str) -> AppResult<Vec<MessageRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, session_id, role, seq, status, model, token_count, metadata, \
-         created_at, updated_at \
+         parent_id, selected_child_id, created_at, updated_at \
          FROM messages \
          WHERE session_id = ?1 \
          ORDER BY seq ASC",
@@ -99,8 +103,10 @@ pub fn list(conn: &Connection, session_id: &str) -> AppResult<Vec<MessageRow>> {
             model: r.get(5)?,
             token_count: r.get(6)?,
             metadata: r.get(7)?,
-            created_at: r.get(8)?,
-            updated_at: r.get(9)?,
+            parent_id: r.get(8)?,
+            selected_child_id: r.get(9)?,
+            created_at: r.get(10)?,
+            updated_at: r.get(11)?,
         })
     })?;
 
@@ -159,8 +165,8 @@ pub fn insert(conn: &Connection, m: &NewMessage) -> AppResult<()> {
     let now_str = now();
     conn.execute(
         "INSERT INTO messages (id, session_id, role, seq, status, model, token_count, \
-         metadata, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+         metadata, parent_id, selected_child_id, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             m.id,
             m.session_id,
@@ -170,6 +176,8 @@ pub fn insert(conn: &Connection, m: &NewMessage) -> AppResult<()> {
             m.model,
             m.token_count,
             m.metadata,
+            m.parent_id,
+            m.selected_child_id,
             now_str,
             now_str,
         ],
@@ -207,4 +215,141 @@ pub fn update_status(conn: &Connection, id: &str, status: &str) -> AppResult<()>
         params![status, now_str, id],
     )?;
     Ok(())
+}
+
+// ===== 版本树相关 =====
+
+/// 活动路径上的一条消息（含片段与版本信息）。
+#[derive(Debug, Clone)]
+pub struct ActivePathMessage {
+    pub message: MessageRow,
+    pub parts: Vec<MessagePartRow>,
+    pub version_index: usize, // 在同级中的序号（0-based）
+    pub version_count: usize, // 该分支点的同级总数
+    pub is_leaf: bool,        // 无子节点（前端用于禁用删除）
+}
+
+#[derive(Debug, Clone)]
+pub struct ActivePathResult {
+    pub messages: Vec<ActivePathMessage>,
+}
+
+/// 按 id 取单条消息。
+pub fn get(conn: &Connection, id: &str) -> AppResult<Option<MessageRow>> {
+    let res = conn
+        .query_row(
+            "SELECT id, session_id, role, seq, status, model, token_count, metadata, \
+             parent_id, selected_child_id, created_at, updated_at \
+             FROM messages WHERE id = ?1",
+            [id],
+            |r| {
+                Ok(MessageRow {
+                    id: r.get(0)?,
+                    session_id: r.get(1)?,
+                    role: r.get(2)?,
+                    seq: r.get(3)?,
+                    status: r.get(4)?,
+                    model: r.get(5)?,
+                    token_count: r.get(6)?,
+                    metadata: r.get(7)?,
+                    parent_id: r.get(8)?,
+                    selected_child_id: r.get(9)?,
+                    created_at: r.get(10)?,
+                    updated_at: r.get(11)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(res)
+}
+
+/// 统计某条消息的子节点数（用于判断是否叶子）。
+pub fn count_children(conn: &Connection, id: &str) -> AppResult<u64> {
+    let cnt: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE parent_id = ?1",
+        [id],
+        |r| r.get(0),
+    )?;
+    Ok(cnt)
+}
+
+/// 设置某消息选中的子消息（切换活动路径）；child_id 为 None 表示该消息变为叶子。
+pub fn set_selected_child(conn: &Connection, parent_id: &str, child_id: Option<&str>) -> AppResult<()> {
+    let now_str = now();
+    conn.execute(
+        "UPDATE messages SET selected_child_id = ?1, updated_at = ?2 WHERE id = ?3",
+        params![child_id, now_str, parent_id],
+    )?;
+    Ok(())
+}
+
+/// 删除某消息的全部片段。
+pub fn delete_parts(conn: &Connection, message_id: &str) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM message_parts WHERE message_id = ?1",
+        [message_id],
+    )?;
+    Ok(())
+}
+
+/// 删除一条消息及其全部片段（调用方需先确认是叶子）。
+pub fn delete_message(conn: &Connection, id: &str) -> AppResult<()> {
+    delete_parts(conn, id)?;
+    conn.execute("DELETE FROM messages WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+/// 计算会话当前活动路径（root → selected_child_id → … → 叶子）。
+///
+/// 一次查询全部消息，内存里按 parent_id 分组同级，沿 selected_child_id 走链。
+/// 每条附 version_index/version_count（同级数，供版本切换器）与 is_leaf。
+pub fn list_active_with_parts(
+    conn: &Connection,
+    session_id: &str,
+) -> AppResult<ActivePathResult> {
+    use std::collections::{HashMap, HashSet};
+
+    let all = list(conn, session_id)?;
+    if all.is_empty() {
+        return Ok(ActivePathResult { messages: vec![] });
+    }
+
+    // 按 parent_id 分组同级（NULL 用哨兵 "__root__"）
+    let mut siblings: HashMap<String, Vec<&MessageRow>> = HashMap::new();
+    for m in &all {
+        let key = m
+            .parent_id
+            .clone()
+            .unwrap_or_else(|| "__root__".to_string());
+        siblings.entry(key).or_default().push(m);
+    }
+    let has_children: HashSet<String> = all.iter().filter_map(|m| m.parent_id.clone()).collect();
+
+    // 根 = parent_id 为 NULL 且 seq 最小
+    let mut cur_opt = all.iter().filter(|m| m.parent_id.is_none()).min_by_key(|m| m.seq);
+    let mut out = Vec::new();
+    while let Some(cur) = cur_opt {
+        let key = cur
+            .parent_id
+            .clone()
+            .unwrap_or_else(|| "__root__".to_string());
+        let group = siblings.get(&key).cloned().unwrap_or_default();
+        let vidx = group.iter().position(|m| m.id == cur.id).unwrap_or(0);
+        let vcount = group.len();
+        let parts = list_parts(conn, &cur.id)?;
+        out.push(ActivePathMessage {
+            message: cur.clone(),
+            parts,
+            version_index: vidx,
+            version_count: vcount,
+            is_leaf: !has_children.contains(&cur.id),
+        });
+        // 沿 selected_child_id 继续走链
+        cur_opt = match &cur.selected_child_id {
+            Some(cid) => all.iter().find(|m| m.id == *cid),
+            None => None,
+        };
+    }
+
+    Ok(ActivePathResult { messages: out })
 }

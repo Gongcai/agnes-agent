@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 use crate::error::AppResult;
 
@@ -93,6 +93,47 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT DEFAULT ''", [])?;
         conn.execute("ALTER TABLE sessions ADD COLUMN thinking_mode TEXT DEFAULT ''", [])?;
         conn.execute("ALTER TABLE sessions ADD COLUMN thinking_budget INTEGER DEFAULT 0", [])?;
+    }
+
+    // 为已存在的 messages 表补充版本树列（幂等，兼容老库）+ 回填链接
+    let has_parent_id: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'parent_id'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_parent_id {
+        conn.execute("ALTER TABLE messages ADD COLUMN parent_id TEXT", [])?;
+        conn.execute("ALTER TABLE messages ADD COLUMN selected_child_id TEXT", [])?;
+        // 回填：把每个会话现有的线性消息按 seq 链起来
+        // parent_id = 上一条 id（首条为 NULL），selected_child_id = 下一条 id（末条为 NULL）
+        let session_ids: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT DISTINCT session_id FROM messages")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            let mut v = Vec::new();
+            for r in rows { v.push(r?); }
+            v
+        };
+        for sid in session_ids {
+            let msg_ids: Vec<String> = {
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM messages WHERE session_id = ?1 ORDER BY seq ASC",
+                )?;
+                let rows = stmt.query_map([&sid], |r| r.get::<_, String>(0))?;
+                let mut v = Vec::new();
+                for r in rows { v.push(r?); }
+                v
+            };
+            for i in 0..msg_ids.len() {
+                let parent_id = if i == 0 { None } else { Some(msg_ids[i - 1].clone()) };
+                let sel_child = if i + 1 < msg_ids.len() { Some(msg_ids[i + 1].clone()) } else { None };
+                conn.execute(
+                    "UPDATE messages SET parent_id = ?1, selected_child_id = ?2 WHERE id = ?3",
+                    params![parent_id, sel_child, msg_ids[i]],
+                )?;
+            }
+        }
     }
 
     Ok(())
