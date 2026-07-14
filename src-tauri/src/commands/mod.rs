@@ -698,13 +698,19 @@ pub async fn replace_message_parts(
 }
 
 /// 取消某会话当前活跃的运行：取出 session→run_id 映射，向 Python 发 RUN_CANCEL。
-/// Python 收到后取消对应任务（langgraph 任务被 cancel，流式中止）。
+/// 同时触发挂起审批的取消信号，解除 ws_server 在 approval oneshot 上的阻塞
+/// （否则 ws 循环卡死，RUN_ERROR 与后续消息都无法处理）。Python 收到后取消对应任务。
 #[tauri::command]
 pub async fn cancel_run(
     state: tauri::State<'_, AppState>,
     session_id: String,
 ) -> AppResult<()> {
     if let Some(run_id) = state.agent.remove_session_run(&session_id) {
+        // 先触发审批取消信号，解除 ws_server 的 approval await 阻塞
+        // （用 select! 分支，handler 不会发 TOOL_RESULT，避免 Python 任务被工具结果唤醒继续）
+        if let Some(tx) = state.agent.take_run_cancel_signal(&run_id) {
+            let _ = tx.send(());
+        }
         let env = Envelope {
             protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
             id: uuid::Uuid::new_v4().to_string(),

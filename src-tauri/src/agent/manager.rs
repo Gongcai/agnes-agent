@@ -29,6 +29,10 @@ pub struct AgentManager {
     pending_runs: Mutex<std::collections::HashMap<String, String>>,
     // 当前活跃运行：session_id -> run_id，供 cancel_run 按会话取消
     active_session_runs: Mutex<std::collections::HashMap<String, String>>,
+    // 挂起审批的工具调用：run_id -> tool_call_id，cancel 时据此把审批 resolve 为 false 解除 ws 阻塞
+    run_approval_tc: Mutex<std::collections::HashMap<String, String>>,
+    // 挂起审批的取消信号：run_id -> oneshot::Sender，cancel_run 触发以解除 ws_server approval await
+    run_cancel_signals: Mutex<std::collections::HashMap<String, oneshot::Sender<()>>>,
 }
 
 impl AgentManager {
@@ -41,6 +45,8 @@ impl AgentManager {
             pending_debug: Mutex::new(std::collections::HashMap::new()),
             pending_runs: Mutex::new(std::collections::HashMap::new()),
             active_session_runs: Mutex::new(std::collections::HashMap::new()),
+            run_approval_tc: Mutex::new(std::collections::HashMap::new()),
+            run_cancel_signals: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -154,8 +160,13 @@ impl AgentManager {
             .insert(run_id, assistant_message_id);
     }
 
-    /// 取走（消费）某 run_id 对应的 assistant_message_id。找不到返回 None。
-    pub fn take_run(&self, run_id: &str) -> Option<String> {
+    /// 非消费地查看 run_id 对应的 assistant_message_id（ws_server ensure_run 用）。
+    pub fn peek_run(&self, run_id: &str) -> Option<String> {
+        self.pending_runs.lock().unwrap().get(run_id).cloned()
+    }
+
+    /// 清理 run_id → assistant_message_id 映射（RUN_FINISHED/RUN_ERROR 时调用）。
+    pub fn remove_run(&self, run_id: &str) -> Option<String> {
         self.pending_runs.lock().unwrap().remove(run_id)
     }
 
@@ -173,6 +184,32 @@ impl AgentManager {
             .lock()
             .unwrap()
             .remove(session_id)
+    }
+
+    /// 记录某 run 当前挂起审批的 tool_call_id（cancel 时据此解除审批阻塞）。
+    pub fn set_run_approval_tc(&self, run_id: String, tool_call_id: String) {
+        self.run_approval_tc
+            .lock()
+            .unwrap()
+            .insert(run_id, tool_call_id);
+    }
+
+    /// 取走某 run 挂起审批的 tool_call_id。
+    pub fn take_run_approval_tc(&self, run_id: &str) -> Option<String> {
+        self.run_approval_tc.lock().unwrap().remove(run_id)
+    }
+
+    /// 注册某 run 审批等待的取消信号（ws_server 在 approval await 时 select 它）。
+    pub fn set_run_cancel_signal(&self, run_id: String, tx: oneshot::Sender<()>) {
+        self.run_cancel_signals
+            .lock()
+            .unwrap()
+            .insert(run_id, tx);
+    }
+
+    /// 取走并触发某 run 的取消信号（cancel_run 调用）。
+    pub fn take_run_cancel_signal(&self, run_id: &str) -> Option<oneshot::Sender<()>> {
+        self.run_cancel_signals.lock().unwrap().remove(run_id)
     }
 }
 

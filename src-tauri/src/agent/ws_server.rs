@@ -214,9 +214,9 @@ async fn handle_conn<R: tauri::Runtime>(
                 // 2. 缓存并累加消息内容
                 let mut runs = active_runs.lock().await;
                 if !runs.contains_key(&run_id) {
-                    // 优先用 AgentManager 显式注册的 assistant_message_id（由 send_message/
-                    // edit_and_resend/regenerate_message 调用 register_run 注入），消除「最后一条 pending」竞争。
-                    let pending_id = manager.take_run(&run_id);
+                    // 优先用 AgentManager 显式注册的 assistant_message_id（peek 非消费，
+                    // 供后续 TOOL_CALL_REQUEST / RUN_ERROR 也能定位），消除「最后一条 pending」竞争。
+                    let pending_id = manager.peek_run(&run_id);
                     let pending_id = match pending_id {
                         Some(id) => Some(id),
                         None => {
@@ -276,6 +276,25 @@ async fn handle_conn<R: tauri::Runtime>(
                 let tool_name = env.payload.get("tool").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 let args = env.payload.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
 
+                // 确保 ActiveRun 已创建（AI 首个输出可能是工具调用，此前无 ASSISTANT_DELTA）。
+                // 否则取消时无 ActiveRun 可 drain、状态不更新，消息会消失。
+                {
+                    let mut runs = active_runs.lock().await;
+                    if !runs.contains_key(&run_id) {
+                        let pending_id = manager.peek_run(&run_id);
+                        if let Some(id) = pending_id {
+                            runs.insert(run_id.clone(), ActiveRun {
+                                assistant_message_id: id,
+                                session_id: session_id.clone(),
+                                accumulated_text: String::new(),
+                                accumulated_thought: String::new(),
+                                current_ordinal: 0,
+                                in_thought: false,
+                            });
+                        }
+                    }
+                }
+
                 // 获取 Agent 的 ToolPolicy
                 let mut policy = ToolPolicy::default();
                 let mut agent_id = String::new();
@@ -306,10 +325,16 @@ async fn handle_conn<R: tauri::Runtime>(
                 };
 
                 let mut approved = true;
+                let mut cancelled_during_approval = false;
                 if needs_approval {
                     // 1. 注册 Oneshot Channel 并将协程挂起
                     let (approval_tx, approval_rx) = tokio::sync::oneshot::channel::<bool>();
                     manager.register_approval(tc_id.clone(), approval_tx);
+                    // 记录 run_id → tc_id，cancel 时据此清理
+                    manager.set_run_approval_tc(run_id.clone(), tc_id.clone());
+                    // 注册取消信号：cancel_run 触发以解除下方 select 阻塞
+                    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+                    manager.set_run_cancel_signal(run_id.clone(), cancel_tx);
 
                     // 2. 向 React 发送等待审批事件
                     let _ = app_handle.emit("agent://tool_call_pending", json!({
@@ -320,8 +345,19 @@ async fn handle_conn<R: tauri::Runtime>(
                         "arguments": args.clone(),
                     }));
 
-                    // 3. 等待用户点击按钮释放
-                    approved = approval_rx.await.unwrap_or(false);
+                    // 3. 等待用户点击按钮释放，或 cancel_run 触发取消信号
+                    tokio::select! {
+                        r = approval_rx => { approved = r.unwrap_or(false); }
+                        _ = cancel_rx => { cancelled_during_approval = true; }
+                    }
+                    // 清理：未消费的 approval_tx 与 run→tc 映射（已消费则 no-op）
+                    let _ = manager.resolve_approval(&tc_id, false);
+                    let _ = manager.take_run_approval_tc(&run_id);
+                }
+
+                // 取消：不执行工具、不发 TOOL_RESULT，让 RUN_ERROR 清理消息状态
+                if cancelled_during_approval {
+                    continue;
                 }
 
                 if !approved {
@@ -540,7 +576,8 @@ async fn handle_conn<R: tauri::Runtime>(
                 }
                 drop(runs);
 
-                // 清除 session→run 映射（运行已结束）
+                // 清除 run 与 session 映射（运行已结束）
+                let _ = manager.remove_run(&run_id);
                 let _ = manager.remove_session_run(&session_id);
 
                 // 通知前端渲染完成
@@ -554,33 +591,38 @@ async fn handle_conn<R: tauri::Runtime>(
                 let err_msg = env.payload.get("message").and_then(|x| x.as_str()).unwrap_or("Unknown runtime error");
                 let is_cancelled = err_msg == "已取消";
 
+                // 取 ActiveRun（若有）；否则用 peek_run 兜底定位 assistant_msg_id
+                // （AI 首个输出即工具调用且取消时，可能从未产生 ASSISTANT_DELTA，ActiveRun 不存在）
                 let mut runs = active_runs.lock().await;
-                if let Some(mut run) = runs.remove(&run_id) {
-                    let mut parts_to_insert = Vec::new();
-                    // 先保存已累积的思维链/正文（避免取消/出错时丢失已流式产出的部分回复）
-                    drain_accumulated(&mut run, &mut parts_to_insert);
-                    // 追加错误/取消提示片段
+                let (assistant_msg_id, mut parts_to_insert) = if let Some(mut run) = runs.remove(&run_id) {
+                    let mut parts = Vec::new();
+                    drain_accumulated(&mut run, &mut parts);
+                    (Some(run.assistant_message_id.clone()), parts)
+                } else {
+                    (manager.peek_run(&run_id), Vec::new())
+                };
+                drop(runs);
+
+                if let Some(id) = assistant_msg_id.clone() {
                     parts_to_insert.push(NewMessagePart {
                         id: uuid::Uuid::new_v4().to_string(),
-                        message_id: run.assistant_message_id.clone(),
+                        message_id: id.clone(),
                         kind: "text".into(),
-                        ordinal: run.current_ordinal,
+                        ordinal: 0,
                         mime_type: None,
                         tool_call_id: None,
                         content: if is_cancelled { "（已取消）".to_string() } else { format!("Error: {err_msg}") },
                         metadata: None,
                     });
-                    if !parts_to_insert.is_empty() {
-                        let _ = db.insert_message_parts(parts_to_insert).await;
-                    }
+                    let _ = db.insert_message_parts(parts_to_insert).await;
                     let _ = db.update_message_status(
-                        run.assistant_message_id.clone(),
+                        id,
                         if is_cancelled { "cancelled".to_string() } else { "failed".to_string() },
                     ).await;
                 }
-                drop(runs);
 
-                // 清除 session→run 映射（运行已结束）
+                // 清除 run 与 session 映射（运行已结束）
+                let _ = manager.remove_run(&run_id);
                 let _ = manager.remove_session_run(&session_id);
 
                 let _ = app_handle.emit("agent://run_error", json!({
