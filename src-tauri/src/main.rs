@@ -28,14 +28,23 @@ fn main() {
             // 2) 启动 AgentManager：Rust 起 WS Server + 拉起 Python sidecar。
             //    非致命：失败仅日志，不阻断 UI 启动。
             let agent = Arc::new(agent::AgentManager::new());
-            if let Err(e) = agent.start() {
+            if let Err(e) = agent.start(db.clone(), app.handle().clone()) {
                 eprintln!("[agent] 启动失败（非致命）：{e}");
             }
 
             app.manage(AppState { db, agent });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![commands::ping, commands::list_agents])
+        .invoke_handler(tauri::generate_handler![
+            commands::ping,
+            commands::list_agents,
+            commands::create_session,
+            commands::list_sessions,
+            commands::delete_session,
+            commands::list_messages,
+            commands::send_message,
+            commands::approve_tool
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

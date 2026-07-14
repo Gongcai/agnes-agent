@@ -1,9 +1,12 @@
 use std::net::TcpListener;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tokio::sync::{mpsc, oneshot};
 
+use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
+use crate::agent::protocol::Envelope;
 
 /// Agent 运行时：拥有 Python sidecar 子进程与 WS Server 端口/token。
 struct AgentRuntime {
@@ -12,11 +15,14 @@ struct AgentRuntime {
     child: std::process::Child,
 }
 
-/// 管理 Python sidecar 生命周期（dev 用 uv，发布用 externalBin）。
-/// Rust 是主进程：绑定 127.0.0.1 WS、生成一次性 token、spawn Python、管权限与重启。
+/// 管理 Python sidecar 生命周期并协调 WS 通信与工具审批。
 pub struct AgentManager {
     inner: Mutex<Option<AgentRuntime>>,
     running: AtomicBool,
+    // 当前活跃的 WebSocket 连接发送端通道
+    active_sender: Mutex<Option<mpsc::UnboundedSender<Envelope>>>,
+    // 等待审批的工具调用：tool_call_id -> oneshot 批准状态发送端
+    pending_approvals: Mutex<std::collections::HashMap<String, oneshot::Sender<bool>>>,
 }
 
 impl AgentManager {
@@ -24,12 +30,18 @@ impl AgentManager {
         Self {
             inner: Mutex::new(None),
             running: AtomicBool::new(false),
+            active_sender: Mutex::new(None),
+            pending_approvals: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
     /// 启动：绑定 127.0.0.1 随机端口，生成一次性 token，拉起 Python sidecar。
-    /// 非致命：失败仅返回 Err，由调用方决定是否阻断（main 中选择不阻断）。
-    pub fn start(&self) -> AppResult<()> {
+    /// 并将 WS Server 任务提交到 Tauri 的异步运行时。
+    pub fn start(
+        self: &Arc<Self>,
+        db: DbActorHandle,
+        app_handle: tauri::AppHandle,
+    ) -> AppResult<()> {
         if self.running.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
@@ -55,19 +67,12 @@ impl AgentManager {
                 ))
             })?;
 
-        // WS Server 跑在独立线程（自带 tokio runtime），已绑定的 listener 移交过去。
-        // token 先 clone 一份给线程，原 token 留给 AgentRuntime 持有。
+        // 绑定 WS Server 运行到 Tauri 异步运行时
         let token_for_ws = token.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build();
-            if let Ok(rt) = rt {
-                rt.block_on(async move {
-                    if let Err(e) = crate::agent::ws_server::run(listener, token_for_ws).await {
-                        eprintln!("[agent][ws] 运行错误：{e}");
-                    }
-                });
+        let manager_clone = self.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = crate::agent::ws_server::run(listener, token_for_ws, db, app_handle, manager_clone).await {
+                eprintln!("[agent][ws] 运行错误：{e}");
             }
         });
 
@@ -78,6 +83,43 @@ impl AgentManager {
         });
         Ok(())
     }
+
+    /// 注册当前活跃的 WS 发送端通道。
+    pub fn register_active_sender(&self, tx: mpsc::UnboundedSender<Envelope>) {
+        *self.active_sender.lock().unwrap() = Some(tx);
+    }
+
+    /// 注销当前活跃的 WS 发送端通道。
+    pub fn clear_active_sender(&self) {
+        *self.active_sender.lock().unwrap() = None;
+    }
+
+    /// 往 Python sidecar 发送一条协议信封消息。
+    pub fn send_to_agent(&self, env: Envelope) -> AppResult<()> {
+        let sender_opt = self.active_sender.lock().unwrap();
+        if let Some(ref tx) = *sender_opt {
+            tx.send(env).map_err(|_| AppError::Ws("WS 连接通道已断开".into()))?;
+            Ok(())
+        } else {
+            Err(AppError::Ws("Python sidecar 未连接或连接已断开".into()))
+        }
+    }
+
+    /// 注册一个等待审批的工具调用。
+    pub fn register_approval(&self, tool_call_id: String, tx: oneshot::Sender<bool>) {
+        self.pending_approvals.lock().unwrap().insert(tool_call_id, tx);
+    }
+
+    /// 批准或拒绝一个挂起的工具调用。如果找到并处理则返回 true。
+    pub fn resolve_approval(&self, tool_call_id: &str, approved: bool) -> bool {
+        let mut map = self.pending_approvals.lock().unwrap();
+        if let Some(tx) = map.remove(tool_call_id) {
+            let _ = tx.send(approved);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 fn generate_token() -> String {
@@ -87,7 +129,6 @@ fn generate_token() -> String {
 }
 
 fn resolve_agent_dir() -> std::path::PathBuf {
-    // dev 时 cwd 通常为仓库根
     if std::path::Path::new("agent").exists() {
         std::path::PathBuf::from("agent")
     } else {

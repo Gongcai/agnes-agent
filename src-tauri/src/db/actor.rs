@@ -16,6 +16,10 @@ pub enum DbCommand {
         row: repo::agents::NewAgent,
         resp: oneshot::Sender<AppResult<String>>,
     },
+    InsertMemory {
+        row: repo::memory::NewMemory,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ListSessions {
         agent_id: String,
         resp: oneshot::Sender<AppResult<Vec<repo::sessions::SessionRow>>>,
@@ -107,6 +111,13 @@ impl DbActorHandle {
     pub async fn insert_agent(&self, row: repo::agents::NewAgent) -> AppResult<String> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::InsertAgent { row, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn insert_memory(&self, row: repo::memory::NewMemory) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::InsertMemory { row, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -262,6 +273,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::InsertAgent { row, resp } => {
                     let _ = resp.send(repo::agents::insert(&conn, &row));
+                }
+                DbCommand::InsertMemory { row, resp } => {
+                    let _ = resp.send(repo::memory::insert(&conn, &row));
                 }
                 DbCommand::ListSessions { agent_id, resp } => {
                     let _ = resp.send(repo::sessions::list(&conn, &agent_id));
