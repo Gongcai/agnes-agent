@@ -123,21 +123,34 @@
 
 ## 4. 颜色与视觉规范 (Visual System Tokens)
 
-从 Cyber 风格切换为**现代质感简洁风**，设计规范如下：
+视觉系统采用温暖雅致的象牙白与灰色轻量线条，搭配低饱和度、极具亲和力的**莫兰迪绿 (Morandi Green)** 作为副色系高亮，呈现平滑、温润的现代简洁感。
 
 ### 4.1 调色板 (Color Palette)
 
 | 颜色名称 | 变量/Hex | 使用场景 |
 |---|---|---|
-| **Background (主背景)** | `bg-zinc-50` / `bg-zinc-950` | 页面最底层背景，干净爽朗 |
-| **Sidebar (侧边栏背景)** | `bg-zinc-100/50` / `bg-zinc-900/60` | 与主聊天区产生视觉区隔 |
-| **Card / Bubbles (卡片)** | `bg-white` / `bg-zinc-900` | 消息气泡、输入框、控制面板 |
-| **Border (细分割线)** | `border-zinc-200` / `border-zinc-800` | 极其纤细的 1px 描边 |
-| **Accent Violet (主题紫)**| `bg-violet-600` / `text-violet-600` | 按钮激活态、首选模型指示、思维指示 |
-| **Text Primary (正文)** | `text-zinc-900` / `text-zinc-50` | 正文字体，强调清晰可读 |
-| **Text Secondary (次要)** | `text-zinc-500` / `text-zinc-400` | 时间戳、备注、折叠描述 |
+| **Background (主背景)** | `bg-[#FAF9F5]` / #FAF9F5 (象牙白) | 整个应用的主背景，温润舒适 |
+| **Sidebar (侧边栏背景)** | `bg-stone-100/50` / #F1F0EC | 侧栏底色，与聊天区产生柔和的阶梯对比 |
+| **Card / Bubbles (卡片)** | `bg-white` | 消息气泡、输入框、控制面板、弹窗卡片 |
+| **Border (细分割线)** | `border-stone-200` / #E4E4E0 | 极纤细的 1px 温和描边 |
+| **Accent Green (莫兰迪绿)**| `bg-[#8CA38A]` / `#8CA38A` | 主按钮、选中态文字、活动状态、思维指示高亮 |
+| **Text Primary (正文)** | `text-stone-900` / #1E1E24 | 高可读性文本色 |
+| **Text Secondary (次要)** | `text-stone-500` / #7C7C88 | 时间戳、元数据、折叠标题 |
 
 ### 4.2 细节规范
 *   **圆角系统 (Border Radius)**：统一采用较大而圆润的现代圆角设计（`rounded-2xl` 适用于主气泡/卡片，`rounded-xl` 适用于按钮/输入框）。
-*   **阴影系统 (Shadows)**：使用现代柔和的扩散阴影（`shadow-sm` 用于卡片，`shadow-xl` 用于浮动弹窗），去除扁平化带来的简陋感。
-*   **排版**：正文字号略微调大，行间距设计为 `leading-relaxed`，极佳的阅读舒适感。
+*   **阴影系统 (Shadows)**：使用现代柔和的极轻量扩散阴影（`shadow-sm` 用于气泡与小卡，`shadow-xl` 用于设置大弹窗），去除扁平化带来的简陋感。
+*   **排版**：正文字号略微调大，行间距设计为 `leading-relaxed`，提供极佳的阅读舒适感。
+
+---
+
+## 5. 未来主题自定义扩展 (Future Theme Customization Roadmap)
+
+为支持日后用户深度自定义主色系与副色系，本项目的视觉设计已前置完成了「主题解耦」：
+
+1.  **CSS 变量驱动**：
+    *   将 `src/index.css` 中的 `--background`、`--foreground`、`--primary` 等变量作为颜色真理源。
+    *   在 Tailwind 样式中统一使用这些变量对应的 utility 类（如 `bg-background`、`text-primary`），避免硬编码特定颜色类名。
+2.  **动态样式注入**：
+    *   在 V0.4 中，用户的自定义配色将作为 JSON 存入本地 SQLite 的 `settings` 表中。
+    *   前端 React 启动时，通过自定义 hook 读取该配置，并通过 JS 动态修改 HTML `document.documentElement.style` 的 CSS 变量值（如将 `--primary` 改为用户自定义的莫兰迪红或灰蓝色 HSL 值），实现实时、全局且无刷新的主题无缝切换。

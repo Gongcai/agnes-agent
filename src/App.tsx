@@ -701,7 +701,7 @@ export default function App() {
   );
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#FAF9F5] text-[#2e2e38] antialiased selection:bg-violet-100 selection:text-violet-900">
+    <div className="flex h-screen w-screen overflow-hidden bg-[#FAF9F5] text-[#2e2e38] antialiased selection:bg-emerald-100 selection:text-emerald-900">
       
       {/* 1. COLLAPSIBLE SIDEBAR */}
       <aside className={`flex flex-col border-r border-stone-200/80 bg-stone-100/50 backdrop-blur-md transition-all duration-300 ${
@@ -746,7 +746,7 @@ export default function App() {
                     onClick={() => setActiveSessionId(sess.id)}
                     className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition-all duration-150 ${
                       isActive 
-                        ? "bg-white text-violet-600 font-semibold border border-stone-200 shadow-[0_1px_2px_0_rgba(0,0,0,0.03)]" 
+                        ? "bg-white text-emerald-700 font-semibold border border-stone-200 shadow-[0_1px_2px_0_rgba(0,0,0,0.03)]" 
                         : "text-stone-600 hover:bg-stone-200/40 hover:text-stone-900"
                     }`}
                   >
@@ -817,7 +817,7 @@ export default function App() {
               }}
               className="flex items-center gap-1.5 text-[11px] text-stone-600 hover:text-stone-900 bg-white px-2.5 py-1 rounded-lg border border-stone-200 shadow-sm transition-colors"
             >
-              <ShieldCheck className="h-3.5 w-3.5 text-violet-500" />
+              <ShieldCheck className="h-3.5 w-3.5 text-[#8CA38A]" />
               <span>审计流水</span>
             </button>
           </div>
@@ -842,7 +842,7 @@ export default function App() {
                 <div className={`space-y-1.5 max-w-[80%] ${isUser ? "order-1" : "order-2"}`}>
                   
                   {isUser ? (
-                    <div className="rounded-2xl rounded-tr-sm bg-[#EFEFFA]/60 px-4 py-2.5 text-sm text-stone-900 border border-violet-100/60 shadow-[0_1px_2px_0_rgba(109,40,217,0.01)]">
+                    <div className="rounded-2xl rounded-tr-sm bg-[#F1F5F0]/70 px-4 py-2.5 text-sm text-stone-900 border border-[#DFE7DD] shadow-sm">
                       <p className="whitespace-pre-wrap leading-relaxed">{message.parts[0].content}</p>
                     </div>
                   ) : (
@@ -852,8 +852,8 @@ export default function App() {
                         // 1. Thought Process (Minimal gray bar style)
                         if (part.type === "thought") {
                           return (
-                            <details key={index} open className="group border-l-2 border-violet-400 bg-stone-100/60 rounded-r-xl p-3 transition-colors">
-                              <summary className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-violet-600 select-none hover:text-violet-750">
+                            <details key={index} open className="group border-l-2 border-[#8CA38A] bg-stone-100/60 rounded-r-xl p-3 transition-colors">
+                              <summary className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-[#6C806A] select-none hover:text-[#556654]">
                                 <Cpu className="h-3.5 w-3.5" />
                                 <span>Agent 思维过程 (Thought)</span>
                                 <ChevronDown className="h-3 w-3 ml-auto group-open:rotate-180 transition-transform" />
@@ -1046,7 +1046,7 @@ export default function App() {
             {/* Header */}
             <header className="px-5 py-4 border-b border-stone-200 bg-stone-50 flex justify-between items-center shrink-0">
               <div className="flex items-center gap-2">
-                <Sliders className="h-4.5 w-4.5 text-violet-500" />
+                <Sliders className="h-4.5 w-4.5 text-[#8CA38A]" />
                 <span className="font-semibold text-stone-800 text-sm">配置与管理中心</span>
               </div>
               <button 
@@ -1153,7 +1153,7 @@ export default function App() {
                             onClick={() => setEditingAgent({ ...agent })}
                             className={`p-3.5 rounded-xl border text-left cursor-pointer transition-all ${
                               isSelected 
-                                ? "border-violet-400 bg-violet-50/10 shadow-sm" 
+                                ? "border-[#8CA38A] bg-stone-50 shadow-sm" 
                                 : "border-stone-200 bg-[#FAF9F5]/30 hover:border-stone-300"
                             }`}
                           >
@@ -1177,7 +1177,7 @@ export default function App() {
                                     e.stopPropagation();
                                     handleSwitchAgent(agent.id);
                                   }}
-                                  className="text-violet-600 hover:text-violet-500 font-semibold"
+                                  className="text-[#6C806A] hover:text-[#556654] font-semibold"
                                 >
                                   激活激活
                                 </button>
@@ -1296,7 +1296,7 @@ export default function App() {
                                       toolPolicy: { ...editingAgent.toolPolicy, shell: updated }
                                     });
                                   }}
-                                  className="rounded text-violet-600 border-stone-200 focus:ring-violet-500/20"
+                                  className="rounded text-[#6C806A] border-stone-200 focus:ring-[#8CA38A]/20"
                                 />
                               </div>
                             </div>
@@ -1328,7 +1328,7 @@ export default function App() {
                                       toolPolicy: { ...editingAgent.toolPolicy, file: updated }
                                     });
                                   }}
-                                  className="rounded text-violet-600 border-stone-200 focus:ring-violet-500/20"
+                                  className="rounded text-[#6C806A] border-stone-200 focus:ring-[#8CA38A]/20"
                                 />
                               </div>
                             </div>
@@ -1353,7 +1353,7 @@ export default function App() {
                       <button 
                         onClick={() => setMemoryEditFileTab("memory")}
                         className={`px-4 py-2 border-b-2 transition-all ${
-                          memoryEditFileTab === "memory" ? "border-violet-500 text-violet-600" : "border-transparent text-stone-400"
+                          memoryEditFileTab === "memory" ? "border-[#8CA38A] text-[#6C806A]" : "border-transparent text-stone-400"
                         }`}
                       >
                         必存记忆文件 (MEMORY.md / USER.md)
@@ -1361,7 +1361,7 @@ export default function App() {
                       <button 
                         onClick={() => setMemoryEditFileTab("store")}
                         className={`px-4 py-2 border-b-2 transition-all ${
-                          memoryEditFileTab === "store" ? "border-violet-500 text-violet-600" : "border-transparent text-stone-400"
+                          memoryEditFileTab === "store" ? "border-[#8CA38A] text-[#6C806A]" : "border-transparent text-stone-400"
                         }`}
                       >
                         语义记忆数据库 (sqlite-vec)
@@ -1381,7 +1381,7 @@ export default function App() {
                                 <button onClick={handleSaveUserMd} className="text-emerald-600">保存</button>
                               </div>
                             ) : (
-                              <button onClick={() => setIsEditingUserMd(true)} className="text-violet-600 font-medium">编辑</button>
+                              <button onClick={() => setIsEditingUserMd(true)} className="text-[#6C806A] font-medium">编辑</button>
                             )}
                           </div>
                           {isEditingUserMd ? (
@@ -1407,7 +1407,7 @@ export default function App() {
                                 <button onClick={handleSaveMemoryMd} className="text-emerald-600">保存</button>
                               </div>
                             ) : (
-                              <button onClick={() => setIsEditingMemoryMd(true)} className="text-violet-600 font-medium">编辑</button>
+                              <button onClick={() => setIsEditingMemoryMd(true)} className="text-[#6C806A] font-medium">编辑</button>
                             )}
                           </div>
                           {isEditingMemoryMd ? (
@@ -1446,7 +1446,7 @@ export default function App() {
                                 <p className="text-stone-800 leading-relaxed pr-6">{item.content}</p>
                                 <div className="flex items-center gap-2 text-[9px] text-stone-400 font-medium">
                                   <span className="bg-stone-100 px-1 rounded text-stone-500 font-mono">{item.type}</span>
-                                  <span className="text-violet-600 bg-violet-50 px-1 py-0.5 rounded border border-violet-100">置信: {(item.confidence * 100).toFixed(0)}%</span>
+                                  <span className="text-[#6C806A] bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100/60 font-semibold">置信: {(item.confidence * 100).toFixed(0)}%</span>
                                   <span>来源: {item.source}</span>
                                 </div>
                               </div>
