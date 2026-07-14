@@ -388,38 +388,55 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const { messages } = get();
     if (messages.length === 0) return;
 
-    // Mutate the last message if it's the assistant's pending message
     const updatedMessages = [...messages];
     const lastMsg = { ...updatedMessages[updatedMessages.length - 1] };
-    
-    if (lastMsg.role === "assistant") {
-      lastMsg.parts = [...lastMsg.parts];
-      
-      const isThought = content.startsWith("<thought>") || 
-                        (lastMsg.parts.length > 0 && 
-                         lastMsg.parts[lastMsg.parts.length - 1].kind === "thought" && 
-                         !lastMsg.parts[lastMsg.parts.length - 1].content.includes("</thought>"));
-      
-      const kind = isThought ? "thought" : "text";
-      const cleanContent = content.replace("<thought>", "").replace("</thought>", "");
-      
-      // If the last part matches the current kind, append to it
-      if (lastMsg.parts.length > 0 && lastMsg.parts[lastMsg.parts.length - 1].kind === kind) {
-        const lastPart = { ...lastMsg.parts[lastMsg.parts.length - 1] };
-        lastPart.content += cleanContent;
-        lastMsg.parts[lastMsg.parts.length - 1] = lastPart;
+    if (lastMsg.role !== "assistant") return;
+    lastMsg.parts = [...lastMsg.parts];
+
+    let partSeq = lastMsg.parts.length;
+    const appendKind = (kind: "text" | "thought", text: string) => {
+      if (!text) return;
+      const last = lastMsg.parts[lastMsg.parts.length - 1];
+      if (last && last.kind === kind) {
+        lastMsg.parts[lastMsg.parts.length - 1] = { ...last, content: last.content + text };
       } else {
-        // Create new part
-        lastMsg.parts.push({
-          id: `p_a_${Date.now()}`,
-          kind,
-          content: cleanContent,
-        });
+        lastMsg.parts.push({ id: `p_a_${Date.now()}_${partSeq++}`, kind, content: text });
       }
-      
-      updatedMessages[updatedMessages.length - 1] = lastMsg;
-      set({ messages: updatedMessages });
+    };
+
+    // 当前是否处于思维链中：最后一个 part 为 thought 即视为未闭合
+    let inThought =
+      lastMsg.parts.length > 0 &&
+      lastMsg.parts[lastMsg.parts.length - 1].kind === "thought";
+
+    // 按 <thought>/</thought> 标签分段路由（标签可能跨 chunk 到达）
+    let remaining = content;
+    while (remaining.length > 0) {
+      if (inThought) {
+        const closeIdx = remaining.indexOf("</thought>");
+        if (closeIdx >= 0) {
+          appendKind("thought", remaining.slice(0, closeIdx));
+          inThought = false;
+          remaining = remaining.slice(closeIdx + "</thought>".length);
+        } else {
+          appendKind("thought", remaining);
+          remaining = "";
+        }
+      } else {
+        const openIdx = remaining.indexOf("<thought>");
+        if (openIdx >= 0) {
+          appendKind("text", remaining.slice(0, openIdx));
+          inThought = true;
+          remaining = remaining.slice(openIdx + "<thought>".length);
+        } else {
+          appendKind("text", remaining);
+          remaining = "";
+        }
+      }
     }
+
+    updatedMessages[updatedMessages.length - 1] = lastMsg;
+    set({ messages: updatedMessages });
   },
 
   updateLocalToolCallStatus: (toolCallId: string, status: string, output?: string) => {

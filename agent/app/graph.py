@@ -133,20 +133,41 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
     )
     
     full_text = ""
+    full_reasoning = ""
     tool_calls_accumulator = {}
-    
+    reasoning_started = False
+    reasoning_closed = False
+
+    async def emit(content: str) -> None:
+        if send_delta_fn:
+            await send_delta_fn(content)
+
     # Stream tokens and accumulate tool calls
     for chunk in response:
         if not chunk.choices:
             continue
         delta = chunk.choices[0].delta
-        
+
+        # 思维链内容（DeepSeek reasoning_content / OpenAI o-series reasoning）
+        # 用 <thought>...</thought> 包裹，Rust 与前端据此分流到 thought 片段
+        reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+        if reasoning_text:
+            if not reasoning_started:
+                reasoning_started = True
+                await emit("<thought>")
+            full_reasoning += reasoning_text
+            await emit(reasoning_text)
+
+        # 从思维链切换到正文：闭合 <thought> 标签
+        if delta.content and reasoning_started and not reasoning_closed:
+            reasoning_closed = True
+            await emit("</thought>")
+
         # Stream text delta if callback is present
         if delta.content:
             full_text += delta.content
-            if send_delta_fn:
-                await send_delta_fn(delta.content)
-                
+            await emit(delta.content)
+
         # Accumulate streaming tool call args
         if delta.tool_calls:
             for tc in delta.tool_calls:
@@ -167,6 +188,11 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
                         tool_calls_accumulator[index]["function"]["name"] += tc.function.name
                     if tc.function.arguments:
                         tool_calls_accumulator[index]["function"]["arguments"] += tc.function.arguments
+
+    # 流结束时若仍处于思维链中（无正文跟进），闭合标签
+    if reasoning_started and not reasoning_closed:
+        reasoning_closed = True
+        await emit("</thought>")
                         
     # Format accumulated tool calls list
     pending_tool_calls = list(tool_calls_accumulator.values())

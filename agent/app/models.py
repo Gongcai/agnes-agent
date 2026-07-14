@@ -64,42 +64,42 @@ def build_thinking_kwargs(
     litellm_model: str,
     provider: str,
 ) -> Dict[str, Any]:
-    """根据模型 provider 与思考强度，构造对应的思考参数。
+    """根据思考强度，构造对应 provider 的思考参数。
 
-    依据服务商文档（以 DeepSeek 为例，OpenAI 兼容格式）：
-    - 思考开关：``{"thinking": {"type": "enabled"}}``（不再手动设置 token 预算，
-      交由服务商默认参数决定）。
-    - 思考强度（OpenAI / DeepSeek 格式）：``{"reasoning_effort": "low"|"medium"|"high"}``。
-    - 思考强度（Anthropic 格式）：``{"output_config": {"effort": "low"|"medium"|"high"}}``。
+    关键：``thinking`` 字段必须通过 ``extra_body`` 透传——OpenAI SDK（及 litellm 的
+    openai/openai_compatible 适配器）不原生识别 ``thinking``，若作为顶层参数传入，
+    会在 ``drop_params=True`` 时被 litellm 当作未知参数丢弃，导致思考未开启。
+    参考服务商官方示例：``reasoning_effort`` 为顶层参数，``thinking`` 走 extra_body。
 
-    ``drop_params=True`` 已开启，因此即使误传给不支持的 provider，
-    不被识别的参数也会被自动丢弃，不会引发调用失败。
+    - OpenAI / OpenAI 兼容（DeepSeek 等）：``reasoning_effort`` + ``extra_body={"thinking":{"type":"enabled"}}``
+    - Anthropic：litellm 原生 ``thinking`` 开关 + ``output_config.effort``
+    - 不再手动设置 token 预算，交由服务商默认参数。
     """
     if not mode or mode == "off":
         return {}
 
-    model_l = (litellm_model or "").lower()
     effort_map = {"low": "low", "medium": "medium", "high": "high", "auto": "medium"}
     effort = effort_map.get(mode, "medium")
 
-    # OpenAI / OpenAI 兼容（DeepSeek 等）/ o-series：thinking 开关 + reasoning_effort
-    if provider in ("openai", "openai_compatible") or any(
-        k in model_l for k in ("deepseek", "reasoner", "o1", "o3", "o4")
-    ):
+    # OpenAI / OpenAI 兼容（DeepSeek 等）：统一 OpenAI 格式
+    if provider in ("openai", "openai_compatible"):
         return {
-            "thinking": {"type": "enabled"},
             "reasoning_effort": effort,
+            "extra_body": {"thinking": {"type": "enabled"}},
         }
 
-    # Anthropic：thinking 开关 + output_config.effort
-    if provider == "anthropic" or "claude" in model_l:
+    # Anthropic：原生 thinking 开关 + output_config.effort
+    if provider == "anthropic":
         return {
             "thinking": {"type": "enabled"},
-            "output_config": {"effort": effort},
+            "extra_body": {"output_config": {"effort": effort}},
         }
 
-    # 其它 provider：不注入不支持的参数
-    return {}
+    # 其它 provider（ollama/google 等）：尝试 OpenAI 通用格式，drop_params 兜底
+    return {
+        "reasoning_effort": effort,
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
 
 
 def completion(
