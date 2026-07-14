@@ -151,6 +151,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 ) : (
                   <div className="space-y-3.5">
                     {message.parts.map((part, index) => {
+                      // tool_result 已在工具卡片中展示（tc.output），跳过避免重复泄漏为正文
+                      if (part.kind === "tool_result") return null;
+                      // tool_call 片段若无关联工具数据，也不当作正文渲染
+                      if (part.kind === "tool_call" && !part.tool_call) return null;
                       // 1. Thought Process (reasoning)
                       if (part.kind === "thought") {
                         return (

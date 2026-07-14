@@ -28,6 +28,46 @@ pub struct ActiveRun {
     pub in_thought: bool,
 }
 
+/// 把当前回合累积的思维链与正文落库为 message_parts，并重置累积缓冲。
+/// 在「工具调用前」与「运行结束时」各调用一次，保持「回复-工具调用-回复」的回合顺序，
+/// 避免跨回合合并成一段正文（accumulated_text 不再跨回合累加）。
+fn drain_accumulated(run: &mut ActiveRun, out: &mut Vec<NewMessagePart>) {
+    if !run.accumulated_thought.is_empty() {
+        let t = run.accumulated_thought.trim().to_string();
+        if !t.is_empty() {
+            out.push(NewMessagePart {
+                id: uuid::Uuid::new_v4().to_string(),
+                message_id: run.assistant_message_id.clone(),
+                kind: "reasoning".into(),
+                ordinal: run.current_ordinal,
+                mime_type: None,
+                tool_call_id: None,
+                content: t,
+                metadata: None,
+            });
+            run.current_ordinal += 1;
+        }
+    }
+    if !run.accumulated_text.is_empty() {
+        let t = std::mem::take(&mut run.accumulated_text);
+        if !t.trim().is_empty() {
+            out.push(NewMessagePart {
+                id: uuid::Uuid::new_v4().to_string(),
+                message_id: run.assistant_message_id.clone(),
+                kind: "text".into(),
+                ordinal: run.current_ordinal,
+                mime_type: None,
+                tool_call_id: None,
+                content: t,
+                metadata: None,
+            });
+            run.current_ordinal += 1;
+        }
+    }
+    run.accumulated_thought.clear();
+    run.in_thought = false;
+}
+
 // 在 AgentManager 里扩展对 ActiveRun 的管理。
 // 我们在 ws_server 里单独用一个 Mutex 存储 active runs 映射以解耦，或者直接在 ws_server 里定义全局线程安全 Map。
 // 使用 lazy_static 或 Thread Local 在 Rust 里不够安全优雅；最优雅的是直接放在 AgentManager 里。
@@ -365,40 +405,41 @@ async fn handle_conn<R: tauri::Runtime>(
                 // 这样前端加载历史消息时可以完整展示思考中的工具轨迹。
                 let mut runs = active_runs.lock().await;
                 if let Some(run) = runs.get_mut(&run_id) {
-                    let part_tc_id = uuid::Uuid::new_v4().to_string();
-                    let part_res_id = uuid::Uuid::new_v4().to_string();
+                    let mut parts = Vec::new();
+
+                    // 先把本回合累积的思维链/正文落库，保持「回复-工具调用-回复」的回合顺序，
+                    // 不跨回合合并（避免重开后所有正文被拼到一起）。
+                    drain_accumulated(run, &mut parts);
 
                     // tool_call part
-                    let _ = db.insert_message_parts(vec![
-                        NewMessagePart {
-                            id: part_tc_id,
-                            message_id: run.assistant_message_id.clone(),
-                            kind: "tool_call".into(),
-                            ordinal: run.current_ordinal,
-                            mime_type: None,
-                            tool_call_id: Some(tc_id.clone()),
-                            content: format!("Calling {tool_name} with params: {}", args.to_string()),
-                            metadata: None,
-                        }
-                    ]).await;
+                    parts.push(NewMessagePart {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        message_id: run.assistant_message_id.clone(),
+                        kind: "tool_call".into(),
+                        ordinal: run.current_ordinal,
+                        mime_type: None,
+                        tool_call_id: Some(tc_id.clone()),
+                        content: format!("Calling {tool_name} with params: {}", args.to_string()),
+                        metadata: None,
+                    });
                     run.current_ordinal += 1;
 
                     // tool_result part
                     let stdout_clean = reply_payload.get("stdout").and_then(|x| x.as_str()).unwrap_or("").to_string();
                     let stderr_clean = reply_payload.get("stderr").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let _ = db.insert_message_parts(vec![
-                        NewMessagePart {
-                            id: part_res_id,
-                            message_id: run.assistant_message_id.clone(),
-                            kind: "tool_result".into(),
-                            ordinal: run.current_ordinal,
-                            mime_type: None,
-                            tool_call_id: Some(tc_id.clone()),
-                            content: if stderr_clean.is_empty() { stdout_clean } else { stderr_clean },
-                            metadata: None,
-                        }
-                    ]).await;
+                    parts.push(NewMessagePart {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        message_id: run.assistant_message_id.clone(),
+                        kind: "tool_result".into(),
+                        ordinal: run.current_ordinal,
+                        mime_type: None,
+                        tool_call_id: Some(tc_id.clone()),
+                        content: if stderr_clean.is_empty() { stdout_clean } else { stderr_clean },
+                        metadata: None,
+                    });
                     run.current_ordinal += 1;
+
+                    let _ = db.insert_message_parts(parts).await;
                 }
                 drop(runs);
 
@@ -468,47 +509,11 @@ async fn handle_conn<R: tauri::Runtime>(
                     }
                 }
 
-                // 3. 落地最终的 assistant 思考及正文消息片段
+                // 3. 落地最终的 assistant 思考及正文消息片段（本回合的，已累计的在前序回合 drain 过）
                 let mut runs = active_runs.lock().await;
-                if let Some(run) = runs.remove(&run_id) {
+                if let Some(mut run) = runs.remove(&run_id) {
                     let mut parts_to_insert = Vec::new();
-
-                    // reasoning (thought) part
-                    if !run.accumulated_thought.is_empty() {
-                        // 去除 thought 首尾标记
-                        let thought_clean = run.accumulated_thought
-                            .replace("<thought>", "")
-                            .replace("</thought>", "")
-                            .trim()
-                            .to_string();
-
-                        if !thought_clean.is_empty() {
-                            parts_to_insert.push(NewMessagePart {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                message_id: run.assistant_message_id.clone(),
-                                kind: "reasoning".into(),
-                                ordinal: run.current_ordinal,
-                                mime_type: None,
-                                tool_call_id: None,
-                                content: thought_clean,
-                                metadata: None,
-                            });
-                        }
-                    }
-
-                    // text response part
-                    if !run.accumulated_text.is_empty() {
-                        parts_to_insert.push(NewMessagePart {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            message_id: run.assistant_message_id.clone(),
-                            kind: "text".into(),
-                            ordinal: run.current_ordinal + 1,
-                            mime_type: None,
-                            tool_call_id: None,
-                            content: run.accumulated_text,
-                            metadata: None,
-                        });
-                    }
+                    drain_accumulated(&mut run, &mut parts_to_insert);
 
                     // 消息行（pending 占位）已在 send_message 中创建，这里只需把累积的文本/思考片段
                     // 写入已有的 message_parts，避免以相同 id 重新 INSERT 触发主键冲突导致整段事务回滚、
