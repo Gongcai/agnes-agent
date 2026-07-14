@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore, ModelProvider, AgentSummary } from "../store/useAgentStore";
+import { AgentAvatar } from "./AgentAvatar";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -106,6 +107,15 @@ const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
   file: { enabled: true, approval: false },
   git: { enabled: true, approval: false },
 };
+
+const AGENT_EMOJIS: string[] = [
+  "🤖", "🧑‍💻", "👩‍💻", "🦊", "🐱", "🐶", "🦁", "🐯",
+  "🐼", "🐨", "🐧", "🦉", "🦄", "🐉", "🐲", "🦖",
+  "👽", "🤡", "💡", "🔮", "⚡", "🔥", "🌟", "🌈",
+  "📚", "✍️", "🎯", "🧠", "💬", "🗣️", "🫶", "😺",
+  "🥷", "🦸", "🧙", "🧚", "👻", "🎭", "🛡️", "⚙️",
+  "🌸", "🌿", "☕", "🍎", "🪐", "🌍", "🔭", "🧪",
+];
 
 const EMPTY_AGENT_FORM: AgentFormValues = {
   id: null,
@@ -289,6 +299,118 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       </div>
     </div>
   );
+
+  // ===== 角色卡头像：emoji 选择 + 图片上传 + 圆形裁剪 =====
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [cropSrc, setCropSrc] = useState<string | null>(null);
+  const [cropScale, setCropScale] = useState(1);
+  const [cropX, setCropX] = useState(0);
+  const [cropY, setCropY] = useState(0);
+  const cropCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const cropImgRef = React.useRef<HTMLImageElement | null>(null);
+  const cropDragRef = React.useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const CROP_SIZE = 256;
+
+  const drawCrop = React.useCallback(() => {
+    const canvas = cropCanvasRef.current;
+    const img = cropImgRef.current;
+    if (!canvas || !img) return;
+    const S = CROP_SIZE;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, S, S);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(S / 2, S / 2, S / 2, 0, Math.PI * 2);
+    ctx.clip();
+    const baseScale = Math.max(S / img.naturalWidth, S / img.naturalHeight);
+    const total = baseScale * cropScale;
+    const drawW = img.naturalWidth * total;
+    const drawH = img.naturalHeight * total;
+    const lowerX = (S - drawW) / 2;
+    const lowerY = (S - drawH) / 2;
+    const x = lowerX + cropX;
+    const y = lowerY + cropY;
+    ctx.drawImage(img, x, y, drawW, drawH);
+    ctx.restore();
+  }, [cropScale, cropX, cropY]);
+
+  // 上传文件 → 进入裁剪
+  const onAvatarFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      setCropSrc(dataUrl);
+      setCropScale(1);
+      setCropX(0);
+      setCropY(0);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  // 图片加载后缓存并首次绘制
+  React.useEffect(() => {
+    if (!cropSrc) return;
+    const img = new Image();
+    img.onload = () => {
+      cropImgRef.current = img;
+      drawCrop();
+    };
+    img.src = cropSrc;
+  }, [cropSrc, drawCrop]);
+
+  // 缩放/拖拽变化时重绘
+  React.useEffect(() => {
+    drawCrop();
+  }, [cropScale, cropX, cropY, drawCrop]);
+
+  const onCropPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    cropDragRef.current = { x: e.clientX, y: e.clientY, ox: cropX, oy: cropY };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const onCropPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = cropDragRef.current;
+    const canvas = cropCanvasRef.current;
+    const img = cropImgRef.current;
+    if (!drag || !canvas || !img) return;
+    const S = CROP_SIZE;
+    const baseScale = Math.max(S / img.naturalWidth, S / img.naturalHeight);
+    const total = baseScale * cropScale;
+    const drawW = img.naturalWidth * total;
+    const drawH = img.naturalHeight * total;
+    const lowerX = (S - drawW) / 2;
+    const lowerY = (S - drawH) / 2;
+    const upperX = (drawW - S) / 2;
+    const upperY = (drawH - S) / 2;
+    const nx = Math.min(upperX, Math.max(lowerX, drag.ox + (e.clientX - drag.x)));
+    const ny = Math.min(upperY, Math.max(lowerY, drag.oy + (e.clientY - drag.y)));
+    setCropX(nx);
+    setCropY(ny);
+  };
+
+  const onCropPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    cropDragRef.current = null;
+    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+  };
+
+  const confirmCrop = () => {
+    const canvas = cropCanvasRef.current;
+    if (!canvas) return;
+    const dataUrl = canvas.toDataURL("image/png");
+    setAgentForm((f) => ({ ...f, avatar: dataUrl }));
+    setCropSrc(null);
+  };
+
+  const clearAvatar = () => {
+    setAgentForm((f) => ({ ...f, avatar: "" }));
+    setShowEmojiPicker(false);
+  };
 
   const loadDebugPrompt = () => {
     if (!activeAgentId) return;
@@ -638,9 +760,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           onClick={() => setActiveAgentId(agent.id).catch(console.error)}
                           className="flex-1 flex items-center gap-2 min-w-0 text-left"
                         >
-                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-indigo-50 border border-indigo-100 font-bold text-indigo-600 text-[10px]">
-                            {agent.name.charAt(0)}
-                          </span>
+                          <AgentAvatar name={agent.name} avatar={agent.avatar} size={20} />
                           <span className="truncate">{agent.name}</span>
                           {agent.tags && (
                             <span className="truncate text-[10px] text-stone-400 font-normal">
@@ -683,6 +803,62 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       >
                         <X className="h-4 w-4" />
                       </button>
+                    </div>
+
+                    {/* 头像：emoji 选择 / 图片上传 / 清除 */}
+                    <div className="relative flex items-center gap-4 pb-3 border-b border-stone-200">
+                      <AgentAvatar name={agentForm.name || "?"} avatar={agentForm.avatar} size={64} />
+                      <div className="flex flex-col gap-2">
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowEmojiPicker((v) => !v)}
+                            className="px-3 py-1.5 rounded-lg bg-stone-100 text-stone-600 text-xs font-semibold hover:bg-stone-200"
+                          >
+                            选择 Emoji
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="px-3 py-1.5 rounded-lg bg-stone-100 text-stone-600 text-xs font-semibold hover:bg-stone-200"
+                          >
+                            上传图片
+                          </button>
+                          {agentForm.avatar && (
+                            <button
+                              type="button"
+                              onClick={clearAvatar}
+                              className="px-3 py-1.5 rounded-lg bg-stone-100 text-red-500 text-xs font-semibold hover:bg-red-100"
+                            >
+                              清除
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={onAvatarFile}
+                        />
+                        {showEmojiPicker && (
+                          <div className="absolute left-0 top-full mt-2 z-30 w-64 max-h-48 overflow-y-auto rounded-xl border border-stone-200 bg-white p-2 shadow-lg grid grid-cols-8 gap-1">
+                            {AGENT_EMOJIS.map((em) => (
+                              <button
+                                key={em}
+                                type="button"
+                                onClick={() => {
+                                  setAgentForm((f) => ({ ...f, avatar: em }));
+                                  setShowEmojiPicker(false);
+                                }}
+                                className="text-xl leading-none p-1 rounded hover:bg-stone-100"
+                              >
+                                {em}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     <div className="space-y-3 text-xs text-stone-800 leading-relaxed">
@@ -804,9 +980,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 ) : activeAgent ? (
                   <div className="border border-stone-200 bg-[#FAF9F5]/20 rounded-xl p-5 space-y-4 shadow-sm">
                     <div className="flex items-center gap-3 pb-3 border-b border-stone-200">
-                      <div className="h-10 w-10 bg-indigo-50 border border-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-md">
-                        {activeAgent.name.charAt(0)}
-                      </div>
+                      <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={40} />
                       <div>
                         <h4 className="font-semibold text-xs text-stone-800">{activeAgent.name}</h4>
                         <p className="text-[10px] text-stone-500 font-mono">ID: {activeAgent.id}</p>
@@ -1507,6 +1681,51 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   确认导入
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 头像圆形裁剪浮层 */}
+      {cropSrc && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
+          <div className="w-[360px] bg-white border border-stone-200 rounded-2xl shadow-2xl p-5 flex flex-col items-center gap-4">
+            <h4 className="text-sm font-semibold text-stone-800 self-start">裁剪圆形头像</h4>
+            <canvas
+              ref={cropCanvasRef}
+              width={CROP_SIZE}
+              height={CROP_SIZE}
+              onPointerDown={onCropPointerDown}
+              onPointerMove={onCropPointerMove}
+              onPointerUp={onCropPointerUp}
+              onPointerLeave={onCropPointerUp}
+              className="rounded-full cursor-move touch-none border border-stone-200 bg-stone-100"
+              style={{ width: CROP_SIZE, height: CROP_SIZE }}
+            />
+            <input
+              type="range"
+              min={1}
+              max={3}
+              step={0.01}
+              value={cropScale}
+              onChange={(e) => setCropScale(parseFloat(e.target.value))}
+              className="w-full accent-indigo-600"
+            />
+            <p className="text-[11px] text-stone-400 self-start">拖动画面调整位置，拖动滑块缩放。</p>
+            <div className="flex justify-end gap-2 w-full">
+              <button
+                onClick={() => setCropSrc(null)}
+                className="px-4 py-1.5 rounded-lg text-xs font-semibold text-stone-500 hover:bg-stone-100"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmCrop}
+                className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700"
+              >
+                <Check className="h-3.5 w-3.5" />
+                确认裁剪
+              </button>
             </div>
           </div>
         </div>

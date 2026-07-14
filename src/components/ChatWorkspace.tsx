@@ -4,6 +4,7 @@ import {
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
+import { AgentAvatar } from "./AgentAvatar";
 
 interface ChatWorkspaceProps {
   isSidebarOpen: boolean;
@@ -109,9 +110,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               className={`flex gap-4 ${isUser ? "justify-end" : "justify-start"}`}
             >
               {!isUser && activeAgent && (
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-50 border border-indigo-100 font-bold text-indigo-600 text-xs shadow-sm">
-                  {activeAgent.name.charAt(0)}
-                </div>
+                <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={32} />
               )}
 
               <div className={`space-y-1.5 max-w-[85%] ${isUser ? "order-1" : "order-2"}`}>
@@ -277,9 +276,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         {isStreaming && messages[messages.length - 1]?.role === "user" && (
           <div className="flex gap-4 justify-start">
             {activeAgent && (
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-50 border border-indigo-100 font-bold text-indigo-600 text-xs shadow-sm">
-                {activeAgent.name.charAt(0)}
-              </div>
+              <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={32} />
             )}
             <div className="bg-white border border-stone-200 px-4 py-2.5 rounded-2xl rounded-tl-sm flex items-center gap-1 shadow-sm">
               <span className="w-1.5 h-1.5 rounded-full bg-stone-400 animate-bounce"></span>

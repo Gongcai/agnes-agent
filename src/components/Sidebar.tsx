@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Plus, CornerDownRight, Settings, Pin, PinOff, Pencil, Trash2 } from "lucide-react";
 import { useAgentStore } from "../store/useAgentStore";
+import { AgentAvatar } from "./AgentAvatar";
 
 interface SidebarProps {
   isOpen: boolean;
@@ -91,9 +92,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onOpenSettings }) => {
       {activeAgent && (
         <div className="border-b border-stone-200/80 p-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-indigo-50 border border-indigo-100 font-bold text-indigo-600 text-md shadow-sm">
-              {activeAgent.name.charAt(0)}
-            </div>
+            <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={40} />
             <div className="overflow-hidden">
               <span className="font-semibold text-stone-900 block truncate text-sm">
                 {activeAgent.name}
