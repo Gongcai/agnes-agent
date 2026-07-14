@@ -114,6 +114,8 @@ interface AgentState {
   switchVersion: (messageId: string, direction: "prev" | "next") => Promise<void>;
   createBranch: (messageId: string) => Promise<void>;
   deleteMessage: (messageId: string) => Promise<void>;
+  editAndResend: (messageId: string, text: string) => Promise<void>;
+  regenerateMessage: (messageId: string) => Promise<void>;
   updateAgentModel: (agentId: string, model: string) => Promise<void>;
   upsertAgent: (agent: {
     id?: string;
@@ -364,6 +366,32 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
+  editAndResend: async (messageId: string, text: string) => {
+    set({ isStreaming: true });
+    try {
+      await invoke("edit_and_resend", { messageId, text });
+      const { activeSessionId } = get();
+      if (activeSessionId) await get().loadMessages(activeSessionId);
+    } catch (e) {
+      set({ isStreaming: false });
+      console.error("编辑并重发失败", e);
+      throw e;
+    }
+  },
+
+  regenerateMessage: async (messageId: string) => {
+    set({ isStreaming: true });
+    try {
+      await invoke("regenerate_message", { messageId });
+      const { activeSessionId } = get();
+      if (activeSessionId) await get().loadMessages(activeSessionId);
+    } catch (e) {
+      set({ isStreaming: false });
+      console.error("重新生成失败", e);
+      throw e;
+    }
+  },
+
   updateAgentModel: async (agentId: string, model: string) => {
     try {
       await invoke("update_agent_model", { agentId, model });
@@ -440,7 +468,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     const updatedMessages = [...messages];
     const lastMsg = { ...updatedMessages[updatedMessages.length - 1] };
-    if (lastMsg.role !== "assistant") return;
+    // 仅追加到处于 pending/streaming 的 assistant 消息（避免重生成/编辑重发后
+    // 首个 delta 在 loadMessages 完成前误落到旧 complete 消息上）
+    if (lastMsg.role !== "assistant" || (lastMsg.status !== "pending" && lastMsg.status !== "streaming")) return;
     lastMsg.parts = [...lastMsg.parts];
 
     let partSeq = lastMsg.parts.length;

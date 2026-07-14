@@ -618,6 +618,48 @@ pub async fn delete_message(
     state.db.delete_message(message_id).await
 }
 
+/// 编辑并重发：把编辑后的文本作为旧 user 消息的同级新版本插入（共享 parent），
+/// 切换活动路径到新 user，造新 pending assistant，启动运行。旧 user 子树保留可切回。
+#[tauri::command]
+pub async fn edit_and_resend(
+    state: tauri::State<'_, AppState>,
+    message_id: String,
+    text: String,
+) -> AppResult<()> {
+    let msg = state.db.get_message(message_id.clone()).await?
+        .ok_or_else(|| AppError::Other("消息不存在".into()))?;
+    if msg.role != "user" {
+        return Err(AppError::Other("仅可编辑用户消息".into()));
+    }
+    let cfg = resolve_llm(&state, &msg.session_id).await?;
+    let parent_id = msg.parent_id.clone();
+    let (_user_id, assistant_msg_id) = state.db
+        .append_user_and_assistant(msg.session_id.clone(), parent_id, text, cfg.model_name.clone())
+        .await?;
+    start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id).await
+}
+
+/// 单条重新生成：为 AI 消息造一个同级新版本（共享父 user 消息），切换活动路径
+/// 到新 AI，启动运行。旧 AI 子树保留可切回。
+#[tauri::command]
+pub async fn regenerate_message(
+    state: tauri::State<'_, AppState>,
+    message_id: String,
+) -> AppResult<()> {
+    let msg = state.db.get_message(message_id.clone()).await?
+        .ok_or_else(|| AppError::Other("消息不存在".into()))?;
+    if msg.role != "assistant" {
+        return Err(AppError::Other("仅可重新生成 AI 消息".into()));
+    }
+    let parent_user_id = msg.parent_id.clone()
+        .ok_or_else(|| AppError::Other("AI 消息无父用户消息".into()))?;
+    let cfg = resolve_llm(&state, &msg.session_id).await?;
+    let assistant_msg_id = state.db
+        .append_assistant_sibling(msg.session_id.clone(), parent_user_id, cfg.model_name.clone())
+        .await?;
+    start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id).await
+}
+
 /// 将占位提示文本视为空，避免被当作真实记忆发送给 AI（占位仅由前端展示）。
 fn normalize_memory_text(text: String) -> String {
     let t = text.trim();

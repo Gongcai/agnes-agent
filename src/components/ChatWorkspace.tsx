@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  Cpu, Terminal, Send, AlertTriangle, Menu, ChevronLeft, ShieldCheck, ChevronDown, Server, Check, Copy, GitBranch, Trash2
+  Cpu, Terminal, Send, AlertTriangle, Menu, ChevronLeft, ShieldCheck, ChevronDown, Server, Check, Copy, GitBranch, Trash2, Pencil, RefreshCw
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
@@ -49,12 +49,16 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     switchVersion,
     createBranch,
     deleteMessage,
+    editAndResend,
+    regenerateMessage,
     loadProviders,
   } = useAgentStore();
 
   const [inputVal, setInputVal] = useState("");
   const messageEndRef = useRef<HTMLDivElement>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState("");
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -146,11 +150,43 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
               <div className={`space-y-1.5 max-w-[85%] ${isUser ? "order-1" : "order-2"}`}>
                 {isUser ? (
-                  <div className="rounded-2xl rounded-tr-sm bg-[#F1F5F0]/70 px-4 py-2.5 text-sm text-stone-900 border border-[#DFE7DD] shadow-sm">
-                    <p className="whitespace-pre-wrap leading-relaxed">
-                      {message.parts.map((p) => p.content).join("")}
-                    </p>
-                  </div>
+                  editingMsgId === message.id ? (
+                    <div className="rounded-2xl rounded-tr-sm bg-[#F1F5F0]/70 px-3 py-2 text-sm text-stone-900 border border-[#8CA38A] shadow-sm space-y-2">
+                      <textarea
+                        value={editingText}
+                        onChange={(e) => setEditingText(e.target.value)}
+                        autoFocus
+                        className="w-full bg-white/70 rounded-lg p-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#8CA38A] resize-none"
+                        rows={3}
+                      />
+                      <div className="flex justify-end gap-1.5">
+                        <button
+                          onClick={() => { setEditingMsgId(null); setEditingText(""); }}
+                          className="px-2.5 py-1 rounded-lg text-[11px] text-stone-500 hover:bg-stone-200/60"
+                        >
+                          取消
+                        </button>
+                        <button
+                          onClick={() => {
+                            const t = editingText.trim();
+                            if (!t) return;
+                            setEditingMsgId(null);
+                            setEditingText("");
+                            editAndResend(message.id, t).catch(console.error);
+                          }}
+                          className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-[#8CA38A] text-white hover:bg-[#7A917A]"
+                        >
+                          重发
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl rounded-tr-sm bg-[#F1F5F0]/70 px-4 py-2.5 text-sm text-stone-900 border border-[#DFE7DD] shadow-sm">
+                      <p className="whitespace-pre-wrap leading-relaxed">
+                        {message.parts.map((p) => p.content).join("")}
+                      </p>
+                    </div>
+                  )
                 ) : (
                   <div className="space-y-3.5">
                     {message.parts.map((part, index) => {
@@ -278,6 +314,28 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   >
                     <Copy className="h-3 w-3" />
                   </button>
+                  {isUser && (
+                    <button
+                      onClick={() => {
+                        setEditingMsgId(message.id);
+                        setEditingText(message.parts.map((p) => p.content).join(""));
+                      }}
+                      className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60"
+                      title="编辑并重发"
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </button>
+                  )}
+                  {!isUser && (
+                    <button
+                      onClick={() => regenerateMessage(message.id).catch(console.error)}
+                      disabled={isStreaming}
+                      className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60 disabled:opacity-30"
+                      title="单条重新生成"
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                    </button>
+                  )}
                   <button
                     onClick={() => createBranch(message.id).catch(console.error)}
                     className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60"
