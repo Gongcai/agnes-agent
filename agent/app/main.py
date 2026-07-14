@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import traceback
+import litellm
 from typing import Any, Dict
 
 import websockets
@@ -118,13 +119,27 @@ async def run_agent_graph(
             # Summarize the discarded messages + current summary
             new_summary = summarize_history(discarded_messages, new_summary, agent_model)
             
-        # 6. Extract memories from the latest turns (asynchronously)
+        # 6. Extract memories from the latest turns (asynchronously) and compute vectors
         extracted_memories = []
         try:
             latest_messages = output_state.get("messages", [])
             extracted_memories = extract_memories(latest_messages, agent_model)
             if extracted_memories:
                 print(f"[sidecar][memory] Extracted {len(extracted_memories)} new memories: {extracted_memories}", flush=True)
+                # Compute embedding vectors using LiteLLM
+                for mem in extracted_memories:
+                    try:
+                        content = mem.get("content", "")
+                        # Fallback to standard text-embedding-3-small
+                        embed_res = litellm.embedding(
+                            model="text-embedding-3-small",
+                            input=[content]
+                        )
+                        vector = embed_res.data[0]["embedding"]
+                        mem["vector"] = vector
+                        print(f"[sidecar][memory] Computed vector of length {len(vector)} for extracted memory", flush=True)
+                    except Exception as embed_ex:
+                        print(f"[sidecar][memory] Failed to compute embedding: {embed_ex}", flush=True)
         except Exception as mem_ex:
             print(f"[sidecar][memory] Failed to extract memories: {mem_ex}", flush=True)
 

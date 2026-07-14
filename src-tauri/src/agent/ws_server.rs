@@ -417,7 +417,7 @@ async fn handle_conn<R: tauri::Runtime>(
                     agent_id = sess.agent_id;
                 }
 
-                // 2. 插入新提取的长期记忆条目
+                // 2. 插入新提取的长期记忆条目（包含关联向量写入 sqlite-vec）
                 if let Some(mems) = memories_val {
                     for m in mems {
                         let content = m.get("content").and_then(|x| x.as_str()).unwrap_or("");
@@ -426,14 +426,37 @@ async fn handle_conn<R: tauri::Runtime>(
                         let source = m.get("source").and_then(|x| x.as_str()).unwrap_or("");
 
                         if !content.is_empty() && !agent_id.is_empty() {
+                            let mem_id = uuid::Uuid::new_v4().to_string();
+                            let mut embedding_id = None;
+
+                            if let Some(arr) = m.get("vector").and_then(|x| x.as_array()) {
+                                let vector: Vec<f32> = arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect();
+                                if !vector.is_empty() {
+                                    let embed_id = uuid::Uuid::new_v4().to_string();
+                                    let content_hash = format!("{}", content.len());
+
+                                    let _ = db.insert_embedding(
+                                        embed_id.clone(),
+                                        "memory_store".to_string(),
+                                        mem_id.clone(),
+                                        "text-embedding-3-small".to_string(),
+                                        vector.len() as i32,
+                                        content_hash,
+                                        vector,
+                                    ).await;
+                                    embedding_id = Some(embed_id);
+                                }
+                            }
+
                             let new_mem = NewMemory {
-                                id: uuid::Uuid::new_v4().to_string(),
+                                id: mem_id,
                                 agent_id: agent_id.clone(),
                                 content: content.to_string(),
                                 memory_type: m_type.to_string(),
                                 scope: "agent".to_string(),
                                 source: source.to_string(),
                                 confidence,
+                                embedding_id,
                             };
                             let _ = db.insert_memory(new_mem).await;
                         }

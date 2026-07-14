@@ -20,6 +20,31 @@ pub enum DbCommand {
         row: repo::memory::NewMemory,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    GetSetting {
+        key: String,
+        resp: oneshot::Sender<AppResult<Option<String>>>,
+    },
+    SetSetting {
+        key: String,
+        value: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    InsertEmbedding {
+        embedding_id: String,
+        ref_type: String,
+        ref_id: String,
+        model: String,
+        dims: i32,
+        content_hash: String,
+        vector: Vec<f32>,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    SearchMemories {
+        query_text: String,
+        query_vector: Option<Vec<f32>>,
+        agent_id: String,
+        resp: oneshot::Sender<AppResult<Vec<String>>>,
+    },
     ListSessions {
         agent_id: String,
         resp: oneshot::Sender<AppResult<Vec<repo::sessions::SessionRow>>>,
@@ -118,6 +143,62 @@ impl DbActorHandle {
     pub async fn insert_memory(&self, row: repo::memory::NewMemory) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::InsertMemory { row, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn get_setting(&self, key: String) -> AppResult<Option<String>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetSetting { key, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn set_setting(&self, key: String, value: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SetSetting { key, value, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn insert_embedding(
+        &self,
+        embedding_id: String,
+        ref_type: String,
+        ref_id: String,
+        model: String,
+        dims: i32,
+        content_hash: String,
+        vector: Vec<f32>,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::InsertEmbedding {
+            embedding_id,
+            ref_type,
+            ref_id,
+            model,
+            dims,
+            content_hash,
+            vector,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn search_memories(
+        &self,
+        query_text: String,
+        query_vector: Option<Vec<f32>>,
+        agent_id: String,
+    ) -> AppResult<Vec<String>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SearchMemories {
+            query_text,
+            query_vector,
+            agent_id,
+            resp,
+        })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -246,6 +327,12 @@ impl DbActorHandle {
 
 /// 在独立 OS 线程跑 rusqlite 单连接；该线程用 `blocking_recv` 消费命令。
 pub fn spawn(db_path: PathBuf) -> DbActorHandle {
+    unsafe {
+        let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
+    }
+
     let (tx, mut rx) = mpsc::unbounded_channel::<DbCommand>();
     std::thread::spawn(move || {
         let mut conn = match Connection::open(&db_path) {
@@ -276,6 +363,42 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::InsertMemory { row, resp } => {
                     let _ = resp.send(repo::memory::insert(&conn, &row));
+                }
+                DbCommand::GetSetting { key, resp } => {
+                    let _ = resp.send(repo::settings::get(&conn, &key));
+                }
+                DbCommand::SetSetting { key, value, resp } => {
+                    let _ = resp.send(repo::settings::set(&conn, &key, &value));
+                }
+                DbCommand::InsertEmbedding {
+                    embedding_id,
+                    ref_type,
+                    ref_id,
+                    model,
+                    dims,
+                    content_hash,
+                    vector,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::memory::insert_embedding(
+                        &conn,
+                        &embedding_id,
+                        &ref_type,
+                        &ref_id,
+                        &model,
+                        dims,
+                        &content_hash,
+                        &vector,
+                    ));
+                }
+                DbCommand::SearchMemories {
+                    query_text,
+                    query_vector,
+                    agent_id,
+                    resp,
+                } => {
+                    let vec_ref = query_vector.as_deref();
+                    let _ = resp.send(repo::memory::search(&conn, &query_text, vec_ref, &agent_id));
                 }
                 DbCommand::ListSessions { agent_id, resp } => {
                     let _ = resp.send(repo::sessions::list(&conn, &agent_id));
@@ -498,6 +621,11 @@ mod tests {
 
         let got_sess = handle.get_session("test-session".into()).await.unwrap().unwrap();
         assert!(got_sess.deleted_at.is_some());
+
+        // 6. Test Settings
+        handle.set_setting("test-key".into(), "test-value".into()).await.unwrap();
+        let val = handle.get_setting("test-key".into()).await.unwrap();
+        assert_eq!(val, Some("test-value".into()));
 
         // Cleanup
         let _ = fs::remove_file(&db_path);

@@ -178,6 +178,30 @@ pub async fn list_messages(
     Ok(msgs_dto)
 }
 
+/// 从 DB 中加载 explicit memories（如果不存在则从磁盘加载并写入 DB 作为 canonical 真相源）。
+async fn load_explicit_memories_db_backed(
+    db: &crate::db::DbActorHandle,
+    agent_id: &str,
+) -> AppResult<(String, String)> {
+    let user_key = format!("agent:{}:user_md", agent_id);
+    let memory_key = format!("agent:{}:memory_md", agent_id);
+
+    let db_user = db.get_setting(user_key.clone()).await?;
+    let db_memory = db.get_setting(memory_key.clone()).await?;
+
+    if let (Some(u), Some(m)) = (db_user, db_memory) {
+        // 自动同步写回磁盘 materialized view md 文件以防手改丢失
+        let _ = crate::memory::save_explicit_memories(agent_id, &u, &m);
+        Ok((u, m))
+    } else {
+        // 磁盘作为 fallback 并生成默认值
+        let (user_md, memory_md) = crate::memory::load_explicit_memories(agent_id)?;
+        let _ = db.set_setting(user_key, user_md.clone()).await;
+        let _ = db.set_setting(memory_key, memory_md.clone()).await;
+        Ok((user_md, memory_md))
+    }
+}
+
 /// 发送消息给 Agent，启动推理引擎运行（Tauri 主入口）。
 #[tauri::command]
 pub async fn send_message(
@@ -234,8 +258,8 @@ pub async fn send_message(
     };
     state.db.insert_message(new_assistant_msg, vec![]).await?;
 
-    // 4. 从磁盘读取 USER.md 与 MEMORY.md 内存
-    let (user_md, memory_md) = crate::memory::load_explicit_memories(&session.agent_id)?;
+    // 4. 读取 USER.md 与 MEMORY.md 内存 (SQLite canonical)
+    let (user_md, memory_md) = load_explicit_memories_db_backed(&state.db, &session.agent_id).await?;
 
     // 5. 编译 ContextSnapshot
     // 我们再次拉取完整的历史记录（此时已含最新的 user 消息，不含 pending assistant）
@@ -336,17 +360,29 @@ pub struct ExplicitMemoriesDto {
 }
 
 #[tauri::command]
-pub async fn get_explicit_memories(agent_id: String) -> AppResult<ExplicitMemoriesDto> {
-    let (user_md, memory_md) = crate::memory::load_explicit_memories(&agent_id)?;
+pub async fn get_explicit_memories(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> AppResult<ExplicitMemoriesDto> {
+    let (user_md, memory_md) = load_explicit_memories_db_backed(&state.db, &agent_id).await?;
     Ok(ExplicitMemoriesDto { user_md, memory_md })
 }
 
 #[tauri::command]
 pub async fn save_explicit_memories(
+    state: tauri::State<'_, AppState>,
     agent_id: String,
     user_md: String,
     memory_md: String,
 ) -> AppResult<()> {
+    let user_key = format!("agent:{}:user_md", agent_id);
+    let memory_key = format!("agent:{}:memory_md", agent_id);
+
+    // 1. 写入 SQLite canonical 真相源
+    state.db.set_setting(user_key, user_md.clone()).await?;
+    state.db.set_setting(memory_key, memory_md.clone()).await?;
+
+    // 2. 更新本地磁盘 materialized view md 视图
     crate::memory::save_explicit_memories(&agent_id, &user_md, &memory_md)
 }
 

@@ -90,7 +90,10 @@ CREATE TABLE IF NOT EXISTS embedding_items (
   content_hash TEXT,
   created_at TEXT
 );
--- 向量虚拟表（sqlite-vec）在 V0.2 由 migrations 建：vec_embeddings(embedding_id, vector)
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(
+  embedding_id TEXT PRIMARY KEY,
+  vector float[1536]
+);
 
 CREATE TABLE IF NOT EXISTS documents (
   id TEXT PRIMARY KEY,
