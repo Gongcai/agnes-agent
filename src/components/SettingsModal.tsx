@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, Key } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { useAgentStore } from "../store/useAgentStore";
+import { useAgentStore, ModelProvider } from "../store/useAgentStore";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -18,12 +18,72 @@ interface AuditLog {
   risk: string;
 }
 
+type ProviderKind = "openai" | "anthropic" | "ollama" | "openai_compatible" | "google";
+
+const KIND_OPTIONS: { value: ProviderKind; label: string }[] = [
+  { value: "openai", label: "OpenAI" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "ollama", label: "Ollama" },
+  { value: "openai_compatible", label: "OpenAI 兼容" },
+  { value: "google", label: "Google" },
+];
+
+const KIND_BADGE_COLORS: Record<string, { bg: string; text: string; border: string }> = {
+  openai: { bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-200/60" },
+  anthropic: { bg: "bg-violet-50", text: "text-violet-700", border: "border-violet-200/60" },
+  ollama: { bg: "bg-amber-50", text: "text-amber-700", border: "border-amber-200/60" },
+  openai_compatible: { bg: "bg-blue-50", text: "text-blue-700", border: "border-blue-200/60" },
+  google: { bg: "bg-red-50", text: "text-red-600", border: "border-red-200/60" },
+};
+
+const KIND_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  ollama: "Ollama",
+  openai_compatible: "OpenAI 兼容",
+  google: "Google",
+};
+
+const KIND_PLACEHOLDER_URL: Record<string, string> = {
+  openai: "https://api.openai.com/v1 (默认)",
+  anthropic: "https://api.anthropic.com (默认)",
+  ollama: "http://localhost:11434",
+  openai_compatible: "输入自定义 API 地址...",
+  google: "https://generativelanguage.googleapis.com (默认)",
+};
+
+const KIND_EXAMPLE_MODELS: Record<string, string> = {
+  openai: "gpt-4o, gpt-4o-mini, o3-mini",
+  anthropic: "claude-sonnet-4-20250514, claude-3-5-haiku-20241022",
+  ollama: "llama3, mistral, codellama",
+  openai_compatible: "模型名称取决于服务商",
+  google: "gemini-2.5-pro, gemini-2.5-flash",
+};
+
+interface ProviderFormValues {
+  name: string;
+  kind: ProviderKind;
+  api_base: string;
+  api_key: string;
+  models: string;
+  is_default: boolean;
+}
+
+const EMPTY_FORM: ProviderFormValues = {
+  name: "",
+  kind: "openai",
+  api_base: "",
+  api_key: "",
+  models: "",
+  is_default: false,
+};
+
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
   initialTab = "agents",
 }) => {
-  const { agents, activeAgentId, activeSessionId } = useAgentStore();
+  const { agents, activeAgentId, activeSessionId, providers, loadProviders, upsertProvider, deleteProvider, updateAgentModel } = useAgentStore();
   const [activeTab, setActiveTab] = useState<"agents" | "memory" | "llm" | "audit">(initialTab);
   
   // Memory MD state
@@ -34,6 +94,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Audit state
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+
+  // Provider editor state
+  const [editingProviderId, setEditingProviderId] = useState<string | null>(null); // null = closed, "new" = adding, uuid = editing
+  const [formValues, setFormValues] = useState<ProviderFormValues>(EMPTY_FORM);
+  const [isSaving, setIsSaving] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isTesting, setIsTesting] = useState(false);
+  const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
+  
+  // Model selection modal state
+  const [isModelSelectOpen, setIsModelSelectOpen] = useState(false);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
 
   // Sync memory text when activeAgentId changes
   useEffect(() => {
@@ -62,6 +136,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   }, [activeSessionId, activeTab]);
 
+  // Load providers when LLM tab is activated
+  useEffect(() => {
+    if (activeTab === "llm") {
+      loadProviders();
+    }
+  }, [activeTab, loadProviders]);
+
   if (!isOpen) return null;
 
   const handleSaveUserMd = () => {
@@ -86,7 +167,158 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       .catch(console.error);
   };
 
+  // --- Provider editor helpers ---
+  const openAddProvider = () => {
+    setEditingProviderId("new");
+    setFormValues(EMPTY_FORM);
+    setShowApiKey(false);
+    setTestResult(null);
+  };
+
+  const openEditProvider = async (provider: ModelProvider) => {
+    setEditingProviderId(provider.id);
+    setFormValues({
+      name: provider.name,
+      kind: provider.kind as ProviderKind,
+      api_base: provider.api_base || "",
+      api_key: "",
+      models: provider.models.join(", "),
+      is_default: provider.is_default,
+    });
+    setShowApiKey(false);
+    setTestResult(null);
+    // 回显已保存的 API Key（默认密码形式展示，可由眼睛图标切换明文）
+    try {
+      const key = await invoke<string | null>("get_provider_api_key", { providerId: provider.id });
+      if (key) {
+        setFormValues((prev) => ({ ...prev, api_key: key }));
+      }
+    } catch (e) {
+      console.error("Failed to load provider api key", e);
+    }
+  };
+
+  const closeEditor = () => {
+    setEditingProviderId(null);
+    setFormValues(EMPTY_FORM);
+    setShowApiKey(false);
+    setTestResult(null);
+    setIsTesting(false);
+  };
+
+  const handleSaveProvider = async () => {
+    setIsSaving(true);
+    try {
+      const payload: any = {
+        name: formValues.name,
+        kind: formValues.kind,
+        is_default: formValues.is_default,
+        models: formValues.models
+          .split(",")
+          .map((m) => m.trim())
+          .filter(Boolean),
+      };
+      if (formValues.api_base) payload.api_base = formValues.api_base;
+      if (formValues.api_key) payload.api_key = formValues.api_key;
+      if (editingProviderId && editingProviderId !== "new") {
+        payload.id = editingProviderId;
+      }
+      await upsertProvider(payload);
+      closeEditor();
+    } catch (e) {
+      console.error("Failed to save provider", e);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteProvider = async (providerId: string) => {
+    if (!window.confirm("确定要删除此服务商配置吗？此操作不可撤销。")) return;
+    await deleteProvider(providerId);
+    if (editingProviderId === providerId) closeEditor();
+  };
+
+  const handleTestConnection = async (providerId: string) => {
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const result = await invoke<{ success: boolean; message: string }>("test_provider", { providerId });
+      setTestResult(result);
+    } catch (e: any) {
+      setTestResult({ success: false, message: e?.toString() || "连接测试失败" });
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
+  const handleFetchModels = async () => {
+    setIsFetchingModels(true);
+    setTestResult(null);
+    try {
+      const fetchedModels = await invoke<string[]>("fetch_provider_models", {
+        kind: formValues.kind,
+        apiBase: formValues.api_base || null,
+        apiKey: formValues.api_key || null,
+      });
+      if (fetchedModels.length > 0) {
+        setAvailableModels(fetchedModels);
+        
+        // Pre-select models that are already in formValues.models
+        const existing = new Set(
+          formValues.models
+            .split(",")
+            .map(m => m.trim())
+            .filter(Boolean)
+        );
+        
+        // Also add logic if it's completely empty, maybe select nothing by default
+        // or select everything. Let's just keep the existing ones checked.
+        setSelectedModels(existing);
+        setIsModelSelectOpen(true);
+        setTestResult({ success: true, message: `成功获取 ${fetchedModels.length} 个模型` });
+      } else {
+        setTestResult({ success: false, message: "未获取到模型列表" });
+      }
+    } catch (e: any) {
+      setTestResult({ success: false, message: e?.toString() || "获取模型失败" });
+    } finally {
+      setIsFetchingModels(false);
+    }
+  };
+
+  const handleToggleModel = (model: string) => {
+    setSelectedModels(prev => {
+      const next = new Set(prev);
+      if (next.has(model)) {
+        next.delete(model);
+      } else {
+        next.add(model);
+      }
+      return next;
+    });
+  };
+
+  const handleConfirmModels = () => {
+    const modelsArr = Array.from(selectedModels);
+    updateForm("models", modelsArr.join(", "));
+    setIsModelSelectOpen(false);
+  };
+
+  const updateForm = (field: keyof ProviderFormValues, value: string | boolean) => {
+    setFormValues((prev) => ({ ...prev, [field]: value }));
+  };
+
   const activeAgent = agents.find((a) => a.id === activeAgentId);
+  const editingProvider = providers.find((p) => p.id === editingProviderId);
+
+  const renderKindBadge = (kind: string) => {
+    const colors = KIND_BADGE_COLORS[kind] || KIND_BADGE_COLORS.openai;
+    return (
+      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${colors.bg} ${colors.text} ${colors.border}`}>
+        {KIND_LABELS[kind] || kind}
+      </span>
+    );
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
@@ -179,28 +411,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="space-y-3 text-xs text-stone-800 leading-relaxed">
                     <div>
                       <span className="font-semibold text-stone-500 block mb-1">能力模型:</span>
-                      <p className="bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 font-mono text-[11px]">
-                        gpt-4o
-                      </p>
+                      <select
+                        value={activeAgent.model || ""}
+                        onChange={(e) => updateAgentModel(activeAgent.id, e.target.value)}
+                        className="w-full bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 font-mono text-[11px] focus:outline-none focus:ring-1 focus:ring-stone-300"
+                      >
+                        <option value="">-- 请选择关联的模型 --</option>
+                        {providers.map((p) => {
+                          const models = p.models.length > 0 ? p.models : [];
+                          return (
+                            <optgroup key={p.id} label={`${p.name} (${KIND_LABELS[p.kind] || p.kind})`}>
+                              {models.map((m) => {
+                                const modelVal = `${p.id}/${m}`;
+                                return (
+                                  <option key={modelVal} value={modelVal}>
+                                    {m}
+                                  </option>
+                                );
+                              })}
+                            </optgroup>
+                          );
+                        })}
+                      </select>
                     </div>
                     <div>
                       <span className="font-semibold text-stone-500 block mb-1">人格与背景设定 (Persona):</span>
                       <p className="bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 text-stone-650">
-                        {activeAgent.id === "agnes" 
-                          ? "你叫 Agnes，是 Tavern 的首席管家。你温和有礼、逻辑严密。偏好编写清晰模块化的代码。"
-                          : activeAgent.id === "nova"
-                          ? "你是 Nova，经验丰富的 DevSecOps 专家 and 代码审计员。防范任何恶意指令的执行。"
-                          : "你是 Bard，酒馆吟游诗人，协助创意文学与背景设计。"}
+                        {activeAgent.persona || "暂无设定"}
                       </p>
                     </div>
                     <div>
                       <span className="font-semibold text-stone-500 block mb-1">工具安全策略 (Tool Policy):</span>
-                      <pre className="bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 font-mono text-[10px] text-stone-600">
-                        {activeAgent.id === "agnes"
-                          ? "Shell: 必审 | File: 写操作审 | Git: 免审"
-                          : activeAgent.id === "nova"
-                          ? "Shell: 必审 | File: 必审 | Git: 必审"
-                          : "Shell: 禁止 | File: 禁止 | Git: 禁止"}
+                      <pre className="bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 font-mono text-[10px] text-stone-600 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                        {activeAgent.tool_policy || "{}"}
                       </pre>
                     </div>
                   </div>
@@ -307,52 +550,333 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* 3. LLM TAB */}
             {activeTab === "llm" && (
               <div className="space-y-5">
+                {/* Section 1: Model Provider 配置 */}
                 <div>
-                  <h3 className="text-sm font-semibold text-stone-850">模型与同步参数</h3>
-                  <p className="text-[11px] text-stone-400">系统底层密钥及同步配置详情。</p>
+                  <h3 className="text-sm font-semibold text-stone-850">模型服务商配置</h3>
+                  <p className="text-[11px] text-stone-400">管理 LLM API 提供商，配置自定义 endpoint、密钥与可用模型。</p>
                 </div>
 
-                <div className="border border-stone-200 bg-[#FAF9F5]/30 rounded-xl p-5 space-y-4 shadow-sm">
-                  <div className="space-y-2">
-                    <span className="block text-xs font-semibold text-stone-500 uppercase tracking-wide">
-                      系统托管凭证锁 (OS Keyring)
-                    </span>
-                    <div className="flex items-center gap-2 bg-white border border-stone-200 px-3 py-2 rounded-lg text-xs">
-                      <Key className="h-4 w-4 text-stone-400" />
-                      <input
-                        type="password"
-                        value="sk-proj-xxxxxxxxxxxxxxxxxxxxxxxx"
-                        disabled
-                        className="bg-transparent flex-1 text-stone-400 font-mono focus:outline-none"
-                      />
-                      <span className="text-[10px] text-stone-400 bg-stone-100 px-2 py-0.5 rounded-md border border-stone-200 font-medium">
-                        加密保护中
-                      </span>
-                    </div>
-                  </div>
+                {/* Provider List */}
+                <div className="space-y-2.5">
+                  {providers.map((provider) => (
+                    <div
+                      key={provider.id}
+                      className={`border rounded-xl p-4 shadow-sm transition-all duration-200 hover:shadow-md ${
+                        editingProviderId === provider.id
+                          ? "border-[#8CA38A]/50 bg-[#FAF9F5]/40 ring-1 ring-[#8CA38A]/20"
+                          : "border-stone-200 bg-[#FAF9F5]/20 hover:border-stone-300"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        {/* Left: Provider info */}
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <div className="h-8 w-8 rounded-lg bg-stone-100 border border-stone-200/60 flex items-center justify-center shrink-0">
+                            <Server className="h-3.5 w-3.5 text-stone-500" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-semibold text-stone-800 truncate">{provider.name}</span>
+                              {renderKindBadge(provider.kind)}
+                              {provider.is_default && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-[#8CA38A]/10 text-[#6C806A] border border-[#8CA38A]/20">
+                                  <Check className="h-2.5 w-2.5" />
+                                  默认
+                                </span>
+                              )}
+                              {provider.has_api_key && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200/60">
+                                  <Key className="h-2.5 w-2.5" />
+                                  已配置密钥
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3 mt-0.5">
+                              {provider.api_base && (
+                                <span className="text-[10px] text-stone-400 font-mono truncate max-w-[240px]">
+                                  {provider.api_base}
+                                </span>
+                              )}
+                              <span className="text-[10px] text-stone-400">
+                                {provider.models.length} 个模型
+                              </span>
+                            </div>
+                          </div>
+                        </div>
 
-                  <div className="space-y-3 pt-3 border-t border-stone-200">
-                    <span className="block text-xs font-semibold text-stone-500 uppercase tracking-wide">
-                      云端同步网关 (Incremental Sync)
-                    </span>
-                    <div className="grid grid-cols-2 gap-4 text-xs">
-                      <div>
-                        <label className="block text-stone-400 mb-1">同步网关 Worker URL</label>
+                        {/* Right: Actions */}
+                        <div className="flex items-center gap-1 shrink-0 ml-3">
+                          <button
+                            onClick={() => openEditProvider(provider)}
+                            className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
+                            title="编辑"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleTestConnection(provider.id)}
+                            className="p-1.5 rounded-lg text-stone-400 hover:text-amber-600 hover:bg-amber-50 transition-colors"
+                            title="测试连接"
+                            disabled={isTesting}
+                          >
+                            <Zap className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteProvider(provider.id)}
+                            className="p-1.5 rounded-lg text-stone-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                            title="删除"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Inline test result for this provider */}
+                      {testResult && editingProviderId !== provider.id && !editingProviderId && (
+                        // Show test results only if we just tested (no editor open)
+                        null
+                      )}
+                    </div>
+                  ))}
+
+                  {providers.length === 0 && !editingProviderId && (
+                    <div className="border border-dashed border-stone-200 rounded-xl p-8 text-center">
+                      <Server className="h-8 w-8 text-stone-300 mx-auto mb-2" />
+                      <p className="text-xs text-stone-400">尚未配置任何模型服务商</p>
+                      <p className="text-[10px] text-stone-350 mt-0.5">点击下方按钮添加您的第一个服务商</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Test result (shown globally when no editor is open) */}
+                {testResult && !editingProviderId && (
+                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs border transition-all ${
+                    testResult.success
+                      ? "bg-emerald-50 border-emerald-200/60 text-emerald-700"
+                      : "bg-red-50 border-red-200/60 text-red-600"
+                  }`}>
+                    {testResult.success ? <Check className="h-3.5 w-3.5 shrink-0" /> : <X className="h-3.5 w-3.5 shrink-0" />}
+                    <span className="truncate">{testResult.message}</span>
+                    <button
+                      onClick={() => setTestResult(null)}
+                      className="ml-auto p-0.5 hover:bg-black/5 rounded shrink-0"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Provider Editor (inline form) */}
+                {editingProviderId && (
+                  <div className="border border-[#8CA38A]/30 bg-[#FAF9F5]/40 rounded-xl p-5 space-y-4 shadow-sm ring-1 ring-[#8CA38A]/10">
+                    <div className="flex items-center justify-between pb-3 border-b border-stone-200/60">
+                      <h4 className="text-xs font-semibold text-stone-700">
+                        {editingProviderId === "new" ? "添加新服务商" : "编辑服务商"}
+                      </h4>
+                      <button
+                        onClick={closeEditor}
+                        className="text-stone-400 hover:text-stone-600 p-0.5 rounded hover:bg-stone-100 transition-colors"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* 名称 */}
+                      <div className="space-y-1">
+                        <label className="text-xs font-semibold text-stone-500">名称</label>
                         <input
                           type="text"
-                          value="https://agnes-sync.caiwen.workers.dev"
-                          disabled
-                          className="w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-1.5 text-stone-500 focus:outline-none"
+                          value={formValues.name}
+                          onChange={(e) => updateForm("name", e.target.value)}
+                          placeholder="例如：My OpenAI"
+                          className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-xs text-stone-800 focus:outline-none focus:ring-1 focus:ring-[#8CA38A]/40 focus:border-[#8CA38A] transition-shadow"
                         />
                       </div>
-                      <div>
-                        <label className="block text-stone-400 mb-1">本机同步标识 (Device UUID)</label>
+
+                      {/* 类型 */}
+                      <div className="space-y-1">
+                        <label className="text-xs font-semibold text-stone-500">类型</label>
+                        <select
+                          value={formValues.kind}
+                          onChange={(e) => updateForm("kind", e.target.value)}
+                          className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-xs text-stone-800 focus:outline-none focus:ring-1 focus:ring-[#8CA38A]/40 focus:border-[#8CA38A] transition-shadow appearance-none"
+                        >
+                          {KIND_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* API Base URL */}
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-stone-500">API Base URL</label>
+                      <input
+                        type="text"
+                        value={formValues.api_base}
+                        onChange={(e) => updateForm("api_base", e.target.value)}
+                        placeholder={KIND_PLACEHOLDER_URL[formValues.kind] || "输入 API 地址..."}
+                        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-xs text-stone-800 font-mono focus:outline-none focus:ring-1 focus:ring-[#8CA38A]/40 focus:border-[#8CA38A] transition-shadow"
+                      />
+                    </div>
+
+                    {/* API Key */}
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-stone-500 flex items-center gap-1.5">
+                        <Key className="h-3 w-3 text-stone-400" />
+                        API Key
+                      </label>
+                      <div className="relative">
                         <input
-                          type="text"
-                          value="7d938f32-cf72-4e9f-863a-ea9387d8df93"
-                          disabled
-                          className="w-full bg-stone-100 border border-stone-200 rounded-lg px-3 py-1.5 text-stone-400 font-mono"
+                          type={showApiKey ? "text" : "password"}
+                          value={formValues.api_key}
+                          onChange={(e) => updateForm("api_key", e.target.value)}
+                          placeholder={
+                            editingProviderId !== "new"
+                              ? (editingProvider?.has_api_key ? "已保存，留空则保持不变" : "留空则保持原密钥不变")
+                              : "输入 API Key..."
+                          }
+                          className="w-full bg-white border border-stone-200 rounded-lg pl-3 pr-9 py-2 text-xs text-stone-800 font-mono focus:outline-none focus:ring-1 focus:ring-[#8CA38A]/40 focus:border-[#8CA38A] transition-shadow"
                         />
+                        <button
+                          type="button"
+                          onClick={() => setShowApiKey((v) => !v)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700 transition-colors"
+                          title={showApiKey ? "隐藏 API Key" : "显示 API Key"}
+                        >
+                          {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                        </button>
+                      </div>
+                      {editingProviderId !== "new" && editingProvider?.has_api_key && (
+                        <p className="flex items-center gap-1 text-[10px] text-amber-600 mt-1">
+                          <Key className="h-2.5 w-2.5" />
+                          已保存 API Key（重新输入将覆盖）
+                        </p>
+                      )}
+                    </div>
+
+                    {/* 可用模型 */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-semibold text-stone-500">可用模型</label>
+                        <button
+                          onClick={handleFetchModels}
+                          disabled={isFetchingModels || (formValues.kind !== "openai" && formValues.kind !== "openai_compatible" && formValues.kind !== "ollama")}
+                          className="text-[10px] flex items-center gap-1 text-[#8CA38A] hover:text-[#6C806A] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="尝试从接口自动获取模型列表"
+                        >
+                          <Download className="h-3 w-3" />
+                          {isFetchingModels ? "获取中..." : "获取模型"}
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        value={formValues.models}
+                        onChange={(e) => updateForm("models", e.target.value)}
+                        placeholder="以逗号分隔，例如：gpt-4o, gpt-4o-mini"
+                        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-xs text-stone-800 font-mono focus:outline-none focus:ring-1 focus:ring-[#8CA38A]/40 focus:border-[#8CA38A] transition-shadow"
+                      />
+                      <p className="text-[10px] text-stone-400">
+                        示例: {KIND_EXAMPLE_MODELS[formValues.kind] || "输入模型名称"}
+                      </p>
+                    </div>
+
+                    {/* 设为默认 */}
+                    <label className="flex items-center gap-2 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={formValues.is_default}
+                        onChange={(e) => updateForm("is_default", e.target.checked)}
+                        className="rounded border-stone-300 text-[#8CA38A] focus:ring-[#8CA38A]/40 h-3.5 w-3.5"
+                      />
+                      <span className="text-xs text-stone-600 group-hover:text-stone-800 transition-colors">设为默认服务商</span>
+                    </label>
+
+                    {/* Test result in editor */}
+                    {testResult && (
+                      <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs border transition-all ${
+                        testResult.success
+                          ? "bg-emerald-50 border-emerald-200/60 text-emerald-700"
+                          : "bg-red-50 border-red-200/60 text-red-600"
+                      }`}>
+                        {testResult.success ? <Check className="h-3.5 w-3.5 shrink-0" /> : <X className="h-3.5 w-3.5 shrink-0" />}
+                        <span className="truncate">{testResult.message}</span>
+                      </div>
+                    )}
+
+                    {/* Actions */}
+                    <div className="flex items-center justify-between pt-3 border-t border-stone-200/60">
+                      <div>
+                        {editingProviderId !== "new" && (
+                          <button
+                            onClick={() => handleTestConnection(editingProviderId)}
+                            disabled={isTesting}
+                            className="flex items-center gap-1.5 text-xs text-stone-500 hover:text-amber-600 font-medium transition-colors disabled:opacity-50"
+                          >
+                            <Zap className="h-3.5 w-3.5" />
+                            {isTesting ? "测试中..." : "测试连接"}
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={closeEditor}
+                          className="px-3 py-1.5 rounded-lg text-xs font-medium text-stone-500 hover:text-stone-700 hover:bg-stone-100 transition-colors"
+                        >
+                          取消
+                        </button>
+                        <button
+                          onClick={handleSaveProvider}
+                          disabled={isSaving || !formValues.name.trim()}
+                          className="bg-[#8CA38A] text-white hover:bg-[#7A917A] rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                          {isSaving ? "保存中..." : "保存"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Add Provider Button */}
+                {!editingProviderId && (
+                  <button
+                    onClick={openAddProvider}
+                    className="w-full border border-dashed border-stone-300 hover:border-[#8CA38A] rounded-xl p-3 text-xs font-semibold text-stone-400 hover:text-[#6C806A] hover:bg-[#FAF9F5]/30 transition-all flex items-center justify-center gap-1.5"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    添加服务商
+                  </button>
+                )}
+
+                {/* Section 3: Cloud Sync (preserved) */}
+                <div className="border-t border-stone-200 pt-5 mt-2">
+                  <div className="border border-stone-200 bg-[#FAF9F5]/30 rounded-xl p-5 space-y-4 shadow-sm">
+                    <div className="space-y-3">
+                      <span className="block text-xs font-semibold text-stone-500 uppercase tracking-wide">
+                        云端同步网关 (Incremental Sync)
+                      </span>
+                      <div className="grid grid-cols-2 gap-4 text-xs">
+                        <div>
+                          <label className="block text-stone-400 mb-1">同步网关 Worker URL</label>
+                          <input
+                            type="text"
+                            value="https://agnes-sync.caiwen.workers.dev"
+                            disabled
+                            className="w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-1.5 text-stone-500 focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-stone-400 mb-1">本机同步标识 (Device UUID)</label>
+                          <input
+                            type="text"
+                            value="7d938f32-cf72-4e9f-863a-ea9387d8df93"
+                            disabled
+                            className="w-full bg-stone-100 border border-stone-200 rounded-lg px-3 py-1.5 text-stone-400 font-mono"
+                          />
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -413,6 +937,63 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </div>
         </div>
       </div>
+      
+      {/* Model Selection Modal */}
+      {isModelSelectOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-[2px]">
+          <div className="w-[480px] max-h-[500px] bg-white border border-stone-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="px-5 py-3.5 border-b border-stone-200 bg-stone-50 flex justify-between items-center shrink-0">
+              <h4 className="text-sm font-semibold text-stone-800">选择要导入的模型</h4>
+              <button
+                onClick={() => setIsModelSelectOpen(false)}
+                className="text-stone-400 hover:text-stone-800 rounded p-1 hover:bg-stone-200/50 transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-2 bg-[#FAF9F5]/30">
+              <div className="space-y-1">
+                {availableModels.map(model => (
+                  <label
+                    key={model}
+                    className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-white border border-transparent hover:border-stone-200 hover:shadow-sm cursor-pointer transition-all group"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedModels.has(model)}
+                      onChange={() => handleToggleModel(model)}
+                      className="rounded border-stone-300 text-[#8CA38A] focus:ring-[#8CA38A]/40 h-4 w-4 shrink-0 transition-colors"
+                    />
+                    <span className="text-xs font-mono text-stone-700 group-hover:text-stone-900 break-all">{model}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            
+            <div className="px-5 py-3.5 border-t border-stone-200 bg-stone-50 flex justify-between items-center shrink-0">
+              <div className="text-xs text-stone-500 font-medium">
+                已选中 <span className="text-[#8CA38A] font-bold">{selectedModels.size}</span> 个模型
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setIsModelSelectOpen(false)}
+                  className="px-4 py-1.5 rounded-lg text-xs font-medium text-stone-500 hover:text-stone-700 hover:bg-stone-200/50 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleConfirmModels}
+                  className="bg-[#8CA38A] text-white hover:bg-[#7A917A] rounded-lg px-5 py-1.5 text-xs font-semibold transition-colors flex items-center gap-1.5"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  确认导入
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

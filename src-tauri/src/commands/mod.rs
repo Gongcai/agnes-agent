@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::error::{AppError, AppResult};
@@ -11,6 +11,10 @@ use crate::db::repo::sessions::NewSession;
 pub struct AgentSummary {
     pub id: String,
     pub name: String,
+    pub persona: String,
+    pub system_prompt: String,
+    pub model: String,
+    pub tool_policy: String,
 }
 
 #[derive(Serialize)]
@@ -67,8 +71,21 @@ pub async fn list_agents(state: tauri::State<'_, AppState>) -> AppResult<Vec<Age
         .map(|r| AgentSummary {
             id: r.id,
             name: r.name,
+            persona: r.persona,
+            system_prompt: r.system_prompt,
+            model: r.model,
+            tool_policy: r.tool_policy,
         })
         .collect())
+}
+
+#[tauri::command]
+pub async fn update_agent_model(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    model: String,
+) -> AppResult<()> {
+    state.db.update_agent_model(agent_id, model).await
 }
 
 /// 创建新会话。
@@ -217,7 +234,42 @@ pub async fn send_message(
     let agent = agents.iter().find(|a| a.id == session.agent_id)
         .ok_or_else(|| AppError::Other(format!("关联的智能体 `{}` 不存在", session.agent_id)))?;
 
-    // 2. 插入用户发送的 Message
+    // 2. 解析 LLM 配置：provider_id/model_name 或仅 model_name（使用默认 provider）
+    let agent_model_str = if agent.model.is_empty() { "gpt-4o".to_string() } else { agent.model.clone() };
+    let (provider_id_opt, model_name) = if let Some(idx) = agent_model_str.find('/') {
+        (Some(agent_model_str[..idx].to_string()), agent_model_str[idx + 1..].to_string())
+    } else {
+        (None, agent_model_str.clone())
+    };
+
+    let provider = if let Some(ref pid) = provider_id_opt {
+        state.db.get_model_provider(pid.clone()).await?
+    } else {
+        state.db.get_default_model_provider().await?
+    };
+
+    let (provider_kind, api_base, provider_resolved_id) = if let Some(ref p) = provider {
+        (p.kind.clone(), p.api_base.clone(), Some(p.id.clone()))
+    } else {
+        (String::new(), None, None)
+    };
+
+    let api_key = if let Some(ref pid) = provider_resolved_id {
+        state.db.get_setting(format!("provider:{}:api_key", pid)).await?
+    } else {
+        None
+    };
+
+    let litellm_model = match provider_kind.as_str() {
+        "openai" => model_name.clone(),
+        "anthropic" => model_name.clone(),
+        "ollama" => format!("ollama/{}", model_name),
+        "openai_compatible" => format!("openai/{}", model_name),
+        "google" => format!("gemini/{}", model_name),
+        _ => model_name.clone(),
+    };
+
+    // 3. 插入用户发送的 Message
     let user_msg_id = uuid::Uuid::new_v4().to_string();
     let current_history = state.db.list_messages_with_parts(session_id.clone()).await?;
     let seq_user = current_history.len() as i32;
@@ -244,7 +296,7 @@ pub async fn send_message(
     };
     state.db.insert_message(new_user_msg, vec![new_user_part]).await?;
 
-    // 3. 插入一条 pending 状态的 Assistant 占位消息，供前台渲染 "Agnes 正在思考..."
+    // 4. 插入一条 pending 状态的 Assistant 占位消息，供前台渲染 "Agnes 正在思考..."
     let assistant_msg_id = uuid::Uuid::new_v4().to_string();
     let new_assistant_msg = NewMessage {
         id: assistant_msg_id.clone(),
@@ -252,16 +304,16 @@ pub async fn send_message(
         role: "assistant".into(),
         seq: seq_user + 1,
         status: "pending".into(),
-        model: Some(if agent.model.is_empty() { "gpt-4o".to_string() } else { agent.model.clone() }),
+        model: Some(model_name.clone()),
         token_count: None,
         metadata: None,
     };
     state.db.insert_message(new_assistant_msg, vec![]).await?;
 
-    // 4. 读取 USER.md 与 MEMORY.md 内存 (SQLite canonical)
+    // 5. 读取 USER.md 与 MEMORY.md 内存 (SQLite canonical)
     let (user_md, memory_md) = load_explicit_memories_db_backed(&state.db, &session.agent_id).await?;
 
-    // 5. 编译 ContextSnapshot
+    // 6. 编译 ContextSnapshot
     // 我们再次拉取完整的历史记录（此时已含最新的 user 消息，不含 pending assistant）
     let updated_history = state.db.list_messages_with_parts(session_id.clone()).await?;
     let mut history_json = Vec::new();
@@ -308,6 +360,13 @@ pub async fn send_message(
                 "systemPrompt": agent.system_prompt,
                 "model": agent.model,
                 "toolPolicy": serde_json::from_str::<serde_json::Value>(&agent.tool_policy).unwrap_or(json!({}))
+            },
+            "llmConfig": {
+                "provider": provider_kind,
+                "apiBase": api_base,
+                "apiKey": api_key,
+                "model": model_name,
+                "litellmModel": litellm_model
             },
             "settings": {
                 "user_context_limit": session.context_limit
@@ -410,4 +469,237 @@ pub async fn list_audit_logs(
         status: r.status,
         risk: r.risk_level.unwrap_or_else(|| "Low".to_string()),
     }).collect())
+}
+
+// ── Model Provider DTOs & Commands ──────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ModelProviderDto {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub api_base: Option<String>,
+    pub is_default: bool,
+    pub models: Vec<String>,
+    /// 是否已保存 API Key（出于安全不返回明文，仅暴露是否配置）
+    pub has_api_key: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Deserialize)]
+pub struct UpsertProviderInput {
+    pub id: Option<String>,
+    pub name: String,
+    pub kind: String,
+    pub api_base: Option<String>,
+    pub api_key: Option<String>,
+    pub is_default: Option<bool>,
+    pub models: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+pub struct TestProviderResult {
+    pub success: bool,
+    pub message: String,
+}
+
+/// 列出所有已配置的模型提供商。
+#[tauri::command]
+pub async fn list_providers(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<ModelProviderDto>> {
+    let rows = state.db.list_model_providers().await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let models: Vec<String> = r
+            .models_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        // 出于安全不返回明文 key，仅判断是否已配置
+        let stored_key = state
+            .db
+            .get_setting(format!("provider:{}:api_key", r.id))
+            .await
+            .ok()
+            .flatten();
+        let has_api_key = stored_key.map(|k| !k.is_empty()).unwrap_or(false);
+        out.push(ModelProviderDto {
+            id: r.id,
+            name: r.name,
+            kind: r.kind,
+            api_base: r.api_base,
+            is_default: r.is_default != 0,
+            models,
+            has_api_key,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        });
+    }
+    Ok(out)
+}
+
+/// 新增或更新模型提供商。如果 id 为 None 则自动生成 UUID。
+#[tauri::command]
+pub async fn upsert_provider(
+    state: tauri::State<'_, AppState>,
+    provider: UpsertProviderInput,
+) -> AppResult<String> {
+    let id = provider.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    // 存储 API Key 到 settings 表
+    if let Some(ref key) = provider.api_key {
+        state
+            .db
+            .set_setting(format!("provider:{}:api_key", id), key.clone())
+            .await?;
+    }
+
+    let models_json = provider
+        .models
+        .as_ref()
+        .map(|m| serde_json::to_string(m).unwrap_or_else(|_| "[]".to_string()));
+
+    let set_default = provider.is_default.unwrap_or(false);
+
+    let new_row = crate::db::repo::model_providers::NewModelProvider {
+        id: id.clone(),
+        name: provider.name,
+        kind: provider.kind,
+        api_base: provider.api_base,
+        is_default: if set_default { 1 } else { 0 },
+        models_json,
+        extra_config: None,
+    };
+
+    state.db.upsert_model_provider(new_row, set_default).await?;
+    Ok(id)
+}
+
+/// 删除模型提供商及其关联的 API Key。
+#[tauri::command]
+pub async fn delete_provider(
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+) -> AppResult<()> {
+    state.db.delete_model_provider(provider_id.clone()).await?;
+    // 清理 settings 中的 API Key
+    state
+        .db
+        .set_setting(format!("provider:{}:api_key", provider_id), String::new())
+        .await?;
+    Ok(())
+}
+
+/// 获取已保存的 API Key 明文（本地应用，仅供设置界面回显，默认以密码形式展示）。
+#[tauri::command]
+pub async fn get_provider_api_key(
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+) -> AppResult<Option<String>> {
+    Ok(state
+        .db
+        .get_setting(format!("provider:{}:api_key", provider_id))
+        .await?
+        .filter(|k| !k.is_empty()))
+}
+
+/// 测试模型提供商配置是否有效（V0.1 仅检查是否存在及 API Key 已配置）。
+#[tauri::command]
+pub async fn test_provider(
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+) -> AppResult<TestProviderResult> {
+    let provider = state.db.get_model_provider(provider_id.clone()).await?;
+    match provider {
+        None => Ok(TestProviderResult {
+            success: false,
+            message: format!("Provider `{}` not found", provider_id),
+        }),
+        Some(p) => {
+            // 对于 ollama 无需 API Key
+            if p.kind == "ollama" {
+                return Ok(TestProviderResult {
+                    success: true,
+                    message: "Ollama provider configured (no API key required)".into(),
+                });
+            }
+            let api_key = state
+                .db
+                .get_setting(format!("provider:{}:api_key", provider_id))
+                .await?;
+            match api_key {
+                Some(k) if !k.is_empty() => Ok(TestProviderResult {
+                    success: true,
+                    message: format!("Provider `{}` configured with API key", p.name),
+                }),
+                _ => Ok(TestProviderResult {
+                    success: false,
+                    message: format!("Provider `{}` has no API key configured", p.name),
+                }),
+            }
+        }
+    }
+}
+
+/// 从服务端自动获取可用模型列表
+#[tauri::command]
+pub async fn fetch_provider_models(
+    kind: String,
+    api_base: Option<String>,
+    api_key: Option<String>,
+) -> AppResult<Vec<String>> {
+    let client = reqwest::Client::new();
+    let mut models = Vec::new();
+
+    if kind == "openai" || kind == "openai_compatible" {
+        let base = api_base.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        // Handle trailing slashes gracefully
+        let mut url = base.trim_end_matches('/').to_string();
+        if !url.ends_with("/v1") && !url.contains("/v1") && kind == "openai" {
+            url.push_str("/v1");
+        }
+        url.push_str("/models");
+        
+        let mut req = client.get(&url);
+        if let Some(key) = api_key {
+            if !key.is_empty() {
+                req = req.bearer_auth(key);
+            }
+        }
+
+        let resp = req.send().await.map_err(|e| AppError::Other(format!("请求失败: {}", e)))?;
+        let json: serde_json::Value = resp.json().await.map_err(|e| AppError::Other(format!("解析JSON失败: {}", e)))?;
+        
+        if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+            for item in data {
+                if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                    models.push(id.to_string());
+                }
+            }
+        } else {
+            return Err(AppError::Other("未在响应中找到模型数据".into()));
+        }
+    } else if kind == "ollama" {
+        let base = api_base.unwrap_or_else(|| "http://localhost:11434".to_string());
+        let url = format!("{}/api/tags", base.trim_end_matches('/'));
+        
+        let resp = client.get(&url).send().await.map_err(|e| AppError::Other(format!("请求失败: {}", e)))?;
+        let json: serde_json::Value = resp.json().await.map_err(|e| AppError::Other(format!("解析JSON失败: {}", e)))?;
+        
+        if let Some(models_arr) = json.get("models").and_then(|m| m.as_array()) {
+            for item in models_arr {
+                if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                    models.push(name.to_string());
+                }
+            }
+        } else {
+            return Err(AppError::Other("未在响应中找到模型数据".into()));
+        }
+    } else {
+        return Err(AppError::Other(format!("暂不支持自动获取 {} 的模型列表，请手动输入", kind)));
+    }
+
+    Ok(models)
 }

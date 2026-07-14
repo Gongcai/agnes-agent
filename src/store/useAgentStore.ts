@@ -40,6 +40,10 @@ export interface Session {
 export interface AgentSummary {
   id: string;
   name: string;
+  persona: string;
+  system_prompt: string;
+  model: string;
+  tool_policy: string;
 }
 
 export interface AgentConfig {
@@ -56,6 +60,18 @@ export interface AgentConfig {
   toolPolicy: any;
 }
 
+export interface ModelProvider {
+  id: string;
+  name: string;
+  kind: string;
+  api_base: string | null;
+  is_default: boolean;
+  models: string[];
+  has_api_key: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 interface AgentState {
   agents: AgentSummary[];
   sessions: Session[];
@@ -63,6 +79,7 @@ interface AgentState {
   activeAgentId: string | null;
   activeSessionId: string | null;
   isStreaming: boolean;
+  providers: ModelProvider[];
   
   // Actions
   loadAgents: () => Promise<void>;
@@ -74,7 +91,21 @@ interface AgentState {
   approveTool: (toolCallId: string, approved: boolean) => Promise<void>;
   setActiveAgentId: (agentId: string) => Promise<void>;
   setActiveSessionId: (sessionId: string) => Promise<void>;
+  updateAgentModel: (agentId: string, model: string) => Promise<void>;
   
+  // Provider actions
+  loadProviders: () => Promise<void>;
+  upsertProvider: (provider: {
+    id?: string;
+    name: string;
+    kind: string;
+    api_base?: string;
+    api_key?: string;
+    is_default?: boolean;
+    models?: string[];
+  }) => Promise<string>;
+  deleteProvider: (providerId: string) => Promise<void>;
+
   // Local Mutations (typically called by Tauri event listeners)
   appendStreamingDelta: (content: string) => void;
   updateLocalToolCallStatus: (toolCallId: string, status: string, output?: string) => void;
@@ -88,6 +119,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   activeAgentId: null,
   activeSessionId: null,
   isStreaming: false,
+  providers: [],
 
   loadAgents: async () => {
     try {
@@ -216,6 +248,45 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setActiveSessionId: async (sessionId: string) => {
     set({ activeSessionId: sessionId });
     await get().loadMessages(sessionId);
+  },
+
+  updateAgentModel: async (agentId: string, model: string) => {
+    try {
+      await invoke("update_agent_model", { agentId, model });
+      await get().loadAgents(); // Reload agents list to reflect the changes
+    } catch (e) {
+      console.error("Failed to update agent model", e);
+      throw e;
+    }
+  },
+
+  loadProviders: async () => {
+    try {
+      const providers = await invoke<ModelProvider[]>("list_providers");
+      set({ providers });
+    } catch (e) {
+      console.error("Failed to load providers", e);
+    }
+  },
+
+  upsertProvider: async (provider) => {
+    try {
+      const id = await invoke<string>("upsert_provider", { provider });
+      await get().loadProviders();
+      return id;
+    } catch (e) {
+      console.error("Failed to upsert provider", e);
+      throw e;
+    }
+  },
+
+  deleteProvider: async (providerId) => {
+    try {
+      await invoke("delete_provider", { providerId });
+      await get().loadProviders();
+    } catch (e) {
+      console.error("Failed to delete provider", e);
+    }
   },
 
   appendStreamingDelta: (content: string) => {

@@ -147,4 +147,16 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS model_providers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  api_base TEXT,
+  is_default INTEGER DEFAULT 0,
+  models_json TEXT,
+  extra_config TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
 "#;

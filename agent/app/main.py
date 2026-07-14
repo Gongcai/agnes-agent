@@ -7,13 +7,14 @@ import os
 import sys
 import traceback
 import litellm
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import websockets
 
 from .protocol import MsgType, make
 from .prompt import assemble_prompt, summarize_history
 from .graph import build_graph
+from .models import LlmConfig
 from .memory_extract import extract_memories
 
 
@@ -90,14 +91,20 @@ async def run_agent_graph(
             pending_futures.pop(tool_call_id, None)
 
     # 3. Setup Graph and Inputs
-    agent_model = payload.get("context", {}).get("agent", {}).get("model") or "gpt-4o"
+    llm_config_raw: Optional[Dict[str, Any]] = payload.get("context", {}).get("llmConfig")
+    # Prefer litellm model from llmConfig, fallback to agent model field
+    _cfg = llm_config_raw or {}
+    agent_model = _cfg.get("litellmModel") or _cfg.get("model") or payload.get("context", {}).get("agent", {}).get("model") or "gpt-4o"
+    llm_config = LlmConfig.from_dict(llm_config_raw) if llm_config_raw else None
+
     graph_inputs = {
         "messages": messages,
         "system_prompt": system_prompt,
         "model": agent_model,
         "tool_policy": payload.get("context", {}).get("agent", {}).get("toolPolicy") or {},
         "pending_tool_calls": [],
-        "finished": False
+        "finished": False,
+        "llm_config": llm_config_raw,  # Raw dict, parsed in graph nodes
     }
     
     config = {
@@ -117,13 +124,13 @@ async def run_agent_graph(
         if discarded_messages:
             print(f"[sidecar][summary] History exceeded budget, compiling new rolling summary...", flush=True)
             # Summarize the discarded messages + current summary
-            new_summary = summarize_history(discarded_messages, new_summary, agent_model)
+            new_summary = summarize_history(discarded_messages, new_summary, agent_model, llm_config=llm_config)
             
         # 6. Extract memories from the latest turns (asynchronously) and compute vectors
         extracted_memories = []
         try:
             latest_messages = output_state.get("messages", [])
-            extracted_memories = extract_memories(latest_messages, agent_model)
+            extracted_memories = extract_memories(latest_messages, agent_model, llm_config=llm_config)
             if extracted_memories:
                 print(f"[sidecar][memory] Extracted {len(extracted_memories)} new memories: {extracted_memories}", flush=True)
                 # Compute embedding vectors using LiteLLM

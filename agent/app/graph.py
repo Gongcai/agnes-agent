@@ -1,10 +1,11 @@
 """LangGraph Agent State Machine."""
 from __future__ import annotations
 import json
-from typing import Any, Dict, List, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.graph import StateGraph, END
+from langchain_core.runnables import RunnableConfig
 
-from .models import completion
+from .models import LlmConfig, completion
 
 class AgentState(TypedDict):
     messages: List[Dict[str, Any]]
@@ -13,6 +14,7 @@ class AgentState(TypedDict):
     tool_policy: Dict[str, Any]
     pending_tool_calls: List[Dict[str, Any]]
     finished: bool
+    llm_config: Optional[Dict[str, Any]]  # Raw dict from ContextSnapshot, parsed in nodes
 
 def get_available_tools(tool_policy: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Determine tools to expose to the LLM based on permissions policy."""
@@ -98,7 +100,7 @@ def get_available_tools(tool_policy: Dict[str, Any]) -> List[Dict[str, Any]]:
         
     return tools
 
-async def call_llm_node(state: AgentState, config: Any) -> Dict[str, Any]:
+async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, Any]:
     """Node that handles LiteLLM completion and output streaming."""
     # Retrieve communication callbacks from LangGraph config
     configurable = config.get("configurable", {})
@@ -117,12 +119,17 @@ async def call_llm_node(state: AgentState, config: Any) -> Dict[str, Any]:
     available_tools = get_available_tools(state.get("tool_policy", {}))
     tools_arg = available_tools if available_tools else None
     
+    # Build LlmConfig from state
+    raw_llm_config = state.get("llm_config")
+    llm_config = LlmConfig.from_dict(raw_llm_config) if raw_llm_config else None
+
     # Invoke LiteLLM
     response = completion(
         model=state["model"],
         messages=messages,
         tools=tools_arg,
-        stream=True
+        stream=True,
+        llm_config=llm_config,
     )
     
     full_text = ""
@@ -187,7 +194,7 @@ async def call_llm_node(state: AgentState, config: Any) -> Dict[str, Any]:
         "finished": len(pending_tool_calls) == 0
     }
 
-async def execute_tools_node(state: AgentState, config: Any) -> Dict[str, Any]:
+async def execute_tools_node(state: AgentState, config: RunnableConfig) -> Dict[str, Any]:
     """Node that handles routing tool calls to Rust and waiting for results."""
     configurable = config.get("configurable", {})
     execute_tool_fn = configurable.get("execute_tool_fn")

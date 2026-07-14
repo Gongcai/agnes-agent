@@ -38,6 +38,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::list_agents,
+            commands::update_agent_model,
             commands::create_session,
             commands::list_sessions,
             commands::delete_session,
@@ -46,7 +47,13 @@ fn main() {
             commands::approve_tool,
             commands::get_explicit_memories,
             commands::save_explicit_memories,
-            commands::list_audit_logs
+            commands::list_audit_logs,
+            commands::list_providers,
+            commands::upsert_provider,
+            commands::delete_provider,
+            commands::get_provider_api_key,
+            commands::test_provider,
+            commands::fetch_provider_models
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

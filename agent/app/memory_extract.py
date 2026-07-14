@@ -1,12 +1,17 @@
 """Memory extraction from conversation history."""
 from __future__ import annotations
 import json
-from typing import Any, Dict, List
-import litellm
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import LlmConfig
+
+from .models import completion
 
 def extract_memories(
     messages: List[Dict[str, Any]],
-    model: str = "gpt-4o"
+    model: str = "gpt-4o",
+    llm_config: Optional["LlmConfig"] = None,
 ) -> List[Dict[str, Any]]:
     """Extract new user facts, preferences, or project details from recent chat history.
     
@@ -57,11 +62,12 @@ def extract_memories(
             extraction_messages.append({"role": role, "content": content})
 
     try:
-        response = litellm.completion(
+        response = completion(
             model=model,
             messages=extraction_messages,
+            llm_config=llm_config,
             response_format={"type": "json_object"},
-            temperature=0.1
+            temperature=0.1,
         )
         content_str = response.choices[0].message.content
         data = json.loads(content_str)

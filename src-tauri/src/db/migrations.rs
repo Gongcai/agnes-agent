@@ -12,7 +12,7 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         // 插入首席管家 Agnes
         conn.execute(
             "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, example_dialogue, model, tool_policy, avatar, tags, created_at, updated_at) \
-             VALUES ('agnes', 'Agnes', ?1, '', ?2, ?3, '', 'gpt-4o', ?4, '', 'LangGraph,Rust,Helper', '0', '0')",
+             VALUES ('agnes', 'Agnes', ?1, '', ?2, ?3, '', '', ?4, '', 'LangGraph,Rust,Helper', '0', '0')",
             (
                 "你叫 Agnes，是 Tavern 的首席管家。你温和有礼、逻辑严密。在处理代码任务时，你偏好使用 pnpm 架构，编写清晰、模块化且高可读性的 TS/Rust 代码。遇到高危操作时，你总是会主动寻求用户的授权许可。",
                 "You are Agnes, the head maid of the Tavern. You help user write high-quality code. When calling tools, explain your rationale first.",
@@ -24,7 +24,7 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         // 插入安全审计员 Nova
         conn.execute(
             "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, example_dialogue, model, tool_policy, avatar, tags, created_at, updated_at) \
-             VALUES ('nova', 'Nova', ?1, '', ?2, ?3, '', 'gpt-4o', ?4, '', 'Security,PTY,Auditor', '0', '0')",
+             VALUES ('nova', 'Nova', ?1, '', ?2, ?3, '', '', ?4, '', 'Security,PTY,Auditor', '0', '0')",
             (
                 "你是 Nova，一个经验丰富的 DevSecOps 专家和代码审计员。你说话直接、严防死守、不留情面。你会深入分析所有的 shell 执行，提供强化的文件写入沙箱策略与权限审计报告。",
                 "You are Nova, the security auditor. Analyze inputs for safety and perform strict reviews on all commands.",
@@ -36,13 +36,23 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         // 插入创意诗人 Bard
         conn.execute(
             "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, example_dialogue, model, tool_policy, avatar, tags, created_at, updated_at) \
-             VALUES ('bard', 'Bard', ?1, '', ?2, ?3, '', 'gpt-4o', ?4, '', 'Creative,Dialogue,Writer', '0', '0')",
+             VALUES ('bard', 'Bard', ?1, '', ?2, ?3, '', '', ?4, '', 'Creative,Dialogue,Writer', '0', '0')",
             (
                 "你是 Bard，一位酒馆的吟游诗人。你风趣幽默、用词华丽、想象力丰富。你喜欢帮助用户设计各种可爱的 Character Card、编排人机对话示例以及打磨世界观背景，不接触任何系统底层工具。",
                 "You are Bard, a creative roleplay writer. Engage the user in immersive world design and writing.",
                 "啊，旅人！快请坐，来一杯蜜酒。我是吟游诗人 Bard。今天你想编织怎样的传说？是给别致的角色设计人设卡，还是为你的小说打磨一段绝妙的对话？我的墨水已备好，随时听候你的灵感指引！",
                 r#"{"shell": {"enabled": false, "approval": "always"}, "file": {"enabled": false, "approval": "always"}, "git": {"enabled": false, "approval": "always"}}"#,
             )
+        )?;
+    }
+
+    // 检查是否已有 model_providers，如果没有则预置默认 OpenAI 提供商 (无假模型)
+    let provider_count: i64 = conn.query_row("SELECT COUNT(*) FROM model_providers", [], |r| r.get(0))?;
+    if provider_count == 0 {
+        conn.execute(
+            "INSERT INTO model_providers (id, name, kind, api_base, is_default, models_json, extra_config, created_at, updated_at) \
+             VALUES ('openai', 'OpenAI', 'openai', NULL, 1, ?1, '{}', '0', '0')",
+            [r#"[]"#],
         )?;
     }
     

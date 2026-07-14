@@ -21,6 +21,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onOpenSettings }) => {
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSessionList = sessions.filter((s) => s.agent_id === activeAgentId);
 
+  // 解析当前 Agent 实际绑定的模型（agents.model 形如 "provider_id/model_name"）
+  const activeModelName = activeAgent?.model
+    ? activeAgent.model.includes("/")
+      ? activeAgent.model.split("/").pop()
+      : activeAgent.model
+    : "";
+
   const handleAddSession = () => {
     if (!activeAgentId) return;
     const title = `新会话 #${activeSessionList.length + 1}`;
@@ -44,9 +51,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onOpenSettings }) => {
               <span className="font-semibold text-stone-900 block truncate text-sm">
                 {activeAgent.name}
               </span>
-              <span className="text-[10px] bg-stone-200/60 text-stone-600 px-1.5 py-0.5 rounded font-mono border border-stone-300/40">
-                GPT-4o
-              </span>
+              {activeModelName ? (
+                <span className="text-[10px] bg-emerald-50/80 text-emerald-700 px-1.5 py-0.5 rounded font-mono border border-emerald-200/50 inline-block max-w-full truncate align-middle" title={activeAgent.model}>
+                  {activeModelName}
+                </span>
+              ) : (
+                <span className="text-[10px] bg-stone-200/60 text-stone-500 px-1.5 py-0.5 rounded font-mono border border-stone-300/40 inline-block">
+                  未配置模型
+                </span>
+              )}
             </div>
           </div>
         </div>

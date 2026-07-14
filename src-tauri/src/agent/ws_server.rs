@@ -12,7 +12,7 @@ use tauri::Emitter;
 use crate::agent::protocol::{msg_type, Envelope};
 use crate::agent::AgentManager;
 use crate::db::DbActorHandle;
-use crate::db::repo::messages::{NewMessage, NewMessagePart};
+use crate::db::repo::messages::NewMessagePart;
 use crate::db::repo::memory::NewMemory;
 use crate::db::repo::tools::NewToolCall;
 use crate::error::{AppError, AppResult};
@@ -340,59 +340,35 @@ async fn handle_conn<R: tauri::Runtime>(
                     let part_res_id = uuid::Uuid::new_v4().to_string();
 
                     // tool_call part
-                    let _ = db.insert_message(
-                        NewMessage {
-                            id: run.assistant_message_id.clone(),
-                            session_id: session_id.clone(),
-                            role: "assistant".into(),
-                            seq: 0, // 仅用作 messages 的 seq，此处消息本身已存在，这里底层 insert_message 不会重复创建
-                            status: "pending".into(),
-                            model: None,
-                            token_count: None,
+                    let _ = db.insert_message_parts(vec![
+                        NewMessagePart {
+                            id: part_tc_id,
+                            message_id: run.assistant_message_id.clone(),
+                            kind: "tool_call".into(),
+                            ordinal: run.current_ordinal,
+                            mime_type: None,
+                            tool_call_id: Some(tc_id.clone()),
+                            content: format!("Calling {tool_name} with params: {}", args.to_string()),
                             metadata: None,
-                        },
-                        vec![
-                            NewMessagePart {
-                                id: part_tc_id,
-                                message_id: run.assistant_message_id.clone(),
-                                kind: "tool_call".into(),
-                                ordinal: run.current_ordinal,
-                                mime_type: None,
-                                tool_call_id: Some(tc_id.clone()),
-                                content: format!("Calling {tool_name} with params: {}", args.to_string()),
-                                metadata: None,
-                            }
-                        ]
-                    ).await;
+                        }
+                    ]).await;
                     run.current_ordinal += 1;
 
                     // tool_result part
                     let stdout_clean = reply_payload.get("stdout").and_then(|x| x.as_str()).unwrap_or("").to_string();
                     let stderr_clean = reply_payload.get("stderr").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let _ = db.insert_message(
-                        NewMessage {
-                            id: run.assistant_message_id.clone(),
-                            session_id: session_id.clone(),
-                            role: "assistant".into(),
-                            seq: 0,
-                            status: "pending".into(),
-                            model: None,
-                            token_count: None,
+                    let _ = db.insert_message_parts(vec![
+                        NewMessagePart {
+                            id: part_res_id,
+                            message_id: run.assistant_message_id.clone(),
+                            kind: "tool_result".into(),
+                            ordinal: run.current_ordinal,
+                            mime_type: None,
+                            tool_call_id: Some(tc_id.clone()),
+                            content: if stderr_clean.is_empty() { stdout_clean } else { stderr_clean },
                             metadata: None,
-                        },
-                        vec![
-                            NewMessagePart {
-                                id: part_res_id,
-                                message_id: run.assistant_message_id.clone(),
-                                kind: "tool_result".into(),
-                                ordinal: run.current_ordinal,
-                                mime_type: None,
-                                tool_call_id: Some(tc_id.clone()),
-                                content: if stderr_clean.is_empty() { stdout_clean } else { stderr_clean },
-                                metadata: None,
-                            }
-                        ]
-                    ).await;
+                        }
+                    ]).await;
                     run.current_ordinal += 1;
                 }
                 drop(runs);
@@ -505,23 +481,13 @@ async fn handle_conn<R: tauri::Runtime>(
                         });
                     }
 
+                    // 消息行（pending 占位）已在 send_message 中创建，这里只需把累积的文本/思考片段
+                    // 写入已有的 message_parts，避免以相同 id 重新 INSERT 触发主键冲突导致整段事务回滚、
+                    // 回复内容丢失（表现为 AI 消息在输出结束后消失）。
                     if !parts_to_insert.is_empty() {
-                        // 以 complete 状态写入 SQLite
-                        let _ = db.insert_message(
-                            NewMessage {
-                                id: run.assistant_message_id.clone(),
-                                session_id: session_id.clone(),
-                                role: "assistant".into(),
-                                seq: 0,
-                                status: "complete".into(),
-                                model: None,
-                                token_count: None,
-                                metadata: None,
-                            },
-                            parts_to_insert
-                        ).await;
+                        let _ = db.insert_message_parts(parts_to_insert).await;
                     }
-                    
+
                     let _ = db.update_message_status(run.assistant_message_id, "complete".to_string()).await;
                 }
                 drop(runs);
@@ -540,31 +506,20 @@ async fn handle_conn<R: tauri::Runtime>(
                 if let Some(run) = runs.remove(&run_id) {
                     let _ = db.update_message_status(run.assistant_message_id.clone(), "failed".to_string()).await;
                     
-                    // 写入一个错误片段
-                    let _ = db.insert_message(
-                        NewMessage {
-                            id: run.assistant_message_id.clone(),
-                            session_id: session_id.clone(),
-                            role: "assistant".into(),
-                            seq: 0,
-                            status: "failed".into(),
-                            model: None,
-                            token_count: None,
+                    // 消息行（pending 占位）已在 send_message 中创建，这里只写入错误片段，
+                    // 避免以相同 id 重新 INSERT 触发主键冲突导致事务回滚、错误内容丢失。
+                    let _ = db.insert_message_parts(vec![
+                        NewMessagePart {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            message_id: run.assistant_message_id.clone(),
+                            kind: "text".into(),
+                            ordinal: run.current_ordinal,
+                            mime_type: None,
+                            tool_call_id: None,
+                            content: format!("Error: {err_msg}"),
                             metadata: None,
-                        },
-                        vec![
-                            NewMessagePart {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                message_id: run.assistant_message_id,
-                                kind: "text".into(),
-                                ordinal: run.current_ordinal,
-                                mime_type: None,
-                                tool_call_id: None,
-                                content: format!("Error: {err_msg}"),
-                                metadata: None,
-                            }
-                        ]
-                    ).await;
+                        }
+                    ]).await;
                 }
                 drop(runs);
 

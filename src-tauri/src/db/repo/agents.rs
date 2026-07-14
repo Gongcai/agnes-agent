@@ -78,6 +78,15 @@ pub fn insert(conn: &Connection, a: &NewAgent) -> AppResult<String> {
     Ok(a.id.clone())
 }
 
+pub fn update_model(conn: &Connection, id: &str, model: &str) -> AppResult<()> {
+    let now = now();
+    conn.execute(
+        "UPDATE agents SET model = ?1, updated_at = ?2 WHERE id = ?3",
+        (model, &now, id),
+    )?;
+    Ok(())
+}
+
 pub fn now() -> String {
     chrono_like_now()
 }

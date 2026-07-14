@@ -1,7 +1,10 @@
 """Prompt compiler and context budget manager."""
 from __future__ import annotations
 import json
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import LlmConfig
 import tiktoken
 
 from .models import get_max_context_tokens, completion
@@ -82,7 +85,8 @@ def translate_messages(recent_messages: List[Dict[str, Any]]) -> List[Dict[str, 
 def summarize_history(
     messages_to_compress: List[Dict[str, Any]],
     old_summary: Optional[str],
-    model: str
+    model: str,
+    llm_config: Optional["LlmConfig"] = None,
 ) -> str:
     """Run LiteLLM to compress message history into a rolling summary."""
     if not messages_to_compress:
@@ -110,7 +114,8 @@ def summarize_history(
         response = completion(
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
+            llm_config=llm_config,
+            temperature=0.3,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:

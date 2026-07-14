@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { 
-  Cpu, Terminal, Send, AlertTriangle, Menu, ChevronLeft, ShieldCheck, ChevronDown
+  Cpu, Terminal, Send, AlertTriangle, Menu, ChevronLeft, ShieldCheck, ChevronDown, Server, Check
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
@@ -23,15 +23,34 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     activeAgentId,
     activeSessionId,
     isStreaming,
+    providers,
     sendMessage,
     approveTool,
+    updateAgentModel,
+    loadProviders,
   } = useAgentStore();
 
   const [inputVal, setInputVal] = useState("");
   const messageEndRef = useRef<HTMLDivElement>(null);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
+
+  // 拉取服务商与模型列表，供底部模型切换器使用
+  useEffect(() => {
+    loadProviders().catch(console.error);
+  }, [loadProviders]);
+
+  // 解析当前 Agent 绑定的模型（agents.model 形如 "provider_id/model_name"）
+  const currentModel = (() => {
+    if (!activeAgent?.model) return null;
+    const idx = activeAgent.model.indexOf("/");
+    const pid = idx >= 0 ? activeAgent.model.slice(0, idx) : "";
+    const name = idx >= 0 ? activeAgent.model.slice(idx + 1) : activeAgent.model;
+    const provider = providers.find((p) => p.id === pid);
+    return { name, providerName: provider?.name ?? "" };
+  })();
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -298,13 +317,88 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           <div className="flex items-center justify-between border-t border-stone-100 pt-2 px-1 text-[10px] text-stone-400">
             <span>Agent 本地执行受系统沙箱安全策略保护</span>
             <div className="flex items-center gap-2">
+              {/* Model switcher (Provider -> Model) */}
+              <div className="relative">
+                <button
+                  onClick={() => setModelPickerOpen((v) => !v)}
+                  className="flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[10px] text-stone-600 hover:text-stone-900 hover:bg-stone-50 transition-colors"
+                  title="切换模型"
+                >
+                  <Cpu className="h-3 w-3 text-[#8CA38A]" />
+                  <span className="max-w-[140px] truncate font-mono">
+                    {currentModel ? currentModel.name : "选择模型"}
+                  </span>
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+
+                {modelPickerOpen && (
+                  <>
+                    {/* 点击空白关闭 */}
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setModelPickerOpen(false)}
+                    />
+                    <div className="absolute bottom-full right-0 mb-2 z-50 w-72 max-h-80 overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl p-2">
+                      {providers.length === 0 ? (
+                        <div className="px-3 py-6 text-center text-[11px] text-stone-400">
+                          暂无服务商，请到设置 → 模型与同步中添加
+                        </div>
+                      ) : (
+                        providers.map((p) => (
+                          <div key={p.id} className="mb-1">
+                            <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-stone-400">
+                              <Server className="h-3 w-3" />
+                              <span className="truncate">{p.name}</span>
+                              {p.is_default && (
+                                <span className="text-[#6C806A]">默认</span>
+                              )}
+                            </div>
+                            {p.models.length === 0 ? (
+                              <div className="px-3 py-1 text-[10px] text-stone-300">
+                                无可用模型
+                              </div>
+                            ) : (
+                              p.models.map((m) => {
+                                const val = `${p.id}/${m}`;
+                                const isActive = activeAgent?.model === val;
+                                return (
+                                  <button
+                                    key={val}
+                                    onClick={() => {
+                                      if (activeAgentId) {
+                                        updateAgentModel(activeAgentId, val).catch(console.error);
+                                      }
+                                      setModelPickerOpen(false);
+                                    }}
+                                    className={`w-full text-left px-3 py-1.5 rounded-lg text-[11px] font-mono transition-colors ${
+                                      isActive
+                                        ? "bg-[#8CA38A]/10 text-[#6C806A] font-semibold"
+                                        : "text-stone-600 hover:bg-stone-100"
+                                    }`}
+                                  >
+                                    {m}
+                                    {isActive && (
+                                      <Check className="h-3 w-3 inline ml-1" />
+                                    )}
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+
               <Button
                 onClick={handleSend}
                 disabled={!inputVal.trim() || isStreaming || !activeSessionId}
                 className="rounded-lg bg-stone-900 hover:bg-stone-850 text-white px-3.5 py-1 h-6 text-[10px] font-semibold shadow-sm"
               >
                 <Send className="h-3 w-3 mr-1" />
-                <span>运行</span>
+                <span>发送</span>
               </Button>
             </div>
           </div>

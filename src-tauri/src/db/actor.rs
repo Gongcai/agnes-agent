@@ -16,6 +16,11 @@ pub enum DbCommand {
         row: repo::agents::NewAgent,
         resp: oneshot::Sender<AppResult<String>>,
     },
+    UpdateAgentModel {
+        agent_id: String,
+        model: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     InsertMemory {
         row: repo::memory::NewMemory,
         resp: oneshot::Sender<AppResult<()>>,
@@ -80,6 +85,10 @@ pub enum DbCommand {
         parts: Vec<repo::messages::NewMessagePart>,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    InsertMessageParts {
+        parts: Vec<repo::messages::NewMessagePart>,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     UpdateMessageStatus {
         id: String,
         status: String,
@@ -111,6 +120,25 @@ pub enum DbCommand {
         session_id: String,
         resp: oneshot::Sender<AppResult<Vec<repo::tools::ToolCallRow>>>,
     },
+    ListModelProviders {
+        resp: oneshot::Sender<AppResult<Vec<repo::model_providers::ModelProviderRow>>>,
+    },
+    GetModelProvider {
+        id: String,
+        resp: oneshot::Sender<AppResult<Option<repo::model_providers::ModelProviderRow>>>,
+    },
+    UpsertModelProvider {
+        row: repo::model_providers::NewModelProvider,
+        set_default: bool,
+        resp: oneshot::Sender<AppResult<String>>,
+    },
+    DeleteModelProvider {
+        id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    GetDefaultModelProvider {
+        resp: oneshot::Sender<AppResult<Option<repo::model_providers::ModelProviderRow>>>,
+    },
 }
 
 /// 对外句柄：命令通过 mpsc 发给 DB 线程，结果经 oneshot 回传。
@@ -136,6 +164,13 @@ impl DbActorHandle {
     pub async fn insert_agent(&self, row: repo::agents::NewAgent) -> AppResult<String> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::InsertAgent { row, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn update_agent_model(&self, agent_id: String, model: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateAgentModel { agent_id, model, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -266,6 +301,16 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn insert_message_parts(
+        &self,
+        parts: Vec<repo::messages::NewMessagePart>,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::InsertMessageParts { parts, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn update_message_status(&self, id: String, status: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::UpdateMessageStatus { id, status, resp })?;
@@ -323,6 +368,41 @@ impl DbActorHandle {
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
+
+    pub async fn list_model_providers(&self) -> AppResult<Vec<repo::model_providers::ModelProviderRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListModelProviders { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn get_model_provider(&self, id: String) -> AppResult<Option<repo::model_providers::ModelProviderRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetModelProvider { id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn upsert_model_provider(&self, row: repo::model_providers::NewModelProvider, set_default: bool) -> AppResult<String> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpsertModelProvider { row, set_default, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn delete_model_provider(&self, id: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::DeleteModelProvider { id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn get_default_model_provider(&self) -> AppResult<Option<repo::model_providers::ModelProviderRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetDefaultModelProvider { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
 }
 
 /// 在独立 OS 线程跑 rusqlite 单连接；该线程用 `blocking_recv` 消费命令。
@@ -360,6 +440,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::InsertAgent { row, resp } => {
                     let _ = resp.send(repo::agents::insert(&conn, &row));
+                }
+                DbCommand::UpdateAgentModel { agent_id, model, resp } => {
+                    let _ = resp.send(repo::agents::update_model(&conn, &agent_id, &model));
                 }
                 DbCommand::InsertMemory { row, resp } => {
                     let _ = resp.send(repo::memory::insert(&conn, &row));
@@ -433,6 +516,15 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     })();
                     let _ = resp.send(transaction_res);
                 }
+                DbCommand::InsertMessageParts { parts, resp } => {
+                    let res = (|| -> AppResult<()> {
+                        for p in parts {
+                            repo::messages::insert_part(&conn, &p)?;
+                        }
+                        Ok(())
+                    })();
+                    let _ = resp.send(res);
+                }
                 DbCommand::UpdateMessageStatus { id, status, resp } => {
                     let _ = resp.send(repo::messages::update_status(&conn, &id, &status));
                 }
@@ -466,6 +558,27 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::ListToolCalls { session_id, resp } => {
                     let _ = resp.send(repo::tools::list_for_session(&conn, &session_id));
+                }
+                DbCommand::ListModelProviders { resp } => {
+                    let _ = resp.send(repo::model_providers::list(&conn));
+                }
+                DbCommand::GetModelProvider { id, resp } => {
+                    let _ = resp.send(repo::model_providers::get(&conn, &id));
+                }
+                DbCommand::UpsertModelProvider { row, set_default, resp } => {
+                    let res = (|| -> AppResult<String> {
+                        if set_default {
+                            repo::model_providers::clear_default(&conn)?;
+                        }
+                        repo::model_providers::upsert(&conn, &row)
+                    })();
+                    let _ = resp.send(res);
+                }
+                DbCommand::DeleteModelProvider { id, resp } => {
+                    let _ = resp.send(repo::model_providers::delete(&conn, &id));
+                }
+                DbCommand::GetDefaultModelProvider { resp } => {
+                    let _ = resp.send(repo::model_providers::get_default(&conn));
                 }
             }
         }
