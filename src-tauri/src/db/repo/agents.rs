@@ -58,7 +58,7 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentRow>> {
     Ok(out)
 }
 
-pub fn insert(conn: &mut Connection, a: &NewAgent) -> AppResult<String> {
+pub fn insert(conn: &Connection, a: &NewAgent) -> AppResult<String> {
     let now = now();
     conn.execute(
         "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, \
