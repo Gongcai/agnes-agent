@@ -95,12 +95,23 @@ interface AgentFormValues {
   model: string;
   tags: string;
   avatar: string;
+  thinkingMode: string;
+  thinkingBudget: number;
   toolPolicy: {
     shell: AgentToolToggle;
     file: AgentToolToggle;
     git: AgentToolToggle;
   };
 }
+
+/// 思考模式/强度选项：off=关闭，auto=自动，low/medium/high=思考强度等级。
+const THINKING_MODE_OPTIONS: { value: string; label: string; desc: string }[] = [
+  { value: "off", label: "关闭", desc: "不启用思考" },
+  { value: "auto", label: "自动", desc: "由模型决定思考深度" },
+  { value: "low", label: "轻度", desc: "浅层思考，响应更快" },
+  { value: "medium", label: "中等", desc: "常规思考深度" },
+  { value: "high", label: "深度", desc: "深入推理，消耗更多 token" },
+];
 
 const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
   shell: { enabled: true, approval: false },
@@ -128,6 +139,8 @@ const EMPTY_AGENT_FORM: AgentFormValues = {
   model: "",
   tags: "",
   avatar: "",
+  thinkingMode: "off",
+  thinkingBudget: 0,
   toolPolicy: DEFAULT_TOOL_POLICY,
 };
 
@@ -206,6 +219,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       model: agent.model || "",
       tags: agent.tags || "",
       avatar: agent.avatar || "",
+      thinkingMode: agent.thinking_mode || "off",
+      thinkingBudget: agent.thinking_budget || 0,
       toolPolicy: parseToolPolicy(agent.tool_policy),
     });
     setEditingAgentId(agent.id);
@@ -231,6 +246,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         tool_policy: JSON.stringify(agentForm.toolPolicy),
         avatar: agentForm.avatar,
         tags: agentForm.tags,
+        thinking_mode: agentForm.thinkingMode,
+        thinking_budget: agentForm.thinkingBudget,
       });
       closeAgentEditor();
       if (agentForm.id === null) {
@@ -762,6 +779,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         >
                           <AgentAvatar name={agent.name} avatar={agent.avatar} size={20} />
                           <span className="truncate">{agent.name}</span>
+                          {agent.thinking_mode && agent.thinking_mode !== "off" && (
+                            <span className="shrink-0 text-[9px] font-semibold px-1 py-0.5 rounded bg-violet-50 text-violet-600 border border-violet-200/60">
+                              {THINKING_MODE_OPTIONS.find((o) => o.value === agent.thinking_mode)?.label || agent.thinking_mode}思考
+                            </span>
+                          )}
                           {agent.tags && (
                             <span className="truncate text-[10px] text-stone-400 font-normal">
                               · {agent.tags}
@@ -940,6 +962,48 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             );
                           })}
                         </select>
+                      </div>
+                      <div>
+                        <label className="font-semibold text-stone-500 block mb-1">思考模式 / 强度</label>
+                        <div className="grid grid-cols-5 gap-1.5">
+                          {THINKING_MODE_OPTIONS.map((opt) => (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              title={opt.desc}
+                              onClick={() => setAgentForm((f) => ({ ...f, thinkingMode: opt.value }))}
+                              className={`px-1.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors border ${
+                                agentForm.thinkingMode === opt.value
+                                  ? "bg-indigo-50 text-indigo-700 border-indigo-300"
+                                  : "bg-stone-50 text-stone-500 border-stone-200/60 hover:bg-stone-100"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                        {agentForm.thinkingMode !== "off" && (
+                          <div className="mt-2 flex items-center gap-2">
+                            <span className="text-[11px] text-stone-500 whitespace-nowrap">思考预算 (token)</span>
+                            <input
+                              type="number"
+                              min={0}
+                              step={512}
+                              value={agentForm.thinkingBudget}
+                              onChange={(e) =>
+                                setAgentForm((f) => ({
+                                  ...f,
+                                  thinkingBudget: Math.max(0, parseInt(e.target.value || "0", 10) || 0),
+                                }))
+                              }
+                              placeholder="0 = 按强度自动"
+                              className="flex-1 bg-stone-50 p-1.5 rounded-lg border border-stone-200/60 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-stone-300"
+                            />
+                          </div>
+                        )}
+                        <p className="mt-1 text-[10px] text-stone-400">
+                          关闭/自动由模型决定；轻度~深度控制思考深度。预算为 Claude 的 budget_tokens，0 表示按强度预设。
+                        </p>
                       </div>
                       <div>
                         <label className="font-semibold text-stone-500 block mb-1">标签 (逗号分隔)</label>

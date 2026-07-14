@@ -21,6 +21,8 @@ pub struct AgentSummary {
     pub tool_policy: String,
     pub avatar: String,
     pub tags: String,
+    pub thinking_mode: String,
+    pub thinking_budget: i64,
 }
 
 #[derive(Serialize)]
@@ -95,6 +97,8 @@ pub async fn list_agents(state: tauri::State<'_, AppState>) -> AppResult<Vec<Age
             tool_policy: r.tool_policy,
             avatar: r.avatar,
             tags: r.tags,
+            thinking_mode: r.thinking_mode,
+            thinking_budget: r.thinking_budget,
         })
         .collect())
 }
@@ -122,6 +126,8 @@ pub struct UpsertAgentPayload {
     pub tool_policy: String,
     pub avatar: String,
     pub tags: String,
+    pub thinking_mode: String,
+    pub thinking_budget: i64,
 }
 
 /// 创建或更新角色卡：id 为空则新建（生成 uuid），否则全量更新。
@@ -143,6 +149,8 @@ pub async fn upsert_agent(
                 tool_policy: payload.tool_policy,
                 avatar: payload.avatar,
                 tags: payload.tags,
+                thinking_mode: payload.thinking_mode,
+                thinking_budget: payload.thinking_budget,
             };
             state.db.update_agent(id.clone(), changes).await?;
             Ok(id)
@@ -161,6 +169,8 @@ pub async fn upsert_agent(
                 tool_policy: payload.tool_policy,
                 avatar: payload.avatar,
                 tags: payload.tags,
+                thinking_mode: payload.thinking_mode,
+                thinking_budget: payload.thinking_budget,
             };
             state.db.insert_agent(row).await
         }
@@ -354,7 +364,11 @@ pub async fn get_debug_prompt(
                 "apiBase": api_base,
                 "apiKey": api_key,
                 "model": model_name,
-                "litellmModel": litellm_model
+                "litellmModel": litellm_model,
+                "thinking": {
+                    "mode": if agent.thinking_mode.is_empty() { "off" } else { &agent.thinking_mode },
+                    "budget": agent.thinking_budget
+                }
             },
             "settings": { "user_context_limit": serde_json::Value::Null },
             "recentMessages": history_json,
@@ -669,7 +683,11 @@ pub async fn send_message(
                 "apiBase": api_base,
                 "apiKey": api_key,
                 "model": model_name,
-                "litellmModel": litellm_model
+                "litellmModel": litellm_model,
+                "thinking": {
+                    "mode": if agent.thinking_mode.is_empty() { "off" } else { &agent.thinking_mode },
+                    "budget": agent.thinking_budget
+                }
             },
             "settings": {
                 "user_context_limit": session.context_limit

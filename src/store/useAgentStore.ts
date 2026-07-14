@@ -50,6 +50,8 @@ export interface AgentSummary {
   tool_policy: string;
   avatar: string;
   tags: string;
+  thinking_mode: string;
+  thinking_budget: number;
 }
 
 export interface AgentConfig {
@@ -112,6 +114,8 @@ interface AgentState {
     tool_policy: string;
     avatar: string;
     tags: string;
+    thinking_mode: string;
+    thinking_budget: number;
   }) => Promise<string>;
   deleteAgent: (agentId: string) => Promise<void>;
   

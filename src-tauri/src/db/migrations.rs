@@ -11,8 +11,8 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
     if count == 0 {
         // 插入首席管家 Agnes
         conn.execute(
-            "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, example_dialogue, model, tool_policy, avatar, tags, created_at, updated_at) \
-             VALUES ('agnes', 'Agnes', ?1, '', ?2, ?3, '', '', ?4, '', 'LangGraph,Rust,Helper', '0', '0')",
+            "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, example_dialogue, model, tool_policy, avatar, tags, thinking_mode, thinking_budget, created_at, updated_at) \
+             VALUES ('agnes', 'Agnes', ?1, '', ?2, ?3, '', '', ?4, '', 'LangGraph,Rust,Helper', 'off', 0, '0', '0')",
             (
                 "你叫 Agnes，是 Tavern 的首席管家。你温和有礼、逻辑严密。在处理代码任务时，你偏好使用 pnpm 架构，编写清晰、模块化且高可读性的 TS/Rust 代码。遇到高危操作时，你总是会主动寻求用户的授权许可。",
                 "You are Agnes, the head maid of the Tavern. You help user write high-quality code. When calling tools, explain your rationale first.",
@@ -23,8 +23,8 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
 
         // 插入安全审计员 Nova
         conn.execute(
-            "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, example_dialogue, model, tool_policy, avatar, tags, created_at, updated_at) \
-             VALUES ('nova', 'Nova', ?1, '', ?2, ?3, '', '', ?4, '', 'Security,PTY,Auditor', '0', '0')",
+            "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, example_dialogue, model, tool_policy, avatar, tags, thinking_mode, thinking_budget, created_at, updated_at) \
+             VALUES ('nova', 'Nova', ?1, '', ?2, ?3, '', '', ?4, '', 'Security,PTY,Auditor', 'off', 0, '0', '0')",
             (
                 "你是 Nova，一个经验丰富的 DevSecOps 专家和代码审计员。你说话直接、严防死守、不留情面。你会深入分析所有的 shell 执行，提供强化的文件写入沙箱策略与权限审计报告。",
                 "You are Nova, the security auditor. Analyze inputs for safety and perform strict reviews on all commands.",
@@ -35,8 +35,8 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
 
         // 插入创意诗人 Bard
         conn.execute(
-            "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, example_dialogue, model, tool_policy, avatar, tags, created_at, updated_at) \
-             VALUES ('bard', 'Bard', ?1, '', ?2, ?3, '', '', ?4, '', 'Creative,Dialogue,Writer', '0', '0')",
+            "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, example_dialogue, model, tool_policy, avatar, tags, thinking_mode, thinking_budget, created_at, updated_at) \
+             VALUES ('bard', 'Bard', ?1, '', ?2, ?3, '', '', ?4, '', 'Creative,Dialogue,Writer', 'off', 0, '0', '0')",
             (
                 "你是 Bard，一位酒馆的吟游诗人。你风趣幽默、用词华丽、想象力丰富。你喜欢帮助用户设计各种可爱的 Character Card、编排人机对话示例以及打磨世界观背景，不接触任何系统底层工具。",
                 "You are Bard, a creative roleplay writer. Engage the user in immersive world design and writing.",
@@ -66,6 +66,19 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         .unwrap_or(false);
     if !has_pinned {
         conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0", [])?;
+    }
+
+    // 为已存在的 agents 表补充思考配置列（幂等，兼容老库）
+    let has_thinking_mode: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'thinking_mode'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_thinking_mode {
+        conn.execute("ALTER TABLE agents ADD COLUMN thinking_mode TEXT DEFAULT 'off'", [])?;
+        conn.execute("ALTER TABLE agents ADD COLUMN thinking_budget INTEGER DEFAULT 0", [])?;
     }
 
     Ok(())

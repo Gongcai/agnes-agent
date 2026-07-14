@@ -661,6 +661,8 @@ mod tests {
             tool_policy: "{}".into(),
             avatar: String::new(),
             tags: String::new(),
+            thinking_mode: "off".into(),
+            thinking_budget: 0,
         };
         let agent_id = handle.insert_agent(agent).await.unwrap();
         assert_eq!(agent_id, "test-agent");

@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS agents (
   tool_policy TEXT,                -- 结构化 JSON
   avatar TEXT,
   tags TEXT,
+  thinking_mode TEXT,              -- 思考模式/强度: off|auto|low|medium|high
+  thinking_budget INTEGER,         -- 思考预算(token)，Claude 的 budget_tokens，0 = 按强度预设
   created_at TEXT,
   updated_at TEXT
 );

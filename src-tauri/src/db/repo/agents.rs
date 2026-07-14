@@ -15,6 +15,8 @@ pub struct AgentRow {
     pub tool_policy: String,
     pub avatar: String,
     pub tags: String,
+    pub thinking_mode: String,
+    pub thinking_budget: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -31,6 +33,8 @@ pub struct NewAgent {
     pub tool_policy: String,
     pub avatar: String,
     pub tags: String,
+    pub thinking_mode: String,
+    pub thinking_budget: i64,
 }
 
 /// 角色卡可编辑字段（不含 id）。
@@ -45,12 +49,14 @@ pub struct AgentUpdate {
     pub tool_policy: String,
     pub avatar: String,
     pub tags: String,
+    pub thinking_mode: String,
+    pub thinking_budget: i64,
 }
 
 pub fn list(conn: &Connection) -> AppResult<Vec<AgentRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, persona, scenario, system_prompt, greeting, \
-         example_dialogue, model, tool_policy, avatar, tags, created_at, updated_at \
+         example_dialogue, model, tool_policy, avatar, tags, thinking_mode, thinking_budget, created_at, updated_at \
          FROM agents ORDER BY created_at",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -66,8 +72,10 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentRow>> {
             tool_policy: r.get(8)?,
             avatar: r.get(9)?,
             tags: r.get(10)?,
-            created_at: r.get(11)?,
-            updated_at: r.get(12)?,
+            thinking_mode: r.get(11)?,
+            thinking_budget: r.get(12)?,
+            created_at: r.get(13)?,
+            updated_at: r.get(14)?,
         })
     })?;
     let mut out = Vec::new();
@@ -81,8 +89,8 @@ pub fn insert(conn: &Connection, a: &NewAgent) -> AppResult<String> {
     let now = now();
     conn.execute(
         "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, \
-         example_dialogue, model, tool_policy, avatar, tags, created_at, updated_at) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+         example_dialogue, model, tool_policy, avatar, tags, thinking_mode, thinking_budget, created_at, updated_at) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
         (
             &a.id,
             &a.name,
@@ -95,6 +103,8 @@ pub fn insert(conn: &Connection, a: &NewAgent) -> AppResult<String> {
             &a.tool_policy,
             &a.avatar,
             &a.tags,
+            &a.thinking_mode,
+            &a.thinking_budget,
             &now,
             &now,
         ),
@@ -107,7 +117,7 @@ pub fn update(conn: &Connection, id: &str, c: &AgentUpdate) -> AppResult<()> {
     conn.execute(
         "UPDATE agents SET name = ?1, persona = ?2, scenario = ?3, system_prompt = ?4, \
          greeting = ?5, example_dialogue = ?6, model = ?7, tool_policy = ?8, \
-         avatar = ?9, tags = ?10, updated_at = ?11 WHERE id = ?12",
+         avatar = ?9, tags = ?10, thinking_mode = ?11, thinking_budget = ?12, updated_at = ?13 WHERE id = ?14",
         (
             &c.name,
             &c.persona,
@@ -119,6 +129,8 @@ pub fn update(conn: &Connection, id: &str, c: &AgentUpdate) -> AppResult<()> {
             &c.tool_policy,
             &c.avatar,
             &c.tags,
+            &c.thinking_mode,
+            &c.thinking_budget,
             &now,
             id,
         ),
