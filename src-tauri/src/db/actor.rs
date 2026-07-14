@@ -377,8 +377,9 @@ mod tests {
         assert_eq!(agent_id, "test-agent");
 
         let agents = handle.list_agents().await.unwrap();
-        assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].name, "Test Agent");
+        assert_eq!(agents.len(), 4);
+        let test_agent_row = agents.iter().find(|a| a.id == "test-agent").unwrap();
+        assert_eq!(test_agent_row.name, "Test Agent");
 
         // 2. Insert Session
         let session = repo::sessions::NewSession {
