@@ -214,18 +214,32 @@ async fn handle_conn<R: tauri::Runtime>(
                 // 2. 缓存并累加消息内容
                 let mut runs = active_runs.lock().await;
                 if !runs.contains_key(&run_id) {
-                    // 查询 SQLite 获取最新的 pending 消息 ID
-                    if let Ok(msgs) = db.list_messages_with_parts(session_id.clone()).await {
-                        if let Some((pending_msg, _)) = msgs.iter().rev().find(|(m, _)| m.status == "pending") {
-                            runs.insert(run_id.clone(), ActiveRun {
-                                assistant_message_id: pending_msg.id.clone(),
-                                session_id: session_id.clone(),
-                                accumulated_text: String::new(),
-                                accumulated_thought: String::new(),
-                                current_ordinal: 0,
-                                in_thought: false,
-                            });
+                    // 优先用 AgentManager 显式注册的 assistant_message_id（由 send_message/
+                    // edit_and_resend/regenerate_message 调用 register_run 注入），消除「最后一条 pending」竞争。
+                    let pending_id = manager.take_run(&run_id);
+                    let pending_id = match pending_id {
+                        Some(id) => Some(id),
+                        None => {
+                            // fallback：查最后一条 pending 消息（保留以兼容未注册的路径）
+                            db.list_messages_with_parts(session_id.clone())
+                                .await
+                                .ok()
+                                .and_then(|msgs| {
+                                    msgs.iter().rev()
+                                        .find(|(m, _)| m.status == "pending")
+                                        .map(|(m, _)| m.id.clone())
+                                })
                         }
+                    };
+                    if let Some(id) = pending_id {
+                        runs.insert(run_id.clone(), ActiveRun {
+                            assistant_message_id: id,
+                            session_id: session_id.clone(),
+                            accumulated_text: String::new(),
+                            accumulated_thought: String::new(),
+                            current_ordinal: 0,
+                            in_thought: false,
+                        });
                     }
                 }
 

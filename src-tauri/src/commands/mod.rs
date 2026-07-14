@@ -5,7 +5,7 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::agent::protocol::{msg_type, Envelope};
 use crate::db::repo::messages::{NewMessage, NewMessagePart};
-use crate::db::repo::agents::{AgentUpdate, NewAgent};
+use crate::db::repo::agents::{AgentRow, AgentUpdate, NewAgent};
 use crate::db::repo::sessions::NewSession;
 
 #[derive(Serialize)]
@@ -587,61 +587,56 @@ async fn load_explicit_memories_db_backed(
     }
 }
 
-/// 发送消息给 Agent，启动推理引擎运行（Tauri 主入口）。
-#[tauri::command]
-pub async fn send_message(
-    state: tauri::State<'_, AppState>,
-    session_id: String,
-    text: String,
-) -> AppResult<()> {
-    // 1. 获取会话与 Agent 详情
-    let session = state.db.get_session(session_id.clone()).await?
+/// 解析出的 LLM 运行配置（会话级优先，回退角色卡默认）。
+struct ResolvedLlm {
+    agent: AgentRow,
+    session_context_limit: Option<i64>,
+    session_summary: Option<String>,
+    effective_model: String,
+    model_name: String,
+    provider_kind: String,
+    api_base: Option<String>,
+    api_key: Option<String>,
+    litellm_model: String,
+    thinking_mode: String,
+    thinking_budget: i64,
+}
+
+/// 解析会话当前生效的 LLM 配置（模型/思考/provider/密钥）。
+async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLlm> {
+    let session = state.db.get_session(session_id.to_string()).await?
         .ok_or_else(|| AppError::Other(format!("会话 `{session_id}` 不存在")))?;
-        
     let agents = state.db.list_agents().await?;
     let agent = agents.iter().find(|a| a.id == session.agent_id)
-        .ok_or_else(|| AppError::Other(format!("关联的智能体 `{}` 不存在", session.agent_id)))?;
+        .ok_or_else(|| AppError::Other(format!("关联的智能体 `{}` 不存在", session.agent_id)))?
+        .clone();
 
-    // 2. 解析 LLM 配置：会话级模型优先，回退角色卡默认；思考配置同理。
     let session_model = session.model.clone().unwrap_or_default();
     let effective_model = if session_model.is_empty() {
         if agent.model.is_empty() { "gpt-4o".to_string() } else { agent.model.clone() }
     } else {
         session_model
     };
-    let effective_thinking_mode = {
-        let m = session.thinking_mode.clone().filter(|s| !s.is_empty())
-            .unwrap_or_else(|| agent.thinking_mode.clone());
-        if m.is_empty() { "off".to_string() } else { m }
-    };
-    let effective_thinking_budget = session.thinking_budget.or(Some(agent.thinking_budget)).unwrap_or(0);
-
-    // 解析 provider_id/model_name 或仅 model_name（使用默认 provider）
-    let agent_model_str = effective_model;
-    let (provider_id_opt, model_name) = if let Some(idx) = agent_model_str.find('/') {
-        (Some(agent_model_str[..idx].to_string()), agent_model_str[idx + 1..].to_string())
+    let (provider_id_opt, model_name) = if let Some(idx) = effective_model.find('/') {
+        (Some(effective_model[..idx].to_string()), effective_model[idx + 1..].to_string())
     } else {
-        (None, agent_model_str.clone())
+        (None, effective_model.clone())
     };
-
     let provider = if let Some(ref pid) = provider_id_opt {
         state.db.get_model_provider(pid.clone()).await?
     } else {
         state.db.get_default_model_provider().await?
     };
-
     let (provider_kind, api_base, provider_resolved_id) = if let Some(ref p) = provider {
         (p.kind.clone(), p.api_base.clone(), Some(p.id.clone()))
     } else {
         (String::new(), None, None)
     };
-
     let api_key = if let Some(ref pid) = provider_resolved_id {
         state.db.get_setting(format!("provider:{}:api_key", pid)).await?
     } else {
         None
     };
-
     let litellm_model = match provider_kind.as_str() {
         "openai" => model_name.clone(),
         "anthropic" => model_name.clone(),
@@ -650,67 +645,42 @@ pub async fn send_message(
         "google" => format!("gemini/{}", model_name),
         _ => model_name.clone(),
     };
-
-    // 3. 插入用户发送的 Message
-    let user_msg_id = uuid::Uuid::new_v4().to_string();
-    let current_history = state.db.list_messages_with_parts(session_id.clone()).await?;
-    let seq_user = current_history.len() as i32;
-    
-    let new_user_msg = NewMessage {
-        id: user_msg_id.clone(),
-        session_id: session_id.clone(),
-        role: "user".into(),
-        seq: seq_user,
-        status: "complete".into(),
-        model: None,
-        token_count: None,
-        metadata: None,
-        parent_id: None,
-        selected_child_id: None,
+    let thinking_mode = {
+        let m = session.thinking_mode.clone().filter(|s| !s.is_empty())
+            .unwrap_or_else(|| agent.thinking_mode.clone());
+        if m.is_empty() { "off".to_string() } else { m }
     };
-    let new_user_part = NewMessagePart {
-        id: uuid::Uuid::new_v4().to_string(),
-        message_id: user_msg_id,
-        kind: "text".into(),
-        ordinal: 0,
-        mime_type: None,
-        tool_call_id: None,
-        content: text.clone(),
-        metadata: None,
-    };
-    state.db.insert_message(new_user_msg, vec![new_user_part]).await?;
+    let thinking_budget = session.thinking_budget.or(Some(agent.thinking_budget)).unwrap_or(0);
 
-    // 4. 插入一条 pending 状态的 Assistant 占位消息，供前台渲染 "Agnes 正在思考..."
-    let assistant_msg_id = uuid::Uuid::new_v4().to_string();
-    let new_assistant_msg = NewMessage {
-        id: assistant_msg_id.clone(),
-        session_id: session_id.clone(),
-        role: "assistant".into(),
-        seq: seq_user + 1,
-        status: "pending".into(),
-        model: Some(model_name.clone()),
-        token_count: None,
-        metadata: None,
-        parent_id: None,
-        selected_child_id: None,
-    };
-    state.db.insert_message(new_assistant_msg, vec![]).await?;
+    Ok(ResolvedLlm {
+        agent,
+        session_context_limit: session.context_limit,
+        session_summary: session.summary,
+        effective_model,
+        model_name,
+        provider_kind,
+        api_base,
+        api_key,
+        litellm_model,
+        thinking_mode,
+        thinking_budget,
+    })
+}
 
-    // 5. 读取 USER.md 与 MEMORY.md 内存 (SQLite canonical)
-    let (user_md, memory_md) = load_explicit_memories_db_backed(&state.db, &session.agent_id).await?;
+/// 用已解析配置启动一次 agent 运行：构建活动路径历史（跳过 pending assistant）→
+/// 编译 snapshot（input="" 避免与 recentMessages 重复）→ 注册 run_id → 发 RUN_REQUEST。
+async fn start_agent_run(state: &AppState, cfg: &ResolvedLlm, session_id: &str, assistant_msg_id: &str) -> AppResult<()> {
+    let (user_md, memory_md) = load_explicit_memories_db_backed(&state.db, &cfg.agent.id).await?;
 
-    // 6. 编译 ContextSnapshot
-    // 我们再次拉取完整的历史记录（此时已含最新的 user 消息，不含 pending assistant）
-    let updated_history = state.db.list_messages_with_parts(session_id.clone()).await?;
+    let path = state.db.list_active_with_parts(session_id.to_string()).await?;
     let mut history_json = Vec::new();
-    for (m, parts) in updated_history {
-        // 跳过我们刚才插入的那个 pending assistant 占位消息，只把完整消息发给 Python
-        if m.id == assistant_msg_id {
+    for am in path.messages {
+        // 跳过 pending assistant 占位消息，只把完整历史发给 Python
+        if am.message.id == assistant_msg_id {
             continue;
         }
-        
         let mut parts_json = Vec::new();
-        for p in parts {
+        for p in am.parts {
             let mut tc_json = serde_json::Value::Null;
             if let Some(ref tc_id) = p.tool_call_id {
                 if let Ok(Some(tc)) = state.db.get_tool_call(tc_id.clone()).await {
@@ -728,41 +698,39 @@ pub async fn send_message(
                 "toolCall": tc_json,
             }));
         }
-
         history_json.push(json!({
-            "id": m.id,
-            "role": m.role,
+            "id": am.message.id,
+            "role": am.message.role,
             "parts": parts_json,
         }));
     }
 
     let run_id = uuid::Uuid::new_v4().to_string();
-
     let context_snapshot = json!({
-        "input": text,
+        "input": "",
         "context": {
             "agent": {
-                "persona": agent.persona,
-                "systemPrompt": agent.system_prompt,
-                "model": agent_model_str,
-                "toolPolicy": serde_json::from_str::<serde_json::Value>(&agent.tool_policy).unwrap_or(json!({}))
+                "persona": cfg.agent.persona,
+                "systemPrompt": cfg.agent.system_prompt,
+                "model": cfg.effective_model,
+                "toolPolicy": serde_json::from_str::<serde_json::Value>(&cfg.agent.tool_policy).unwrap_or(json!({}))
             },
             "llmConfig": {
-                "provider": provider_kind,
-                "apiBase": api_base,
-                "apiKey": api_key,
-                "model": model_name,
-                "litellmModel": litellm_model,
+                "provider": cfg.provider_kind,
+                "apiBase": cfg.api_base,
+                "apiKey": cfg.api_key,
+                "model": cfg.model_name,
+                "litellmModel": cfg.litellm_model,
                 "thinking": {
-                    "mode": effective_thinking_mode,
-                    "budget": effective_thinking_budget
+                    "mode": cfg.thinking_mode,
+                    "budget": cfg.thinking_budget
                 }
             },
             "settings": {
-                "user_context_limit": session.context_limit
+                "user_context_limit": cfg.session_context_limit
             },
             "recentMessages": history_json,
-            "summary": session.summary,
+            "summary": cfg.session_summary,
             "explicitMemories": {
                 "user_md": user_md,
                 "memory_md": memory_md
@@ -772,19 +740,41 @@ pub async fn send_message(
         }
     });
 
-    // 6. 构造 RUN_REQUEST 协议信封并发送
+    // 显式注册 run_id → assistant_msg_id，供 ws_server 精确定位 pending 消息
+    state.agent.register_run(run_id.clone(), assistant_msg_id.to_string());
+
     let run_req = Envelope {
         protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
         id: uuid::Uuid::new_v4().to_string(),
         run_id,
-        session_id,
+        session_id: session_id.to_string(),
         msg_type: msg_type::RUN_REQUEST.to_string(),
         created_at: String::new(),
         payload: context_snapshot,
     };
 
-    // 路由分发
     state.agent.send_to_agent(run_req)
+}
+
+/// 发送消息给 Agent，启动推理引擎运行（Tauri 主入口）。
+#[tauri::command]
+pub async fn send_message(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    text: String,
+) -> AppResult<()> {
+    let cfg = resolve_llm(&state, &session_id).await?;
+
+    // 取当前活动叶子作为新 user 消息的 parent（首条消息时为 None）
+    let path = state.db.list_active_with_parts(session_id.clone()).await?;
+    let leaf_id = path.messages.last().map(|am| am.message.id.clone());
+
+    // 原子插入 user + pending assistant 并链接版本树
+    let (_user_id, assistant_msg_id) = state.db
+        .append_user_and_assistant(session_id.clone(), leaf_id, text, cfg.model_name.clone())
+        .await?;
+
+    start_agent_run(&state, &cfg, &session_id, &assistant_msg_id).await
 }
 
 /// 批准或拒绝挂起的工具调用。由 React 用户点击卡片同意/拒绝时触发。

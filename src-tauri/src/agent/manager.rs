@@ -25,6 +25,8 @@ pub struct AgentManager {
     pending_approvals: Mutex<std::collections::HashMap<String, oneshot::Sender<bool>>>,
     // 等待调试提示词拼装结果：请求 id -> oneshot 返回 payload 发送端
     pending_debug: Mutex<std::collections::HashMap<String, oneshot::Sender<serde_json::Value>>>,
+    // 显式注册的运行：run_id -> assistant_message_id，供 ws_server 精确定位 pending 消息
+    pending_runs: Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl AgentManager {
@@ -35,6 +37,7 @@ impl AgentManager {
             active_sender: Mutex::new(None),
             pending_approvals: Mutex::new(std::collections::HashMap::new()),
             pending_debug: Mutex::new(std::collections::HashMap::new()),
+            pending_runs: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -138,6 +141,19 @@ impl AgentManager {
         } else {
             false
         }
+    }
+
+    /// 注册一次运行的 run_id → assistant_message_id 映射，供 ws_server 精确定位 pending 消息。
+    pub fn register_run(&self, run_id: String, assistant_message_id: String) {
+        self.pending_runs
+            .lock()
+            .unwrap()
+            .insert(run_id, assistant_message_id);
+    }
+
+    /// 取走（消费）某 run_id 对应的 assistant_message_id。找不到返回 None。
+    pub fn take_run(&self, run_id: &str) -> Option<String> {
+        self.pending_runs.lock().unwrap().remove(run_id)
     }
 }
 
