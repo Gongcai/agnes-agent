@@ -15,6 +15,10 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 - 提交消息使用 `<type>(<scope>): <subject>` 格式，`subject` 使用中文，`type` 和 `scope` 使用英文
 - 每完成一轮工作，提交代码及相关修改
 
+# 依赖与包管理（前端）
+
+- 本机 npm 未安装在用户目录、调用需 sudo；统一改用 pnpm 管理前端依赖（如 `pnpm add <pkg>` / `pnpm install`），已生成的 `pnpm-lock.yaml` 一并提交。
+
 # 常用命令（项目脚手架就位后）
 
 > 项目当前为空仓库，以下为各组件的预期命令，脚手架建立后据此核对。
