@@ -61,16 +61,16 @@ def get_max_context_tokens(model_name: str) -> int:
 
 def build_thinking_kwargs(
     mode: str,
-    budget: int,
     litellm_model: str,
     provider: str,
 ) -> Dict[str, Any]:
     """根据模型 provider 与思考强度，构造对应的思考参数。
 
-    - Anthropic(Claude) / deepseek-reasoner：注入 ``thinking`` 信封 + ``max_tokens``
-      （litellm 的 anthropic 适配器要求 max_tokens > budget_tokens）。
-    - OpenAI o-series(o1/o3/o4)：注入 ``reasoning_effort``。
-    - 其它 provider：不注入（由 litellm.drop_params 处理，避免报错）。
+    依据服务商文档（以 DeepSeek 为例，OpenAI 兼容格式）：
+    - 思考开关：``{"thinking": {"type": "enabled"}}``（不再手动设置 token 预算，
+      交由服务商默认参数决定）。
+    - 思考强度（OpenAI / DeepSeek 格式）：``{"reasoning_effort": "low"|"medium"|"high"}``。
+    - 思考强度（Anthropic 格式）：``{"output_config": {"effort": "low"|"medium"|"high"}}``。
 
     ``drop_params=True`` 已开启，因此即使误传给不支持的 provider，
     不被识别的参数也会被自动丢弃，不会引发调用失败。
@@ -79,22 +79,23 @@ def build_thinking_kwargs(
         return {}
 
     model_l = (litellm_model or "").lower()
+    effort_map = {"low": "low", "medium": "medium", "high": "high", "auto": "medium"}
+    effort = effort_map.get(mode, "medium")
 
-    # OpenAI 推理系列：reasoning_effort ∈ {low, medium, high}
-    if provider == "openai" and any(m in model_l for m in ("o1", "o3", "o4")):
-        effort = {"low": "low", "medium": "medium", "high": "high", "auto": "medium"}.get(mode, "medium")
-        return {"reasoning_effort": effort}
-
-    # Anthropic / deepseek-reasoner：扩展思考信封
-    if provider == "anthropic" or "reasoner" in model_l or "claude" in model_l:
-        # 按强度预设预算；用户显式 budget > 0 时优先使用
-        presets = {"low": 2000, "medium": 8000, "high": 16000, "auto": 8000}
-        b = int(budget) if int(budget) > 0 else presets.get(mode, 8000)
-        # Claude 要求 max_tokens 至少大于 budget_tokens，并留出输出空间
-        max_tokens = max(int(b) + 4096, 8192)
+    # OpenAI / OpenAI 兼容（DeepSeek 等）/ o-series：thinking 开关 + reasoning_effort
+    if provider in ("openai", "openai_compatible") or any(
+        k in model_l for k in ("deepseek", "reasoner", "o1", "o3", "o4")
+    ):
         return {
-            "thinking": {"type": "thinking", "budget_tokens": int(b)},
-            "max_tokens": max_tokens,
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": effort,
+        }
+
+    # Anthropic：thinking 开关 + output_config.effort
+    if provider == "anthropic" or "claude" in model_l:
+        return {
+            "thinking": {"type": "enabled"},
+            "output_config": {"effort": effort},
         }
 
     # 其它 provider：不注入不支持的参数
@@ -125,7 +126,6 @@ def completion(
         # 思考模式：按 provider 注入对应参数（litellm 会丢弃不支持的参数）
         thinking_kwargs = build_thinking_kwargs(
             llm_config.thinking_mode,
-            llm_config.thinking_budget,
             call_model,
             llm_config.provider,
         )

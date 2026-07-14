@@ -72,9 +72,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     return { name, providerName: provider?.name ?? "" };
   })();
 
-  // 当前生效的思考模式/预算（会话级优先，回退角色卡）
+  // 当前生效的思考模式（会话级优先，回退角色卡）
   const currentThinkingMode = activeSession?.thinking_mode || activeAgent?.thinking_mode || "off";
-  const currentThinkingBudget = activeSession?.thinking_budget ?? activeAgent?.thinking_budget ?? 0;
 
   // 持久化会话级模型/思考配置
   const applySessionLlm = (model: string, thinkingMode: string, thinkingBudget: number) => {
@@ -362,7 +361,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                                   <button
                                     key={val}
                                     onClick={() => {
-                                      applySessionLlm(val, currentThinkingMode, currentThinkingBudget);
+                                      applySessionLlm(val, currentThinkingMode, 0);
                                       setModelPickerOpen(false);
                                     }}
                                     className={`w-full text-left px-3 py-1.5 rounded-lg text-[11px] font-mono transition-colors ${
@@ -393,7 +392,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               key={opt.value}
                               type="button"
                               title={opt.desc}
-                              onClick={() => applySessionLlm(effectiveModel, opt.value, currentThinkingBudget)}
+                              onClick={() => applySessionLlm(effectiveModel, opt.value, 0)}
                               className={`px-1 py-1 rounded-md text-[10px] font-semibold transition-colors border ${
                                 currentThinkingMode === opt.value
                                   ? "bg-indigo-50 text-indigo-700 border-indigo-300"
@@ -404,26 +403,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                             </button>
                           ))}
                         </div>
-                        {currentThinkingMode !== "off" && (
-                          <div className="mt-1.5 flex items-center gap-2 px-1">
-                            <span className="text-[10px] text-stone-500 whitespace-nowrap">预算(token)</span>
-                            <input
-                              type="number"
-                              min={0}
-                              step={512}
-                              value={currentThinkingBudget}
-                              onChange={(e) =>
-                                applySessionLlm(
-                                  effectiveModel,
-                                  currentThinkingMode,
-                                  Math.max(0, parseInt(e.target.value || "0", 10) || 0),
-                                )
-                              }
-                              placeholder="0 = 按强度自动"
-                              className="flex-1 bg-stone-50 p-1 rounded-md border border-stone-200/60 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-stone-300"
-                            />
-                          </div>
-                        )}
                       </div>
                     </div>
                   </>

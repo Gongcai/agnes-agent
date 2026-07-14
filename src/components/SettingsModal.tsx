@@ -982,27 +982,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </button>
                           ))}
                         </div>
-                        {agentForm.thinkingMode !== "off" && (
-                          <div className="mt-2 flex items-center gap-2">
-                            <span className="text-[11px] text-stone-500 whitespace-nowrap">思考预算 (token)</span>
-                            <input
-                              type="number"
-                              min={0}
-                              step={512}
-                              value={agentForm.thinkingBudget}
-                              onChange={(e) =>
-                                setAgentForm((f) => ({
-                                  ...f,
-                                  thinkingBudget: Math.max(0, parseInt(e.target.value || "0", 10) || 0),
-                                }))
-                              }
-                              placeholder="0 = 按强度自动"
-                              className="flex-1 bg-stone-50 p-1.5 rounded-lg border border-stone-200/60 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-stone-300"
-                            />
-                          </div>
-                        )}
                         <p className="mt-1 text-[10px] text-stone-400">
-                          关闭/自动由模型决定；轻度~深度控制思考深度。预算为 Claude 的 budget_tokens，0 表示按强度预设。
+                          关闭/自动由模型决定；轻度~深度控制思考深度。预算交由服务商默认参数，无需手动设置。
                         </p>
                       </div>
                       <div>
