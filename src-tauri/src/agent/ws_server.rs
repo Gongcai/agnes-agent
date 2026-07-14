@@ -24,6 +24,8 @@ pub struct ActiveRun {
     pub accumulated_text: String,
     pub accumulated_thought: String,
     pub current_ordinal: i32,
+    /// 当前是否处于 <thought> 思维链中（跨 chunk 持久，避免多段思维链路由错乱）
+    pub in_thought: bool,
 }
 
 // 在 AgentManager 里扩展对 ActiveRun 的管理。
@@ -181,16 +183,36 @@ async fn handle_conn<R: tauri::Runtime>(
                                 accumulated_text: String::new(),
                                 accumulated_thought: String::new(),
                                 current_ordinal: 0,
+                                in_thought: false,
                             });
                         }
                     }
                 }
 
                 if let Some(run) = runs.get_mut(&run_id) {
-                    if content.starts_with("<thought>") || run.accumulated_thought.starts_with("<thought>") && !run.accumulated_thought.contains("</thought>") {
-                        run.accumulated_thought.push_str(content);
-                    } else {
-                        run.accumulated_text.push_str(content);
+                    // 按 <thought>/</thought> 标签分段路由到 thought / text。
+                    // 用 in_thought 标志跨 chunk 持久，避免多段思维链时第二段被误并入正文
+                    // （旧逻辑用 accumulated_thought.contains("</thought>") 判断，第一段闭合后恒为 true，
+                    //  导致第二段思维链全部落入 accumulated_text，重开读库时表现为正文泄漏）。
+                    let mut remaining = content;
+                    while !remaining.is_empty() {
+                        if run.in_thought {
+                            if let Some(idx) = remaining.find("</thought>") {
+                                run.accumulated_thought.push_str(&remaining[..idx]);
+                                run.in_thought = false;
+                                remaining = &remaining[idx + "</thought>".len()..];
+                            } else {
+                                run.accumulated_thought.push_str(remaining);
+                                remaining = "";
+                            }
+                        } else if let Some(idx) = remaining.find("<thought>") {
+                            run.accumulated_text.push_str(&remaining[..idx]);
+                            run.in_thought = true;
+                            remaining = &remaining[idx + "<thought>".len()..];
+                        } else {
+                            run.accumulated_text.push_str(remaining);
+                            remaining = "";
+                        }
                     }
                 }
             }
