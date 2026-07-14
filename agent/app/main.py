@@ -165,6 +165,18 @@ async def run_agent_graph(
         
     except asyncio.CancelledError:
         print(f"[sidecar][run] Run task cancelled (id: {run_id})", flush=True)
+        # 通知 Rust 取消，让其走 RUN_ERROR 清理路径（保存已累积内容、置状态、清映射）
+        try:
+            err_envelope = make(
+                MsgType.RUN_ERROR,
+                session_id=session_id,
+                run_id=run_id,
+                payload={"message": "已取消"}
+            )
+            await ws.send(err_envelope.model_dump_json())
+        except Exception:
+            pass
+        raise
     except Exception as e:
         traceback.print_exc()
         err_envelope = make(

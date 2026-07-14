@@ -540,6 +540,9 @@ async fn handle_conn<R: tauri::Runtime>(
                 }
                 drop(runs);
 
+                // 清除 session→run 映射（运行已结束）
+                let _ = manager.remove_session_run(&session_id);
+
                 // 通知前端渲染完成
                 let _ = app_handle.emit("agent://run_finished", json!({
                     "session_id": session_id,
@@ -549,27 +552,36 @@ async fn handle_conn<R: tauri::Runtime>(
 
             msg_type::RUN_ERROR => {
                 let err_msg = env.payload.get("message").and_then(|x| x.as_str()).unwrap_or("Unknown runtime error");
-                
+                let is_cancelled = err_msg == "已取消";
+
                 let mut runs = active_runs.lock().await;
-                if let Some(run) = runs.remove(&run_id) {
-                    let _ = db.update_message_status(run.assistant_message_id.clone(), "failed".to_string()).await;
-                    
-                    // 消息行（pending 占位）已在 send_message 中创建，这里只写入错误片段，
-                    // 避免以相同 id 重新 INSERT 触发主键冲突导致事务回滚、错误内容丢失。
-                    let _ = db.insert_message_parts(vec![
-                        NewMessagePart {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            message_id: run.assistant_message_id.clone(),
-                            kind: "text".into(),
-                            ordinal: run.current_ordinal,
-                            mime_type: None,
-                            tool_call_id: None,
-                            content: format!("Error: {err_msg}"),
-                            metadata: None,
-                        }
-                    ]).await;
+                if let Some(mut run) = runs.remove(&run_id) {
+                    let mut parts_to_insert = Vec::new();
+                    // 先保存已累积的思维链/正文（避免取消/出错时丢失已流式产出的部分回复）
+                    drain_accumulated(&mut run, &mut parts_to_insert);
+                    // 追加错误/取消提示片段
+                    parts_to_insert.push(NewMessagePart {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        message_id: run.assistant_message_id.clone(),
+                        kind: "text".into(),
+                        ordinal: run.current_ordinal,
+                        mime_type: None,
+                        tool_call_id: None,
+                        content: if is_cancelled { "（已取消）".to_string() } else { format!("Error: {err_msg}") },
+                        metadata: None,
+                    });
+                    if !parts_to_insert.is_empty() {
+                        let _ = db.insert_message_parts(parts_to_insert).await;
+                    }
+                    let _ = db.update_message_status(
+                        run.assistant_message_id.clone(),
+                        if is_cancelled { "cancelled".to_string() } else { "failed".to_string() },
+                    ).await;
                 }
                 drop(runs);
+
+                // 清除 session→run 映射（运行已结束）
+                let _ = manager.remove_session_run(&session_id);
 
                 let _ = app_handle.emit("agent://run_error", json!({
                     "session_id": session_id,

@@ -697,6 +697,28 @@ pub async fn replace_message_parts(
     state.db.replace_message_parts(message_id, new_parts).await
 }
 
+/// 取消某会话当前活跃的运行：取出 session→run_id 映射，向 Python 发 RUN_CANCEL。
+/// Python 收到后取消对应任务（langgraph 任务被 cancel，流式中止）。
+#[tauri::command]
+pub async fn cancel_run(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> AppResult<()> {
+    if let Some(run_id) = state.agent.remove_session_run(&session_id) {
+        let env = Envelope {
+            protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id,
+            session_id,
+            msg_type: msg_type::RUN_CANCEL.to_string(),
+            created_at: String::new(),
+            payload: serde_json::json!({}),
+        };
+        state.agent.send_to_agent(env)?;
+    }
+    Ok(())
+}
+
 /// 将占位提示文本视为空，避免被当作真实记忆发送给 AI（占位仅由前端展示）。
 fn normalize_memory_text(text: String) -> String {
     let t = text.trim();
@@ -895,6 +917,8 @@ async fn start_agent_run(state: &AppState, cfg: &ResolvedLlm, session_id: &str, 
 
     // 显式注册 run_id → assistant_msg_id，供 ws_server 精确定位 pending 消息
     state.agent.register_run(run_id.clone(), assistant_msg_id.to_string());
+    // 记录 session_id → run_id，供 cancel_run 按会话取消
+    state.agent.set_session_run(session_id.to_string(), run_id.clone());
 
     let run_req = Envelope {
         protocol_version: crate::agent::protocol::PROTOCOL_VERSION,

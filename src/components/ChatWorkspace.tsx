@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  Cpu, Terminal, Send, AlertTriangle, Menu, ChevronLeft, ShieldCheck, ChevronDown, Server, Check, Copy, GitBranch, Trash2, Pencil, RefreshCw, Brain
+  Cpu, Terminal, Send, AlertTriangle, Menu, ChevronLeft, ShieldCheck, ChevronDown, Server, Check, Copy, GitBranch, Trash2, Pencil, RefreshCw, Brain, Square
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
@@ -46,6 +46,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     providers,
     sendMessage,
     approveTool,
+    cancelRun,
     setSessionLlm,
     switchVersion,
     createBranch,
@@ -543,14 +544,25 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 )}
               </div>
 
-              <Button
-                onClick={handleSend}
-                disabled={!inputVal.trim() || isStreaming || !activeSessionId}
-                className="rounded-lg bg-stone-900 hover:bg-stone-850 text-white px-3.5 py-1 h-6 text-[10px] font-semibold shadow-sm"
-              >
-                <Send className="h-3 w-3 mr-1" />
-                <span>发送</span>
-              </Button>
+              {isStreaming ? (
+                <button
+                  onClick={() => activeSessionId && cancelRun(activeSessionId).catch(console.error)}
+                  className="flex items-center gap-1 rounded-lg bg-red-600 hover:bg-red-700 text-white px-3.5 py-1 h-6 text-[10px] font-semibold shadow-sm transition-colors"
+                  title="停止生成"
+                >
+                  <Square className="h-2.5 w-2.5 fill-current" />
+                  <span>停止</span>
+                </button>
+              ) : (
+                <Button
+                  onClick={handleSend}
+                  disabled={!inputVal.trim() || !activeSessionId}
+                  className="rounded-lg bg-stone-900 hover:bg-stone-850 text-white px-3.5 py-1 h-6 text-[10px] font-semibold shadow-sm"
+                >
+                  <Send className="h-3 w-3 mr-1" />
+                  <span>发送</span>
+                </Button>
+              )}
             </div>
           </div>
         </div>

@@ -107,6 +107,7 @@ interface AgentState {
   pinSession: (sessionId: string, pinned: boolean) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
   sendMessage: (sessionId: string, text: string) => Promise<void>;
+  cancelRun: (sessionId: string) => Promise<void>;
   approveTool: (toolCallId: string, approved: boolean) => Promise<void>;
   setActiveAgentId: (agentId: string) => Promise<void>;
   setActiveSessionId: (sessionId: string) => Promise<void>;
@@ -295,6 +296,19 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         isStreaming: false,
         messages: get().messages.filter(m => m.id !== tempAssistantMsg.id),
       });
+    }
+  },
+
+  cancelRun: async (sessionId: string) => {
+    // 乐观置为非生成中，再发取消；run_finished/run_error 也会兜底重载
+    set({ isStreaming: false });
+    try {
+      await invoke("cancel_run", { sessionId });
+      if (get().activeSessionId) {
+        await get().loadMessages(get().activeSessionId!);
+      }
+    } catch (e) {
+      console.error("取消运行失败", e);
     }
   },
 

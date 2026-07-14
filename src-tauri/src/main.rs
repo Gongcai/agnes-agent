@@ -55,6 +55,7 @@ fn main() {
             commands::edit_and_resend,
             commands::regenerate_message,
             commands::replace_message_parts,
+            commands::cancel_run,
             commands::send_message,
             commands::approve_tool,
             commands::get_explicit_memories,
