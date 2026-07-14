@@ -116,6 +116,10 @@ interface AgentState {
   deleteMessage: (messageId: string) => Promise<void>;
   editAndResend: (messageId: string, text: string) => Promise<void>;
   regenerateMessage: (messageId: string) => Promise<void>;
+  replaceMessageParts: (
+    messageId: string,
+    parts: { kind: string; content: string; tool_call_id?: string; metadata?: string }[],
+  ) => Promise<void>;
   updateAgentModel: (agentId: string, model: string) => Promise<void>;
   upsertAgent: (agent: {
     id?: string;
@@ -388,6 +392,17 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     } catch (e) {
       set({ isStreaming: false });
       console.error("重新生成失败", e);
+      throw e;
+    }
+  },
+
+  replaceMessageParts: async (messageId, parts) => {
+    try {
+      await invoke("replace_message_parts", { messageId, parts });
+      const { activeSessionId } = get();
+      if (activeSessionId) await get().loadMessages(activeSessionId);
+    } catch (e) {
+      console.error("修改记忆失败", e);
       throw e;
     }
   },

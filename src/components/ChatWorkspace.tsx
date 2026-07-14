@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  Cpu, Terminal, Send, AlertTriangle, Menu, ChevronLeft, ShieldCheck, ChevronDown, Server, Check, Copy, GitBranch, Trash2, Pencil, RefreshCw
+  Cpu, Terminal, Send, AlertTriangle, Menu, ChevronLeft, ShieldCheck, ChevronDown, Server, Check, Copy, GitBranch, Trash2, Pencil, RefreshCw, Brain
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { ModifyMemoryModal } from "./ModifyMemoryModal";
 
 // 思考模式/强度选项（与角色卡编辑器保持一致）
 const THINKING_OPTIONS: { value: string; label: string; desc: string }[] = [
@@ -59,6 +60,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  const [memoryEditMsgId, setMemoryEditMsgId] = useState<string | null>(null);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -336,6 +338,16 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       <RefreshCw className="h-3 w-3" />
                     </button>
                   )}
+                  {!isUser && (
+                    <button
+                      onClick={() => setMemoryEditMsgId(message.id)}
+                      disabled={message.status !== "complete"}
+                      className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60 disabled:opacity-30"
+                      title="修改记忆"
+                    >
+                      <Brain className="h-3 w-3" />
+                    </button>
+                  )}
                   <button
                     onClick={() => createBranch(message.id).catch(console.error)}
                     className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60"
@@ -543,6 +555,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           </div>
         </div>
       </div>
+
+      <ModifyMemoryModal
+        message={memoryEditMsgId ? messages.find((m) => m.id === memoryEditMsgId) ?? null : null}
+        onClose={() => setMemoryEditMsgId(null)}
+      />
     </main>
   );
 };

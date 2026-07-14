@@ -660,6 +660,43 @@ pub async fn regenerate_message(
     start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id).await
 }
 
+/// 修改记忆：替换某条 AI 消息的全部片段（用户在弹窗里编辑/删除/新增片段）。
+/// 仅 complete 的 AI 消息可改。kind 泛型，不特判 thought/tool_call 等。
+#[derive(Deserialize)]
+pub struct PartInput {
+    pub kind: String,
+    pub content: String,
+    pub tool_call_id: Option<String>,
+    pub metadata: Option<String>,
+}
+
+#[tauri::command]
+pub async fn replace_message_parts(
+    state: tauri::State<'_, AppState>,
+    message_id: String,
+    parts: Vec<PartInput>,
+) -> AppResult<()> {
+    let msg = state.db.get_message(message_id.clone()).await?
+        .ok_or_else(|| AppError::Other("消息不存在".into()))?;
+    if msg.role != "assistant" {
+        return Err(AppError::Other("仅可修改 AI 消息".into()));
+    }
+    if msg.status != "complete" {
+        return Err(AppError::Other("仅可修改已完成的 AI 消息".into()));
+    }
+    let new_parts: Vec<NewMessagePart> = parts.into_iter().map(|p| NewMessagePart {
+        id: uuid::Uuid::new_v4().to_string(),
+        message_id: message_id.clone(),
+        kind: p.kind,
+        ordinal: 0, // actor handler 会按顺序重排
+        mime_type: None,
+        tool_call_id: p.tool_call_id,
+        content: p.content,
+        metadata: p.metadata,
+    }).collect();
+    state.db.replace_message_parts(message_id, new_parts).await
+}
+
 /// 将占位提示文本视为空，避免被当作真实记忆发送给 AI（占位仅由前端展示）。
 fn normalize_memory_text(text: String) -> String {
     let t = text.trim();
