@@ -201,7 +201,8 @@ async def main() -> None:
                 mtype = msg.get("type")
                 session_id = msg.get("session_id", "")
                 run_id = msg.get("run_id", "")
-                
+                payload = msg.get("payload", {})
+
                 if mtype == MsgType.READY:
                     print("[sidecar] 握手成功，进入待命状态", flush=True)
                     
@@ -226,7 +227,34 @@ async def main() -> None:
                     print(f"[sidecar][run] Cancelling run task (id: {run_id})", flush=True)
                     if run_id in run_tasks:
                         run_tasks[run_id].cancel()
-                        
+
+                elif mtype == MsgType.DEBUG_PROMPT:
+                    # 仅拼装提示词并返回，不调用 LLM，用于前端调试面板
+                    print(f"[sidecar][debug] Assembling prompt for debug panel (id: {msg.get('id')})", flush=True)
+                    try:
+                        system_prompt, messages, discarded = assemble_prompt(payload)
+                        result = make(
+                            MsgType.DEBUG_PROMPT_RESULT,
+                            session_id=session_id,
+                            run_id=run_id,
+                            payload={
+                                "id": msg.get("id"),
+                                "system_prompt": system_prompt,
+                                "messages": messages,
+                                "discarded_messages": discarded,
+                            },
+                        )
+                        await ws.send(result.model_dump_json())
+                    except Exception as e:
+                        traceback.print_exc()
+                        err = make(
+                            MsgType.DEBUG_PROMPT_RESULT,
+                            session_id=session_id,
+                            run_id=run_id,
+                            payload={"id": msg.get("id"), "error": f"Prompt assembly failed: {e}"},
+                        )
+                        await ws.send(err.model_dump_json())
+
                 else:
                     print(f"[sidecar] 未知消息类型: {mtype}", flush=True)
                     

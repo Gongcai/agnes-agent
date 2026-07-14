@@ -25,6 +25,8 @@ class MsgType(str, Enum):
     ASSISTANT_DELTA = "assistant_delta"
     MEMORY_QUERY_REQUEST = "memory_query_request"
     USER_MESSAGE = "user_message"
+    DEBUG_PROMPT = "debug_prompt"
+    DEBUG_PROMPT_RESULT = "debug_prompt_result"
 
 
 class Envelope(BaseModel):

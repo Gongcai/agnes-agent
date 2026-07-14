@@ -1,10 +1,10 @@
-import React from "react";
-import { Plus, CornerDownRight, Settings } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Plus, CornerDownRight, Settings, Pin, PinOff, Pencil, Trash2 } from "lucide-react";
 import { useAgentStore } from "../store/useAgentStore";
 
 interface SidebarProps {
   isOpen: boolean;
-  onOpenSettings: (tab?: "agents" | "memory" | "llm" | "audit") => void;
+  onOpenSettings: (tab?: "agents" | "memory" | "llm" | "audit" | "debug") => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onOpenSettings }) => {
@@ -13,9 +13,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onOpenSettings }) => {
     sessions,
     activeAgentId,
     activeSessionId,
-    setActiveAgentId,
     setActiveSessionId,
     createSession,
+    pinSession,
+    renameSession,
+    deleteSession,
   } = useAgentStore();
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
@@ -28,10 +30,55 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onOpenSettings }) => {
       : activeAgent.model
     : "";
 
+  // 会话右键菜单状态：{ sessionId, x, y, isPinned, title } | null
+  const [ctxMenu, setCtxMenu] = useState<{
+    sessionId: string;
+    x: number;
+    y: number;
+    isPinned: boolean;
+    title: string;
+  } | null>(null);
+  const closeCtxMenu = () => setCtxMenu(null);
+
+  // 点击空白或按 Esc 关闭右键菜单
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeCtxMenu();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [ctxMenu]);
+
   const handleAddSession = () => {
     if (!activeAgentId) return;
     const title = `新会话 #${activeSessionList.length + 1}`;
     createSession(activeAgentId, title).catch(console.error);
+  };
+
+  const handleCtxPin = () => {
+    if (!ctxMenu) return;
+    pinSession(ctxMenu.sessionId, !ctxMenu.isPinned).catch(console.error);
+    closeCtxMenu();
+  };
+
+  const handleCtxRename = () => {
+    if (!ctxMenu) return;
+    const next = window.prompt("重命名会话", ctxMenu.title);
+    if (next && next.trim() && next.trim() !== ctxMenu.title) {
+      renameSession(ctxMenu.sessionId, next.trim()).catch(console.error);
+    }
+    closeCtxMenu();
+  };
+
+  const handleCtxDelete = () => {
+    if (!ctxMenu) return;
+    if (!window.confirm(`确定删除会话「${ctxMenu.title}」吗？此操作不可撤销。`)) {
+      closeCtxMenu();
+      return;
+    }
+    deleteSession(ctxMenu.sessionId).catch(console.error);
+    closeCtxMenu();
   };
 
   return (
@@ -65,28 +112,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onOpenSettings }) => {
         </div>
       )}
 
-      {/* Agent Selector in Sidebar */}
-      <div className="px-4 pt-4 pb-2 border-b border-stone-200/40">
-        <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider block mb-2 px-2">
-          选择智能体
-        </span>
-        <div className="flex flex-col gap-1">
-          {agents.map((agent) => (
-            <button
-              key={agent.id}
-              onClick={() => setActiveAgentId(agent.id)}
-              className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg transition-colors ${
-                agent.id === activeAgentId
-                  ? "bg-white border border-stone-200 text-indigo-600 font-semibold shadow-sm"
-                  : "text-stone-600 hover:bg-stone-200/40 hover:text-stone-900"
-              }`}
-            >
-              {agent.name}
-            </button>
-          ))}
-        </div>
-      </div>
-
       {/* Sessions List */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         <div>
@@ -108,6 +133,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onOpenSettings }) => {
                 <button
                   key={sess.id}
                   onClick={() => setActiveSessionId(sess.id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setCtxMenu({
+                      sessionId: sess.id,
+                      x: e.clientX,
+                      y: e.clientY,
+                      isPinned: !!sess.pinned,
+                      title: sess.title,
+                    });
+                  }}
                   className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition-all duration-150 ${
                     isActive
                       ? "bg-white text-emerald-700 font-semibold border border-stone-200 shadow-[0_1px_2px_0_rgba(0,0,0,0.03)]"
@@ -116,6 +151,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onOpenSettings }) => {
                 >
                   <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-stone-400" />
                   <span className="flex-1 truncate">{sess.title}</span>
+                  {sess.pinned && (
+                    <Pin className="h-3 w-3 shrink-0 text-amber-500" />
+                  )}
                 </button>
               );
             })}
@@ -142,6 +180,39 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onOpenSettings }) => {
           <Settings className="h-4 w-4" />
         </button>
       </div>
+
+      {/* 会话右键菜单 */}
+      {ctxMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={closeCtxMenu} onContextMenu={(e) => { e.preventDefault(); closeCtxMenu(); }} />
+          <div
+            className="fixed z-50 w-40 rounded-xl border border-stone-200 bg-white shadow-2xl py-1 text-xs text-stone-700"
+            style={{ top: ctxMenu.y, left: ctxMenu.x }}
+          >
+            <button
+              onClick={handleCtxPin}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors"
+            >
+              {ctxMenu.isPinned ? <PinOff className="h-3.5 w-3.5 text-amber-500" /> : <Pin className="h-3.5 w-3.5 text-stone-500" />}
+              {ctxMenu.isPinned ? "取消置顶" : "置顶"}
+            </button>
+            <button
+              onClick={handleCtxRename}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors"
+            >
+              <Pencil className="h-3.5 w-3.5 text-stone-500" />
+              重命名
+            </button>
+            <button
+              onClick={handleCtxDelete}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-rose-600 hover:bg-rose-50 transition-colors"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              删除
+            </button>
+          </div>
+        </>
+      )}
     </aside>
   );
 };

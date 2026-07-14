@@ -8,7 +8,7 @@ export default function App() {
   const { loadAgents } = useAgentStore();
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
-  const [settingsTab, setSettingsTab] = useState<"agents" | "memory" | "llm" | "audit">("agents");
+  const [settingsTab, setSettingsTab] = useState<"agents" | "memory" | "llm" | "audit" | "debug">("agents");
 
   // Load initial agents list from SQLite and bind Tauri events bridge on startup
   useEffect(() => {
@@ -22,7 +22,7 @@ export default function App() {
     };
   }, [loadAgents]);
 
-  const handleOpenSettings = (tab: "agents" | "memory" | "llm" | "audit" = "agents") => {
+  const handleOpenSettings = (tab: "agents" | "memory" | "llm" | "audit" | "debug" = "agents") => {
     setSettingsTab(tab);
     setIsSettingsOpen(true);
   };

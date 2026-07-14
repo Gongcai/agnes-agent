@@ -25,6 +25,15 @@ pub struct SessionDto {
     pub summary: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub pinned: bool,
+}
+
+/// 调试面板：当前拼装好、待发送给 LLM 的提示词。
+#[derive(Serialize)]
+pub struct DebugPromptDto {
+    pub system_prompt: String,
+    pub messages: Vec<serde_json::Value>,
+    pub discarded_count: usize,
 }
 
 #[derive(Serialize)]
@@ -127,6 +136,7 @@ pub async fn list_sessions(
             summary: r.summary,
             created_at: r.created_at,
             updated_at: r.updated_at,
+            pinned: r.pinned != 0,
         })
         .collect())
 }
@@ -138,6 +148,201 @@ pub async fn delete_session(
     session_id: String,
 ) -> AppResult<()> {
     state.db.delete_session(session_id).await
+}
+
+/// 置顶或取消置顶某个会话。
+#[tauri::command]
+pub async fn set_session_pin(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    pinned: bool,
+) -> AppResult<()> {
+    state.db.set_session_pin(session_id, pinned).await
+}
+
+/// 重命名某个会话。
+#[tauri::command]
+pub async fn rename_session(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    title: String,
+) -> AppResult<()> {
+    state.db.update_session_title(session_id, title.trim().to_string()).await
+}
+
+/// 调试面板：调用 Python 框架拼装当前智能体（含可选会话历史）将要发送给 LLM 的完整提示词。
+#[tauri::command]
+pub async fn get_debug_prompt(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    session_id: Option<String>,
+) -> AppResult<DebugPromptDto> {
+    let agents = state.db.list_agents().await?;
+    let agent = agents
+        .iter()
+        .find(|a| a.id == agent_id)
+        .ok_or_else(|| AppError::Other(format!("智能体 `{agent_id}` 不存在")))?;
+
+    // 复用 send_message 的 LLM 配置解析逻辑
+    let agent_model_str = if agent.model.is_empty() {
+        "gpt-4o".to_string()
+    } else {
+        agent.model.clone()
+    };
+    let (provider_id_opt, model_name) = if let Some(idx) = agent_model_str.find('/') {
+        (
+            Some(agent_model_str[..idx].to_string()),
+            agent_model_str[idx + 1..].to_string(),
+        )
+    } else {
+        (None, agent_model_str.clone())
+    };
+    let provider = if let Some(ref pid) = provider_id_opt {
+        state.db.get_model_provider(pid.clone()).await?
+    } else {
+        state.db.get_default_model_provider().await?
+    };
+    let (provider_kind, api_base, provider_resolved_id) = if let Some(ref p) = provider {
+        (p.kind.clone(), p.api_base.clone(), Some(p.id.clone()))
+    } else {
+        (String::new(), None, None)
+    };
+    let api_key = if let Some(ref pid) = provider_resolved_id {
+        state.db.get_setting(format!("provider:{}:api_key", pid)).await?
+    } else {
+        None
+    };
+    let litellm_model = match provider_kind.as_str() {
+        "openai" => model_name.clone(),
+        "anthropic" => model_name.clone(),
+        "ollama" => format!("ollama/{}", model_name),
+        "openai_compatible" => format!("openai/{}", model_name),
+        "google" => format!("gemini/{}", model_name),
+        _ => model_name.clone(),
+    };
+
+    // 读取 USER.md / MEMORY.md（SQLite canonical 真相源）
+    let (user_md, memory_md) = load_explicit_memories_db_backed(&state.db, &agent.id).await?;
+
+    // 读取会话历史与摘要（如有）
+    let mut history_json = Vec::new();
+    let mut summary = None;
+    if let Some(ref sid) = session_id {
+        if let Ok(Some(sess)) = state.db.get_session(sid.clone()).await {
+            summary = sess.summary.clone();
+        }
+        if let Ok(history) = state.db.list_messages_with_parts(sid.clone()).await {
+            for (m, parts) in history {
+                let mut parts_json = Vec::new();
+                for p in parts {
+                    let mut tc_json = serde_json::Value::Null;
+                    if let Some(ref tc_id) = p.tool_call_id {
+                        if let Ok(Some(tc)) = state.db.get_tool_call(tc_id.clone()).await {
+                            tc_json = json!({
+                                "id": tc.id,
+                                "tool": tc.tool,
+                                "args": tc.params.unwrap_or_default(),
+                            });
+                        }
+                    }
+                    parts_json.push(json!({
+                        "id": p.id,
+                        "kind": p.kind,
+                        "content": p.content,
+                        "toolCall": tc_json,
+                    }));
+                }
+                history_json.push(json!({
+                    "id": m.id,
+                    "role": m.role,
+                    "parts": parts_json,
+                }));
+            }
+        }
+    }
+
+    let snapshot = json!({
+        "input": "",
+        "context": {
+            "agent": {
+                "persona": agent.persona,
+                "systemPrompt": agent.system_prompt,
+                "model": agent.model,
+                "toolPolicy": serde_json::from_str::<serde_json::Value>(&agent.tool_policy).unwrap_or(json!({}))
+            },
+            "llmConfig": {
+                "provider": provider_kind,
+                "apiBase": api_base,
+                "apiKey": api_key,
+                "model": model_name,
+                "litellmModel": litellm_model
+            },
+            "settings": { "user_context_limit": serde_json::Value::Null },
+            "recentMessages": history_json,
+            "summary": summary,
+            "explicitMemories": { "user_md": user_md, "memory_md": memory_md },
+            "retrievedMemories": [],
+            "projectContext": []
+        }
+    });
+
+    let debug_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
+    state.agent.register_debug(debug_id.clone(), tx);
+
+    let env = Envelope {
+        protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
+        id: debug_id.clone(),
+        run_id: String::new(),
+        session_id: session_id.clone().unwrap_or_default(),
+        msg_type: msg_type::DEBUG_PROMPT.to_string(),
+        created_at: String::new(),
+        payload: snapshot,
+    };
+
+    if let Err(e) = state.agent.send_to_agent(env) {
+        // 清理已注册的等待项，避免泄漏
+        state.agent.resolve_debug(&debug_id, serde_json::json!({ "error": e.to_string() }));
+        return Err(e);
+    }
+
+    // 等待 Python 回包，带超时保护
+    let payload = match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+        Ok(Ok(p)) => p,
+        Ok(Err(_)) => return Err(AppError::Other("调试请求通道已断开".into())),
+        Err(_) => {
+            state
+                .agent
+                .resolve_debug(&debug_id, serde_json::json!({ "error": "timeout" }));
+            return Err(AppError::Other("调试提示词拼装超时（Python sidecar 未响应）".into()));
+        }
+    };
+
+    if let Some(err) = payload.get("error").and_then(|x| x.as_str()) {
+        return Err(AppError::Other(err.to_string()));
+    }
+
+    let system_prompt = payload
+        .get("system_prompt")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let messages = payload
+        .get("messages")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let discarded = payload
+        .get("discarded_messages")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(DebugPromptDto {
+        system_prompt,
+        messages,
+        discarded_count: discarded.len(),
+    })
 }
 
 /// 获取某个会话中所有的消息与片段，并翻译成前端所用 Dto。
@@ -195,6 +400,20 @@ pub async fn list_messages(
     Ok(msgs_dto)
 }
 
+/// 将占位提示文本视为空，避免被当作真实记忆发送给 AI（占位仅由前端展示）。
+fn normalize_memory_text(text: String) -> String {
+    let t = text.trim();
+    if t.is_empty()
+        || t == "# USER.md"
+        || t == "# MEMORY.md"
+        || t.contains("在此输入您的基础个人画像")
+        || t.contains("在此记录助手每次对话沉淀的事实")
+    {
+        return String::new();
+    }
+    text
+}
+
 /// 从 DB 中加载 explicit memories（如果不存在则从磁盘加载并写入 DB 作为 canonical 真相源）。
 async fn load_explicit_memories_db_backed(
     db: &crate::db::DbActorHandle,
@@ -207,12 +426,17 @@ async fn load_explicit_memories_db_backed(
     let db_memory = db.get_setting(memory_key.clone()).await?;
 
     if let (Some(u), Some(m)) = (db_user, db_memory) {
-        // 自动同步写回磁盘 materialized view md 文件以防手改丢失
-        let _ = crate::memory::save_explicit_memories(agent_id, &u, &m);
-        Ok((u, m))
+        // 自动同步写回磁盘 materialized view md 文件以防手改丢失；
+        // 占位提示视为空，避免被当作记忆发送给 AI
+        let u_norm = normalize_memory_text(u);
+        let m_norm = normalize_memory_text(m);
+        let _ = crate::memory::save_explicit_memories(agent_id, &u_norm, &m_norm);
+        Ok((u_norm, m_norm))
     } else {
         // 磁盘作为 fallback 并生成默认值
         let (user_md, memory_md) = crate::memory::load_explicit_memories(agent_id)?;
+        let user_md = normalize_memory_text(user_md);
+        let memory_md = normalize_memory_text(memory_md);
         let _ = db.set_setting(user_key, user_md.clone()).await;
         let _ = db.set_setting(memory_key, memory_md.clone()).await;
         Ok((user_md, memory_md))

@@ -55,6 +55,18 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
             [r#"[]"#],
         )?;
     }
-    
+
+    // 为已存在的 sessions 表补充 pinned 列（幂等，兼容老库）
+    let has_pinned: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'pinned'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_pinned {
+        conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0", [])?;
+    }
+
     Ok(())
 }

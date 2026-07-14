@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore, ModelProvider } from "../store/useAgentStore";
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  initialTab?: "agents" | "memory" | "llm" | "audit";
+  initialTab?: "agents" | "memory" | "llm" | "audit" | "debug";
 }
 
 interface AuditLog {
@@ -83,8 +83,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   initialTab = "agents",
 }) => {
-  const { agents, activeAgentId, activeSessionId, providers, loadProviders, upsertProvider, deleteProvider, updateAgentModel } = useAgentStore();
-  const [activeTab, setActiveTab] = useState<"agents" | "memory" | "llm" | "audit">(initialTab);
+  const { agents, activeAgentId, activeSessionId, providers, loadProviders, upsertProvider, deleteProvider, updateAgentModel, setActiveAgentId } = useAgentStore();
+  const [activeTab, setActiveTab] = useState<"agents" | "memory" | "llm" | "audit" | "debug">(initialTab);
   
   // Memory MD state
   const [userMdText, setUserMdText] = useState("");
@@ -103,6 +103,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isTesting, setIsTesting] = useState(false);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
+
+  // Debug prompt panel state
+  const [debugPrompt, setDebugPrompt] = useState<{
+    system_prompt: string;
+    messages: any[];
+    discarded_count: number;
+  } | null>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
+  const [debugError, setDebugError] = useState<string | null>(null);
+
+  const loadDebugPrompt = () => {
+    if (!activeAgentId) return;
+    setDebugLoading(true);
+    setDebugError(null);
+    invoke<any>("get_debug_prompt", {
+      agentId: activeAgentId,
+      sessionId: activeSessionId ?? null,
+    })
+      .then((res) => setDebugPrompt(res))
+      .catch((e) => {
+        setDebugError(e?.toString() || "获取提示词失败");
+        setDebugPrompt(null);
+      })
+      .finally(() => setDebugLoading(false));
+  };
   
   // Model selection modal state
   const [isModelSelectOpen, setIsModelSelectOpen] = useState(false);
@@ -385,6 +410,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <ShieldCheck className="h-4 w-4 text-stone-500" />
               <span>工具执行审计</span>
             </button>
+            <button
+              onClick={() => setActiveTab("debug")}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                activeTab === "debug"
+                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
+                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+              }`}
+            >
+              <Terminal className="h-4 w-4 text-stone-500" />
+              <span>提示词调试</span>
+            </button>
           </nav>
 
           {/* Right Panel View */}
@@ -392,6 +428,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* 1. AGENTS TAB */}
             {activeTab === "agents" && activeAgent && (
               <div className="space-y-6">
+                {/* 选择智能体（从主界面侧边栏移入此处） */}
+                <div>
+                  <h3 className="text-sm font-semibold text-stone-850">选择智能体</h3>
+                  <p className="text-[11px] text-stone-400">切换当前对话使用的角色卡。</p>
+                  <div className="mt-3 flex flex-col gap-1">
+                    {agents.map((agent) => (
+                      <button
+                        key={agent.id}
+                        onClick={() => setActiveAgentId(agent.id).catch(console.error)}
+                        className={`w-full text-left text-xs px-3 py-2 rounded-lg transition-colors ${
+                          agent.id === activeAgentId
+                            ? "bg-white border border-stone-200 text-indigo-600 font-semibold shadow-sm"
+                            : "text-stone-600 hover:bg-stone-100 hover:text-stone-900 border border-transparent"
+                        }`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-indigo-50 border border-indigo-100 font-bold text-indigo-600 text-[10px]">
+                            {agent.name.charAt(0)}
+                          </span>
+                          {agent.name}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div>
                   <h3 className="text-sm font-semibold text-stone-850">智能体信息</h3>
                   <p className="text-[11px] text-stone-400">查看当前选择 of 的 Agent 静态配置及能力描述。</p>
@@ -932,6 +994,117 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* 5. DEBUG TAB */}
+            {activeTab === "debug" && (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center border-b border-stone-200 pb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-stone-850">提示词调试面板</h3>
+                    <p className="text-[11px] text-stone-400">
+                      显示当前智能体（{activeAgent?.name}）框架拼装后、发送给 AI 前的完整提示词。
+                      {activeSessionId ? "已包含当前会话历史。" : "未选择会话，仅显示系统提示词。"}
+                    </p>
+                  </div>
+                  <button
+                    onClick={loadDebugPrompt}
+                    disabled={debugLoading || !activeAgentId}
+                    className="flex items-center gap-1.5 bg-[#8CA38A] text-white hover:bg-[#7A917A] rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Terminal className="h-3.5 w-3.5" />
+                    {debugLoading ? "拼装中..." : "生成提示词预览"}
+                  </button>
+                </div>
+
+                {debugError && (
+                  <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200/60 rounded-lg px-3 py-2">
+                    {debugError}
+                  </div>
+                )}
+
+                {!debugPrompt && !debugError && !debugLoading && (
+                  <div className="text-center py-10 text-xs text-stone-400">
+                    点击右上角「生成提示词预览」以查看当前智能体将要发送给 AI 的提示词。
+                  </div>
+                )}
+
+                {debugPrompt && (
+                  <div className="space-y-4">
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[11px] font-bold text-stone-500 uppercase tracking-wide">
+                          System Prompt
+                        </span>
+                        <span className="text-[10px] text-stone-400">
+                          {debugPrompt.system_prompt.length} 字符
+                        </span>
+                      </div>
+                      <pre className="bg-stone-900 text-stone-100 text-[11px] p-3 rounded-lg border border-stone-800 overflow-x-auto whitespace-pre-wrap max-h-72 overflow-y-auto font-mono leading-relaxed">
+                        {debugPrompt.system_prompt}
+                      </pre>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[11px] font-bold text-stone-500 uppercase tracking-wide">
+                          Messages ({debugPrompt.messages.length}
+                          {debugPrompt.discarded_count > 0
+                            ? ` · 已裁剪 ${debugPrompt.discarded_count} 条`
+                            : ""}
+                          )
+                        </span>
+                        <span className="text-[10px] text-stone-400">角色交替的历史消息</span>
+                      </div>
+                      <div className="space-y-2 max-h-[360px] overflow-y-auto">
+                        {debugPrompt.messages.map((m, i) => {
+                          const role = (m.role as string) || "unknown";
+                          const isUser = role === "user";
+                          const isSystem = role === "system";
+                          const content =
+                            typeof m.content === "string"
+                              ? m.content
+                              : JSON.stringify(m.content, null, 2);
+                          return (
+                            <div
+                              key={i}
+                              className={`rounded-xl border p-3 text-xs ${
+                                isUser
+                                  ? "bg-[#F1F5F0]/70 border-[#DFE7DD]"
+                                  : isSystem
+                                  ? "bg-stone-50 border-stone-200"
+                                  : "bg-white border-stone-200 shadow-sm"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 mb-1.5">
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                                    isUser
+                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200/60"
+                                      : isSystem
+                                      ? "bg-stone-100 text-stone-500 border-stone-200/50"
+                                      : "bg-indigo-50 text-indigo-600 border-indigo-100"
+                                  }`}
+                                >
+                                  {role}
+                                </span>
+                                {m.tool_calls && (
+                                  <span className="text-[10px] text-amber-600">
+                                    含 {Array.isArray(m.tool_calls) ? m.tool_calls.length : 0} 个工具调用
+                                  </span>
+                                )}
+                              </div>
+                              <pre className="text-stone-700 whitespace-pre-wrap font-mono text-[11px] leading-relaxed max-h-48 overflow-y-auto">
+                                {content}
+                              </pre>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

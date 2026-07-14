@@ -47,6 +47,8 @@ pub mod msg_type {
     pub const RUN_ERROR: &str = "run_error";
     pub const ASSISTANT_DELTA: &str = "assistant_delta";
     pub const MEMORY_QUERY_REQUEST: &str = "memory_query_request";
+    pub const DEBUG_PROMPT: &str = "debug_prompt";
+    pub const DEBUG_PROMPT_RESULT: &str = "debug_prompt_result";
     pub const PING: &str = "ping";
     pub const PONG: &str = "pong";
 }

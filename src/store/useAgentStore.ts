@@ -35,6 +35,7 @@ export interface Session {
   summary?: string;
   created_at: string;
   updated_at: string;
+  pinned?: boolean;
 }
 
 export interface AgentSummary {
@@ -87,6 +88,8 @@ interface AgentState {
   loadMessages: (sessionId: string) => Promise<void>;
   createSession: (agentId: string, title: string) => Promise<string>;
   deleteSession: (sessionId: string) => Promise<void>;
+  pinSession: (sessionId: string, pinned: boolean) => Promise<void>;
+  renameSession: (sessionId: string, title: string) => Promise<void>;
   sendMessage: (sessionId: string, text: string) => Promise<void>;
   approveTool: (toolCallId: string, approved: boolean) => Promise<void>;
   setActiveAgentId: (agentId: string) => Promise<void>;
@@ -181,6 +184,26 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
     } catch (e) {
       console.error("Failed to delete session", e);
+    }
+  },
+
+  pinSession: async (sessionId, pinned) => {
+    try {
+      await invoke("set_session_pin", { sessionId, pinned });
+      const { activeAgentId } = get();
+      if (activeAgentId) await get().loadSessions(activeAgentId);
+    } catch (e) {
+      console.error("Failed to pin session", e);
+    }
+  },
+
+  renameSession: async (sessionId, title) => {
+    try {
+      await invoke("rename_session", { sessionId, title });
+      const { activeAgentId } = get();
+      if (activeAgentId) await get().loadSessions(activeAgentId);
+    } catch (e) {
+      console.error("Failed to rename session", e);
     }
   },
 

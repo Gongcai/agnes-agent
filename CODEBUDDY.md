@@ -10,6 +10,11 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 - 自然语言使用：代码内的注释使用英文标准注释，与用户交谈、汇报或者文档使用中文
 
+# Git 提交
+
+- 提交消息使用 `<type>(<scope>): <subject>` 格式，`subject` 使用中文，`type` 和 `scope` 使用英文
+- 每完成一轮工作，提交代码及相关修改
+
 # 常用命令（项目脚手架就位后）
 
 > 项目当前为空仓库，以下为各组件的预期命令，脚手架建立后据此核对。

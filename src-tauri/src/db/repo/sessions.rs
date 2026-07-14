@@ -20,6 +20,7 @@ pub struct SessionRow {
     pub version: i64,
     pub deleted_at: Option<String>,
     pub origin_device_id: Option<String>,
+    pub pinned: i64,
 }
 
 pub struct NewSession {
@@ -42,15 +43,15 @@ fn now() -> String {
     format!("{secs}")
 }
 
-/// 列出某个 Agent 的所有非软删除会话，按创建时间排序。
+/// 列出某个 Agent 的所有非软删除会话，置顶优先，其余按更新时间倒序。
 pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, title, context_limit, compress_threshold, recency_window, \
          reserved_output_tokens, summarizer_model, summary, summary_updated_at, \
-         created_at, updated_at, version, deleted_at, origin_device_id \
+         created_at, updated_at, version, deleted_at, origin_device_id, pinned \
          FROM sessions \
          WHERE agent_id = ?1 AND deleted_at IS NULL \
-         ORDER BY created_at DESC",
+         ORDER BY pinned DESC, updated_at DESC",
     )?;
 
     let rows = stmt.query_map([agent_id], |r| {
@@ -70,6 +71,7 @@ pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
             version: r.get(12)?,
             deleted_at: r.get(13)?,
             origin_device_id: r.get(14)?,
+            pinned: r.get(15)?,
         })
     })?;
 
@@ -85,7 +87,7 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, title, context_limit, compress_threshold, recency_window, \
          reserved_output_tokens, summarizer_model, summary, summary_updated_at, \
-         created_at, updated_at, version, deleted_at, origin_device_id \
+         created_at, updated_at, version, deleted_at, origin_device_id, pinned \
          FROM sessions \
          WHERE id = ?1",
     )?;
@@ -107,6 +109,7 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<SessionRow>> {
             version: r.get(12)?,
             deleted_at: r.get(13)?,
             origin_device_id: r.get(14)?,
+            pinned: r.get(15)?,
         })
     }).optional()?;
 
@@ -174,6 +177,15 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
          SET deleted_at = ?1, updated_at = ?2, version = version + 1 \
          WHERE id = ?3",
         params![now_str, now_str, id],
+    )?;
+    Ok(())
+}
+
+/// 设置或取消会话置顶。
+pub fn set_pin(conn: &Connection, id: &str, pinned: bool) -> AppResult<()> {
+    conn.execute(
+        "UPDATE sessions SET pinned = ?1, updated_at = ?2 WHERE id = ?3",
+        params![if pinned { 1 } else { 0 }, now(), id],
     )?;
     Ok(())
 }

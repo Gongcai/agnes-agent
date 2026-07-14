@@ -76,6 +76,11 @@ pub enum DbCommand {
         id: String,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    SetSessionPin {
+        id: String,
+        pinned: bool,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ListMessagesWithParts {
         session_id: String,
         resp: oneshot::Sender<AppResult<Vec<(repo::messages::MessageRow, Vec<repo::messages::MessagePartRow>)>>>,
@@ -276,6 +281,13 @@ impl DbActorHandle {
     pub async fn delete_session(&self, id: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::DeleteSession { id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn set_session_pin(&self, id: String, pinned: bool) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SetSessionPin { id, pinned, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -500,6 +512,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::DeleteSession { id, resp } => {
                     let _ = resp.send(repo::sessions::delete(&conn, &id));
+                }
+                DbCommand::SetSessionPin { id, pinned, resp } => {
+                    let _ = resp.send(repo::sessions::set_pin(&conn, &id, pinned));
                 }
                 DbCommand::ListMessagesWithParts { session_id, resp } => {
                     let _ = resp.send(repo::messages::list_with_parts(&conn, &session_id));

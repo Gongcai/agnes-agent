@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   updated_at TEXT,
   version INTEGER DEFAULT 1,
   deleted_at TEXT,
-  origin_device_id TEXT
+  origin_device_id TEXT,
+  pinned INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (

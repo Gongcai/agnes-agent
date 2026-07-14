@@ -27,14 +27,13 @@ pub fn load_explicit_memories(agent_id: &str) -> AppResult<(String, String)> {
     
     let user_path = mem_dir.join("USER.md");
     if !user_path.exists() {
-        let default_user = "# USER.md\n\n在此输入您的基础个人画像、偏好或背景信息，供助手每次对话时参考（AI 只读）。\n";
-        let _ = fs::write(&user_path, default_user);
+        // 仅创建空文件；占位提示由前端展示，不写入真实内容以免被当作记忆发送给 AI
+        let _ = fs::write(&user_path, "");
     }
-    
+
     let memory_path = mem_dir.join("MEMORY.md");
     if !memory_path.exists() {
-        let default_memory = "# MEMORY.md\n\n在此记录助手每次对话沉淀的事实与长期事实（AI 可写，用户可写）。\n";
-        let _ = fs::write(&memory_path, default_memory);
+        let _ = fs::write(&memory_path, "");
     }
     
     let user_md = fs::read_to_string(&user_path)

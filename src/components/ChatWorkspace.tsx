@@ -8,7 +8,7 @@ import { useAgentStore } from "../store/useAgentStore";
 interface ChatWorkspaceProps {
   isSidebarOpen: boolean;
   onToggleSidebar: () => void;
-  onOpenSettings: (tab: "agents" | "memory" | "llm" | "audit") => void;
+  onOpenSettings: (tab: "agents" | "memory" | "llm" | "audit" | "debug") => void;
 }
 
 export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({

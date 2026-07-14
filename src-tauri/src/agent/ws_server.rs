@@ -152,6 +152,13 @@ async fn handle_conn<R: tauri::Runtime>(
                 let _ = manager.send_to_agent(Envelope::reply(msg_type::PONG, serde_json::json!({})));
             }
 
+            msg_type::DEBUG_PROMPT_RESULT => {
+                let req_id = env.payload.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                if !req_id.is_empty() {
+                    let _ = manager.resolve_debug(&req_id, env.payload.clone());
+                }
+            }
+
             msg_type::ASSISTANT_DELTA => {
                 let content = env.payload.get("content").and_then(|x| x.as_str()).unwrap_or("");
                 

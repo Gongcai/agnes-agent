@@ -23,6 +23,8 @@ pub struct AgentManager {
     active_sender: Mutex<Option<mpsc::UnboundedSender<Envelope>>>,
     // 等待审批的工具调用：tool_call_id -> oneshot 批准状态发送端
     pending_approvals: Mutex<std::collections::HashMap<String, oneshot::Sender<bool>>>,
+    // 等待调试提示词拼装结果：请求 id -> oneshot 返回 payload 发送端
+    pending_debug: Mutex<std::collections::HashMap<String, oneshot::Sender<serde_json::Value>>>,
 }
 
 impl AgentManager {
@@ -32,6 +34,7 @@ impl AgentManager {
             running: AtomicBool::new(false),
             active_sender: Mutex::new(None),
             pending_approvals: Mutex::new(std::collections::HashMap::new()),
+            pending_debug: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -115,6 +118,22 @@ impl AgentManager {
         let mut map = self.pending_approvals.lock().unwrap();
         if let Some(tx) = map.remove(tool_call_id) {
             let _ = tx.send(approved);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 注册一个等待调试提示词结果的请求。
+    pub fn register_debug(&self, id: String, tx: oneshot::Sender<serde_json::Value>) {
+        self.pending_debug.lock().unwrap().insert(id, tx);
+    }
+
+    /// 解析一个调试提示词结果。如果找到并处理则返回 true。
+    pub fn resolve_debug(&self, id: &str, payload: serde_json::Value) -> bool {
+        let mut map = self.pending_debug.lock().unwrap();
+        if let Some(tx) = map.remove(id) {
+            let _ = tx.send(payload);
             true
         } else {
             false
