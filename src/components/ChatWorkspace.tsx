@@ -5,6 +5,7 @@ import {
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
+import { MarkdownMessage } from "./MarkdownMessage";
 
 interface ChatWorkspaceProps {
   isSidebarOpen: boolean;
@@ -220,46 +221,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                         );
                       }
 
-                      // 3. Regular response text rendering
+                      // 3. Regular response text rendering (Markdown + LaTeX)
                       return (
-                        <div
+                        <MarkdownMessage
                           key={part.id || index}
-                          className="text-sm leading-relaxed text-stone-800 prose prose-stone prose-sm"
-                        >
-                          {part.content.includes("```") ? (
-                            <div>
-                              {part.content.split("```").map((chunk, i) => {
-                                if (i % 2 === 1) {
-                                  const lines = chunk.split("\n");
-                                  const lang = lines[0] || "text";
-                                  const code = lines.slice(1).join("\n");
-                                  return (
-                                    <div
-                                      key={i}
-                                      className="my-2 rounded-lg overflow-hidden border border-stone-200 font-mono text-[11px] shadow-sm"
-                                    >
-                                      <div className="bg-stone-100 px-3 py-1 flex justify-between items-center text-[10px] text-stone-500 border-b border-stone-200">
-                                        <span>{lang}</span>
-                                        <button
-                                          onClick={() => navigator.clipboard.writeText(code)}
-                                          className="hover:text-stone-900 transition-colors"
-                                        >
-                                          复制
-                                        </button>
-                                      </div>
-                                      <pre className="bg-white p-3 overflow-x-auto text-stone-800">
-                                        {code}
-                                      </pre>
-                                    </div>
-                                  );
-                                }
-                                return <p key={i} className="my-1 whitespace-pre-wrap">{chunk}</p>;
-                              })}
-                            </div>
-                          ) : (
-                            part.content
-                          )}
-                        </div>
+                          content={part.content}
+                        />
                       );
                     })}
                   </div>
