@@ -1,0 +1,25 @@
+# dependencies
+node_modules
+.pnpm-store
+
+# builds
+dist
+src-tauri/target
+src-tauri/gen
+
+# python
+agent/.venv
+agent/__pycache__
+**/__pycache__
+*.pyc
+
+# tauri
+src-tauri/target/*
+
+# env / secrets
+.env
+.env.*
+*.local
+
+# os
+.DS_Store
