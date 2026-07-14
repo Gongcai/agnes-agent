@@ -25,19 +25,26 @@ async def main() -> None:
     ws_url = f"{url}?token={token}"
     print(f"[sidecar] 连接 Rust WS: {url}", flush=True)
 
-    async with websockets.connect(ws_url) as ws:
-        # 握手：发送 hello（payload 带 token，Rust 校验）
-        await ws.send(make(MsgType.HELLO, payload={"token": token}).model_dump_json())
+    try:
+        async with websockets.connect(ws_url) as ws:
+            # 握手：发送 hello（payload 带 token，Rust 校验）
+            await ws.send(
+                make(MsgType.HELLO, payload={"token": token}).model_dump_json()
+            )
 
-        async for raw in ws:
-            msg = json.loads(raw)
-            mtype = msg.get("type")
-            if mtype == MsgType.READY:
-                print("[sidecar] 握手成功，进入待命（V0.1 仅骨架）", flush=True)
-            elif mtype == MsgType.PING:
-                await ws.send(make(MsgType.PONG).model_dump_json())
-            else:
-                print(f"[sidecar] recv: {mtype}", flush=True)
+            async for raw in ws:
+                msg = json.loads(raw)
+                mtype = msg.get("type")
+                if mtype == MsgType.READY:
+                    print("[sidecar] 握手成功，进入待命（V0.1 仅骨架）", flush=True)
+                elif mtype == MsgType.PING:
+                    await ws.send(make(MsgType.PONG).model_dump_json())
+                else:
+                    print(f"[sidecar] recv: {mtype}", flush=True)
+    except websockets.exceptions.ConnectionClosed as exc:
+        # Rust 端关闭连接（含 App 正常退出与异常断开），优雅退出而非抛 traceback。
+        print(f"[sidecar] 与 Rust 的连接已断开（code={exc.code}），退出", flush=True)
+        sys.exit(0)
 
 
 if __name__ == "__main__":
