@@ -16,7 +16,8 @@ interface ToolPolicy {
 interface Agent {
   id: string;
   name: string;
-  avatarColor: string; // Simplistic hex or tailwind solid color
+  avatarColor: string; // Tailwind solid background colors
+  avatarTextColor: string;
   tags: string[];
   description: string;
   model: string;
@@ -74,12 +75,13 @@ const INITIAL_AGENTS: Agent[] = [
   {
     id: "agnes",
     name: "Agnes",
-    avatarColor: "bg-indigo-500",
+    avatarColor: "bg-indigo-50 border border-indigo-100",
+    avatarTextColor: "text-indigo-600",
     tags: ["LangGraph", "Rust", "Helper"],
     description: "Tavern 首席管家兼代码助手。擅长 Python、Rust 和 Tauri 桌面开发，能够安全地执行本地文件系统与终端任务。",
     model: "Claude 3.5 Sonnet",
-    persona: "你叫 Agnes，是 Cyber Tavern 的首席管家。你温和有礼、逻辑严密。在处理代码任务时，你偏好使用 pnpm 架构，编写清晰、模块化且高可读性的 TS/Rust 代码。遇到高危操作时，你总是会主动寻求用户的授权许可。",
-    systemPrompt: "You are Agnes, the head maid of the Cyber Tavern. You help user write high-quality code. When calling tools, explain your rationale first.",
+    persona: "你叫 Agnes，是 Tavern 的首席管家。你温和有礼、逻辑严密。在处理代码任务时，你偏好使用 pnpm 架构，编写清晰、模块化且高可读性的 TS/Rust 代码。遇到高危操作时，你总是会主动寻求用户的授权许可。",
+    systemPrompt: "You are Agnes, the head maid of the Tavern. You help user write high-quality code. When calling tools, explain your rationale first.",
     greeting: "主人，欢迎回到 Tavern。我是您的专属助理 Agnes。我已经将本地的工作区加载完毕，随时可以协助您进行工程编写、调试或运行测试。今天有什么可以为您效劳的吗？",
     toolPolicy: {
       shell: { enabled: true, approval: "always" },
@@ -90,7 +92,8 @@ const INITIAL_AGENTS: Agent[] = [
   {
     id: "nova",
     name: "Nova",
-    avatarColor: "bg-emerald-500",
+    avatarColor: "bg-emerald-50 border border-emerald-100",
+    avatarTextColor: "text-emerald-600",
     tags: ["Security", "PTY", "Auditor"],
     description: "严苛的安全审计员。专注于终端指令验证、环境变量沙箱审计与文件 diff 审查，防止任何恶意指令在您的系统上执行。",
     model: "GPT-4o",
@@ -106,13 +109,14 @@ const INITIAL_AGENTS: Agent[] = [
   {
     id: "bard",
     name: "Bard",
-    avatarColor: "bg-amber-500",
+    avatarColor: "bg-amber-50 border border-amber-100",
+    avatarTextColor: "text-amber-600",
     tags: ["Creative", "Dialogue", "Writer"],
     description: "旅行吟游诗人。擅长文学创作、人设设定、对话示例编排以及复杂场景世界观的构架，不具备任何本地系统修改工具权限。",
     model: "DeepSeek Coder v2",
-    persona: "你是 Bard，一位赛博酒馆的吟游诗人。你风趣幽默、用词华丽、想象力丰富。你喜欢帮助用户设计各种可爱的 Character Card、编排人机对话示例以及打磨世界观背景，不接触任何系统底层工具。",
+    persona: "你是 Bard，一位酒馆的吟游诗人。你风趣幽默、用词华丽、想象力丰富。你喜欢帮助用户设计各种可爱的 Character Card、编排人机对话示例以及打磨世界观背景，不接触任何系统底层工具。",
     systemPrompt: "You are Bard, a creative roleplay writer. Engage the user in immersive world design and writing.",
-    greeting: "啊，旅人！快请坐，来一杯电子蜜酒。我是吟游诗人 Bard。今天你想编织怎样的传说？是给别致的角色设计人设卡，还是为你的小说打磨一段绝妙的对话？我的墨水已备好，随时听候你的灵感指引！",
+    greeting: "啊，旅人！快请坐，来一杯蜜酒。我是吟游诗人 Bard。今天你想编织怎样的传说？是给别致的角色设计人设卡，还是为你的小说打磨一段绝妙的对话？我的墨水已备好，随时听候你的灵感指引！",
     toolPolicy: {
       shell: { enabled: false, approval: "always" },
       file: { enabled: false, approval: "always" },
@@ -125,7 +129,7 @@ const INITIAL_SESSIONS: Session[] = [
   { id: "sess_agnes_1", agentId: "agnes", title: "前端 UI 界面设计规划", updatedAt: "18:10" },
   { id: "sess_agnes_2", agentId: "agnes", title: "数据库 Schema rusqlite 迁移", updatedAt: "Yesterday" },
   { id: "sess_nova_1", agentId: "nova", title: "Shell 命令风险等级审查", updatedAt: "Monday" },
-  { id: "sess_bard_1", agentId: "bard", title: "赛博酒馆背景故事设定", updatedAt: "July 12" }
+  { id: "sess_bard_1", agentId: "bard", title: "酒馆背景故事设定", updatedAt: "July 12" }
 ];
 
 const INITIAL_MESSAGES: Record<string, Message[]> = {
@@ -203,7 +207,7 @@ const INITIAL_MESSAGES: Record<string, Message[]> = {
       sessionId: "sess_bard_1",
       role: "assistant",
       parts: [
-        { type: "text", content: "啊，旅人！快请坐，来一杯电子蜜酒。我是吟游诗人 Bard。今天你想编织怎样的传说？" }
+        { type: "text", content: "啊，旅人！快请坐，来一杯蜜酒。我是吟游诗人 Bard。今天你想编织怎样的传说？" }
       ],
       createdAt: "July 12"
     }
@@ -231,7 +235,7 @@ const INITIAL_MEMORIES: Record<string, { userMd: string; memoryMd: string; seman
       { id: "mem_1", content: "用户倾向于使用 pnpm workspace 替代 npm/yarn 进行 monorepo 管理。", confidence: 0.98, source: "会话 1 消息 #4", type: "Preference" },
       { id: "mem_2", content: "本地 SQLite 数据库作为多端同步的唯一真相源，USER.md 和 MEMORY.md 属其物化视图。", confidence: 0.94, source: "架构方案 v2", type: "Fact" },
       { id: "mem_3", content: "Tauri 2 客户端启动时需自动绑定 127.0.0.1 随机端口与 Python sidecar 通信。", confidence: 0.89, source: "协议定义文档", type: "Context" },
-      { id: "mem_4", content: "UI 界面须采用简洁明快设计，去除过多霓虹，偏好 Slate 现代无界观感。", confidence: 0.92, source: "用户 UI 要求", type: "Preference" }
+      { id: "mem_4", content: "UI 界面须采用简洁明快设计，采用温暖的象牙白与灰色轻量线条。", confidence: 0.92, source: "用户 UI 要求", type: "Preference" }
     ]
   },
   nova: {
@@ -275,7 +279,7 @@ export default function App() {
   
   // Memory config states inside settings
   const [memorySearch, setMemorySearch] = useState<string>("");
-  const [memoryEditFileTab, setMemoryEditFileTab] = useState<"user" | "memory">("memory");
+  const [memoryEditFileTab, setMemoryEditFileTab] = useState<"memory" | "store">("memory");
   const [userMdText, setUserMdText] = useState("");
   const [memoryMdText, setMemoryMdText] = useState("");
   const [isEditingUserMd, setIsEditingUserMd] = useState(false);
@@ -360,7 +364,7 @@ export default function App() {
       setTimeout(() => {
         if (activeAgentId === "bard") {
           // Stream text directly
-          let responseText = `我已经将这个创意点记录下来。关于 \"${text}\"，我认为可以用最素雅简洁的排版展现，两旁是留白。这里有更多创意文本供你参考...`;
+          let responseText = `我已经将这个创意点记录下来。关于 \"${text}\"，我认为可以用最素雅简洁的排版展现，周围保留足够的象牙色留白。这里有更多创意文本供你参考...`;
           let charIndex = 0;
           
           const textPart: MessagePart = { type: "text", content: "" };
@@ -498,7 +502,7 @@ export default function App() {
 
       // Stream the rest text
       const finalResponseText = isSuccess 
-        ? `主人，我已经为您运行了本地测试命令 \`pnpm test\`，所有的 12 个测试单元均通过，没有发生任何异常。这表明我们刚才对界面的修改并没有影响主流程契约。我们可以继续进行下一步界面润色了。`
+        ? `主人，我已经为您运行了本地测试命令 \`pnpm test\`，所有的 12 个测试单元均通过，没有发生任何异常。这表明刚才对界面的修改并没有影响主流程契约。我们可以继续进行下一步界面展示了。`
         : `警告：该 shell 执行遇到阻止，系统拦截了此次操作，因为其试图访问系统级写保护路径。我已经向您的审计模块报告了此异常。`;
 
       let charIndex = 0;
@@ -697,22 +701,22 @@ export default function App() {
   );
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-zinc-950 text-zinc-100 antialiased selection:bg-violet-500/20 selection:text-violet-200">
+    <div className="flex h-screen w-screen overflow-hidden bg-[#FAF9F5] text-[#2e2e38] antialiased selection:bg-violet-100 selection:text-violet-900">
       
       {/* 1. COLLAPSIBLE SIDEBAR */}
-      <aside className={`flex flex-col border-r border-zinc-800 bg-zinc-900/40 backdrop-blur-md transition-all duration-300 ${
+      <aside className={`flex flex-col border-r border-stone-200/80 bg-stone-100/50 backdrop-blur-md transition-all duration-300 ${
         isSidebarOpen ? "w-64" : "w-0 border-r-0 overflow-hidden"
       }`}>
         
-        {/* Top Active Agent card details (No switcher here!) */}
-        <div className="border-b border-zinc-800 p-4">
+        {/* Top Active Agent card details */}
+        <div className="border-b border-stone-200/80 p-4">
           <div className="flex items-center gap-3">
-            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${activeAgent.avatarColor} font-bold text-white text-md shadow-sm`}>
+            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${activeAgent.avatarColor} font-bold ${activeAgent.avatarTextColor} text-md shadow-sm`}>
               {activeAgent.name.charAt(0)}
             </div>
             <div className="overflow-hidden">
-              <span className="font-semibold text-zinc-200 block truncate">{activeAgent.name}</span>
-              <span className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-mono border border-zinc-700/30">
+              <span className="font-semibold text-stone-900 block truncate text-sm">{activeAgent.name}</span>
+              <span className="text-[10px] bg-stone-200/60 text-stone-600 px-1.5 py-0.5 rounded font-mono border border-stone-300/40">
                 {activeAgent.model.split(" ")[0]}
               </span>
             </div>
@@ -722,11 +726,11 @@ export default function App() {
         {/* Sessions list */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           <div>
-            <div className="flex items-center justify-between px-2 mb-2 text-[10px] font-bold text-zinc-500 uppercase tracking-wider">
-              <span>当前会话 (SESSIONS)</span>
+            <div className="flex items-center justify-between px-2 mb-2 text-[10px] font-bold text-stone-400 uppercase tracking-wider">
+              <span>当前会话</span>
               <button 
                 onClick={handleAddSession}
-                className="text-zinc-400 hover:text-zinc-200 transition-colors"
+                className="text-stone-500 hover:text-stone-900 transition-colors"
                 title="新建会话"
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -740,20 +744,20 @@ export default function App() {
                   <button
                     key={sess.id}
                     onClick={() => setActiveSessionId(sess.id)}
-                    className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-all duration-150 ${
+                    className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition-all duration-150 ${
                       isActive 
-                        ? "bg-zinc-800/80 text-violet-400 font-medium border border-zinc-700/30 shadow-inner" 
-                        : "text-zinc-400 hover:bg-zinc-800/20 hover:text-zinc-200"
+                        ? "bg-white text-violet-600 font-semibold border border-stone-200 shadow-[0_1px_2px_0_rgba(0,0,0,0.03)]" 
+                        : "text-stone-600 hover:bg-stone-200/40 hover:text-stone-900"
                     }`}
                   >
-                    <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-zinc-600" />
+                    <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-stone-400" />
                     <span className="flex-1 truncate">{sess.title}</span>
-                    <span className="text-[9px] text-zinc-600 shrink-0">{sess.updatedAt}</span>
+                    <span className="text-[9px] text-stone-400 shrink-0">{sess.updatedAt}</span>
                   </button>
                 );
               })}
               {activeSessionList.length === 0 && (
-                <div className="text-center py-6 text-[11px] text-zinc-600">
+                <div className="text-center py-6 text-[11px] text-stone-400">
                   无会话，请点击右上角新建
                 </div>
               )}
@@ -762,18 +766,18 @@ export default function App() {
         </div>
 
         {/* Settings button at the very bottom */}
-        <div className="mt-auto border-t border-zinc-800 p-3 bg-zinc-950/20 flex items-center justify-between">
+        <div className="mt-auto border-t border-stone-200 p-3 bg-stone-200/20 flex items-center justify-between">
           <div className="flex items-center gap-2 overflow-hidden mr-2">
-            <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></div>
-            <span className="text-[10px] text-zinc-500 truncate">CF D1 同步就绪</span>
+            <div className="h-1.5 w-1.5 rounded-full bg-emerald-500"></div>
+            <span className="text-[10px] text-stone-500 truncate">云端同步就绪</span>
           </div>
           <button 
             onClick={() => {
               setEditingAgent({ ...activeAgent });
               setIsSettingsOpen(true);
             }}
-            className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100 transition-colors border border-zinc-700/40"
-            title="打开系统与智能体控制中心"
+            className="flex h-8 w-8 items-center justify-center rounded-xl bg-white text-stone-500 hover:text-stone-900 transition-colors border border-stone-200 shadow-sm"
+            title="控制中心"
           >
             <Settings className="h-4 w-4" />
           </button>
@@ -781,24 +785,24 @@ export default function App() {
       </aside>
 
       {/* 2. CHAT WORKSPACE */}
-      <main className="flex flex-1 flex-col bg-zinc-950 relative">
+      <main className="flex flex-1 flex-col bg-[#FAF9F5] relative">
         
         {/* Header bar */}
-        <header className="flex h-14 items-center justify-between border-b border-zinc-800 px-6 bg-zinc-900/10">
+        <header className="flex h-14 items-center justify-between border-b border-stone-200 px-6 bg-white/40 backdrop-blur-md">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-              className="text-zinc-400 hover:text-zinc-200 p-1 rounded hover:bg-zinc-800 transition-colors"
+              className="text-stone-500 hover:text-stone-900 p-1.5 rounded-lg hover:bg-stone-200/40 transition-colors"
               title={isSidebarOpen ? "收起侧边栏" : "展开侧边栏"}
             >
               {isSidebarOpen ? <ChevronLeft className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
             </button>
-            <div className="h-4 w-[1px] bg-zinc-800"></div>
+            <div className="h-4 w-[1px] bg-stone-200"></div>
             <div className="flex items-center gap-2">
-              <span className="font-semibold text-zinc-200 text-sm">
-                会话: {activeSession?.title || "暂无活动会话"}
+              <span className="font-semibold text-stone-850 text-sm">
+                {activeSession?.title || "暂无活动会话"}
               </span>
-              <span className="text-[9px] bg-zinc-900 border border-zinc-850 px-1.5 py-0.5 rounded text-zinc-500 font-mono">
+              <span className="text-[9px] bg-stone-200/60 border border-stone-300/20 px-1.5 py-0.5 rounded text-stone-600 font-mono font-medium">
                 {activeAgent.name} / {activeAgent.model}
               </span>
             </div>
@@ -811,9 +815,9 @@ export default function App() {
                 setSettingsTab("audit");
                 setIsSettingsOpen(true);
               }}
-              className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-200 bg-zinc-900 hover:bg-zinc-800 px-2 py-1 rounded border border-zinc-800 transition-colors"
+              className="flex items-center gap-1.5 text-[11px] text-stone-600 hover:text-stone-900 bg-white px-2.5 py-1 rounded-lg border border-stone-200 shadow-sm transition-colors"
             >
-              <ShieldCheck className="h-3 w-3 text-violet-400" />
+              <ShieldCheck className="h-3.5 w-3.5 text-violet-500" />
               <span>审计流水</span>
             </button>
           </div>
@@ -830,31 +834,31 @@ export default function App() {
                 className={`flex gap-4 ${isUser ? "justify-end" : "justify-start"}`}
               >
                 {!isUser && (
-                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${activeAgent.avatarColor} font-bold text-white text-xs shadow-sm`}>
+                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${activeAgent.avatarColor} font-bold ${activeAgent.avatarTextColor} text-xs shadow-sm`}>
                     {activeAgent.name.charAt(0)}
                   </div>
                 )}
 
-                <div className={`space-y-2 max-w-[80%] ${isUser ? "order-1" : "order-2"}`}>
+                <div className={`space-y-1.5 max-w-[80%] ${isUser ? "order-1" : "order-2"}`}>
                   
                   {isUser ? (
-                    <div className="rounded-2xl rounded-tr-sm bg-zinc-800/80 px-4 py-2.5 text-sm text-zinc-100 shadow-sm border border-zinc-700/20">
+                    <div className="rounded-2xl rounded-tr-sm bg-[#EFEFFA]/60 px-4 py-2.5 text-sm text-stone-900 border border-violet-100/60 shadow-[0_1px_2px_0_rgba(109,40,217,0.01)]">
                       <p className="whitespace-pre-wrap leading-relaxed">{message.parts[0].content}</p>
                     </div>
                   ) : (
-                    <div className="space-y-3">
+                    <div className="space-y-3.5">
                       {message.parts.map((part, index) => {
                         
                         // 1. Thought Process (Minimal gray bar style)
                         if (part.type === "thought") {
                           return (
-                            <details key={index} open className="group border-l border-zinc-700 bg-zinc-900/10 rounded-r-lg p-2.5 transition-colors">
-                              <summary className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-zinc-500 select-none hover:text-zinc-300">
-                                <Cpu className="h-3 w-3" />
-                                <span>Agent 思考过程 (Thought)</span>
+                            <details key={index} open className="group border-l-2 border-violet-400 bg-stone-100/60 rounded-r-xl p-3 transition-colors">
+                              <summary className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-violet-600 select-none hover:text-violet-750">
+                                <Cpu className="h-3.5 w-3.5" />
+                                <span>Agent 思维过程 (Thought)</span>
                                 <ChevronDown className="h-3 w-3 ml-auto group-open:rotate-180 transition-transform" />
                               </summary>
-                              <p className="text-xs text-zinc-400 mt-2 font-mono leading-relaxed pl-5 whitespace-pre-wrap">
+                              <p className="text-xs text-stone-600 mt-2 font-mono leading-relaxed pl-5 whitespace-pre-wrap border-t border-stone-200/40 pt-2">
                                 {part.content}
                               </p>
                             </details>
@@ -870,63 +874,63 @@ export default function App() {
                           return (
                             <div 
                               key={index}
-                              className={`border rounded-lg overflow-hidden transition-all duration-200 ${
+                              className={`border rounded-xl overflow-hidden transition-all duration-200 ${
                                 isPending
                                   ? isHighRisk
-                                    ? "border-rose-500 bg-rose-950/5"
-                                    : "border-amber-500 bg-amber-950/5 animate-pulse-ring-amber"
+                                    ? "border-rose-300 bg-rose-50/50"
+                                    : "border-amber-300 bg-amber-50/50 animate-pulse-ring-amber"
                                   : tc.status === "denied"
-                                    ? "border-zinc-800 bg-zinc-900/40 opacity-70"
-                                    : "border-zinc-800 bg-zinc-900/10"
+                                    ? "border-stone-200 bg-stone-100/40 opacity-70"
+                                    : "border-stone-200 bg-white shadow-sm"
                               }`}
                             >
-                              <div className="px-4 py-2 flex items-center justify-between text-xs font-medium border-b border-zinc-800 bg-zinc-900/40">
-                                <span className="flex items-center gap-1.5 text-zinc-300">
-                                  <Terminal className="h-3.5 w-3.5" />
+                              <div className="px-4 py-2 flex items-center justify-between text-xs font-medium border-b border-stone-200 bg-stone-100/30">
+                                <span className="flex items-center gap-1.5 text-stone-800">
+                                  <Terminal className="h-3.5 w-3.5 text-stone-500" />
                                   <span>调用本地工具: {tc.tool}</span>
                                 </span>
                                 <span className={`px-2 py-0.5 rounded text-[10px] ${
-                                  isHighRisk ? "bg-rose-500/10 text-rose-400" : "bg-zinc-850 text-zinc-500"
+                                  isHighRisk ? "bg-rose-100 text-rose-700" : "bg-stone-200/80 text-stone-600"
                                 }`}>
                                   风险: {tc.risk}
                                 </span>
                               </div>
 
-                              <div className="p-4 space-y-2.5 text-xs text-zinc-300">
+                              <div className="p-4 space-y-3 text-xs text-stone-800">
                                 <div>
-                                  <span className="text-zinc-500 font-mono">命令行指令:</span>
-                                  <pre className="font-mono text-zinc-200 bg-zinc-950 p-2.5 rounded border border-zinc-850 overflow-x-auto text-[11px] mt-1">
+                                  <span className="text-stone-500 font-mono">命令行指令:</span>
+                                  <pre className="font-mono text-zinc-100 bg-zinc-900 p-3 rounded-lg border border-zinc-800 overflow-x-auto text-[11px] mt-1 shadow-inner">
                                     {tc.args}
                                   </pre>
                                 </div>
 
                                 {isPending && (
-                                  <div className="bg-zinc-900/50 p-2.5 rounded border border-zinc-850 flex items-start gap-2">
+                                  <div className="bg-white p-2.5 rounded-lg border border-stone-200 flex items-start gap-2 shadow-sm">
                                     <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-                                    <p className="text-[11px] text-zinc-400">
+                                    <p className="text-[11px] text-stone-500 leading-relaxed">
                                       根据 <b>{activeAgent.name}</b> 规则，运行此命令行需人工审核批准。
                                     </p>
                                   </div>
                                 )}
 
                                 {tc.output && (
-                                  <pre className="p-2.5 text-[10px] font-mono bg-zinc-950 text-zinc-400 max-h-36 overflow-y-auto whitespace-pre-wrap border border-zinc-850 rounded">
+                                  <pre className="p-3 text-[10px] font-mono bg-zinc-900 text-zinc-300 max-h-36 overflow-y-auto whitespace-pre-wrap border border-zinc-800 rounded-lg shadow-inner">
                                     {tc.output}
                                   </pre>
                                 )}
                               </div>
 
                               {isPending && (
-                                <div className="px-4 py-2.5 bg-zinc-900/30 border-t border-zinc-800/60 flex justify-end gap-2">
+                                <div className="px-4 py-2.5 bg-stone-50 border-t border-stone-200/80 flex justify-end gap-2">
                                   <button
                                     onClick={() => handleRejectTool(message.id, index)}
-                                    className="px-3 py-1 text-xs text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 rounded border border-rose-500/20 transition-all"
+                                    className="px-3 py-1 text-xs text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-all font-medium"
                                   >
                                     拒绝执行 (Esc)
                                   </button>
                                   <button
                                     onClick={() => handleApproveTool(message.id, index)}
-                                    className="px-3 py-1 text-xs text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 rounded border border-emerald-500/20 transition-all"
+                                    className="px-3 py-1 text-xs text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-all font-semibold"
                                   >
                                     授权运行 (Ctrl+Enter)
                                   </button>
@@ -938,7 +942,7 @@ export default function App() {
 
                         // 3. Regular Markdown output text
                         return (
-                          <div key={index} className="text-sm leading-relaxed text-zinc-200 prose prose-zinc prose-sm">
+                          <div key={index} className="text-sm leading-relaxed text-stone-800 prose prose-stone prose-sm">
                             {part.content.includes("```") ? (
                               <div>
                                 {part.content.split("```").map((chunk, i) => {
@@ -947,12 +951,12 @@ export default function App() {
                                     const lang = lines[0] || "javascript";
                                     const code = lines.slice(1).join("\n");
                                     return (
-                                      <div key={i} className="my-2 rounded-lg overflow-hidden border border-zinc-800 font-mono text-[11px]">
-                                        <div className="bg-zinc-900 px-3 py-1 flex justify-between items-center text-[10px] text-zinc-500">
+                                      <div key={i} className="my-2 rounded-lg overflow-hidden border border-stone-200 font-mono text-[11px] shadow-sm">
+                                        <div className="bg-stone-100 px-3 py-1 flex justify-between items-center text-[10px] text-stone-500 border-b border-stone-200">
                                           <span>{lang}</span>
-                                          <button onClick={() => navigator.clipboard.writeText(code)} className="hover:text-zinc-300">复制</button>
+                                          <button onClick={() => navigator.clipboard.writeText(code)} className="hover:text-stone-900 transition-colors">复制</button>
                                         </div>
-                                        <pre className="bg-zinc-950 p-3 overflow-x-auto text-zinc-300">{code}</pre>
+                                        <pre className="bg-white p-3 overflow-x-auto text-stone-800">{code}</pre>
                                       </div>
                                     );
                                   }
@@ -968,7 +972,7 @@ export default function App() {
                     </div>
                   )}
 
-                  <span className="block text-[9px] text-zinc-600">
+                  <span className="block text-[9px] text-stone-400">
                     {message.createdAt}
                   </span>
                 </div>
@@ -978,14 +982,14 @@ export default function App() {
 
           {isStreaming && currentMessages[currentMessages.length - 1]?.role === "user" && (
             <div className="flex gap-4 justify-start">
-              <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${activeAgent.avatarColor} font-bold text-white text-xs shadow-sm`}>
+              <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${activeAgent.avatarColor} font-bold ${activeAgent.avatarTextColor} text-xs shadow-sm`}>
                 {activeAgent.name.charAt(0)}
               </div>
-              <div className="bg-zinc-900/60 border border-zinc-850 px-4 py-2.5 rounded-2xl rounded-tl-sm flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 dot-bounce"></span>
-                <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 dot-bounce"></span>
-                <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 dot-bounce"></span>
-                <span className="text-[11px] text-zinc-500 ml-1 font-mono">{activeAgent.name} 思考中...</span>
+              <div className="bg-white border border-stone-200 px-4 py-2.5 rounded-2xl rounded-tl-sm flex items-center gap-1 shadow-sm">
+                <span className="w-1.5 h-1.5 rounded-full bg-stone-400 dot-bounce"></span>
+                <span className="w-1.5 h-1.5 rounded-full bg-stone-400 dot-bounce"></span>
+                <span className="w-1.5 h-1.5 rounded-full bg-stone-400 dot-bounce"></span>
+                <span className="text-[11px] text-stone-400 ml-1 font-mono">{activeAgent.name} 思考中...</span>
               </div>
             </div>
           )}
@@ -994,8 +998,8 @@ export default function App() {
         </div>
 
         {/* Input box */}
-        <div className="border-t border-zinc-800 bg-zinc-950 p-4">
-          <div className="max-w-4xl mx-auto relative rounded-xl border border-zinc-800 bg-zinc-900/20 p-2 focus-within:border-zinc-700 transition-all">
+        <div className="border-t border-stone-200 bg-[#FAF9F5]/40 p-4 shrink-0">
+          <div className="max-w-4xl mx-auto relative rounded-xl border border-stone-300/80 bg-white p-2.5 focus-within:border-stone-400 shadow-sm transition-all">
             <textarea
               value={inputVal}
               onChange={(e) => setInputVal(e.target.value)}
@@ -1005,16 +1009,16 @@ export default function App() {
                   handleSend();
                 }
               }}
-              placeholder={`向 ${activeAgent.name} 发送命令或消息... (Enter 发送)`}
-              className="w-full resize-none bg-transparent px-3 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none h-12"
+              placeholder={`向 ${activeAgent.name} 发送消息... (Enter 发送)`}
+              className="w-full resize-none bg-transparent px-3 py-1 text-sm text-stone-900 placeholder:text-stone-450 focus:outline-none h-12"
             />
-            <div className="flex items-center justify-between border-t border-zinc-850 pt-2 px-1 text-[10px] text-zinc-600">
-              <span>提示：Agent 运行环境受 tool_policy 保护</span>
+            <div className="flex items-center justify-between border-t border-stone-100 pt-2 px-1 text-[10px] text-stone-400">
+              <span>Agent 工具权限受系统沙箱策略保护</span>
               <div className="flex items-center gap-2">
                 {isStreaming && (
                   <button 
                     onClick={() => setIsStreaming(false)}
-                    className="px-2 py-0.5 rounded text-[10px] bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20"
+                    className="px-2.5 py-0.5 rounded-md text-[10px] bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100 transition-colors"
                   >
                     停止
                   </button>
@@ -1022,7 +1026,7 @@ export default function App() {
                 <Button 
                   onClick={() => handleSend()}
                   disabled={!inputVal.trim() || isStreaming}
-                  className="rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-950 px-3 py-1 h-6 text-[10px] font-semibold"
+                  className="rounded-lg bg-stone-900 hover:bg-stone-850 text-white px-3.5 py-1 h-6 text-[10px] font-semibold shadow-sm"
                 >
                   <Send className="h-3 w-3 mr-1" />
                   <span>运行</span>
@@ -1036,18 +1040,18 @@ export default function App() {
 
       {/* --- MODAL: FULL-SCREEN CONFIGURATION & SETTINGS CENTER --- */}
       {isSettingsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm">
-          <div className="w-[960px] h-[640px] border border-zinc-800 bg-zinc-900 rounded-xl overflow-hidden shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-150">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="w-[960px] h-[640px] border border-stone-200 bg-white rounded-2xl overflow-hidden shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-150">
             
             {/* Header */}
-            <header className="px-5 py-4 border-b border-zinc-800 bg-zinc-950/40 flex justify-between items-center shrink-0">
+            <header className="px-5 py-4 border-b border-stone-200 bg-stone-50 flex justify-between items-center shrink-0">
               <div className="flex items-center gap-2">
-                <Sliders className="h-4.5 w-4.5 text-violet-400" />
-                <span className="font-semibold text-zinc-200 text-sm">配置与控制中心 (Dashboard Center)</span>
+                <Sliders className="h-4.5 w-4.5 text-violet-500" />
+                <span className="font-semibold text-stone-800 text-sm">配置与管理中心</span>
               </div>
               <button 
                 onClick={() => setIsSettingsOpen(false)}
-                className="text-zinc-500 hover:text-zinc-200 rounded p-1 hover:bg-zinc-800 transition-colors"
+                className="text-stone-400 hover:text-stone-800 rounded p-1 hover:bg-stone-100 transition-colors"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -1057,64 +1061,65 @@ export default function App() {
             <div className="flex flex-1 overflow-hidden">
               
               {/* Settings Left Menu */}
-              <nav className="w-56 border-r border-zinc-800 bg-zinc-950/20 p-3 flex flex-col gap-1 shrink-0">
+              <nav className="w-56 border-r border-stone-200 bg-stone-50/50 p-3 flex flex-col gap-1 shrink-0">
                 <button
                   onClick={() => setSettingsTab("agents")}
-                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-left transition-colors ${
-                    settingsTab === "agents" ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800/30 hover:text-zinc-200"
+                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                    settingsTab === "agents" ? "bg-white text-zinc-900 border border-stone-200 shadow-sm" : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
                   }`}
                 >
-                  <User className="h-4 w-4" />
-                  <span>智能体与角色卡 (Agents)</span>
+                  <User className="h-4 w-4 text-stone-500" />
+                  <span>角色选择与管理</span>
                 </button>
                 <button
                   onClick={() => setSettingsTab("memory")}
-                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-left transition-colors ${
-                    settingsTab === "memory" ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800/30 hover:text-zinc-200"
+                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                    settingsTab === "memory" ? "bg-white text-zinc-900 border border-stone-200 shadow-sm" : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
                   }`}
                 >
-                  <Database className="h-4 w-4" />
+                  <Database className="h-4 w-4 text-stone-500" />
                   <span>记忆编辑器 (Memory)</span>
                 </button>
                 <button
                   onClick={() => setSettingsTab("llm")}
-                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-left transition-colors ${
-                    settingsTab === "llm" ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800/30 hover:text-zinc-200"
+                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                    settingsTab === "llm" ? "bg-white text-zinc-900 border border-stone-200 shadow-sm" : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
                   }`}
                 >
-                  <Sliders className="h-4 w-4" />
-                  <span>模型与同步 (LLM & Sync)</span>
+                  <Sliders className="h-4 w-4 text-stone-500" />
+                  <span>模型与同步 (LLM)</span>
                 </button>
                 <button
                   onClick={() => setSettingsTab("audit")}
-                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-left transition-colors ${
-                    settingsTab === "audit" ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800/30 hover:text-zinc-200"
+                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                    settingsTab === "audit" ? "bg-white text-zinc-900 border border-stone-200 shadow-sm" : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
                   }`}
                 >
-                  <ShieldCheck className="h-4 w-4" />
-                  <span>工具执行日志 (Audit)</span>
+                  <ShieldCheck className="h-4 w-4 text-stone-500" />
+                  <span>工具执行审计</span>
                 </button>
               </nav>
 
               {/* Settings Right panel details */}
-              <div className="flex-1 overflow-y-auto p-6 bg-zinc-900/20">
+              <div className="flex-1 overflow-y-auto p-6 bg-white">
                 
                 {/* 1. AGENTS TAB: Manage and Configure Agents */}
                 {settingsTab === "agents" && (
                   <div className="space-y-6">
                     {/* List switcher & Add */}
-                    <div className="flex justify-between items-center border-b border-zinc-800 pb-3">
+                    <div className="flex justify-between items-center border-b border-stone-200 pb-3">
                       <div>
-                        <h3 className="text-sm font-semibold text-zinc-200">角色切换与管理</h3>
-                        <p className="text-[11px] text-zinc-500">选择您要对话的活跃 Agent，或自定义添加新卡片。</p>
+                        <h3 className="text-sm font-semibold text-stone-850">角色管理</h3>
+                        <p className="text-[11px] text-stone-400">切换活跃 Agent 角色卡并自定义设定工具策略。</p>
                       </div>
                       <button 
                         onClick={() => {
                           const newId = `agent_${Date.now()}`;
                           const newA: Agent = {
                             id: newId,
-                            name: "自定义智能体",
-                            avatarColor: "bg-blue-500",
+                            name: "自定义角色",
+                            avatarColor: "bg-blue-50 border border-blue-100",
+                            avatarTextColor: "text-blue-600",
                             tags: ["Custom"],
                             description: "新自定义的角色描述...",
                             model: "Claude 3.5 Sonnet",
@@ -1130,10 +1135,10 @@ export default function App() {
                           setAgents(prev => [...prev, newA]);
                           setEditingAgent(newA);
                         }}
-                        className="flex items-center gap-1 text-xs font-semibold text-zinc-900 bg-zinc-100 hover:bg-zinc-200 px-3 py-1.5 rounded-lg transition-colors"
+                        className="flex items-center gap-1 text-xs font-semibold text-white bg-stone-900 hover:bg-stone-850 px-3.5 py-1.5 rounded-xl shadow-sm transition-colors"
                       >
                         <Plus className="h-3.5 w-3.5" />
-                        <span>添加新智能体</span>
+                        <span>新建智能体角色</span>
                       </button>
                     </div>
 
@@ -1146,35 +1151,35 @@ export default function App() {
                           <div 
                             key={agent.id}
                             onClick={() => setEditingAgent({ ...agent })}
-                            className={`p-3 rounded-lg border text-left cursor-pointer transition-all ${
+                            className={`p-3.5 rounded-xl border text-left cursor-pointer transition-all ${
                               isSelected 
-                                ? "border-violet-500 bg-violet-950/5 shadow" 
-                                : "border-zinc-800 bg-zinc-950/20 hover:border-zinc-700"
+                                ? "border-violet-400 bg-violet-50/10 shadow-sm" 
+                                : "border-stone-200 bg-[#FAF9F5]/30 hover:border-stone-300"
                             }`}
                           >
-                            <div className="flex items-center gap-2 mb-2">
-                              <div className={`h-6 w-6 rounded-full ${agent.avatarColor} flex items-center justify-center text-[10px] font-bold text-white`}>
+                            <div className="flex items-center gap-2.5 mb-2">
+                              <div className={`h-6.5 w-6.5 rounded-full ${agent.avatarColor} flex items-center justify-center text-[10px] font-bold ${agent.avatarTextColor}`}>
                                 {agent.name.charAt(0)}
                               </div>
-                              <span className="font-medium text-xs text-zinc-200">{agent.name}</span>
+                              <span className="font-semibold text-xs text-stone-800">{agent.name}</span>
                               {isActive && (
-                                <span className="text-[9px] bg-emerald-500/10 text-emerald-400 px-1 rounded ml-auto">
+                                <span className="text-[9px] bg-emerald-50 text-emerald-600 border border-emerald-100 px-1.5 py-0.5 rounded-md ml-auto font-medium">
                                   活跃中
                                 </span>
                               )}
                             </div>
-                            <p className="text-[10px] text-zinc-500 truncate">{agent.description}</p>
+                            <p className="text-[10px] text-stone-400 truncate leading-relaxed">{agent.description}</p>
                             <div className="flex items-center justify-between mt-3 text-[10px]">
-                              <span className="text-zinc-600 font-mono">{agent.model.split(" ")[0]}</span>
+                              <span className="text-stone-500 font-mono">{agent.model.split(" ")[0]}</span>
                               {!isActive && (
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     handleSwitchAgent(agent.id);
                                   }}
-                                  className="text-violet-400 hover:text-violet-300 font-semibold"
+                                  className="text-violet-600 hover:text-violet-500 font-semibold"
                                 >
-                                  激活并聊天
+                                  激活激活
                                 </button>
                               )}
                             </div>
@@ -1185,78 +1190,86 @@ export default function App() {
 
                     {/* Editor Form */}
                     {editingAgent && (
-                      <div className="border border-zinc-800 bg-zinc-950/30 rounded-xl p-5 space-y-4">
-                        <div className="flex justify-between items-center border-b border-zinc-850 pb-2">
-                          <span className="text-xs font-semibold text-zinc-400 uppercase">人设卡参数配置: {editingAgent.name}</span>
+                      <div className="border border-stone-200 bg-[#FAF9F5]/20 rounded-xl p-5 space-y-4 shadow-sm">
+                        <div className="flex justify-between items-center border-b border-stone-200 pb-2">
+                          <span className="text-xs font-semibold text-stone-500 uppercase tracking-wide">编辑角色卡设定: {editingAgent.name}</span>
                           <button 
                             onClick={handleSaveAgentConfig}
-                            className="flex items-center gap-1 text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 transition-colors"
+                            className="flex items-center gap-1 text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 transition-colors"
                           >
                             <Save className="h-3.5 w-3.5" />
-                            <span>保存此角色修改</span>
+                            <span>更新配置</span>
                           </button>
                         </div>
 
                         <div className="grid grid-cols-2 gap-4">
                           <div>
-                            <label className="block text-[11px] text-zinc-500 mb-1">智能体名称</label>
+                            <label className="block text-[11px] text-stone-400 mb-1 font-semibold">名称</label>
                             <input 
                               type="text" 
                               value={editingAgent.name} 
                               onChange={(e) => setEditingAgent({ ...editingAgent, name: e.target.value })}
-                              className="w-full bg-zinc-950 border border-zinc-850 rounded-lg px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-zinc-700"
+                              className="w-full bg-white border border-stone-200 rounded-lg px-3 py-1.5 text-xs text-stone-850 focus:outline-none focus:border-stone-400"
                             />
                           </div>
                           <div>
-                            <label className="block text-[11px] text-zinc-500 mb-1">头颜色标识 (CSS 类)</label>
+                            <label className="block text-[11px] text-stone-400 mb-1 font-semibold">头像配色</label>
                             <select 
                               value={editingAgent.avatarColor}
-                              onChange={(e) => setEditingAgent({ ...editingAgent, avatarColor: e.target.value })}
-                              className="w-full bg-zinc-950 border border-zinc-850 rounded-lg px-3 py-1.5 text-xs text-zinc-200 focus:outline-none"
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                let txt = "text-zinc-600";
+                                if (val.includes("indigo")) txt = "text-indigo-600";
+                                else if (val.includes("emerald")) txt = "text-emerald-600";
+                                else if (val.includes("amber")) txt = "text-amber-600";
+                                else if (val.includes("rose")) txt = "text-rose-600";
+                                setEditingAgent({ ...editingAgent, avatarColor: val, avatarTextColor: txt });
+                              }}
+                              className="w-full bg-white border border-stone-200 rounded-lg px-3 py-1.5 text-xs text-stone-850 focus:outline-none"
                             >
-                              <option value="bg-indigo-500">蓝色 (indigo)</option>
-                              <option value="bg-emerald-500">绿色 (emerald)</option>
-                              <option value="bg-amber-500">黄色 (amber)</option>
-                              <option value="bg-rose-500">红色 (rose)</option>
-                              <option value="bg-zinc-600">灰色 (zinc)</option>
+                              <option value="bg-indigo-50 border border-indigo-100">蓝色 (indigo)</option>
+                              <option value="bg-emerald-50 border border-emerald-100">绿色 (emerald)</option>
+                              <option value="bg-amber-50 border border-amber-100">黄色 (amber)</option>
+                              <option value="bg-rose-50 border border-rose-100">红色 (rose)</option>
+                              <option value="bg-stone-100 border border-stone-200">灰色 (stone)</option>
                             </select>
                           </div>
                         </div>
 
                         <div>
-                          <label className="block text-[11px] text-zinc-500 mb-1">开场欢迎语 (Greeting)</label>
+                          <label className="block text-[11px] text-stone-400 mb-1 font-semibold">开场问候语 (Greeting)</label>
                           <input 
                             type="text" 
                             value={editingAgent.greeting}
                             onChange={(e) => setEditingAgent({ ...editingAgent, greeting: e.target.value })}
-                            className="w-full bg-zinc-950 border border-zinc-850 rounded-lg px-3 py-1.5 text-xs text-zinc-200 focus:outline-none"
+                            className="w-full bg-white border border-stone-200 rounded-lg px-3 py-1.5 text-xs text-stone-850 focus:outline-none"
                           />
                         </div>
 
                         <div>
-                          <label className="block text-[11px] text-zinc-500 mb-1">人格与背景设定 (Persona)</label>
+                          <label className="block text-[11px] text-stone-400 mb-1 font-semibold">人设定性格背景 (Persona)</label>
                           <textarea 
                             value={editingAgent.persona}
                             onChange={(e) => setEditingAgent({ ...editingAgent, persona: e.target.value })}
-                            className="w-full h-16 bg-zinc-950 border border-zinc-850 rounded-lg px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-zinc-700 resize-none"
+                            className="w-full h-16 bg-white border border-stone-200 rounded-lg px-3 py-1.5 text-xs text-stone-850 focus:outline-none focus:border-stone-400 resize-none leading-relaxed"
                           />
                         </div>
 
                         <div>
-                          <label className="block text-[11px] text-zinc-500 mb-1">系统 System Prompt</label>
+                          <label className="block text-[11px] text-stone-400 mb-1 font-semibold">系统提示词 System Prompt</label>
                           <textarea 
                             value={editingAgent.systemPrompt}
                             onChange={(e) => setEditingAgent({ ...editingAgent, systemPrompt: e.target.value })}
-                            className="w-full h-14 bg-zinc-950 border border-zinc-850 rounded-lg px-3 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-zinc-700 resize-none font-mono"
+                            className="w-full h-14 bg-white border border-stone-200 rounded-lg px-3 py-1.5 text-xs text-stone-850 focus:outline-none focus:border-stone-400 resize-none font-mono leading-relaxed"
                           />
                         </div>
 
                         {/* Tool execution policies */}
-                        <div className="space-y-2 pt-2 border-t border-zinc-850">
-                          <span className="block text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">工具调用规则设定 (Tool policy)</span>
+                        <div className="space-y-2 pt-2 border-t border-stone-200">
+                          <span className="block text-[10px] text-stone-400 uppercase tracking-wider font-bold">工具权限与人类确认策略</span>
                           <div className="grid grid-cols-2 gap-2 text-xs">
-                            <div className="flex items-center justify-between p-2 rounded bg-zinc-950 border border-zinc-850">
-                              <span>Shell 执行许可</span>
+                            <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-stone-200">
+                              <span className="font-medium text-stone-700">Shell 执行授权</span>
                               <div className="flex items-center gap-2">
                                 <select
                                   value={editingAgent.toolPolicy.shell.approval}
@@ -1267,11 +1280,11 @@ export default function App() {
                                       toolPolicy: { ...editingAgent.toolPolicy, shell: updated }
                                     });
                                   }}
-                                  className="bg-zinc-900 border border-zinc-800 text-[10px] px-1.5 py-0.5 rounded text-zinc-300"
+                                  className="bg-stone-50 border border-stone-200 text-[10px] px-1.5 py-0.5 rounded text-stone-800"
                                 >
                                   <option value="always">必审</option>
-                                  <option value="write">写时审</option>
-                                  <option value="never">免审</option>
+                                  <option value="write">仅写确认</option>
+                                  <option value="never">免审 (危险)</option>
                                 </select>
                                 <input 
                                   type="checkbox" 
@@ -1283,12 +1296,12 @@ export default function App() {
                                       toolPolicy: { ...editingAgent.toolPolicy, shell: updated }
                                     });
                                   }}
-                                  className="rounded text-violet-600 bg-zinc-900 border-zinc-800"
+                                  className="rounded text-violet-600 border-stone-200 focus:ring-violet-500/20"
                                 />
                               </div>
                             </div>
-                            <div className="flex items-center justify-between p-2 rounded bg-zinc-950 border border-zinc-850">
-                              <span>文件写入许可</span>
+                            <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-stone-200">
+                              <span className="font-medium text-stone-700">文件写入授权</span>
                               <div className="flex items-center gap-2">
                                 <select
                                   value={editingAgent.toolPolicy.file.approval}
@@ -1299,10 +1312,10 @@ export default function App() {
                                       toolPolicy: { ...editingAgent.toolPolicy, file: updated }
                                     });
                                   }}
-                                  className="bg-zinc-900 border border-zinc-800 text-[10px] px-1.5 py-0.5 rounded text-zinc-300"
+                                  className="bg-stone-50 border border-stone-200 text-[10px] px-1.5 py-0.5 rounded text-stone-800"
                                 >
                                   <option value="always">必审</option>
-                                  <option value="write">写时审</option>
+                                  <option value="write">涉及修改审</option>
                                   <option value="never">免审</option>
                                 </select>
                                 <input 
@@ -1315,7 +1328,7 @@ export default function App() {
                                       toolPolicy: { ...editingAgent.toolPolicy, file: updated }
                                     });
                                   }}
-                                  className="rounded text-violet-600 bg-zinc-900 border-zinc-800"
+                                  className="rounded text-violet-600 border-stone-200 focus:ring-violet-500/20"
                                 />
                               </div>
                             </div>
@@ -1327,58 +1340,58 @@ export default function App() {
                   </div>
                 )}
 
-                {/* 2. MEMORY TAB: Editable raw text files and Semantic vector memory db */}
+                {/* 2. MEMORY TAB: Editable MD memory files and vector db searching */}
                 {settingsTab === "memory" && (
                   <div className="space-y-6">
                     <div>
-                      <h3 className="text-sm font-semibold text-zinc-200">角色专属记忆空间: {activeAgent.name}</h3>
-                      <p className="text-[11px] text-zinc-500">编辑持久的必注入记忆文件，或检索清理向量数据库。</p>
+                      <h3 className="text-sm font-semibold text-stone-850">记忆管理器 ({activeAgent.name})</h3>
+                      <p className="text-[11px] text-stone-400">编辑持久的必注入记忆文件，或检索清理向量数据库。</p>
                     </div>
 
-                    {/* Tabs switcher: files vs database */}
-                    <div className="flex border-b border-zinc-800 text-xs">
+                    {/* Sub-tabs switcher */}
+                    <div className="flex border-b border-stone-200 text-xs font-semibold">
                       <button 
                         onClick={() => setMemoryEditFileTab("memory")}
-                        className={`px-4 py-2 border-b-2 font-medium ${
-                          memoryEditFileTab === "memory" ? "border-violet-500 text-violet-400" : "border-transparent text-zinc-500"
+                        className={`px-4 py-2 border-b-2 transition-all ${
+                          memoryEditFileTab === "memory" ? "border-violet-500 text-violet-600" : "border-transparent text-stone-400"
                         }`}
                       >
-                        必注记忆 (MEMORY.md / USER.md)
+                        必存记忆文件 (MEMORY.md / USER.md)
                       </button>
                       <button 
-                        onClick={() => setMemoryEditFileTab("user")} // repurpose this state tab for db search
-                        className={`px-4 py-2 border-b-2 font-medium ${
-                          memoryEditFileTab === "user" ? "border-violet-500 text-violet-400" : "border-transparent text-zinc-500"
+                        onClick={() => setMemoryEditFileTab("store")}
+                        className={`px-4 py-2 border-b-2 transition-all ${
+                          memoryEditFileTab === "store" ? "border-violet-500 text-violet-600" : "border-transparent text-stone-400"
                         }`}
                       >
-                        语义记忆数据库 (Vector DB)
+                        语义记忆数据库 (sqlite-vec)
                       </button>
                     </div>
 
-                    {/* Sub-tab 1: MD Files editing */}
+                    {/* Files Editing */}
                     {memoryEditFileTab === "memory" && (
                       <div className="grid grid-cols-2 gap-4">
                         {/* USER.md */}
                         <div className="space-y-2 flex flex-col">
                           <div className="flex justify-between items-center text-xs">
-                            <span className="font-semibold text-zinc-400">USER.md (AI只读，用户画像)</span>
+                            <span className="font-semibold text-stone-500">USER.md (AI只读，用户画像)</span>
                             {isEditingUserMd ? (
-                              <div className="flex gap-2">
-                                <button onClick={() => { setUserMdText(activeMemStore.userMd); setIsEditingUserMd(false); }} className="text-zinc-500">取消</button>
-                                <button onClick={handleSaveUserMd} className="text-emerald-400 font-semibold">保存</button>
+                              <div className="flex gap-2 font-medium">
+                                <button onClick={() => { setUserMdText(activeMemStore.userMd); setIsEditingUserMd(false); }} className="text-stone-400">取消</button>
+                                <button onClick={handleSaveUserMd} className="text-emerald-600">保存</button>
                               </div>
                             ) : (
-                              <button onClick={() => setIsEditingUserMd(true)} className="text-violet-400">编辑</button>
+                              <button onClick={() => setIsEditingUserMd(true)} className="text-violet-600 font-medium">编辑</button>
                             )}
                           </div>
                           {isEditingUserMd ? (
                             <textarea 
                               value={userMdText} 
                               onChange={(e) => setUserMdText(e.target.value)}
-                              className="h-72 w-full bg-zinc-950 border border-zinc-850 rounded-lg p-3 font-mono text-[10px] focus:outline-none"
+                              className="h-72 w-full bg-white border border-stone-200 rounded-lg p-3 font-mono text-[10px] focus:outline-none"
                             />
                           ) : (
-                            <pre className="h-72 w-full bg-zinc-950/60 border border-zinc-850 rounded-lg p-3 font-sans text-xs text-zinc-400 overflow-y-auto whitespace-pre-wrap">
+                            <pre className="h-72 w-full bg-[#FAF9F5]/40 border border-stone-200 rounded-lg p-3 font-sans text-xs text-stone-600 overflow-y-auto whitespace-pre-wrap select-text leading-relaxed">
                               {activeMemStore.userMd}
                             </pre>
                           )}
@@ -1387,24 +1400,24 @@ export default function App() {
                         {/* MEMORY.md */}
                         <div className="space-y-2 flex flex-col">
                           <div className="flex justify-between items-center text-xs">
-                            <span className="font-semibold text-zinc-400">MEMORY.md (AI可改，规则备忘)</span>
+                            <span className="font-semibold text-stone-500">MEMORY.md (AI可改，规则备忘)</span>
                             {isEditingMemoryMd ? (
-                              <div className="flex gap-2">
-                                <button onClick={() => { setMemoryMdText(activeMemStore.memoryMd); setIsEditingMemoryMd(false); }} className="text-zinc-500">取消</button>
-                                <button onClick={handleSaveMemoryMd} className="text-emerald-400 font-semibold">保存</button>
+                              <div className="flex gap-2 font-medium">
+                                <button onClick={() => { setMemoryMdText(activeMemStore.memoryMd); setIsEditingMemoryMd(false); }} className="text-stone-400">取消</button>
+                                <button onClick={handleSaveMemoryMd} className="text-emerald-600">保存</button>
                               </div>
                             ) : (
-                              <button onClick={() => setIsEditingMemoryMd(true)} className="text-violet-400">编辑</button>
+                              <button onClick={() => setIsEditingMemoryMd(true)} className="text-violet-600 font-medium">编辑</button>
                             )}
                           </div>
                           {isEditingMemoryMd ? (
                             <textarea 
                               value={memoryMdText} 
                               onChange={(e) => setMemoryMdText(e.target.value)}
-                              className="h-72 w-full bg-zinc-950 border border-zinc-850 rounded-lg p-3 font-mono text-[10px] focus:outline-none"
+                              className="h-72 w-full bg-white border border-stone-200 rounded-lg p-3 font-mono text-[10px] focus:outline-none"
                             />
                           ) : (
-                            <pre className="h-72 w-full bg-zinc-950/60 border border-zinc-850 rounded-lg p-3 font-sans text-xs text-zinc-400 overflow-y-auto whitespace-pre-wrap">
+                            <pre className="h-72 w-full bg-[#FAF9F5]/40 border border-stone-200 rounded-lg p-3 font-sans text-xs text-stone-600 overflow-y-auto whitespace-pre-wrap select-text leading-relaxed">
                               {activeMemStore.memoryMd}
                             </pre>
                           )}
@@ -1412,43 +1425,43 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* Sub-tab 2: Vector list filter & delete */}
-                    {memoryEditFileTab === "user" && (
+                    {/* Vector Search List */}
+                    {memoryEditFileTab === "store" && (
                       <div className="space-y-3">
                         <div className="relative">
-                          <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-500" />
+                          <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-stone-400" />
                           <input
                             type="text"
-                            placeholder="搜索语义事实与偏好记录..."
+                            placeholder="输入事实或属性进行检索..."
                             value={memorySearch}
                             onChange={(e) => setMemorySearch(e.target.value)}
-                            className="w-full bg-zinc-950 pl-9 pr-3 py-2 text-xs rounded-lg border border-zinc-800 focus:outline-none"
+                            className="w-full bg-white border border-stone-200 rounded-xl pl-9 pr-3 py-2 text-xs text-stone-800 focus:outline-none focus:border-stone-400"
                           />
                         </div>
 
                         <div className="space-y-2 max-h-80 overflow-y-auto">
                           {filteredSemanticMemories.map((item) => (
-                            <div key={item.id} className="group border border-zinc-850 bg-zinc-950/30 hover:bg-zinc-950/60 p-3 rounded-lg flex items-center justify-between text-xs transition-all">
+                            <div key={item.id} className="group border border-stone-200 bg-white hover:bg-stone-50/50 p-3.5 rounded-xl flex items-center justify-between text-xs transition-all shadow-sm">
                               <div className="space-y-1">
-                                <p className="text-zinc-200 leading-relaxed pr-6">{item.content}</p>
-                                <div className="flex items-center gap-2 text-[9px] text-zinc-500">
-                                  <span className="bg-zinc-900 border border-zinc-850 px-1 rounded text-zinc-400">{item.type}</span>
-                                  <span className="text-violet-400">置信: {(item.confidence * 100).toFixed(0)}%</span>
+                                <p className="text-stone-800 leading-relaxed pr-6">{item.content}</p>
+                                <div className="flex items-center gap-2 text-[9px] text-stone-400 font-medium">
+                                  <span className="bg-stone-100 px-1 rounded text-stone-500 font-mono">{item.type}</span>
+                                  <span className="text-violet-600 bg-violet-50 px-1 py-0.5 rounded border border-violet-100">置信: {(item.confidence * 100).toFixed(0)}%</span>
                                   <span>来源: {item.source}</span>
                                 </div>
                               </div>
                               <button
                                 onClick={() => handleDeleteMemoryItem(item.id)}
-                                className="text-zinc-600 hover:text-rose-400 p-1.5 rounded hover:bg-zinc-900 transition-colors shrink-0"
-                                title="删除此事实条目"
+                                className="text-stone-400 hover:text-rose-500 p-1.5 rounded-lg hover:bg-stone-100 transition-colors shrink-0"
+                                title="删除该事实"
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
                               </button>
                             </div>
                           ))}
                           {filteredSemanticMemories.length === 0 && (
-                            <div className="text-center py-8 text-xs text-zinc-600">
-                              未搜索到符合匹配的记忆事实
+                            <div className="text-center py-8 text-xs text-stone-400">
+                              未搜索到匹配的记忆块数据
                             </div>
                           )}
                         </div>
@@ -1458,34 +1471,34 @@ export default function App() {
                   </div>
                 )}
 
-                {/* 3. LLM & SYNC TAB: API Key keyring and Cloudflare Workers settings */}
+                {/* 3. LLM & SYNC TAB: API credentials and sync setup */}
                 {settingsTab === "llm" && (
                   <div className="space-y-5">
                     <div>
-                      <h3 className="text-sm font-semibold text-zinc-200">模型提供商与同步设置</h3>
-                      <p className="text-[11px] text-zinc-500">设置用于模型接口的密钥，并管理多端云同步配置。</p>
+                      <h3 className="text-sm font-semibold text-stone-850">模型与同步参数</h3>
+                      <p className="text-[11px] text-stone-400">配置底层 LiteLLM 密钥参数及 CloudflareWorkers 同步网关。</p>
                     </div>
 
-                    <div className="border border-zinc-800 bg-zinc-950/20 rounded-xl p-5 space-y-4">
+                    <div className="border border-stone-200 bg-[#FAF9F5]/30 rounded-xl p-5 space-y-4 shadow-sm">
                       <div className="space-y-2">
-                        <span className="block text-xs font-semibold text-zinc-400 uppercase">OS Keyring 托管密钥</span>
-                        <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-850 px-3 py-2 rounded-lg text-xs">
-                          <Key className="h-4 w-4 text-zinc-500" />
-                          <input type="password" value="sk-proj-xxxxxxxxxxxxxxxxxxxxxxxx" disabled className="bg-transparent flex-1 text-zinc-400 font-mono" />
-                          <span className="text-[10px] text-zinc-500 bg-zinc-900 border border-zinc-850 px-1.5 py-0.5 rounded">Tauri Keyring 保护</span>
+                        <span className="block text-xs font-semibold text-stone-500 uppercase tracking-wide">系统安全托管密钥 (OS Keyring)</span>
+                        <div className="flex items-center gap-2 bg-white border border-stone-200 px-3 py-2 rounded-lg text-xs">
+                          <Key className="h-4 w-4 text-stone-400" />
+                          <input type="password" value="sk-proj-xxxxxxxxxxxxxxxxxxxxxxxx" disabled className="bg-transparent flex-1 text-stone-400 font-mono" />
+                          <span className="text-[10px] text-stone-400 bg-stone-100 px-2 py-0.5 rounded-md border border-stone-200">系统凭证锁</span>
                         </div>
                       </div>
 
-                      <div className="space-y-3 pt-3 border-t border-zinc-850">
-                        <span className="block text-xs font-semibold text-zinc-400 uppercase">Cloudflare Sync 网关 (D1 数据库)</span>
+                      <div className="space-y-3 pt-3 border-t border-stone-200">
+                        <span className="block text-xs font-semibold text-stone-500 uppercase tracking-wide">Cloudflare D1 增量同步设置</span>
                         <div className="grid grid-cols-2 gap-4 text-xs">
                           <div>
-                            <label className="block text-zinc-500 mb-1">同步节点 Worker API</label>
-                            <input type="text" defaultValue="https://agnes-sync.caiwen.workers.dev" className="w-full bg-zinc-950 border border-zinc-850 rounded-lg px-3 py-1.5 text-zinc-200 focus:outline-none" />
+                            <label className="block text-stone-400 mb-1">同步网关 Worker URL</label>
+                            <input type="text" defaultValue="https://agnes-sync.caiwen.workers.dev" className="w-full bg-white border border-stone-200 rounded-lg px-3 py-1.5 text-stone-850 focus:outline-none" />
                           </div>
                           <div>
-                            <label className="block text-zinc-500 mb-1">本机同步 ID (UUID)</label>
-                            <input type="text" value="7d938f32-cf72-4e9f-863a-ea9387d8df93" disabled className="w-full bg-zinc-950 border border-zinc-850 rounded-lg px-3 py-1.5 text-zinc-500 font-mono" />
+                            <label className="block text-stone-400 mb-1">机器 ID (Device UUID)</label>
+                            <input type="text" value="7d938f32-cf72-4e9f-863a-ea9387d8df93" disabled className="w-full bg-stone-100 border border-stone-200 rounded-lg px-3 py-1.5 text-stone-500 font-mono" />
                           </div>
                         </div>
                       </div>
@@ -1493,17 +1506,17 @@ export default function App() {
                   </div>
                 )}
 
-                {/* 4. AUDIT TAB: Log audit stream of tool calls */}
+                {/* 4. AUDIT TAB: Log audit stream */}
                 {settingsTab === "audit" && (
                   <div className="space-y-4">
-                    <div className="flex justify-between items-center border-b border-zinc-800 pb-3">
+                    <div className="flex justify-between items-center border-b border-stone-200 pb-3">
                       <div>
-                        <h3 className="text-sm font-semibold text-zinc-200">本地工具审计流水 (rusqlite DB)</h3>
-                        <p className="text-[11px] text-zinc-500">查看已被 Rust 执行平面记录的本地进程操作流水线。</p>
+                        <h3 className="text-sm font-semibold text-stone-850">本地操作审计流水 (rusqlite DB)</h3>
+                        <p className="text-[11px] text-stone-400">查看已被 Rust 运行时记录的本地进程操作历史清单。</p>
                       </div>
                       <button 
                         onClick={() => setAuditLogs([])} 
-                        className="flex items-center gap-1 text-xs text-zinc-500 hover:text-rose-400 transition-colors"
+                        className="flex items-center gap-1 text-xs text-stone-500 hover:text-rose-600 transition-colors"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                         <span>清除日志</span>
@@ -1512,27 +1525,27 @@ export default function App() {
 
                     <div className="space-y-2 max-h-[360px] overflow-y-auto">
                       {auditLogs.map((log) => (
-                        <div key={log.id} className="border border-zinc-850 bg-zinc-950/40 p-3 rounded-lg flex items-center justify-between text-xs font-mono">
+                        <div key={log.id} className="border border-stone-200 bg-white hover:bg-stone-50/50 shadow-sm p-3.5 rounded-xl flex items-center justify-between text-xs font-mono">
                           <div className="space-y-1 overflow-hidden mr-4">
                             <div className="flex items-center gap-2">
-                              <span className="text-zinc-500">{log.time}</span>
-                              <span className="text-zinc-300 font-medium">{log.agent}</span>
-                              <span className="bg-zinc-900 border border-zinc-850 px-1.5 py-0.5 rounded text-[10px] text-zinc-400">
+                              <span className="text-stone-400">{log.time}</span>
+                              <span className="text-stone-800 font-semibold font-sans">{log.agent}</span>
+                              <span className="bg-stone-100 border border-stone-200 px-2 py-0.5 rounded text-[10px] text-stone-500">
                                 {log.tool}
                               </span>
                             </div>
-                            <p className="text-zinc-400 truncate max-w-[480px]">
-                              参数: <code className="text-zinc-500 bg-zinc-900 px-1 py-0.5 rounded font-mono">{log.params}</code>
+                            <p className="text-stone-600 truncate max-w-[480px]">
+                              参数: <code className="text-stone-500 bg-stone-100 px-1 py-0.5 rounded font-mono">{log.params}</code>
                             </p>
                           </div>
 
                           <div className="flex items-center gap-3 shrink-0 text-[10px]">
                             <span className={`px-1.5 py-0.5 rounded ${
-                              log.risk === "High" ? "bg-rose-500/10 text-rose-400" : "bg-zinc-900 text-zinc-500"
+                              log.risk === "High" ? "bg-rose-50 text-rose-600 border border-rose-100" : "bg-stone-100 text-stone-500"
                             }`}>
                               {log.risk}
                             </span>
-                            <span className={`font-semibold ${log.status === "Succeeded" ? "text-emerald-400" : "text-rose-400"}`}>
+                            <span className={`font-semibold ${log.status === "Succeeded" ? "text-emerald-600" : "text-rose-600"}`}>
                               {log.status}
                             </span>
                           </div>
@@ -1546,10 +1559,10 @@ export default function App() {
             </div>
 
             {/* Footer */}
-            <footer className="px-5 py-3 border-t border-zinc-800 bg-zinc-950/40 flex justify-end shrink-0">
+            <footer className="px-5 py-3 border-t border-stone-200 bg-stone-50 flex justify-end shrink-0">
               <Button 
                 onClick={() => setIsSettingsOpen(false)}
-                className="bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700 text-xs px-4 h-8 font-medium"
+                className="bg-stone-900 text-white hover:bg-stone-850 text-xs px-4.5 h-8 font-semibold rounded-lg shadow-sm"
               >
                 返回对话
               </Button>

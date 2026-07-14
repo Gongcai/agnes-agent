@@ -4,41 +4,41 @@
 
 @layer base {
   :root {
-    color-scheme: dark;
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 5.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
+    color-scheme: light;
+    --background: 40 20% 99%; /* Soft Warm Ivory background */
+    --foreground: 240 10% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 10%;
     --primary: 263.4 70% 50.4%;
     --primary-foreground: 210 20% 98%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
+    --secondary: 240 4.8% 96%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 96%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 96%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 240 5.9% 88%;
+    --input: 240 5.9% 90%;
     --ring: 263.4 70% 50.4%;
-    --radius: 0.5rem;
+    --radius: 0.75rem;
   }
 }
 
 body {
   margin: 0;
-  background-color: #09090b;
-  color: #f4f4f5;
+  background-color: #FAF9F5; /* Warm Ivory tone */
+  color: #1e1e24;
   font-family: 'Outfit', 'Inter', system-ui, -apple-system, sans-serif;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Custom scrollbar */
+/* Custom scrollbar in light mode */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -49,69 +49,70 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #27272a;
+  background: #e4e4e7;
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #3f3f46;
+  background: #d4d4d8;
 }
 
-/* Glassmorphism utilities */
-.glass-panel {
-  background: rgba(24, 24, 27, 0.7);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(63, 63, 70, 0.3);
+/* Smooth clean styling classes */
+.clean-panel {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(228, 228, 231, 0.6);
 }
 
-.glass-card {
-  background: rgba(39, 39, 42, 0.4);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(63, 63, 70, 0.2);
+.clean-card {
+  background: #ffffff;
+  border: 1px solid rgba(228, 228, 231, 0.8);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02), 0 1px 2px rgba(0,0,0,0.03);
 }
 
-/* Animations */
-@keyframes pulse-ring {
+/* Soft breathing highlights */
+@keyframes pulse-ring-amber {
   0% {
-    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4);
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.2);
   }
   70% {
-    box-shadow: 0 0 0 8px rgba(251, 191, 36, 0);
+    box-shadow: 0 0 0 6px rgba(245, 158, 11, 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0);
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
   }
 }
 
 .animate-pulse-ring-amber {
-  animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  animation: pulse-ring-amber 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 @keyframes pulse-ring-red {
   0% {
-    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.4);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.2);
   }
   70% {
-    box-shadow: 0 0 0 8px rgba(244, 63, 94, 0);
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
   }
 }
 
 .animate-pulse-ring-red {
-  animation: pulse-ring-red 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  animation: pulse-ring-red 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 /* Typing indicator dot bounce */
 @keyframes typing-bounce {
   0%, 100% {
     transform: translateY(0);
+    opacity: 0.4;
   }
   50% {
-    transform: translateY(-4px);
+    transform: translateY(-3px);
+    opacity: 1;
   }
 }
 
