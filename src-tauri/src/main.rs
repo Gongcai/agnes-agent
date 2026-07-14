@@ -43,7 +43,10 @@ fn main() {
             commands::delete_session,
             commands::list_messages,
             commands::send_message,
-            commands::approve_tool
+            commands::approve_tool,
+            commands::get_explicit_memories,
+            commands::save_explicit_memories,
+            commands::list_audit_logs
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -328,3 +328,50 @@ pub async fn approve_tool(
         Err(AppError::Other(format!("审批 ID `{tool_call_id}` 未找到或已失效")))
     }
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct ExplicitMemoriesDto {
+    pub user_md: String,
+    pub memory_md: String,
+}
+
+#[tauri::command]
+pub async fn get_explicit_memories(agent_id: String) -> AppResult<ExplicitMemoriesDto> {
+    let (user_md, memory_md) = crate::memory::load_explicit_memories(&agent_id)?;
+    Ok(ExplicitMemoriesDto { user_md, memory_md })
+}
+
+#[tauri::command]
+pub async fn save_explicit_memories(
+    agent_id: String,
+    user_md: String,
+    memory_md: String,
+) -> AppResult<()> {
+    crate::memory::save_explicit_memories(&agent_id, &user_md, &memory_md)
+}
+
+#[derive(serde::Serialize)]
+pub struct AuditLogDto {
+    pub id: String,
+    pub time: String,
+    pub tool: String,
+    pub params: String,
+    pub status: String,
+    pub risk: String,
+}
+
+#[tauri::command]
+pub async fn list_audit_logs(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> AppResult<Vec<AuditLogDto>> {
+    let rows = state.db.list_tool_calls(session_id).await?;
+    Ok(rows.into_iter().map(|r| AuditLogDto {
+        id: r.id,
+        time: r.created_at,
+        tool: r.tool,
+        params: r.params.unwrap_or_default(),
+        status: r.status,
+        risk: r.risk_level.unwrap_or_else(|| "Low".to_string()),
+    }).collect())
+}

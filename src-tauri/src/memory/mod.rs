@@ -44,3 +44,21 @@ pub fn load_explicit_memories(agent_id: &str) -> AppResult<(String, String)> {
         
     Ok((user_md, memory_md))
 }
+
+/// 将修改后的 USER.md 和 MEMORY.md 保存回特定 Agent 的磁盘路径。
+pub fn save_explicit_memories(agent_id: &str, user_md: &str, memory_md: &str) -> AppResult<()> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| AppError::Other("无法获取 HOME 环境变量，无法保存 explicit memories".into()))?;
+        
+    let mem_dir = home.join(".agnes").join("agents").join(agent_id).join("memory");
+    fs::create_dir_all(&mem_dir)
+        .map_err(|e| AppError::Other(format!("创建记忆目录失败: {e}")))?;
+        
+    fs::write(mem_dir.join("USER.md"), user_md)
+        .map_err(|e| AppError::Other(format!("写入 USER.md 失败: {e}")))?;
+    fs::write(mem_dir.join("MEMORY.md"), memory_md)
+        .map_err(|e| AppError::Other(format!("写入 MEMORY.md 失败: {e}")))?;
+        
+    Ok(())
+}

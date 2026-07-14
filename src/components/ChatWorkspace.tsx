@@ -1,0 +1,315 @@
+import React, { useState, useEffect, useRef } from "react";
+import { 
+  Cpu, Terminal, Send, AlertTriangle, Menu, ChevronLeft, ShieldCheck, ChevronDown
+} from "lucide-react";
+import { Button } from "./ui/button";
+import { useAgentStore } from "../store/useAgentStore";
+
+interface ChatWorkspaceProps {
+  isSidebarOpen: boolean;
+  onToggleSidebar: () => void;
+  onOpenSettings: (tab: "agents" | "memory" | "llm" | "audit") => void;
+}
+
+export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
+  isSidebarOpen,
+  onToggleSidebar,
+  onOpenSettings,
+}) => {
+  const {
+    agents,
+    sessions,
+    messages,
+    activeAgentId,
+    activeSessionId,
+    isStreaming,
+    sendMessage,
+    approveTool,
+  } = useAgentStore();
+
+  const [inputVal, setInputVal] = useState("");
+  const messageEndRef = useRef<HTMLDivElement>(null);
+
+  const activeAgent = agents.find((a) => a.id === activeAgentId);
+  const activeSession = sessions.find((s) => s.id === activeSessionId);
+
+  // Scroll to bottom on new messages
+  useEffect(() => {
+    messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isStreaming]);
+
+  const handleSend = () => {
+    if (!inputVal.trim() || isStreaming || !activeSessionId) return;
+    sendMessage(activeSessionId, inputVal.trim()).catch(console.error);
+    setInputVal("");
+  };
+
+  return (
+    <main className="flex flex-1 flex-col bg-[#FAF9F5] relative h-full">
+      {/* Header bar */}
+      <header className="flex h-14 items-center justify-between border-b border-stone-200 px-6 bg-white/40 backdrop-blur-md shrink-0">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onToggleSidebar}
+            className="text-stone-500 hover:text-stone-900 p-1.5 rounded-lg hover:bg-stone-200/40 transition-colors"
+            title={isSidebarOpen ? "收起侧边栏" : "展开侧边栏"}
+          >
+            {isSidebarOpen ? <ChevronLeft className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+          </button>
+          <div className="h-4 w-[1px] bg-stone-200"></div>
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-stone-800 text-sm">
+              {activeSession?.title || "暂无活动会话"}
+            </span>
+            {activeAgent && (
+              <span className="text-[9px] bg-stone-200/60 border border-stone-300/20 px-1.5 py-0.5 rounded text-stone-600 font-mono font-medium">
+                {activeAgent.name}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onOpenSettings("audit")}
+            className="flex items-center gap-1.5 text-[11px] text-stone-600 hover:text-stone-900 bg-white px-2.5 py-1 rounded-lg border border-stone-200 shadow-sm transition-colors"
+          >
+            <ShieldCheck className="h-3.5 w-3.5 text-[#8CA38A]" />
+            <span>审计流水</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Message Panel list */}
+      <div className="flex-1 overflow-y-auto p-6 space-y-6 max-w-4xl mx-auto w-full">
+        {messages.map((message) => {
+          const isUser = message.role === "user";
+          return (
+            <div
+              key={message.id}
+              className={`flex gap-4 ${isUser ? "justify-end" : "justify-start"}`}
+            >
+              {!isUser && activeAgent && (
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-50 border border-indigo-100 font-bold text-indigo-600 text-xs shadow-sm">
+                  {activeAgent.name.charAt(0)}
+                </div>
+              )}
+
+              <div className={`space-y-1.5 max-w-[85%] ${isUser ? "order-1" : "order-2"}`}>
+                {isUser ? (
+                  <div className="rounded-2xl rounded-tr-sm bg-[#F1F5F0]/70 px-4 py-2.5 text-sm text-stone-900 border border-[#DFE7DD] shadow-sm">
+                    <p className="whitespace-pre-wrap leading-relaxed">
+                      {message.parts.map((p) => p.content).join("")}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3.5">
+                    {message.parts.map((part, index) => {
+                      // 1. Thought Process (reasoning)
+                      if (part.kind === "thought") {
+                        return (
+                          <details
+                            key={part.id || index}
+                            open
+                            className="group border-l-2 border-[#8CA38A] bg-stone-100/60 rounded-r-xl p-3 transition-colors"
+                          >
+                            <summary className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-[#6C806A] select-none hover:text-[#556654]">
+                              <Cpu className="h-3.5 w-3.5" />
+                              <span>Agent 思维过程 (Thought)</span>
+                              <ChevronDown className="h-3 w-3 ml-auto group-open:rotate-180 transition-transform" />
+                            </summary>
+                            <p className="text-xs text-stone-600 mt-2 font-mono leading-relaxed pl-5 whitespace-pre-wrap border-t border-stone-200/40 pt-2">
+                              {part.content}
+                            </p>
+                          </details>
+                        );
+                      }
+
+                      // 2. Tool Card
+                      if (part.kind === "tool_call" && part.tool_call) {
+                        const tc = part.tool_call;
+                        const isHighRisk = tc.risk === "High";
+                        const isPending = tc.status === "pending_approval";
+
+                        return (
+                          <div
+                            key={part.id || index}
+                            className={`border rounded-xl overflow-hidden transition-all duration-200 ${
+                              isPending
+                                ? isHighRisk
+                                  ? "border-rose-300 bg-rose-50/50"
+                                  : "border-amber-300 bg-amber-50/50 animate-pulse"
+                                : tc.status === "denied"
+                                ? "border-stone-200 bg-stone-100/40 opacity-70"
+                                : "border-stone-200 bg-white shadow-sm"
+                            }`}
+                          >
+                            <div className="px-4 py-2 flex items-center justify-between text-xs font-medium border-b border-stone-200 bg-stone-100/30">
+                              <span className="flex items-center gap-1.5 text-stone-800">
+                                <Terminal className="h-3.5 w-3.5 text-stone-500" />
+                                <span>调用本地工具: {tc.tool}</span>
+                              </span>
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] ${
+                                  isHighRisk ? "bg-rose-100 text-rose-700" : "bg-stone-200/80 text-stone-600"
+                                }`}
+                              >
+                                风险: {tc.risk}
+                              </span>
+                            </div>
+
+                            <div className="p-4 space-y-3 text-xs text-stone-800">
+                              <div>
+                                <span className="text-stone-500 font-mono">命令行指令:</span>
+                                <pre className="font-mono text-zinc-100 bg-zinc-900 p-3 rounded-lg border border-zinc-800 overflow-x-auto text-[11px] mt-1 shadow-inner">
+                                  {tc.args}
+                                </pre>
+                              </div>
+
+                              {isPending && (
+                                <div className="bg-white p-2.5 rounded-lg border border-stone-200 flex items-start gap-2 shadow-sm">
+                                  <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                                  <p className="text-[11px] text-stone-500 leading-relaxed">
+                                    根据规则，运行此命令行需要人工审核批准。
+                                  </p>
+                                </div>
+                              )}
+
+                              {tc.output && (
+                                <pre className="p-3 text-[10px] font-mono bg-zinc-900 text-zinc-300 max-h-36 overflow-y-auto whitespace-pre-wrap border border-zinc-800 rounded-lg shadow-inner">
+                                  {tc.output}
+                                </pre>
+                              )}
+                            </div>
+
+                            {isPending && (
+                              <div className="px-4 py-2.5 bg-stone-50 border-t border-stone-200/80 flex justify-end gap-2">
+                                <button
+                                  onClick={() => approveTool(tc.id, false).catch(console.error)}
+                                  className="px-3 py-1 text-xs text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-all font-medium"
+                                >
+                                  拒绝执行
+                                </button>
+                                <button
+                                  onClick={() => approveTool(tc.id, true).catch(console.error)}
+                                  className="px-3 py-1 text-xs text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-all font-semibold"
+                                >
+                                  授权运行
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+
+                      // 3. Regular response text rendering
+                      return (
+                        <div
+                          key={part.id || index}
+                          className="text-sm leading-relaxed text-stone-800 prose prose-stone prose-sm"
+                        >
+                          {part.content.includes("```") ? (
+                            <div>
+                              {part.content.split("```").map((chunk, i) => {
+                                if (i % 2 === 1) {
+                                  const lines = chunk.split("\n");
+                                  const lang = lines[0] || "text";
+                                  const code = lines.slice(1).join("\n");
+                                  return (
+                                    <div
+                                      key={i}
+                                      className="my-2 rounded-lg overflow-hidden border border-stone-200 font-mono text-[11px] shadow-sm"
+                                    >
+                                      <div className="bg-stone-100 px-3 py-1 flex justify-between items-center text-[10px] text-stone-500 border-b border-stone-200">
+                                        <span>{lang}</span>
+                                        <button
+                                          onClick={() => navigator.clipboard.writeText(code)}
+                                          className="hover:text-stone-900 transition-colors"
+                                        >
+                                          复制
+                                        </button>
+                                      </div>
+                                      <pre className="bg-white p-3 overflow-x-auto text-stone-800">
+                                        {code}
+                                      </pre>
+                                    </div>
+                                  );
+                                }
+                                return <p key={i} className="my-1 whitespace-pre-wrap">{chunk}</p>;
+                              })}
+                            </div>
+                          ) : (
+                            part.content
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <span className="block text-[9px] text-stone-400 mt-1">
+                  {message.created_at || "Just now"}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+
+        {isStreaming && messages[messages.length - 1]?.role === "user" && (
+          <div className="flex gap-4 justify-start">
+            {activeAgent && (
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-50 border border-indigo-100 font-bold text-indigo-600 text-xs shadow-sm">
+                {activeAgent.name.charAt(0)}
+              </div>
+            )}
+            <div className="bg-white border border-stone-200 px-4 py-2.5 rounded-2xl rounded-tl-sm flex items-center gap-1 shadow-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-stone-400 animate-bounce"></span>
+              <span className="w-1.5 h-1.5 rounded-full bg-stone-400 animate-bounce delay-100"></span>
+              <span className="w-1.5 h-1.5 rounded-full bg-stone-400 animate-bounce delay-200"></span>
+              <span className="text-[11px] text-stone-400 ml-1 font-mono">
+                {activeAgent?.name || "Agnes"} 思考中...
+              </span>
+            </div>
+          </div>
+        )}
+
+        <div ref={messageEndRef} />
+      </div>
+
+      {/* Input box */}
+      <div className="border-t border-stone-200 bg-[#FAF9F5]/40 p-4 shrink-0">
+        <div className="max-w-4xl mx-auto relative rounded-xl border border-stone-300/80 bg-white p-2.5 focus-within:border-stone-400 shadow-sm transition-all">
+          <textarea
+            value={inputVal}
+            onChange={(e) => setInputVal(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
+            placeholder={
+              activeAgent
+                ? `向 ${activeAgent.name} 发送消息... (Enter 发送)`
+                : "选择一个会话以开始..."
+            }
+            className="w-full resize-none bg-transparent px-3 py-1 text-sm text-stone-900 placeholder:text-stone-450 focus:outline-none h-12"
+          />
+          <div className="flex items-center justify-between border-t border-stone-100 pt-2 px-1 text-[10px] text-stone-400">
+            <span>Agent 本地执行受系统沙箱安全策略保护</span>
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={handleSend}
+                disabled={!inputVal.trim() || isStreaming || !activeSessionId}
+                className="rounded-lg bg-stone-900 hover:bg-stone-850 text-white px-3.5 py-1 h-6 text-[10px] font-semibold shadow-sm"
+              >
+                <Send className="h-3 w-3 mr-1" />
+                <span>运行</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+};
