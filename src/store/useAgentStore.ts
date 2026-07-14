@@ -113,6 +113,7 @@ interface AgentState {
   setSessionLlm: (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number) => Promise<void>;
   switchVersion: (messageId: string, direction: "prev" | "next") => Promise<void>;
   createBranch: (messageId: string) => Promise<void>;
+  deleteMessage: (messageId: string) => Promise<void>;
   updateAgentModel: (agentId: string, model: string) => Promise<void>;
   upsertAgent: (agent: {
     id?: string;
@@ -348,6 +349,17 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       if (activeSessionId) await get().loadMessages(activeSessionId);
     } catch (e) {
       console.error("创建分支失败", e);
+      throw e;
+    }
+  },
+
+  deleteMessage: async (messageId: string) => {
+    try {
+      await invoke("delete_message", { messageId });
+      const { activeSessionId } = get();
+      if (activeSessionId) await get().loadMessages(activeSessionId);
+    } catch (e) {
+      console.error("删除消息失败", e);
       throw e;
     }
   },

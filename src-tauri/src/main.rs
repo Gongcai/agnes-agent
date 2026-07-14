@@ -51,6 +51,7 @@ fn main() {
             commands::list_messages,
             commands::switch_version,
             commands::create_branch,
+            commands::delete_message,
             commands::send_message,
             commands::approve_tool,
             commands::get_explicit_memories,

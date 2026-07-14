@@ -592,6 +592,32 @@ pub async fn create_branch(
     state.db.set_selected_child(message_id, None).await
 }
 
+/// 删除单条消息（仅叶子、非 pending/streaming）。若是父的 selected_child，
+/// 把父的 selected_child 置 NULL，活动路径回退到父。
+#[tauri::command]
+pub async fn delete_message(
+    state: tauri::State<'_, AppState>,
+    message_id: String,
+) -> AppResult<()> {
+    let msg = state.db.get_message(message_id.clone()).await?
+        .ok_or_else(|| AppError::Other("消息不存在".into()))?;
+    if msg.status == "pending" || msg.status == "streaming" {
+        return Err(AppError::Other("消息正在生成，无法删除".into()));
+    }
+    let cnt = state.db.count_children(message_id.clone()).await?;
+    if cnt > 0 {
+        return Err(AppError::Other("仅可删除末梢消息（无后续消息）".into()));
+    }
+    if let Some(ref pid) = msg.parent_id {
+        if let Some(p) = state.db.get_message(pid.clone()).await? {
+            if p.selected_child_id.as_deref() == Some(message_id.as_str()) {
+                state.db.set_selected_child(pid.clone(), None).await?;
+            }
+        }
+    }
+    state.db.delete_message(message_id).await
+}
+
 /// 将占位提示文本视为空，避免被当作真实记忆发送给 AI（占位仅由前端展示）。
 fn normalize_memory_text(text: String) -> String {
     let t = text.trim();

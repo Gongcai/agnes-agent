@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
-import { 
-  Cpu, Terminal, Send, AlertTriangle, Menu, ChevronLeft, ShieldCheck, ChevronDown, Server, Check
+import {
+  Cpu, Terminal, Send, AlertTriangle, Menu, ChevronLeft, ShieldCheck, ChevronDown, Server, Check, Copy, GitBranch, Trash2
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
@@ -47,6 +47,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     approveTool,
     setSessionLlm,
     switchVersion,
+    createBranch,
+    deleteMessage,
     loadProviders,
   } = useAgentStore();
 
@@ -136,7 +138,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           return (
             <div
               key={message.id}
-              className={`flex gap-4 ${isUser ? "justify-end" : "justify-start"}`}
+              className={`group flex gap-4 ${isUser ? "justify-end" : "justify-start"}`}
             >
               {!isUser && activeAgent && (
                 <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={32} />
@@ -263,6 +265,39 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     })}
                   </div>
                 )}
+
+                {/* 悬浮操作栏 */}
+                <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 mt-1">
+                  <button
+                    onClick={() => {
+                      const text = message.parts.map((p) => p.content).join("");
+                      navigator.clipboard?.writeText(text).catch(console.error);
+                    }}
+                    className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60"
+                    title="复制消息"
+                  >
+                    <Copy className="h-3 w-3" />
+                  </button>
+                  <button
+                    onClick={() => createBranch(message.id).catch(console.error)}
+                    className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60"
+                    title="从此处创建分支"
+                  >
+                    <GitBranch className="h-3 w-3" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (window.confirm("删除这条消息？")) {
+                        deleteMessage(message.id).catch(console.error);
+                      }
+                    }}
+                    disabled={!message.is_leaf || isStreaming || message.status === "pending" || message.status === "streaming"}
+                    className="p-1 rounded text-stone-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-stone-400"
+                    title={message.is_leaf ? "删除消息" : "仅可删除末梢消息"}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
 
                 {message.version_count > 1 && (
                   <div className="flex items-center gap-1 text-[10px] text-stone-400 mt-1">
