@@ -26,6 +26,8 @@ export interface Message {
   status: string;
   parts: MessagePart[];
   created_at: string;
+  /** 流式暂存：当前是否处于 <thought> 思维链中。仅用于直播渲染，不落库。 */
+  _streamingInThought?: boolean;
 }
 
 export interface Session {
@@ -404,10 +406,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
     };
 
-    // 当前是否处于思维链中：最后一个 part 为 thought 即视为未闭合
-    let inThought =
-      lastMsg.parts.length > 0 &&
-      lastMsg.parts[lastMsg.parts.length - 1].kind === "thought";
+    // 当前是否处于思维链中：用跨调用持久化的标志，避免 <thought> 独立 chunk 丢失状态
+    let inThought = lastMsg._streamingInThought === true;
 
     // 按 <thought>/</thought> 标签分段路由（标签可能跨 chunk 到达）
     let remaining = content;
@@ -435,6 +435,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
     }
 
+    lastMsg._streamingInThought = inThought;
     updatedMessages[updatedMessages.length - 1] = lastMsg;
     set({ messages: updatedMessages });
   },
