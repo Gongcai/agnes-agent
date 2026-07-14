@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { useAgentStore, ModelProvider } from "../store/useAgentStore";
+import { useAgentStore, ModelProvider, AgentSummary } from "../store/useAgentStore";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -78,12 +78,73 @@ const EMPTY_FORM: ProviderFormValues = {
   is_default: false,
 };
 
+interface AgentToolToggle {
+  enabled: boolean;
+  approval: boolean;
+}
+
+interface AgentFormValues {
+  id: string | null;
+  name: string;
+  persona: string;
+  scenario: string;
+  system_prompt: string;
+  greeting: string;
+  example_dialogue: string;
+  model: string;
+  tags: string;
+  avatar: string;
+  toolPolicy: {
+    shell: AgentToolToggle;
+    file: AgentToolToggle;
+    git: AgentToolToggle;
+  };
+}
+
+const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
+  shell: { enabled: true, approval: false },
+  file: { enabled: true, approval: false },
+  git: { enabled: true, approval: false },
+};
+
+const EMPTY_AGENT_FORM: AgentFormValues = {
+  id: null,
+  name: "",
+  persona: "",
+  scenario: "",
+  system_prompt: "",
+  greeting: "",
+  example_dialogue: "",
+  model: "",
+  tags: "",
+  avatar: "",
+  toolPolicy: DEFAULT_TOOL_POLICY,
+};
+
+/// 从 DB 中的 tool_policy JSON 安全解析为结构化开关（缺省字段回退默认）。
+function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
+  const base: AgentFormValues["toolPolicy"] = JSON.parse(JSON.stringify(DEFAULT_TOOL_POLICY));
+  if (!json) return base;
+  try {
+    const obj = JSON.parse(json);
+    (["shell", "file", "git"] as const).forEach((k) => {
+      const t = obj?.[k];
+      if (t && typeof t === "object") {
+        base[k] = { enabled: t.enabled !== false, approval: t.approval === true };
+      }
+    });
+  } catch {
+    // 解析失败则使用默认策略
+  }
+  return base;
+}
+
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
   initialTab = "agents",
 }) => {
-  const { agents, activeAgentId, activeSessionId, providers, loadProviders, upsertProvider, deleteProvider, updateAgentModel, setActiveAgentId } = useAgentStore();
+  const { agents, activeAgentId, activeSessionId, providers, loadProviders, upsertProvider, deleteProvider, updateAgentModel, setActiveAgentId, upsertAgent, deleteAgent } = useAgentStore();
   const [activeTab, setActiveTab] = useState<"agents" | "memory" | "llm" | "audit" | "debug">(initialTab);
   
   // Memory MD state
@@ -112,6 +173,122 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   } | null>(null);
   const [debugLoading, setDebugLoading] = useState(false);
   const [debugError, setDebugError] = useState<string | null>(null);
+
+  // 角色卡编辑器状态：null = 关闭；"new" = 新建；uuid = 编辑对应角色卡
+  const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
+  const [agentForm, setAgentForm] = useState<AgentFormValues>(EMPTY_AGENT_FORM);
+  const [isSavingAgent, setIsSavingAgent] = useState(false);
+
+  const openNewAgent = () => {
+    setAgentForm(EMPTY_AGENT_FORM);
+    setEditingAgentId("new");
+  };
+
+  const openEditAgent = (agent: AgentSummary) => {
+    setAgentForm({
+      id: agent.id,
+      name: agent.name,
+      persona: agent.persona || "",
+      scenario: agent.scenario || "",
+      system_prompt: agent.system_prompt || "",
+      greeting: agent.greeting || "",
+      example_dialogue: agent.example_dialogue || "",
+      model: agent.model || "",
+      tags: agent.tags || "",
+      avatar: agent.avatar || "",
+      toolPolicy: parseToolPolicy(agent.tool_policy),
+    });
+    setEditingAgentId(agent.id);
+  };
+
+  const closeAgentEditor = () => {
+    setEditingAgentId(null);
+    setAgentForm(EMPTY_AGENT_FORM);
+  };
+
+  const saveAgent = async () => {
+    setIsSavingAgent(true);
+    try {
+      const id = await upsertAgent({
+        id: agentForm.id ?? undefined,
+        name: agentForm.name.trim() || "未命名角色",
+        persona: agentForm.persona,
+        scenario: agentForm.scenario,
+        system_prompt: agentForm.system_prompt,
+        greeting: agentForm.greeting,
+        example_dialogue: agentForm.example_dialogue,
+        model: agentForm.model,
+        tool_policy: JSON.stringify(agentForm.toolPolicy),
+        avatar: agentForm.avatar,
+        tags: agentForm.tags,
+      });
+      closeAgentEditor();
+      if (agentForm.id === null) {
+        await setActiveAgentId(id);
+      }
+    } catch (e) {
+      console.error("保存角色卡失败", e);
+    } finally {
+      setIsSavingAgent(false);
+    }
+  };
+
+  const handleDeleteAgent = async (agentId: string, name: string) => {
+    if (!window.confirm(`确定删除角色卡「${name}」吗？其所有会话与消息也会一并删除。`)) return;
+    try {
+      await deleteAgent(agentId);
+      closeAgentEditor();
+    } catch (e) {
+      console.error("删除角色卡失败", e);
+    }
+  };
+
+  // 渲染单个工具策略开关行（启用 / 需人工审批）
+  const renderToolToggle = (key: "shell" | "file" | "git", label: string) => (
+    <div className="flex items-center justify-between py-1.5 border-b border-stone-100 last:border-0">
+      <span className="text-xs text-stone-700">{label}</span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() =>
+            setAgentForm((f) => ({
+              ...f,
+              toolPolicy: {
+                ...f.toolPolicy,
+                [key]: { ...f.toolPolicy[key], enabled: !f.toolPolicy[key].enabled },
+              },
+            }))
+          }
+          className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors ${
+            agentForm.toolPolicy[key].enabled
+              ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+              : "bg-stone-100 text-stone-400 border border-stone-200"
+          }`}
+        >
+          {agentForm.toolPolicy[key].enabled ? "已启用" : "已禁用"}
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            setAgentForm((f) => ({
+              ...f,
+              toolPolicy: {
+                ...f.toolPolicy,
+                [key]: { ...f.toolPolicy[key], approval: !f.toolPolicy[key].approval },
+              },
+            }))
+          }
+          className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors ${
+            agentForm.toolPolicy[key].approval
+              ? "bg-amber-50 text-amber-700 border border-amber-200"
+              : "bg-stone-100 text-stone-400 border border-stone-200"
+          }`}
+        >
+          {agentForm.toolPolicy[key].approval ? "需审批" : "自动执行"}
+        </button>
+      </div>
+    </div>
+  );
 
   const loadDebugPrompt = () => {
     if (!activeAgentId) return;
@@ -426,90 +603,257 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* Right Panel View */}
           <div className="flex-1 overflow-y-auto p-6 bg-white">
             {/* 1. AGENTS TAB */}
-            {activeTab === "agents" && activeAgent && (
+            {activeTab === "agents" && (
               <div className="space-y-6">
-                {/* 选择智能体（从主界面侧边栏移入此处） */}
-                <div>
-                  <h3 className="text-sm font-semibold text-stone-850">选择智能体</h3>
-                  <p className="text-[11px] text-stone-400">切换当前对话使用的角色卡。</p>
-                  <div className="mt-3 flex flex-col gap-1">
+                {/* Header */}
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-stone-850">角色卡</h3>
+                    <p className="text-[11px] text-stone-400">创建、编辑或切换当前对话使用的角色卡。</p>
+                  </div>
+                  {editingAgentId === null && (
+                    <button
+                      onClick={openNewAgent}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 transition-colors shrink-0"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      新建角色卡
+                    </button>
+                  )}
+                </div>
+
+                {/* 角色卡列表（含编辑/删除） */}
+                {editingAgentId === null && (
+                  <div className="flex flex-col gap-1">
                     {agents.map((agent) => (
-                      <button
+                      <div
                         key={agent.id}
-                        onClick={() => setActiveAgentId(agent.id).catch(console.error)}
-                        className={`w-full text-left text-xs px-3 py-2 rounded-lg transition-colors ${
+                        className={`group flex items-center justify-between gap-2 w-full text-left text-xs px-3 py-2 rounded-lg transition-colors ${
                           agent.id === activeAgentId
                             ? "bg-white border border-stone-200 text-indigo-600 font-semibold shadow-sm"
                             : "text-stone-600 hover:bg-stone-100 hover:text-stone-900 border border-transparent"
                         }`}
                       >
-                        <span className="flex items-center gap-2">
+                        <button
+                          onClick={() => setActiveAgentId(agent.id).catch(console.error)}
+                          className="flex-1 flex items-center gap-2 min-w-0 text-left"
+                        >
                           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-indigo-50 border border-indigo-100 font-bold text-indigo-600 text-[10px]">
                             {agent.name.charAt(0)}
                           </span>
-                          {agent.name}
-                        </span>
-                      </button>
+                          <span className="truncate">{agent.name}</span>
+                          {agent.tags && (
+                            <span className="truncate text-[10px] text-stone-400 font-normal">
+                              · {agent.tags}
+                            </span>
+                          )}
+                        </button>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                          <button
+                            onClick={() => openEditAgent(agent)}
+                            title="编辑"
+                            className="p-1 rounded-md hover:bg-stone-200 text-stone-500"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteAgent(agent.id, agent.name)}
+                            title="删除"
+                            className="p-1 rounded-md hover:bg-red-100 text-red-500"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
                     ))}
                   </div>
-                </div>
+                )}
 
-                <div>
-                  <h3 className="text-sm font-semibold text-stone-850">智能体信息</h3>
-                  <p className="text-[11px] text-stone-400">查看当前选择 of 的 Agent 静态配置及能力描述。</p>
-                </div>
-
-                <div className="border border-stone-200 bg-[#FAF9F5]/20 rounded-xl p-5 space-y-4 shadow-sm">
-                  <div className="flex items-center gap-3 pb-3 border-b border-stone-200">
-                    <div className="h-10 w-10 bg-indigo-50 border border-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-md">
-                      {activeAgent.name.charAt(0)}
-                    </div>
-                    <div>
-                      <h4 className="font-semibold text-xs text-stone-800">{activeAgent.name}</h4>
-                      <p className="text-[10px] text-stone-500 font-mono">ID: {activeAgent.id}</p>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3 text-xs text-stone-800 leading-relaxed">
-                    <div>
-                      <span className="font-semibold text-stone-500 block mb-1">能力模型:</span>
-                      <select
-                        value={activeAgent.model || ""}
-                        onChange={(e) => updateAgentModel(activeAgent.id, e.target.value)}
-                        className="w-full bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 font-mono text-[11px] focus:outline-none focus:ring-1 focus:ring-stone-300"
+                {/* 编辑表单 或 只读信息 */}
+                {editingAgentId !== null ? (
+                  <div className="border border-stone-200 bg-[#FAF9F5]/20 rounded-xl p-5 space-y-4 shadow-sm">
+                    <div className="flex items-center justify-between pb-3 border-b border-stone-200">
+                      <h4 className="font-semibold text-xs text-stone-800">
+                        {editingAgentId === "new" ? "新建角色卡" : "编辑角色卡"}
+                      </h4>
+                      <button
+                        onClick={closeAgentEditor}
+                        className="p-1 rounded-md hover:bg-stone-200 text-stone-500"
+                        title="关闭"
                       >
-                        <option value="">-- 请选择关联的模型 --</option>
-                        {providers.map((p) => {
-                          const models = p.models.length > 0 ? p.models : [];
-                          return (
-                            <optgroup key={p.id} label={`${p.name} (${KIND_LABELS[p.kind] || p.kind})`}>
-                              {models.map((m) => {
-                                const modelVal = `${p.id}/${m}`;
-                                return (
-                                  <option key={modelVal} value={modelVal}>
-                                    {m}
-                                  </option>
-                                );
-                              })}
-                            </optgroup>
-                          );
-                        })}
-                      </select>
+                        <X className="h-4 w-4" />
+                      </button>
                     </div>
-                    <div>
-                      <span className="font-semibold text-stone-500 block mb-1">人格与背景设定 (Persona):</span>
-                      <p className="bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 text-stone-650">
-                        {activeAgent.persona || "暂无设定"}
-                      </p>
+
+                    <div className="space-y-3 text-xs text-stone-800 leading-relaxed">
+                      <div>
+                        <label className="font-semibold text-stone-500 block mb-1">名称</label>
+                        <input
+                          value={agentForm.name}
+                          onChange={(e) => setAgentForm((f) => ({ ...f, name: e.target.value }))}
+                          placeholder="角色卡名称"
+                          className="w-full bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 text-[11px] focus:outline-none focus:ring-1 focus:ring-stone-300"
+                        />
+                      </div>
+                      <div>
+                        <label className="font-semibold text-stone-500 block mb-1">人格设定 (Persona)</label>
+                        <textarea
+                          value={agentForm.persona}
+                          onChange={(e) => setAgentForm((f) => ({ ...f, persona: e.target.value }))}
+                          rows={3}
+                          className="w-full bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 text-[11px] focus:outline-none focus:ring-1 focus:ring-stone-300 resize-y"
+                        />
+                      </div>
+                      <div>
+                        <label className="font-semibold text-stone-500 block mb-1">场景 (Scenario)</label>
+                        <textarea
+                          value={agentForm.scenario}
+                          onChange={(e) => setAgentForm((f) => ({ ...f, scenario: e.target.value }))}
+                          rows={2}
+                          className="w-full bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 text-[11px] focus:outline-none focus:ring-1 focus:ring-stone-300 resize-y"
+                        />
+                      </div>
+                      <div>
+                        <label className="font-semibold text-stone-500 block mb-1">系统提示词 (System Prompt)</label>
+                        <textarea
+                          value={agentForm.system_prompt}
+                          onChange={(e) => setAgentForm((f) => ({ ...f, system_prompt: e.target.value }))}
+                          rows={3}
+                          className="w-full bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-stone-300 resize-y"
+                        />
+                      </div>
+                      <div>
+                        <label className="font-semibold text-stone-500 block mb-1">开场白 (Greeting)</label>
+                        <textarea
+                          value={agentForm.greeting}
+                          onChange={(e) => setAgentForm((f) => ({ ...f, greeting: e.target.value }))}
+                          rows={2}
+                          className="w-full bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 text-[11px] focus:outline-none focus:ring-1 focus:ring-stone-300 resize-y"
+                        />
+                      </div>
+                      <div>
+                        <label className="font-semibold text-stone-500 block mb-1">示例对话 (Example Dialogue)</label>
+                        <textarea
+                          value={agentForm.example_dialogue}
+                          onChange={(e) => setAgentForm((f) => ({ ...f, example_dialogue: e.target.value }))}
+                          rows={2}
+                          className="w-full bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 text-[11px] focus:outline-none focus:ring-1 focus:ring-stone-300 resize-y"
+                        />
+                      </div>
+                      <div>
+                        <label className="font-semibold text-stone-500 block mb-1">关联模型</label>
+                        <select
+                          value={agentForm.model}
+                          onChange={(e) => setAgentForm((f) => ({ ...f, model: e.target.value }))}
+                          className="w-full bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 font-mono text-[11px] focus:outline-none focus:ring-1 focus:ring-stone-300"
+                        >
+                          <option value="">-- 请选择关联的模型 --</option>
+                          {providers.map((p) => {
+                            const models = p.models.length > 0 ? p.models : [];
+                            return (
+                              <optgroup key={p.id} label={`${p.name} (${KIND_LABELS[p.kind] || p.kind})`}>
+                                {models.map((m) => {
+                                  const modelVal = `${p.id}/${m}`;
+                                  return (
+                                    <option key={modelVal} value={modelVal}>
+                                      {m}
+                                    </option>
+                                  );
+                                })}
+                              </optgroup>
+                            );
+                          })}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="font-semibold text-stone-500 block mb-1">标签 (逗号分隔)</label>
+                        <input
+                          value={agentForm.tags}
+                          onChange={(e) => setAgentForm((f) => ({ ...f, tags: e.target.value }))}
+                          placeholder="例如：助手, 编程"
+                          className="w-full bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 text-[11px] focus:outline-none focus:ring-1 focus:ring-stone-300"
+                        />
+                      </div>
+                      <div>
+                        <label className="font-semibold text-stone-500 block mb-1">工具安全策略 (Tool Policy)</label>
+                        <div className="bg-stone-50 rounded-lg border border-stone-200/60 px-3 py-1">
+                          {renderToolToggle("shell", "Shell 命令执行")}
+                          {renderToolToggle("file", "文件读写")}
+                          {renderToolToggle("git", "Git 操作")}
+                        </div>
+                      </div>
                     </div>
-                    <div>
-                      <span className="font-semibold text-stone-500 block mb-1">工具安全策略 (Tool Policy):</span>
-                      <pre className="bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 font-mono text-[10px] text-stone-600 whitespace-pre-wrap max-h-40 overflow-y-auto">
-                        {activeAgent.tool_policy || "{}"}
-                      </pre>
+
+                    <div className="flex justify-end gap-2 pt-2 border-t border-stone-200">
+                      <button
+                        onClick={closeAgentEditor}
+                        className="px-4 py-1.5 rounded-lg text-xs font-semibold text-stone-500 hover:bg-stone-100"
+                      >
+                        取消
+                      </button>
+                      <button
+                        onClick={saveAgent}
+                        disabled={isSavingAgent}
+                        className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50"
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                        {isSavingAgent ? "保存中..." : "保存"}
+                      </button>
                     </div>
                   </div>
-                </div>
+                ) : activeAgent ? (
+                  <div className="border border-stone-200 bg-[#FAF9F5]/20 rounded-xl p-5 space-y-4 shadow-sm">
+                    <div className="flex items-center gap-3 pb-3 border-b border-stone-200">
+                      <div className="h-10 w-10 bg-indigo-50 border border-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-md">
+                        {activeAgent.name.charAt(0)}
+                      </div>
+                      <div>
+                        <h4 className="font-semibold text-xs text-stone-800">{activeAgent.name}</h4>
+                        <p className="text-[10px] text-stone-500 font-mono">ID: {activeAgent.id}</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 text-xs text-stone-800 leading-relaxed">
+                      <div>
+                        <span className="font-semibold text-stone-500 block mb-1">能力模型:</span>
+                        <select
+                          value={activeAgent.model || ""}
+                          onChange={(e) => updateAgentModel(activeAgent.id, e.target.value)}
+                          className="w-full bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 font-mono text-[11px] focus:outline-none focus:ring-1 focus:ring-stone-300"
+                        >
+                          <option value="">-- 请选择关联的模型 --</option>
+                          {providers.map((p) => {
+                            const models = p.models.length > 0 ? p.models : [];
+                            return (
+                              <optgroup key={p.id} label={`${p.name} (${KIND_LABELS[p.kind] || p.kind})`}>
+                                {models.map((m) => {
+                                  const modelVal = `${p.id}/${m}`;
+                                  return (
+                                    <option key={modelVal} value={modelVal}>
+                                      {m}
+                                    </option>
+                                  );
+                                })}
+                              </optgroup>
+                            );
+                          })}
+                        </select>
+                      </div>
+                      <div>
+                        <span className="font-semibold text-stone-500 block mb-1">人格与背景设定 (Persona):</span>
+                        <p className="bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 text-stone-650 whitespace-pre-wrap">
+                          {activeAgent.persona || "暂无设定"}
+                        </p>
+                      </div>
+                      <div>
+                        <span className="font-semibold text-stone-500 block mb-1">工具安全策略 (Tool Policy):</span>
+                        <pre className="bg-stone-50 p-2.5 rounded-lg border border-stone-200/60 font-mono text-[10px] text-stone-600 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                          {activeAgent.tool_policy || "{}"}
+                        </pre>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             )}
 

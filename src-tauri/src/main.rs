@@ -39,6 +39,8 @@ fn main() {
             commands::ping,
             commands::list_agents,
             commands::update_agent_model,
+            commands::upsert_agent,
+            commands::delete_agent,
             commands::create_session,
             commands::list_sessions,
             commands::delete_session,

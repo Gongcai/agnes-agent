@@ -42,9 +42,14 @@ export interface AgentSummary {
   id: string;
   name: string;
   persona: string;
+  scenario: string;
   system_prompt: string;
+  greeting: string;
+  example_dialogue: string;
   model: string;
   tool_policy: string;
+  avatar: string;
+  tags: string;
 }
 
 export interface AgentConfig {
@@ -95,6 +100,20 @@ interface AgentState {
   setActiveAgentId: (agentId: string) => Promise<void>;
   setActiveSessionId: (sessionId: string) => Promise<void>;
   updateAgentModel: (agentId: string, model: string) => Promise<void>;
+  upsertAgent: (agent: {
+    id?: string;
+    name: string;
+    persona: string;
+    scenario: string;
+    system_prompt: string;
+    greeting: string;
+    example_dialogue: string;
+    model: string;
+    tool_policy: string;
+    avatar: string;
+    tags: string;
+  }) => Promise<string>;
+  deleteAgent: (agentId: string) => Promise<void>;
   
   // Provider actions
   loadProviders: () => Promise<void>;
@@ -279,6 +298,37 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       await get().loadAgents(); // Reload agents list to reflect the changes
     } catch (e) {
       console.error("Failed to update agent model", e);
+      throw e;
+    }
+  },
+
+  upsertAgent: async (agent) => {
+    try {
+      const id = await invoke<string>("upsert_agent", { payload: agent });
+      await get().loadAgents();
+      return id;
+    } catch (e) {
+      console.error("Failed to upsert agent", e);
+      throw e;
+    }
+  },
+
+  deleteAgent: async (agentId: string) => {
+    try {
+      await invoke("delete_agent", { agentId });
+      const { activeAgentId } = get();
+      await get().loadAgents();
+      // 若删除的是当前角色卡，切换到其余首个或清空
+      if (activeAgentId === agentId) {
+        const agents = get().agents;
+        if (agents.length > 0) {
+          await get().setActiveAgentId(agents[0].id);
+        } else {
+          set({ activeAgentId: null, activeSessionId: null, sessions: [], messages: [] });
+        }
+      }
+    } catch (e) {
+      console.error("Failed to delete agent", e);
       throw e;
     }
   },

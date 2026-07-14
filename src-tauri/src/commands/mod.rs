@@ -5,6 +5,7 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::agent::protocol::{msg_type, Envelope};
 use crate::db::repo::messages::{NewMessage, NewMessagePart};
+use crate::db::repo::agents::{AgentUpdate, NewAgent};
 use crate::db::repo::sessions::NewSession;
 
 #[derive(Serialize)]
@@ -12,9 +13,14 @@ pub struct AgentSummary {
     pub id: String,
     pub name: String,
     pub persona: String,
+    pub scenario: String,
     pub system_prompt: String,
+    pub greeting: String,
+    pub example_dialogue: String,
     pub model: String,
     pub tool_policy: String,
+    pub avatar: String,
+    pub tags: String,
 }
 
 #[derive(Serialize)]
@@ -81,9 +87,14 @@ pub async fn list_agents(state: tauri::State<'_, AppState>) -> AppResult<Vec<Age
             id: r.id,
             name: r.name,
             persona: r.persona,
+            scenario: r.scenario,
             system_prompt: r.system_prompt,
+            greeting: r.greeting,
+            example_dialogue: r.example_dialogue,
             model: r.model,
             tool_policy: r.tool_policy,
+            avatar: r.avatar,
+            tags: r.tags,
         })
         .collect())
 }
@@ -95,6 +106,74 @@ pub async fn update_agent_model(
     model: String,
 ) -> AppResult<()> {
     state.db.update_agent_model(agent_id, model).await
+}
+
+/// 角色卡可编辑字段（前端提交的载荷）。
+#[derive(Deserialize)]
+pub struct UpsertAgentPayload {
+    pub id: Option<String>,
+    pub name: String,
+    pub persona: String,
+    pub scenario: String,
+    pub system_prompt: String,
+    pub greeting: String,
+    pub example_dialogue: String,
+    pub model: String,
+    pub tool_policy: String,
+    pub avatar: String,
+    pub tags: String,
+}
+
+/// 创建或更新角色卡：id 为空则新建（生成 uuid），否则全量更新。
+#[tauri::command]
+pub async fn upsert_agent(
+    state: tauri::State<'_, AppState>,
+    payload: UpsertAgentPayload,
+) -> AppResult<String> {
+    match payload.id {
+        Some(id) if !id.trim().is_empty() => {
+            let changes = AgentUpdate {
+                name: payload.name.trim().to_string(),
+                persona: payload.persona,
+                scenario: payload.scenario,
+                system_prompt: payload.system_prompt,
+                greeting: payload.greeting,
+                example_dialogue: payload.example_dialogue,
+                model: payload.model,
+                tool_policy: payload.tool_policy,
+                avatar: payload.avatar,
+                tags: payload.tags,
+            };
+            state.db.update_agent(id.clone(), changes).await?;
+            Ok(id)
+        }
+        _ => {
+            let id = uuid::Uuid::new_v4().to_string();
+            let row = NewAgent {
+                id: id.clone(),
+                name: payload.name.trim().to_string(),
+                persona: payload.persona,
+                scenario: payload.scenario,
+                system_prompt: payload.system_prompt,
+                greeting: payload.greeting,
+                example_dialogue: payload.example_dialogue,
+                model: payload.model,
+                tool_policy: payload.tool_policy,
+                avatar: payload.avatar,
+                tags: payload.tags,
+            };
+            state.db.insert_agent(row).await
+        }
+    }
+}
+
+/// 删除角色卡（含其依赖的会话与消息）。
+#[tauri::command]
+pub async fn delete_agent(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> AppResult<()> {
+    state.db.delete_agent(agent_id).await
 }
 
 /// 创建新会话。

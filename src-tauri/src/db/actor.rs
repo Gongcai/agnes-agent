@@ -21,6 +21,15 @@ pub enum DbCommand {
         model: String,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    UpdateAgent {
+        id: String,
+        changes: repo::agents::AgentUpdate,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    DeleteAgent {
+        id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     InsertMemory {
         row: repo::memory::NewMemory,
         resp: oneshot::Sender<AppResult<()>>,
@@ -176,6 +185,24 @@ impl DbActorHandle {
     pub async fn update_agent_model(&self, agent_id: String, model: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::UpdateAgentModel { agent_id, model, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn update_agent(
+        &self,
+        id: String,
+        changes: repo::agents::AgentUpdate,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateAgent { id, changes, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn delete_agent(&self, id: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::DeleteAgent { id, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -456,6 +483,12 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::UpdateAgentModel { agent_id, model, resp } => {
                     let _ = resp.send(repo::agents::update_model(&conn, &agent_id, &model));
                 }
+                DbCommand::UpdateAgent { id, changes, resp } => {
+                    let _ = resp.send(repo::agents::update(&conn, &id, &changes));
+                }
+                DbCommand::DeleteAgent { id, resp } => {
+                    let _ = resp.send(repo::agents::delete(&conn, &id));
+                }
                 DbCommand::InsertMemory { row, resp } => {
                     let _ = resp.send(repo::memory::insert(&conn, &row));
                 }
@@ -620,9 +653,14 @@ mod tests {
             id: "test-agent".into(),
             name: "Test Agent".into(),
             persona: "You are a test agent".into(),
+            scenario: String::new(),
             system_prompt: "Be a test agent".into(),
+            greeting: String::new(),
+            example_dialogue: String::new(),
             model: "GPT-4".into(),
             tool_policy: "{}".into(),
+            avatar: String::new(),
+            tags: String::new(),
         };
         let agent_id = handle.insert_agent(agent).await.unwrap();
         assert_eq!(agent_id, "test-agent");
