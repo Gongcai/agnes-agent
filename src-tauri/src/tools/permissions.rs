@@ -61,7 +61,7 @@ pub struct ApprovalDecision {
     pub is_secondary_confirmation: bool,
 }
 
-/// Resolve human approval for the current placeholder implementation of Auto mode.
+/// Resolve human approval for the active session mode.
 pub fn approval_decision(mode: PermissionMode, tool: &str, risk: Risk) -> ApprovalDecision {
     match mode {
         PermissionMode::AskForApproval => ApprovalDecision {
@@ -71,12 +71,12 @@ pub fn approval_decision(mode: PermissionMode, tool: &str, risk: Risk) -> Approv
         },
         PermissionMode::Auto if risk == Risk::High => ApprovalDecision {
             needs_approval: true,
-            reason: "Auto 决策模型尚未接入；此调用属于高风险操作，必须由你二次确认。",
+            reason: "当前模型请求执行高风险操作，Auto 模式仍要求你进行二次确认。",
             is_secondary_confirmation: true,
         },
         PermissionMode::Auto => ApprovalDecision {
-            needs_approval: true,
-            reason: "Auto 决策模型尚未接入，本次调用暂由你决定是否执行。",
+            needs_approval: false,
+            reason: "Auto 模式信任当前模型对普通工具调用的判断并自动执行。",
             is_secondary_confirmation: false,
         },
         PermissionMode::AcceptEdits => {
@@ -120,9 +120,9 @@ mod tests {
     }
 
     #[test]
-    fn auto_is_a_user_decision_placeholder_and_marks_high_risk() {
+    fn auto_executes_normal_calls_and_marks_high_risk() {
         let medium = approval_decision(PermissionMode::Auto, "shell", Risk::Medium);
-        assert!(medium.needs_approval);
+        assert!(!medium.needs_approval);
         assert!(!medium.is_secondary_confirmation);
 
         let high = approval_decision(PermissionMode::Auto, "shell", Risk::High);

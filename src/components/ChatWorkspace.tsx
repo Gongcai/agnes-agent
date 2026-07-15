@@ -39,7 +39,7 @@ const PERMISSION_OPTIONS: {
   {
     value: "auto",
     label: "自动模式",
-    desc: "本轮暂由你决定；高风险操作需要二次确认",
+    desc: "由当前模型决定普通调用；高风险操作需要二次确认",
   },
   {
     value: "accept_edits",
@@ -76,6 +76,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     activeSessionId,
     isStreaming,
     providers,
+    modelRoles,
     sendMessage,
     approveTool,
     cancelRun,
@@ -106,7 +107,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   }, [loadProviders]);
 
   // 当前生效的模型：优先会话级覆盖，回退角色卡默认（形如 "provider_id/model_name"）
-  const effectiveModel = activeSession?.model || activeAgent?.model || "";
+  const effectiveModel = activeSession?.model || activeAgent?.model || modelRoles.main_model || "";
   const currentModel = (() => {
     if (!effectiveModel) return null;
     const idx = effectiveModel.indexOf("/");
@@ -632,7 +633,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               </div>
                             ) : (
                               p.models.map((m) => {
-                                const val = `${p.id}/${m}`;
+                                const val = `${p.id}/${m.id}`;
                                 const isActive = effectiveModel === val;
                                 return (
                                   <button
@@ -647,7 +648,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                                         : "text-stone-600 hover:bg-stone-100"
                                     }`}
                                   >
-                                    {m}
+                                    {m.id}
                                     {isActive && (
                                       <Check className="h-3 w-3 inline ml-1" />
                                     )}

@@ -3,6 +3,38 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 export type PermissionMode = "ask_for_approval" | "auto" | "accept_edits" | "full_access";
+export type ModelModality = "text" | "image";
+
+export interface ModelCapabilities {
+  input_modalities: ModelModality[];
+  output_modalities: ModelModality[];
+  embedding: boolean;
+}
+
+export interface ModelDescriptor {
+  id: string;
+  capabilities: ModelCapabilities;
+}
+
+export interface ModelRoleAssignments {
+  main_model: string | null;
+  image_model: string | null;
+  summary_model: string | null;
+  memory_model: string | null;
+  speech_model: string | null;
+  quick_model: string | null;
+  embedding_model: string | null;
+}
+
+const EMPTY_MODEL_ROLES: ModelRoleAssignments = {
+  main_model: null,
+  image_model: null,
+  summary_model: null,
+  memory_model: null,
+  speech_model: null,
+  quick_model: null,
+  embedding_model: null,
+};
 
 export interface ToolCall {
   id: string;
@@ -102,7 +134,7 @@ export interface ModelProvider {
   kind: string;
   api_base: string | null;
   is_default: boolean;
-  models: string[];
+  models: ModelDescriptor[];
   has_api_key: boolean;
   created_at: string;
   updated_at: string;
@@ -117,6 +149,7 @@ interface AgentState {
   activeSessionId: string | null;
   isStreaming: boolean;
   providers: ModelProvider[];
+  modelRoles: ModelRoleAssignments;
   
   // Actions
   init: () => Promise<void>;
@@ -167,6 +200,8 @@ interface AgentState {
   
   // Provider actions
   loadProviders: () => Promise<void>;
+  loadModelRoles: () => Promise<void>;
+  setModelRoles: (roles: ModelRoleAssignments) => Promise<void>;
   upsertProvider: (provider: {
     id?: string;
     name: string;
@@ -174,7 +209,7 @@ interface AgentState {
     api_base?: string;
     api_key?: string;
     is_default?: boolean;
-    models?: string[];
+    models?: ModelDescriptor[];
   }) => Promise<string>;
   deleteProvider: (providerId: string) => Promise<void>;
 
@@ -193,6 +228,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   activeSessionId: null,
   isStreaming: false,
   providers: [],
+  modelRoles: EMPTY_MODEL_ROLES,
 
   loadAgents: async () => {
     try {
@@ -212,6 +248,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       const agents = await invoke<AgentSummary[]>("list_agents");
       set({ agents });
       if (agents.length === 0) return;
+      await get().loadModelRoles();
 
       const lastAgentId = await invoke<string | null>("get_setting", { key: "ui:last_agent_id" });
       const lastSessionId = await invoke<string | null>("get_setting", { key: "ui:last_session_id" });
@@ -604,10 +641,30 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
+  loadModelRoles: async () => {
+    try {
+      const modelRoles = await invoke<ModelRoleAssignments>("get_model_roles");
+      set({ modelRoles });
+    } catch (e) {
+      console.error("Failed to load model roles", e);
+    }
+  },
+
+  setModelRoles: async (roles) => {
+    try {
+      await invoke("set_model_roles", { roles });
+      set({ modelRoles: roles });
+    } catch (e) {
+      console.error("Failed to save model roles", e);
+      throw e;
+    }
+  },
+
   upsertProvider: async (provider) => {
     try {
       const id = await invoke<string>("upsert_provider", { provider });
       await get().loadProviders();
+      await get().loadModelRoles();
       return id;
     } catch (e) {
       console.error("Failed to upsert provider", e);
@@ -619,6 +676,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       await invoke("delete_provider", { providerId });
       await get().loadProviders();
+      await get().loadModelRoles();
     } catch (e) {
       console.error("Failed to delete provider", e);
     }

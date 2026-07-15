@@ -18,6 +18,20 @@ from .models import LlmConfig
 from .memory_extract import extract_memories
 
 
+def resolve_task_llm(
+    task_configs: Dict[str, Dict[str, Any]],
+    role: str,
+    fallback_model: str,
+    fallback_config: Optional[LlmConfig],
+) -> tuple[str, Optional[LlmConfig]]:
+    """Resolve one task-specific model, falling back to the active main model."""
+    raw = task_configs.get(role)
+    if not raw:
+        return fallback_model, fallback_config
+    model = raw.get("litellmModel") or raw.get("model") or fallback_model
+    return model, LlmConfig.from_dict(raw)
+
+
 async def run_agent_graph(
     ws: websockets.WebSocketClientProtocol,
     envelope: Dict[str, Any],
@@ -96,6 +110,19 @@ async def run_agent_graph(
     _cfg = llm_config_raw or {}
     agent_model = _cfg.get("litellmModel") or _cfg.get("model") or payload.get("context", {}).get("agent", {}).get("model") or "gpt-4o"
     llm_config = LlmConfig.from_dict(llm_config_raw) if llm_config_raw else None
+    task_llm_configs: Dict[str, Dict[str, Any]] = payload.get("context", {}).get("taskLlmConfigs") or {}
+    summary_model, summary_llm_config = resolve_task_llm(
+        task_llm_configs,
+        "summary",
+        agent_model,
+        llm_config,
+    )
+    memory_model, memory_llm_config = resolve_task_llm(
+        task_llm_configs,
+        "memory",
+        agent_model,
+        llm_config,
+    )
 
     graph_inputs = {
         "messages": messages,
@@ -124,13 +151,22 @@ async def run_agent_graph(
         if discarded_messages:
             print(f"[sidecar][summary] History exceeded budget, compiling new rolling summary...", flush=True)
             # Summarize the discarded messages + current summary
-            new_summary = summarize_history(discarded_messages, new_summary, agent_model, llm_config=llm_config)
+            new_summary = summarize_history(
+                discarded_messages,
+                new_summary,
+                summary_model,
+                llm_config=summary_llm_config,
+            )
             
         # 6. Extract memories from the latest turns (asynchronously) and compute vectors
         extracted_memories = []
         try:
             latest_messages = output_state.get("messages", [])
-            extracted_memories = extract_memories(latest_messages, agent_model, llm_config=llm_config)
+            extracted_memories = extract_memories(
+                latest_messages,
+                memory_model,
+                llm_config=memory_llm_config,
+            )
             if extracted_memories:
                 print(f"[sidecar][memory] Extracted {len(extracted_memories)} new memories: {extracted_memories}", flush=True)
                 # Compute embedding vectors using LiteLLM

@@ -5,6 +5,8 @@ import pytest
 from app.prompt import assemble_prompt, translate_messages, count_tokens
 from app.graph import build_graph, get_available_tools
 from app.memory_extract import extract_memories
+from app.main import resolve_task_llm
+from app.models import LlmConfig
 
 def test_count_tokens():
     assert count_tokens("Hello world") > 0
@@ -140,3 +142,26 @@ def test_get_available_tools():
         "apply_patch",
         "git",
     ]
+
+
+def test_task_model_routing_and_fallback():
+    fallback = LlmConfig(model="main", litellm_model="main")
+    model, config = resolve_task_llm({}, "summary", "main", fallback)
+    assert model == "main"
+    assert config is fallback
+
+    model, config = resolve_task_llm(
+        {
+            "summary": {
+                "provider": "openai_compatible",
+                "model": "cheap-summary",
+                "litellmModel": "openai/cheap-summary",
+            }
+        },
+        "summary",
+        "main",
+        fallback,
+    )
+    assert model == "openai/cheap-summary"
+    assert config is not None
+    assert config.model == "cheap-summary"

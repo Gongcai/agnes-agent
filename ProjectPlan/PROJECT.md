@@ -2,6 +2,8 @@
 
 项目规划与设计文档：技术栈、架构、数据模型、AGENTS 角色卡、记忆系统、版本路线图与关键决策。开发规范（语言、命令、代码质量）见 `CODEBUDDY.md`。
 
+模型能力标签与任务分工详见 `ProjectPlan/MODEL_ROUTING.md`。
+
 # 项目定位
 
 `agnes-agent` 是一个**带 Agent 能力的酒馆式多角色聊天应用**（更接近 SillyTavern + Agents，而非纯 Agent 工具）。核心是可创建/管理多个 **AGENTS（角色卡）**，每个 Agent 有独立人设、系统提示词、工具权限与长期记忆；用户与某个 Agent 在 session 中对话，Agent 背后挂 Python LangGraph 运行时执行工具。**桌面端（Tauri）是真正的执行器**，负责本地文件、终端、Git、SSH、工具调用；**安卓端优先做轻客户端 + SSH 控制器**，不在 Android 内置 Termux/Ubuntu 跑完整 Agent（维护成本、权限、后台存活、依赖安装都太烦）。

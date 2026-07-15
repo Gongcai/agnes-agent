@@ -1,7 +1,15 @@
 import React, { useState, useEffect } from "react";
 import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { useAgentStore, ModelProvider, AgentSummary } from "../store/useAgentStore";
+import { useAgentStore } from "../store/useAgentStore";
+import type {
+  AgentSummary,
+  ModelCapabilities,
+  ModelDescriptor,
+  ModelModality,
+  ModelProvider,
+  ModelRoleAssignments,
+} from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
 
 interface SettingsModalProps {
@@ -66,7 +74,8 @@ interface ProviderFormValues {
   kind: ProviderKind;
   api_base: string;
   api_key: string;
-  models: string;
+  models: ModelDescriptor[];
+  modelDraft: string;
   is_default: boolean;
 }
 
@@ -75,9 +84,43 @@ const EMPTY_FORM: ProviderFormValues = {
   kind: "openai",
   api_base: "",
   api_key: "",
-  models: "",
+  models: [],
+  modelDraft: "",
   is_default: false,
 };
+
+type ModelRoleField = keyof ModelRoleAssignments;
+
+const MODEL_ROLE_OPTIONS: {
+  key: ModelRoleField;
+  label: string;
+  desc: string;
+}[] = [
+  { key: "main_model", label: "主模型", desc: "会话与角色均未指定模型时使用" },
+  { key: "image_model", label: "图片处理模型", desc: "图片转自然语言、视觉理解和 OCR" },
+  { key: "summary_model", label: "对话总结模型", desc: "滚动压缩历史对话，建议选择便宜模型" },
+  { key: "memory_model", label: "记忆更新模型", desc: "抽取需要长期保存的事实和偏好" },
+  { key: "speech_model", label: "语音理解模型", desc: "预留语音转文本调用入口" },
+  { key: "quick_model", label: "快速模型", desc: "预留划线翻译、搜索和名词解释" },
+  { key: "embedding_model", label: "嵌入模型", desc: "预留记忆与 RAG 的向量生成入口" },
+];
+
+function modelSupportsRole(model: ModelDescriptor, role: ModelRoleField): boolean {
+  const { input_modalities: inputs, output_modalities: outputs, embedding } = model.capabilities;
+  if (role === "embedding_model") return embedding;
+  if (role === "image_model") return inputs.includes("image") && outputs.includes("text");
+  if (role === "speech_model") return outputs.includes("text");
+  return inputs.includes("text") && outputs.includes("text");
+}
+
+function capabilityLabels(capabilities: ModelCapabilities): string[] {
+  const labels = [
+    ...capabilities.input_modalities.map((modality) => `输入·${modality === "text" ? "文本" : "图像"}`),
+    ...capabilities.output_modalities.map((modality) => `输出·${modality === "text" ? "文本" : "图像"}`),
+  ];
+  if (capabilities.embedding) labels.push("嵌入");
+  return labels;
+}
 
 type ApprovalTier = "never" | "on_write" | "on_risk" | "always";
 
@@ -220,7 +263,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   initialTab = "agents",
 }) => {
-  const { agents, activeAgentId, activeSessionId, providers, loadProviders, upsertProvider, deleteProvider, updateAgentModel, setActiveAgentId, upsertAgent, deleteAgent } = useAgentStore();
+  const {
+    agents,
+    activeAgentId,
+    activeSessionId,
+    providers,
+    modelRoles,
+    loadProviders,
+    loadModelRoles,
+    setModelRoles,
+    upsertProvider,
+    deleteProvider,
+    updateAgentModel,
+    setActiveAgentId,
+    upsertAgent,
+    deleteAgent,
+  } = useAgentStore();
   const [activeTab, setActiveTab] = useState<"general" | "agents" | "memory" | "llm" | "audit" | "debug">(initialTab);
   
   // Memory MD state
@@ -240,6 +298,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isTesting, setIsTesting] = useState(false);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
+  const [modelRoleForm, setModelRoleForm] = useState<ModelRoleAssignments>(modelRoles);
+  const [isSavingModelRoles, setIsSavingModelRoles] = useState(false);
+  const [modelRoleMessage, setModelRoleMessage] = useState<{ success: boolean; text: string } | null>(null);
 
   // Debug prompt panel state
   const [debugPrompt, setDebugPrompt] = useState<{
@@ -498,7 +559,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   
   // Model selection modal state
   const [isModelSelectOpen, setIsModelSelectOpen] = useState(false);
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [availableModels, setAvailableModels] = useState<ModelDescriptor[]>([]);
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
 
   // Sync memory text when activeAgentId changes
@@ -532,8 +593,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   useEffect(() => {
     if (activeTab === "llm") {
       loadProviders();
+      loadModelRoles();
     }
-  }, [activeTab, loadProviders]);
+  }, [activeTab, loadProviders, loadModelRoles]);
+
+  useEffect(() => {
+    setModelRoleForm(modelRoles);
+  }, [modelRoles]);
 
   if (!isOpen) return null;
 
@@ -574,7 +640,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       kind: provider.kind as ProviderKind,
       api_base: provider.api_base || "",
       api_key: "",
-      models: provider.models.join(", "),
+      models: provider.models.map((model) => ({
+        ...model,
+        capabilities: {
+          ...model.capabilities,
+          input_modalities: [...model.capabilities.input_modalities],
+          output_modalities: [...model.capabilities.output_modalities],
+        },
+      })),
+      modelDraft: "",
       is_default: provider.is_default,
     });
     setShowApiKey(false);
@@ -605,10 +679,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         name: formValues.name,
         kind: formValues.kind,
         is_default: formValues.is_default,
-        models: formValues.models
-          .split(",")
-          .map((m) => m.trim())
-          .filter(Boolean),
+        models: formValues.models,
       };
       if (formValues.api_base) payload.api_base = formValues.api_base;
       if (formValues.api_key) payload.api_key = formValues.api_key;
@@ -647,7 +718,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setIsFetchingModels(true);
     setTestResult(null);
     try {
-      const fetchedModels = await invoke<string[]>("fetch_provider_models", {
+      const fetchedModels = await invoke<ModelDescriptor[]>("fetch_provider_models", {
         kind: formValues.kind,
         apiBase: formValues.api_base || null,
         apiKey: formValues.api_key || null,
@@ -656,12 +727,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         setAvailableModels(fetchedModels);
         
         // Pre-select models that are already in formValues.models
-        const existing = new Set(
-          formValues.models
-            .split(",")
-            .map(m => m.trim())
-            .filter(Boolean)
-        );
+        const existing = new Set(formValues.models.map((model) => model.id));
         
         // Also add logic if it's completely empty, maybe select nothing by default
         // or select everything. Let's just keep the existing ones checked.
@@ -691,13 +757,99 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleConfirmModels = () => {
-    const modelsArr = Array.from(selectedModels);
-    updateForm("models", modelsArr.join(", "));
+    const existing = new Map(formValues.models.map((model) => [model.id, model]));
+    const fetched = new Map(availableModels.map((model) => [model.id, model]));
+    const modelsArr = Array.from(selectedModels)
+      .map((id) => existing.get(id) || fetched.get(id))
+      .filter((model): model is ModelDescriptor => Boolean(model));
+    updateForm("models", modelsArr);
     setIsModelSelectOpen(false);
   };
 
-  const updateForm = (field: keyof ProviderFormValues, value: string | boolean) => {
+  const updateForm = <K extends keyof ProviderFormValues>(field: K, value: ProviderFormValues[K]) => {
     setFormValues((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const addManualModels = () => {
+    const ids = formValues.modelDraft
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
+    if (ids.length === 0) return;
+    const existing = new Set(formValues.models.map((model) => model.id));
+    const additions = ids
+      .filter((id) => !existing.has(id))
+      .map<ModelDescriptor>((id) => ({
+        id,
+        capabilities: {
+          input_modalities: ["text"],
+          output_modalities: ["text"],
+          embedding: false,
+        },
+      }));
+    setFormValues((prev) => ({
+      ...prev,
+      models: [...prev.models, ...additions],
+      modelDraft: "",
+    }));
+  };
+
+  const toggleModelModality = (
+    modelId: string,
+    direction: "input_modalities" | "output_modalities",
+    modality: ModelModality,
+  ) => {
+    setFormValues((prev) => ({
+      ...prev,
+      models: prev.models.map((model) => {
+        if (model.id !== modelId) return model;
+        const current = model.capabilities[direction];
+        const next = current.includes(modality)
+          ? current.filter((value) => value !== modality)
+          : [...current, modality];
+        return {
+          ...model,
+          capabilities: { ...model.capabilities, [direction]: next },
+        };
+      }),
+    }));
+  };
+
+  const toggleEmbeddingCapability = (modelId: string) => {
+    setFormValues((prev) => ({
+      ...prev,
+      models: prev.models.map((model) =>
+        model.id === modelId
+          ? {
+              ...model,
+              capabilities: {
+                ...model.capabilities,
+                embedding: !model.capabilities.embedding,
+              },
+            }
+          : model
+      ),
+    }));
+  };
+
+  const removeProviderModel = (modelId: string) => {
+    setFormValues((prev) => ({
+      ...prev,
+      models: prev.models.filter((model) => model.id !== modelId),
+    }));
+  };
+
+  const handleSaveModelRoles = async () => {
+    setIsSavingModelRoles(true);
+    setModelRoleMessage(null);
+    try {
+      await setModelRoles(modelRoleForm);
+      setModelRoleMessage({ success: true, text: "模型分工已保存" });
+    } catch (error) {
+      setModelRoleMessage({ success: false, text: String(error) });
+    } finally {
+      setIsSavingModelRoles(false);
+    }
   };
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
@@ -1018,10 +1170,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             return (
                               <optgroup key={p.id} label={`${p.name} (${KIND_LABELS[p.kind] || p.kind})`}>
                                 {models.map((m) => {
-                                  const modelVal = `${p.id}/${m}`;
+                                  const modelVal = `${p.id}/${m.id}`;
                                   return (
                                     <option key={modelVal} value={modelVal}>
-                                      {m}
+                                      {m.id}
                                     </option>
                                   );
                                 })}
@@ -1144,10 +1296,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             return (
                               <optgroup key={p.id} label={`${p.name} (${KIND_LABELS[p.kind] || p.kind})`}>
                                 {models.map((m) => {
-                                  const modelVal = `${p.id}/${m}`;
+                                  const modelVal = `${p.id}/${m.id}`;
                                   return (
                                     <option key={modelVal} value={modelVal}>
-                                      {m}
+                                      {m.id}
                                     </option>
                                   );
                                 })}
@@ -1273,7 +1425,78 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* 3. LLM TAB */}
             {activeTab === "llm" && (
               <div className="space-y-5">
-                {/* Section 1: Model Provider 配置 */}
+                {/* Model role routing */}
+                <div className="border border-stone-200 bg-[#FAF9F5]/30 rounded-xl p-5 space-y-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h3 className="text-sm font-semibold text-stone-850">模型分工</h3>
+                      <p className="text-[11px] text-stone-400 mt-0.5">
+                        按能力和成本为不同任务指定模型。留空时回退到主模型或当前会话模型。
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSaveModelRoles}
+                      disabled={isSavingModelRoles}
+                      className="shrink-0 bg-[#8CA38A] text-white hover:bg-[#7A917A] rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50"
+                    >
+                      {isSavingModelRoles ? "保存中..." : "保存分工"}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    {MODEL_ROLE_OPTIONS.map((role) => (
+                      <label key={role.key} className="space-y-1">
+                        <span className="flex items-center justify-between text-[11px] font-semibold text-stone-600">
+                          {role.label}
+                          {role.key === "embedding_model" && (
+                            <span className="text-[9px] text-violet-500">独立能力</span>
+                          )}
+                        </span>
+                        <select
+                          value={modelRoleForm[role.key] || ""}
+                          onChange={(event) =>
+                            setModelRoleForm((current) => ({
+                              ...current,
+                              [role.key]: event.target.value || null,
+                            }))
+                          }
+                          className="w-full bg-white border border-stone-200 rounded-lg px-2.5 py-2 text-[11px] text-stone-700 font-mono focus:outline-none focus:ring-1 focus:ring-[#8CA38A]/40"
+                        >
+                          <option value="">未指定（自动回退）</option>
+                          {providers.map((provider) => {
+                            const models = provider.models.filter((model) => modelSupportsRole(model, role.key));
+                            if (models.length === 0) return null;
+                            return (
+                              <optgroup key={provider.id} label={provider.name}>
+                                {models.map((model) => {
+                                  const value = `${provider.id}/${model.id}`;
+                                  return <option key={value} value={value}>{model.id}</option>;
+                                })}
+                              </optgroup>
+                            );
+                          })}
+                        </select>
+                        <span className="block text-[9px] leading-relaxed text-stone-400">{role.desc}</span>
+                      </label>
+                    ))}
+                  </div>
+
+                  <p className="text-[10px] text-stone-400 border-t border-stone-200/60 pt-3">
+                    语音输入能力标签将在语音管线实现时补充；当前语音模型仅校验文本输出能力。嵌入模型先完成选型基础，向量维度迁移后再接入执行。
+                  </p>
+                  {modelRoleMessage && (
+                    <div className={`text-[11px] rounded-lg border px-3 py-2 ${
+                      modelRoleMessage.success
+                        ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                        : "bg-rose-50 border-rose-200 text-rose-700"
+                    }`}>
+                      {modelRoleMessage.text}
+                    </div>
+                  )}
+                </div>
+
+                {/* Model provider configuration */}
                 <div>
                   <h3 className="text-sm font-semibold text-stone-850">模型服务商配置</h3>
                   <p className="text-[11px] text-stone-400">管理 LLM API 提供商，配置自定义 endpoint、密钥与可用模型。</p>
@@ -1353,6 +1576,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
                       </div>
 
+                      {provider.models.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-stone-200/60 space-y-1.5">
+                          {provider.models.slice(0, 4).map((model) => (
+                            <div key={model.id} className="flex items-center gap-2 min-w-0">
+                              <span className="text-[10px] font-mono text-stone-600 truncate min-w-0">
+                                {model.id}
+                              </span>
+                              <span className="flex items-center gap-1 shrink-0">
+                                {capabilityLabels(model.capabilities).map((label) => (
+                                  <span
+                                    key={label}
+                                    className="rounded border border-stone-200 bg-white px-1.5 py-0.5 text-[8px] text-stone-500"
+                                  >
+                                    {label}
+                                  </span>
+                                ))}
+                              </span>
+                            </div>
+                          ))}
+                          {provider.models.length > 4 && (
+                            <div className="text-[9px] text-stone-400">另有 {provider.models.length - 4} 个模型</div>
+                          )}
+                        </div>
+                      )}
+
                       {/* Inline test result for this provider */}
                       {testResult && editingProviderId !== provider.id && !editingProviderId && (
                         // Show test results only if we just tested (no editor open)
@@ -1421,7 +1669,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <label className="text-xs font-semibold text-stone-500">类型</label>
                         <select
                           value={formValues.kind}
-                          onChange={(e) => updateForm("kind", e.target.value)}
+                          onChange={(e) => updateForm("kind", e.target.value as ProviderKind)}
                           className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-xs text-stone-800 focus:outline-none focus:ring-1 focus:ring-[#8CA38A]/40 focus:border-[#8CA38A] transition-shadow appearance-none"
                         >
                           {KIND_OPTIONS.map((opt) => (
@@ -1494,16 +1742,99 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {isFetchingModels ? "获取中..." : "获取模型"}
                         </button>
                       </div>
-                      <input
-                        type="text"
-                        value={formValues.models}
-                        onChange={(e) => updateForm("models", e.target.value)}
-                        placeholder="以逗号分隔，例如：gpt-4o, gpt-4o-mini"
-                        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-xs text-stone-800 font-mono focus:outline-none focus:ring-1 focus:ring-[#8CA38A]/40 focus:border-[#8CA38A] transition-shadow"
-                      />
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={formValues.modelDraft}
+                          onChange={(e) => updateForm("modelDraft", e.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              addManualModels();
+                            }
+                          }}
+                          placeholder="输入模型名称，多个名称可用逗号分隔"
+                          className="flex-1 bg-white border border-stone-200 rounded-lg px-3 py-2 text-xs text-stone-800 font-mono focus:outline-none focus:ring-1 focus:ring-[#8CA38A]/40 focus:border-[#8CA38A] transition-shadow"
+                        />
+                        <button
+                          type="button"
+                          onClick={addManualModels}
+                          className="rounded-lg border border-stone-200 bg-white px-3 text-[10px] font-semibold text-stone-600 hover:bg-stone-50"
+                        >
+                          添加
+                        </button>
+                      </div>
                       <p className="text-[10px] text-stone-400">
-                        示例: {KIND_EXAMPLE_MODELS[formValues.kind] || "输入模型名称"}
+                        示例: {KIND_EXAMPLE_MODELS[formValues.kind] || "输入模型名称"}。自动获取的标签可手动修正。
                       </p>
+
+                      <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                        {formValues.models.map((model) => (
+                          <div key={model.id} className="rounded-lg border border-stone-200 bg-white p-2.5 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="min-w-0 truncate font-mono text-[11px] text-stone-700" title={model.id}>
+                                {model.id}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => removeProviderModel(model.id)}
+                                className="shrink-0 rounded p-1 text-stone-400 hover:bg-rose-50 hover:text-rose-600"
+                                title="移除模型"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5 text-[9px]">
+                              <span className="text-stone-400">输入</span>
+                              {(["text", "image"] as ModelModality[]).map((modality) => (
+                                <button
+                                  key={`input-${modality}`}
+                                  type="button"
+                                  onClick={() => toggleModelModality(model.id, "input_modalities", modality)}
+                                  className={`rounded border px-1.5 py-0.5 ${
+                                    model.capabilities.input_modalities.includes(modality)
+                                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                                      : "border-stone-200 bg-stone-50 text-stone-400"
+                                  }`}
+                                >
+                                  {modality === "text" ? "文本" : "图像"}
+                                </button>
+                              ))}
+                              <span className="ml-1 text-stone-400">输出</span>
+                              {(["text", "image"] as ModelModality[]).map((modality) => (
+                                <button
+                                  key={`output-${modality}`}
+                                  type="button"
+                                  onClick={() => toggleModelModality(model.id, "output_modalities", modality)}
+                                  className={`rounded border px-1.5 py-0.5 ${
+                                    model.capabilities.output_modalities.includes(modality)
+                                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                      : "border-stone-200 bg-stone-50 text-stone-400"
+                                  }`}
+                                >
+                                  {modality === "text" ? "文本" : "图像"}
+                                </button>
+                              ))}
+                              <button
+                                type="button"
+                                onClick={() => toggleEmbeddingCapability(model.id)}
+                                className={`ml-1 rounded border px-1.5 py-0.5 ${
+                                  model.capabilities.embedding
+                                    ? "border-violet-200 bg-violet-50 text-violet-700"
+                                    : "border-stone-200 bg-stone-50 text-stone-400"
+                                }`}
+                              >
+                                嵌入
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                        {formValues.models.length === 0 && (
+                          <div className="rounded-lg border border-dashed border-stone-200 py-4 text-center text-[10px] text-stone-400">
+                            尚未添加模型
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     {/* 设为默认 */}
@@ -1790,16 +2121,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="space-y-1">
                 {availableModels.map(model => (
                   <label
-                    key={model}
+                    key={model.id}
                     className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-white border border-transparent hover:border-stone-200 hover:shadow-sm cursor-pointer transition-all group"
                   >
                     <input
                       type="checkbox"
-                      checked={selectedModels.has(model)}
-                      onChange={() => handleToggleModel(model)}
+                      checked={selectedModels.has(model.id)}
+                      onChange={() => handleToggleModel(model.id)}
                       className="rounded border-stone-300 text-[#8CA38A] focus:ring-[#8CA38A]/40 h-4 w-4 shrink-0 transition-colors"
                     />
-                    <span className="text-xs font-mono text-stone-700 group-hover:text-stone-900 break-all">{model}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs font-mono text-stone-700 group-hover:text-stone-900 break-all">
+                        {model.id}
+                      </span>
+                      <span className="mt-1 flex flex-wrap gap-1">
+                        {capabilityLabels(model.capabilities).map((label) => (
+                          <span key={label} className="rounded border border-stone-200 bg-white px-1.5 py-0.5 text-[8px] text-stone-500">
+                            {label}
+                          </span>
+                        ))}
+                      </span>
+                    </span>
                   </label>
                 ))}
               </div>

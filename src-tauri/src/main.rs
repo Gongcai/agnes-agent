@@ -5,6 +5,7 @@ mod commands;
 mod db;
 mod error;
 mod memory;
+mod model_registry;
 mod state;
 mod tools;
 
@@ -74,6 +75,8 @@ fn main() {
             commands::list_providers,
             commands::upsert_provider,
             commands::delete_provider,
+            commands::get_model_roles,
+            commands::set_model_roles,
             commands::get_provider_api_key,
             commands::test_provider,
             commands::fetch_provider_models,

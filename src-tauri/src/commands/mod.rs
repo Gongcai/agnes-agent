@@ -7,6 +7,10 @@ use crate::agent::protocol::{msg_type, Envelope};
 use crate::db::repo::messages::{NewMessage, NewMessagePart};
 use crate::db::repo::agents::{AgentRow, AgentUpdate, NewAgent};
 use crate::db::repo::sessions::NewSession;
+use crate::model_registry::{
+    descriptor_from_api, load_model_roles, normalize_model_catalog, parse_model_catalog,
+    save_model_roles, ModelDescriptor, ModelRoleAssignments,
+};
 
 #[derive(Serialize)]
 pub struct AgentSummary {
@@ -404,8 +408,16 @@ pub async fn get_debug_prompt(
         None => None,
     };
     let session_model = session_opt.as_ref().and_then(|s| s.model.clone()).unwrap_or_default();
+    let model_roles = load_model_roles(&state.db).await?;
     let effective_model = if session_model.is_empty() {
-        if agent.model.is_empty() { "gpt-4o".to_string() } else { agent.model.clone() }
+        if agent.model.is_empty() {
+            model_roles
+                .main_model
+                .clone()
+                .unwrap_or_else(|| "gpt-4o".to_string())
+        } else {
+            agent.model.clone()
+        }
     } else {
         session_model
     };
@@ -495,6 +507,7 @@ pub async fn get_debug_prompt(
         }
     }
 
+    let task_llm_configs = resolve_task_llm_configs(&state.db, &model_roles).await?;
     let snapshot = json!({
         "input": "",
         "context": {
@@ -515,6 +528,7 @@ pub async fn get_debug_prompt(
                     "budget": effective_thinking_budget
                 }
             },
+            "taskLlmConfigs": task_llm_configs,
             "settings": { "user_context_limit": serde_json::Value::Null },
             "recentMessages": history_json,
             "summary": summary,
@@ -871,6 +885,62 @@ struct ResolvedLlm {
     litellm_model: String,
     thinking_mode: String,
     thinking_budget: i64,
+    task_llm_configs: serde_json::Value,
+}
+
+/// Resolve a routed model reference into the same provider configuration used by the main model.
+async fn resolve_routed_llm_config(
+    db: &crate::db::DbActorHandle,
+    model_ref: Option<&str>,
+) -> AppResult<Option<serde_json::Value>> {
+    let Some(model_ref) = model_ref.filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let Some((provider_id, model_name)) = model_ref.split_once('/') else {
+        return Ok(None);
+    };
+    let Some(provider) = db.get_model_provider(provider_id.to_string()).await? else {
+        return Ok(None);
+    };
+    let api_key = db
+        .get_setting(format!("provider:{}:api_key", provider.id))
+        .await?;
+    let litellm_model = match provider.kind.as_str() {
+        "openai" | "anthropic" => model_name.to_string(),
+        "ollama" => format!("ollama/{model_name}"),
+        "openai_compatible" => format!("openai/{model_name}"),
+        "google" => format!("gemini/{model_name}"),
+        _ => model_name.to_string(),
+    };
+    Ok(Some(json!({
+        "provider": provider.kind,
+        "apiBase": provider.api_base,
+        "apiKey": api_key,
+        "model": model_name,
+        "litellmModel": litellm_model,
+        "thinking": { "mode": "off", "budget": 0 }
+    })))
+}
+
+/// Build task-specific LLM configs. Unimplemented consumers can adopt these keys without a DB change.
+async fn resolve_task_llm_configs(
+    db: &crate::db::DbActorHandle,
+    roles: &ModelRoleAssignments,
+) -> AppResult<serde_json::Value> {
+    let mut configs = serde_json::Map::new();
+    for (key, selection) in [
+        ("image", roles.image_model.as_deref()),
+        ("summary", roles.summary_model.as_deref()),
+        ("memory", roles.memory_model.as_deref()),
+        ("speech", roles.speech_model.as_deref()),
+        ("quick", roles.quick_model.as_deref()),
+        ("embedding", roles.embedding_model.as_deref()),
+    ] {
+        if let Some(config) = resolve_routed_llm_config(db, selection).await? {
+            configs.insert(key.to_string(), config);
+        }
+    }
+    Ok(serde_json::Value::Object(configs))
 }
 
 /// 解析会话当前生效的 LLM 配置（模型/思考/provider/密钥）。
@@ -882,9 +952,17 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         .ok_or_else(|| AppError::Other(format!("关联的智能体 `{}` 不存在", session.agent_id)))?
         .clone();
 
+    let model_roles = load_model_roles(&state.db).await?;
     let session_model = session.model.clone().unwrap_or_default();
     let effective_model = if session_model.is_empty() {
-        if agent.model.is_empty() { "gpt-4o".to_string() } else { agent.model.clone() }
+        if agent.model.is_empty() {
+            model_roles
+                .main_model
+                .clone()
+                .unwrap_or_else(|| "gpt-4o".to_string())
+        } else {
+            agent.model.clone()
+        }
     } else {
         session_model
     };
@@ -923,6 +1001,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
     };
     let thinking_budget = session.thinking_budget.or(Some(agent.thinking_budget)).unwrap_or(0);
 
+    let task_llm_configs = resolve_task_llm_configs(&state.db, &model_roles).await?;
     Ok(ResolvedLlm {
         agent,
         session_context_limit: session.context_limit,
@@ -935,6 +1014,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         litellm_model,
         thinking_mode,
         thinking_budget,
+        task_llm_configs,
     })
 }
 
@@ -997,6 +1077,7 @@ async fn start_agent_run(state: &AppState, cfg: &ResolvedLlm, session_id: &str, 
                     "budget": cfg.thinking_budget
                 }
             },
+            "taskLlmConfigs": cfg.task_llm_configs,
             "settings": {
                 "user_context_limit": cfg.session_context_limit
             },
@@ -1133,7 +1214,7 @@ pub struct ModelProviderDto {
     pub kind: String,
     pub api_base: Option<String>,
     pub is_default: bool,
-    pub models: Vec<String>,
+    pub models: Vec<ModelDescriptor>,
     /// 是否已保存 API Key（出于安全不返回明文，仅暴露是否配置）
     pub has_api_key: bool,
     pub created_at: String,
@@ -1148,7 +1229,7 @@ pub struct UpsertProviderInput {
     pub api_base: Option<String>,
     pub api_key: Option<String>,
     pub is_default: Option<bool>,
-    pub models: Option<Vec<String>>,
+    pub models: Option<Vec<ModelDescriptor>>,
 }
 
 #[derive(Serialize)]
@@ -1165,11 +1246,7 @@ pub async fn list_providers(
     let rows = state.db.list_model_providers().await?;
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
-        let models: Vec<String> = r
-            .models_json
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_default();
+        let models = parse_model_catalog(r.models_json.as_deref(), &r.kind);
         // 出于安全不返回明文 key，仅判断是否已配置
         let stored_key = state
             .db
@@ -1209,10 +1286,8 @@ pub async fn upsert_provider(
             .await?;
     }
 
-    let models_json = provider
-        .models
-        .as_ref()
-        .map(|m| serde_json::to_string(m).unwrap_or_else(|_| "[]".to_string()));
+    let normalized_models = normalize_model_catalog(provider.models.unwrap_or_default(), &provider.kind);
+    let models_json = Some(serde_json::to_string(&normalized_models)?);
 
     let set_default = provider.is_default.unwrap_or(false);
 
@@ -1227,6 +1302,9 @@ pub async fn upsert_provider(
     };
 
     state.db.upsert_model_provider(new_row, set_default).await?;
+    let mut roles = load_model_roles(&state.db).await?;
+    roles.retain_valid_provider_models(&id, &normalized_models);
+    save_model_roles(&state.db, &roles).await?;
     Ok(id)
 }
 
@@ -1242,7 +1320,51 @@ pub async fn delete_provider(
         .db
         .set_setting(format!("provider:{}:api_key", provider_id), String::new())
         .await?;
+    let mut roles = load_model_roles(&state.db).await?;
+    roles.clear_provider(&provider_id);
+    save_model_roles(&state.db, &roles).await?;
     Ok(())
+}
+
+/// Return the global model role assignments.
+#[tauri::command]
+pub async fn get_model_roles(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<ModelRoleAssignments> {
+    load_model_roles(&state.db).await
+}
+
+/// Validate and persist the global model role assignments.
+#[tauri::command]
+pub async fn set_model_roles(
+    state: tauri::State<'_, AppState>,
+    roles: ModelRoleAssignments,
+) -> AppResult<()> {
+    let providers = state.db.list_model_providers().await?;
+    for (role, selection) in roles.selections() {
+        let Some(selection) = selection.filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let (provider_id, model_id) = selection.split_once('/').ok_or_else(|| {
+            AppError::Other(format!("{}的模型引用格式无效: {selection}", role.label()))
+        })?;
+        let provider = providers
+            .iter()
+            .find(|provider| provider.id == provider_id)
+            .ok_or_else(|| AppError::Other(format!("模型服务商 `{provider_id}` 不存在")))?;
+        let models = parse_model_catalog(provider.models_json.as_deref(), &provider.kind);
+        let model = models
+            .iter()
+            .find(|model| model.id == model_id)
+            .ok_or_else(|| AppError::Other(format!("模型 `{selection}` 不存在")))?;
+        if !role.accepts(&model.capabilities) {
+            return Err(AppError::Other(format!(
+                "模型 `{selection}` 不满足{}所需的能力标签",
+                role.label()
+            )));
+        }
+    }
+    save_model_roles(&state.db, &roles).await
 }
 
 /// 获取已保存的 API Key 明文（本地应用，仅供设置界面回显，默认以密码形式展示）。
@@ -1302,7 +1424,7 @@ pub async fn fetch_provider_models(
     kind: String,
     api_base: Option<String>,
     api_key: Option<String>,
-) -> AppResult<Vec<String>> {
+) -> AppResult<Vec<ModelDescriptor>> {
     let client = reqwest::Client::new();
     let mut models = Vec::new();
 
@@ -1328,7 +1450,7 @@ pub async fn fetch_provider_models(
         if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
             for item in data {
                 if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
-                    models.push(id.to_string());
+                    models.push(descriptor_from_api(&kind, id, item));
                 }
             }
         } else {
@@ -1344,7 +1466,16 @@ pub async fn fetch_provider_models(
         if let Some(models_arr) = json.get("models").and_then(|m| m.as_array()) {
             for item in models_arr {
                 if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
-                    models.push(name.to_string());
+                    let metadata = match client
+                        .post(format!("{}/api/show", base.trim_end_matches('/')))
+                        .json(&json!({ "model": name }))
+                        .send()
+                        .await
+                    {
+                        Ok(response) => response.json::<serde_json::Value>().await.unwrap_or_else(|_| item.clone()),
+                        Err(_) => item.clone(),
+                    };
+                    models.push(descriptor_from_api(&kind, name, &metadata));
                 }
             }
         } else {
@@ -1354,7 +1485,7 @@ pub async fn fetch_provider_models(
         return Err(AppError::Other(format!("暂不支持自动获取 {} 的模型列表，请手动输入", kind)));
     }
 
-    Ok(models)
+    Ok(normalize_model_catalog(models, &kind))
 }
 
 /// 读取一个 settings 键值（供前端持久化 UI 状态，如上次选中的 agent/session）。
