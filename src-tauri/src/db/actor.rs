@@ -101,6 +101,10 @@ pub enum DbCommand {
         agent_id: String,
         resp: oneshot::Sender<AppResult<Vec<repo::workspaces::WorkspaceRow>>>,
     },
+    GetWorkspace {
+        id: String,
+        resp: oneshot::Sender<AppResult<Option<repo::workspaces::WorkspaceRow>>>,
+    },
     InsertWorkspace {
         row: repo::workspaces::NewWorkspace,
         resp: oneshot::Sender<AppResult<String>>,
@@ -404,6 +408,12 @@ impl DbActorHandle {
     pub async fn list_workspaces(&self, agent_id: String) -> AppResult<Vec<repo::workspaces::WorkspaceRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListWorkspaces { agent_id, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn get_workspace(&self, id: String) -> AppResult<Option<repo::workspaces::WorkspaceRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetWorkspace { id, resp })?;
         rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
@@ -725,6 +735,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::ListWorkspaces { agent_id, resp } => {
                     let _ = resp.send(repo::workspaces::list(&conn, &agent_id));
+                }
+                DbCommand::GetWorkspace { id, resp } => {
+                    let _ = resp.send(repo::workspaces::get(&conn, &id));
                 }
                 DbCommand::InsertWorkspace { row, resp } => {
                     let _ = resp.send(repo::workspaces::insert(&conn, &row));

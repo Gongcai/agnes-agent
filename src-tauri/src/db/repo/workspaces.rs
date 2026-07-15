@@ -1,5 +1,5 @@
 //! workspaces repo - 工作区（绑定文件夹）的 CRUD。
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::AppResult;
 
@@ -49,6 +49,28 @@ pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<WorkspaceRow>> {
         out.push(r?);
     }
     Ok(out)
+}
+
+/// 按 id 取单个工作区。
+pub fn get(conn: &Connection, id: &str) -> AppResult<Option<WorkspaceRow>> {
+    let res = conn
+        .query_row(
+            "SELECT id, agent_id, name, folder_path, created_at, updated_at \
+             FROM workspaces WHERE id = ?1",
+            [id],
+            |r| {
+                Ok(WorkspaceRow {
+                    id: r.get(0)?,
+                    agent_id: r.get(1)?,
+                    name: r.get(2)?,
+                    folder_path: r.get(3)?,
+                    created_at: r.get(4)?,
+                    updated_at: r.get(5)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(res)
 }
 
 /// 插入一个新工作区。
