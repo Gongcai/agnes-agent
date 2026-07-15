@@ -66,7 +66,9 @@ fn main() {
             commands::delete_provider,
             commands::get_provider_api_key,
             commands::test_provider,
-            commands::fetch_provider_models
+            commands::fetch_provider_models,
+            commands::get_setting,
+            commands::set_setting
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -99,6 +99,7 @@ interface AgentState {
   providers: ModelProvider[];
   
   // Actions
+  init: () => Promise<void>;
   loadAgents: () => Promise<void>;
   loadSessions: (agentId: string) => Promise<void>;
   loadMessages: (sessionId: string) => Promise<void>;
@@ -176,6 +177,48 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
     } catch (e) {
       console.error("Failed to load agents", e);
+    }
+  },
+
+  // 应用启动初始化：读取持久化的上次 agent/session 与打开模式，按模式恢复或新建。
+  init: async () => {
+    try {
+      const agents = await invoke<AgentSummary[]>("list_agents");
+      set({ agents });
+      if (agents.length === 0) return;
+
+      const lastAgentId = await invoke<string | null>("get_setting", { key: "ui:last_agent_id" });
+      const lastSessionId = await invoke<string | null>("get_setting", { key: "ui:last_session_id" });
+      const openMode = (await invoke<string | null>("get_setting", { key: "ui:session_open_mode" })) ?? "last";
+
+      const agentId = lastAgentId && agents.some((a) => a.id === lastAgentId) ? lastAgentId : agents[0].id;
+      set({ activeAgentId: agentId });
+      invoke("set_setting", { key: "ui:last_agent_id", value: agentId }).catch(() => {});
+
+      const sessions = await invoke<Session[]>("list_sessions", { agentId });
+      set({ sessions });
+
+      if (openMode === "new") {
+        // 打开时自动新建会话
+        const sid = await invoke<string>("create_session", { agentId, title: "新会话" });
+        set({ activeSessionId: sid, messages: [] });
+        invoke("set_setting", { key: "ui:last_session_id", value: sid }).catch(() => {});
+      } else {
+        // 回到上次对话：优先上次会话，回退到首条，再回退到新建
+        let sid: string | null = lastSessionId && sessions.some((s) => s.id === lastSessionId) ? lastSessionId : null;
+        if (!sid && sessions.length > 0) sid = sessions[0].id;
+        if (sid) {
+          set({ activeSessionId: sid });
+          await get().loadMessages(sid);
+          invoke("set_setting", { key: "ui:last_session_id", value: sid }).catch(() => {});
+        } else {
+          const newSid = await invoke<string>("create_session", { agentId, title: "新会话" });
+          set({ activeSessionId: newSid, messages: [] });
+          invoke("set_setting", { key: "ui:last_session_id", value: newSid }).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.error("init failed", e);
     }
   },
 
@@ -323,7 +366,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setActiveAgentId: async (agentId: string) => {
     set({ activeAgentId: agentId });
     await get().loadSessions(agentId);
-    
+    // 持久化上次选中的智能体
+    invoke("set_setting", { key: "ui:last_agent_id", value: agentId }).catch(() => {});
+
     const sessions = get().sessions;
     if (sessions.length > 0) {
       await get().setActiveSessionId(sessions[0].id);
@@ -335,6 +380,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setActiveSessionId: async (sessionId: string) => {
     set({ activeSessionId: sessionId });
     await get().loadMessages(sessionId);
+    // 持久化上次选中的会话
+    invoke("set_setting", { key: "ui:last_session_id", value: sessionId }).catch(() => {});
   },
 
   setSessionLlm: async (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number) => {

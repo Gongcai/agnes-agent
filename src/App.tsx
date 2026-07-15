@@ -5,14 +5,14 @@ import { SettingsModal } from "./components/SettingsModal";
 import { useAgentStore, setupTauriEventListeners } from "./store/useAgentStore";
 
 export default function App() {
-  const { loadAgents } = useAgentStore();
+  const { init } = useAgentStore();
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
-  const [settingsTab, setSettingsTab] = useState<"agents" | "memory" | "llm" | "audit" | "debug">("agents");
+  const [settingsTab, setSettingsTab] = useState<"general" | "agents" | "memory" | "llm" | "audit" | "debug">("agents");
 
-  // Load initial agents list from SQLite and bind Tauri events bridge on startup
+  // 启动时初始化：恢复上次 agent/session 或按设置新建，并绑定 Tauri 事件桥
   useEffect(() => {
-    loadAgents().catch(console.error);
+    init().catch(console.error);
 
     // Register active listeners for streams/tools/runs
     const cleanup = setupTauriEventListeners();
@@ -20,9 +20,9 @@ export default function App() {
     return () => {
       cleanup().catch(console.error);
     };
-  }, [loadAgents]);
+  }, [init]);
 
-  const handleOpenSettings = (tab: "agents" | "memory" | "llm" | "audit" | "debug" = "agents") => {
+  const handleOpenSettings = (tab: "general" | "agents" | "memory" | "llm" | "audit" | "debug" = "agents") => {
     setSettingsTab(tab);
     setIsSettingsOpen(true);
   };

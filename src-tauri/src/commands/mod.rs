@@ -1266,3 +1266,22 @@ pub async fn fetch_provider_models(
 
     Ok(models)
 }
+
+/// 读取一个 settings 键值（供前端持久化 UI 状态，如上次选中的 agent/session）。
+#[tauri::command]
+pub async fn get_setting(
+    state: tauri::State<'_, AppState>,
+    key: String,
+) -> AppResult<Option<String>> {
+    state.db.get_setting(key).await
+}
+
+/// 写入一个 settings 键值。
+#[tauri::command]
+pub async fn set_setting(
+    state: tauri::State<'_, AppState>,
+    key: String,
+    value: String,
+) -> AppResult<()> {
+    state.db.set_setting(key, value).await
+}

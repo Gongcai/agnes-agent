@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore, ModelProvider, AgentSummary } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
@@ -7,7 +7,7 @@ import { AgentAvatar } from "./AgentAvatar";
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  initialTab?: "agents" | "memory" | "llm" | "audit" | "debug";
+  initialTab?: "general" | "agents" | "memory" | "llm" | "audit" | "debug";
 }
 
 interface AuditLog {
@@ -168,7 +168,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   initialTab = "agents",
 }) => {
   const { agents, activeAgentId, activeSessionId, providers, loadProviders, upsertProvider, deleteProvider, updateAgentModel, setActiveAgentId, upsertAgent, deleteAgent } = useAgentStore();
-  const [activeTab, setActiveTab] = useState<"agents" | "memory" | "llm" | "audit" | "debug">(initialTab);
+  const [activeTab, setActiveTab] = useState<"general" | "agents" | "memory" | "llm" | "audit" | "debug">(initialTab);
   
   // Memory MD state
   const [userMdText, setUserMdText] = useState("");
@@ -683,6 +683,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* Navigation Sidebar */}
           <nav className="w-56 border-r border-stone-200 bg-stone-50/50 p-3 flex flex-col gap-1 shrink-0">
             <button
+              onClick={() => setActiveTab("general")}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                activeTab === "general"
+                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
+                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+              }`}
+            >
+              <Settings className="h-4 w-4 text-stone-500" />
+              <span>通用设置</span>
+            </button>
+            <button
               onClick={() => setActiveTab("agents")}
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "agents"
@@ -741,6 +752,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {/* Right Panel View */}
           <div className="flex-1 overflow-y-auto p-6 bg-white">
+            {/* 0. GENERAL TAB */}
+            {activeTab === "general" && (
+              <GeneralTab />
+            )}
+
             {/* 1. AGENTS TAB */}
             {activeTab === "agents" && (
               <div className="space-y-6">
@@ -1775,6 +1791,68 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+/// 通用设置标签页：会话打开模式等应用级行为配置。
+const GeneralTab: React.FC = () => {
+  const [openMode, setOpenMode] = useState<string>("last");
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    invoke<string | null>("get_setting", { key: "ui:session_open_mode" })
+      .then((v) => setOpenMode(v ?? "last"))
+      .catch(console.error)
+      .finally(() => setLoaded(true));
+  }, []);
+
+  const updateMode = async (mode: string) => {
+    setOpenMode(mode);
+    try {
+      await invoke("set_setting", { key: "ui:session_open_mode", value: mode });
+    } catch (e) {
+      console.error("保存打开模式失败", e);
+    }
+  };
+
+  const options = [
+    { value: "last", label: "回到上次对话", desc: "打开时恢复上次选中的智能体与会话" },
+    { value: "new", label: "自动新建会话", desc: "打开时为上次选中的智能体自动创建新会话" },
+  ];
+
+  return (
+    <div className="space-y-6 max-w-xl">
+      <div>
+        <h2 className="text-sm font-semibold text-stone-800 mb-1">通用设置</h2>
+        <p className="text-[11px] text-stone-400">应用启动行为与界面偏好</p>
+      </div>
+
+      <div>
+        <label className="font-semibold text-stone-500 block mb-2">打开时</label>
+        <div className="space-y-2">
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={!loaded}
+              onClick={() => updateMode(opt.value)}
+              className={`w-full text-left px-3.5 py-2.5 rounded-xl border transition-colors ${
+                openMode === opt.value
+                  ? "bg-[#8CA38A]/10 border-[#8CA38A] text-stone-800"
+                  : "bg-stone-50 border-stone-200 text-stone-600 hover:bg-stone-100"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <span className={`w-3 h-3 rounded-full border-2 ${openMode === opt.value ? "border-[#8CA38A] bg-[#8CA38A]" : "border-stone-300"}`} />
+                <span className="text-xs font-semibold">{opt.label}</span>
+              </div>
+              <p className="text-[10px] text-stone-400 mt-1 ml-5">{opt.desc}</p>
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-[10px] text-stone-400">下次启动应用时生效。</p>
+      </div>
     </div>
   );
 };
