@@ -45,10 +45,22 @@ const CodeBlock: React.FC<{ lang: string; text: string; children: React.ReactNod
 
 interface MarkdownMessageProps {
   content: string;
+  streaming?: boolean;
 }
 
 /// Markdown + LaTeX 渲染（中文优化）。用于助手消息文本。
-export const MarkdownMessage: React.FC<MarkdownMessageProps> = ({ content }) => {
+const MarkdownMessageView: React.FC<MarkdownMessageProps> = ({ content, streaming = false }) => {
+  // Parsing Markdown, GFM and KaTeX for every token can monopolize the renderer.
+  // Keep the live path lightweight and apply rich formatting once the run finishes.
+  if (streaming) {
+    return (
+      <div className="markdown-body whitespace-pre-wrap break-words">
+        {content}
+        <span className="ml-0.5 inline-block h-4 w-1 animate-pulse bg-stone-400 align-text-bottom" />
+      </div>
+    );
+  }
+
   return (
     <div className="markdown-body">
       <ReactMarkdown
@@ -84,3 +96,5 @@ export const MarkdownMessage: React.FC<MarkdownMessageProps> = ({ content }) => 
     </div>
   );
 };
+
+export const MarkdownMessage = React.memo(MarkdownMessageView);

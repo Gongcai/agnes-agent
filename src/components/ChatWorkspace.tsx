@@ -57,6 +57,14 @@ const PERMISSION_LABEL: Record<PermissionMode, string> = Object.fromEntries(
   PERMISSION_OPTIONS.map((option) => [option.value, option.label]),
 ) as Record<PermissionMode, string>;
 
+const TOOL_STATUS_LABEL: Record<string, string> = {
+  pending_approval: "等待批准",
+  running: "执行中",
+  succeeded: "已完成",
+  denied: "已拒绝",
+  failed: "执行失败",
+};
+
 interface ChatWorkspaceProps {
   isSidebarOpen: boolean;
   onToggleSidebar: () => void;
@@ -134,7 +142,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
   // Scroll to bottom on new messages
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messageEndRef.current?.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" });
   }, [messages, isStreaming]);
 
   const handleSend = () => {
@@ -181,8 +189,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
       {/* Message Panel list */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6 max-w-4xl mx-auto w-full">
-        {messages.map((message) => {
+        {messages.map((message, messageIndex) => {
           const isUser = message.role === "user";
+          const isLiveAssistant = isStreaming
+            && !isUser
+            && messageIndex === messages.length - 1
+            && (message.status === "pending" || message.status === "streaming");
           return (
             <div
               key={message.id}
@@ -263,6 +275,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                         const tc = part.tool_call;
                         const isHighRisk = tc.risk === "High";
                         const isPending = tc.status === "pending_approval";
+                        const statusLabel = TOOL_STATUS_LABEL[tc.status] || tc.status;
 
                         return (
                           <div
@@ -283,6 +296,17 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                                 <span>调用本地工具: {tc.tool}</span>
                               </span>
                               <span className="flex items-center gap-1.5">
+                                <span className={`px-2 py-0.5 rounded text-[10px] ${
+                                  tc.status === "running"
+                                    ? "bg-blue-100 text-blue-700 animate-pulse"
+                                    : tc.status === "succeeded"
+                                    ? "bg-emerald-100 text-emerald-700"
+                                    : tc.status === "failed" || tc.status === "denied"
+                                    ? "bg-rose-100 text-rose-700"
+                                    : "bg-amber-100 text-amber-700"
+                                }`}>
+                                  {statusLabel}
+                                </span>
                                 {tc.permissionMode && (
                                   <span className="px-2 py-0.5 rounded bg-stone-100 text-stone-500 text-[10px]">
                                     {PERMISSION_LABEL[tc.permissionMode]}
@@ -369,6 +393,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                         <MarkdownMessage
                           key={part.id || index}
                           content={part.content}
+                          streaming={isLiveAssistant}
                         />
                       );
                     })}

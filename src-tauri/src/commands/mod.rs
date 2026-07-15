@@ -613,12 +613,19 @@ pub async fn list_messages(
             let mut tool_call_dto = None;
             if let Some(ref tc_id) = p.tool_call_id {
                 if let Ok(Some(tc_row)) = state.db.get_tool_call(tc_id.clone()).await {
+                    let status = match tc_row.status.as_str() {
+                        "done" => "succeeded",
+                        "rejected" => "denied",
+                        "cancelled" => "failed",
+                        value => value,
+                    }
+                    .to_string();
                     tool_call_dto = Some(ToolCallDto {
                         id: tc_row.id,
                         tool: tc_row.tool,
                         args: tc_row.params.unwrap_or_default(),
                         risk: tc_row.risk_level.unwrap_or_else(|| "Low".to_string()),
-                        status: tc_row.status,
+                        status,
                         output: tc_row.stdout.or(tc_row.stderr),
                     });
                 }

@@ -222,6 +222,7 @@ pub struct NetworkPolicy { pub allow: bool }
 - 现有审批卡片 + 取消信号机制保留（已修好的 select! 不动）。
 - 审批卡片补充显示 risk（High 红色徽章）+ workspace cwd + 是否联网。
 - `OnWrite`/`OnRisk` 免审批时仍落审计 + 前端 toast 提示（可选）。
+- 所有会话权限模式在工具开始时都发送实时卡片事件：需审批为 `tool_call_pending`，直接执行为 `tool_call_started`；结果事件携带 `running | succeeded | failed | denied` 状态并原位更新卡片。
 
 ## 九、新增依赖
 - Rust：`landlock`、`nix`（rlimit）、`async-trait`、`regex`（grep）、`globset`、`walkdir`。

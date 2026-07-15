@@ -51,6 +51,22 @@ export interface ToolCall {
   isSecondaryConfirmation?: boolean;
 }
 
+interface ToolCallEventPayload {
+  session_id: string;
+  run_id: string;
+  tool_call_id: string;
+  tool: string;
+  arguments: unknown;
+  risk: string;
+  cwd?: string;
+  network_allowed: boolean;
+  landlock: boolean;
+  permission_mode: PermissionMode;
+  approval_reason: string;
+  is_secondary_confirmation: boolean;
+  status: ToolCall["status"];
+}
+
 export interface MessagePart {
   id: string;
   kind: "text" | "thought" | "tool_call" | "tool_result";
@@ -215,7 +231,8 @@ interface AgentState {
 
   // Local Mutations (typically called by Tauri event listeners)
   appendStreamingDelta: (content: string) => void;
-  updateLocalToolCallStatus: (toolCallId: string, status: string, output?: string) => void;
+  upsertLocalToolCall: (sessionId: string, toolCall: ToolCall) => void;
+  updateLocalToolCallStatus: (toolCallId: string, status: ToolCall["status"], output?: string) => void;
   setStreamingState: (isStreaming: boolean) => void;
 }
 
@@ -734,33 +751,81 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
 
     lastMsg._streamingInThought = inThought;
+    lastMsg.status = "streaming";
     updatedMessages[updatedMessages.length - 1] = lastMsg;
     set({ messages: updatedMessages });
   },
 
-  updateLocalToolCallStatus: (toolCallId: string, status: string, output?: string) => {
+  upsertLocalToolCall: (sessionId: string, toolCall: ToolCall) => {
+    const { activeSessionId, messages } = get();
+    if (activeSessionId !== sessionId || messages.length === 0) return;
+
+    let messageIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (
+        message.session_id === sessionId &&
+        message.role === "assistant" &&
+        (message.status === "pending" || message.status === "streaming")
+      ) {
+        messageIndex = index;
+        break;
+      }
+    }
+    if (messageIndex < 0) return;
+
+    const updatedMessages = [...messages];
+    const message = { ...updatedMessages[messageIndex], status: "streaming" };
+    const parts = [...message.parts];
+    const partIndex = parts.findIndex(
+      (part) => part.kind === "tool_call" && part.tool_call?.id === toolCall.id,
+    );
+
+    if (partIndex >= 0) {
+      const existing = parts[partIndex];
+      parts[partIndex] = {
+        ...existing,
+        tool_call: { ...existing.tool_call!, ...toolCall },
+      };
+    } else {
+      parts.push({
+        id: `p_tc_${toolCall.id}`,
+        kind: "tool_call",
+        content: `Calling ${toolCall.tool}`,
+        tool_call: toolCall,
+      });
+    }
+
+    message.parts = parts;
+    updatedMessages[messageIndex] = message;
+    set({ messages: updatedMessages });
+  },
+
+  updateLocalToolCallStatus: (toolCallId: string, status: ToolCall["status"], output?: string) => {
     const { messages } = get();
     if (messages.length === 0) return;
 
     const updatedMessages = [...messages];
-    const lastMsg = { ...updatedMessages[updatedMessages.length - 1] };
+    for (let messageIndex = updatedMessages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+      const message = updatedMessages[messageIndex];
+      const partIndex = message.parts.findIndex(
+        (part) => part.kind === "tool_call" && part.tool_call?.id === toolCallId,
+      );
+      if (partIndex < 0) continue;
 
-    if (lastMsg.role === "assistant") {
-      lastMsg.parts = lastMsg.parts.map(part => {
-        if (part.kind === "tool_call" && part.tool_call?.id === toolCallId) {
-          return {
-            ...part,
-            tool_call: {
-              ...part.tool_call,
-              status: status as any,
-              output: output !== undefined ? output : part.tool_call.output,
-            }
-          };
-        }
-        return part;
-      });
-      updatedMessages[updatedMessages.length - 1] = lastMsg;
+      const parts = [...message.parts];
+      const part = parts[partIndex];
+      parts[partIndex] = {
+        ...part,
+        tool_call: {
+          ...part.tool_call!,
+          status,
+          output: output !== undefined ? output : part.tool_call?.output,
+        },
+      };
+      updatedMessages[messageIndex] = { ...message, parts };
       set({ messages: updatedMessages });
+      return;
     }
   },
 
@@ -772,12 +837,89 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 // Setup bridge listener to bind Tauri backend events to Zustand actions
 export function setupTauriEventListeners() {
   const listeners: Promise<() => void>[] = [];
+  let bufferedDelta: { sessionId: string; runId: string; content: string } | null = null;
+  let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const flushBufferedDelta = () => {
+    if (deltaFlushTimer !== null) {
+      clearTimeout(deltaFlushTimer);
+      deltaFlushTimer = null;
+    }
+    const delta = bufferedDelta;
+    bufferedDelta = null;
+    if (!delta) return;
+
+    const store = useAgentStore.getState();
+    if (store.activeSessionId === delta.sessionId) {
+      store.appendStreamingDelta(delta.content);
+    }
+  };
+
+  const queueStreamingDelta = (sessionId: string, runId: string, content: string) => {
+    if (!content || useAgentStore.getState().activeSessionId !== sessionId) return;
+    if (bufferedDelta && (bufferedDelta.sessionId !== sessionId || bufferedDelta.runId !== runId)) {
+      flushBufferedDelta();
+    }
+
+    if (bufferedDelta) {
+      bufferedDelta.content += content;
+    } else {
+      bufferedDelta = { sessionId, runId, content };
+    }
+
+    if (deltaFlushTimer === null) {
+      deltaFlushTimer = setTimeout(flushBufferedDelta, 50);
+    }
+  };
+
+  const showToolCall = (payload: ToolCallEventPayload, fallbackStatus: ToolCall["status"]) => {
+    // Preserve the backend event order when text deltas are waiting in the UI batch.
+    flushBufferedDelta();
+    const args = typeof payload.arguments === "string"
+      ? payload.arguments
+      : JSON.stringify(payload.arguments ?? {});
+    useAgentStore.getState().upsertLocalToolCall(payload.session_id, {
+      id: payload.tool_call_id,
+      tool: payload.tool,
+      args,
+      risk: payload.risk || (payload.tool === "shell" ? "Medium" : "High"),
+      cwd: payload.cwd,
+      networkAllowed: payload.network_allowed,
+      landlock: payload.landlock,
+      permissionMode: payload.permission_mode,
+      approvalReason: payload.approval_reason,
+      isSecondaryConfirmation: payload.is_secondary_confirmation,
+      status: payload.status || fallbackStatus,
+    });
+  };
 
   listeners.push(
     listen<{ session_id: string; run_id: string; content: string }>(
       "agent://assistant_delta",
       (event) => {
-        useAgentStore.getState().appendStreamingDelta(event.payload.content);
+        queueStreamingDelta(
+          event.payload.session_id,
+          event.payload.run_id,
+          event.payload.content,
+        );
+      }
+    )
+  );
+
+  listeners.push(
+    listen<ToolCallEventPayload>(
+      "agent://tool_call_pending",
+      (event) => {
+        showToolCall(event.payload, "pending_approval");
+      }
+    )
+  );
+
+  listeners.push(
+    listen<ToolCallEventPayload>(
+      "agent://tool_call_started",
+      (event) => {
+        showToolCall(event.payload, "running");
       }
     )
   );
@@ -788,80 +930,21 @@ export function setupTauriEventListeners() {
       run_id: string;
       tool_call_id: string;
       tool: string;
-      arguments: any;
-      risk: string;
-      cwd?: string;
-      network_allowed: boolean;
-      landlock: boolean;
-      permission_mode: PermissionMode;
-      approval_reason: string;
-      is_secondary_confirmation: boolean;
+      status?: ToolCall["status"];
+      output: string;
     }>(
-      "agent://tool_call_pending",
-      (event) => {
-        const {
-          tool_call_id,
-          tool,
-          arguments: args,
-          risk,
-          cwd,
-          network_allowed,
-          landlock,
-          permission_mode,
-          approval_reason,
-          is_secondary_confirmation,
-        } = event.payload;
-        // Inject a pending tool call into the current assistant message's parts list for visual card rendering
-        const { messages } = useAgentStore.getState();
-        if (messages.length === 0) return;
-        
-        const updatedMessages = [...messages];
-        const lastMsg = { ...updatedMessages[updatedMessages.length - 1] };
-        
-        if (lastMsg.role === "assistant") {
-          lastMsg.parts = [...lastMsg.parts, {
-            id: `p_tc_${tool_call_id}`,
-            kind: "tool_call",
-            content: `Suspended for user approval: calling ${tool}`,
-            tool_call: {
-              id: tool_call_id,
-              tool,
-              args: typeof args === "string" ? args : JSON.stringify(args),
-              risk: risk || (tool === "shell" ? "Medium" : "High"),
-              cwd,
-              networkAllowed: network_allowed,
-              landlock,
-              permissionMode: permission_mode,
-              approvalReason: approval_reason,
-              isSecondaryConfirmation: is_secondary_confirmation,
-              status: "pending_approval"
-            }
-          }];
-          updatedMessages[updatedMessages.length - 1] = lastMsg;
-          useAgentStore.setState({ messages: updatedMessages });
-        }
-      }
-    )
-  );
-
-  listeners.push(
-    listen<{ session_id: string; run_id: string; tool_call_id: string; tool: string; output: string }>(
       "agent://tool_result",
       (event) => {
-        const { tool_call_id, output } = event.payload;
+        const { session_id, tool_call_id, output } = event.payload;
         const store = useAgentStore.getState();
-        
-        // Find if we already have the tool call in parts list
-        const lastMsg = store.messages[store.messages.length - 1];
-        if (lastMsg && lastMsg.role === "assistant") {
-          const hasToolCall = lastMsg.parts.some(p => p.kind === "tool_call" && p.tool_call?.id === tool_call_id);
-          
-          if (hasToolCall) {
-            // Update its status
-            const status = output === "Executing..." ? "running" : "succeeded";
-            store.updateLocalToolCallStatus(tool_call_id, status, output);
-          }
-        }
+        if (store.activeSessionId !== session_id) return;
+        const status = event.payload.status
+          || (output === "Executing..." ? "running" : "succeeded");
+        store.updateLocalToolCallStatus(
+          tool_call_id,
+          status,
+          status === "running" ? undefined : output,
+        );
       }
     )
   );
@@ -869,17 +952,18 @@ export function setupTauriEventListeners() {
   listeners.push(
     listen<{ session_id: string; run_id: string }>(
       "agent://run_finished",
-      async (_event) => {
+      async (event) => {
+        flushBufferedDelta();
         const store = useAgentStore.getState();
-        store.setStreamingState(false);
         // Reload from SQLite to ensure database-level consistency
-        if (store.activeSessionId) {
-          await store.loadMessages(store.activeSessionId);
+        if (store.activeSessionId === event.payload.session_id) {
+          await store.loadMessages(event.payload.session_id);
           // Also refresh sessions list in case summary changed
           if (store.activeAgentId) {
             await store.loadSessions(store.activeAgentId);
           }
         }
+        store.setStreamingState(false);
       }
     )
   );
@@ -887,18 +971,21 @@ export function setupTauriEventListeners() {
   listeners.push(
     listen<{ session_id: string; run_id: string; message: string }>(
       "agent://run_error",
-      async (_event) => {
+      async (event) => {
+        flushBufferedDelta();
         const store = useAgentStore.getState();
-        store.setStreamingState(false);
-        if (store.activeSessionId) {
-          await store.loadMessages(store.activeSessionId);
+        if (store.activeSessionId === event.payload.session_id) {
+          await store.loadMessages(event.payload.session_id);
         }
+        store.setStreamingState(false);
       }
     )
   );
 
   // Return unsubscribe cleanup function
   return async () => {
+    if (deltaFlushTimer !== null) clearTimeout(deltaFlushTimer);
+    bufferedDelta = null;
     const unsubscribes = await Promise.all(listeners);
     unsubscribes.forEach((unsub) => unsub());
   };

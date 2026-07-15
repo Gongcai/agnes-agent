@@ -328,6 +328,30 @@ async fn handle_conn<R: tauri::Runtime>(
                     .or_else(|| workspace_cwd.map(|path| path.to_string_lossy().to_string()))
                     .or_else(|| policy.shell.allowed_cwd.first().cloned());
 
+                // Emit the tool call before approval or execution so every permission mode
+                // gets a live card in the frontend.
+                let tool_event_name = if approval_decision.needs_approval {
+                    "agent://tool_call_pending"
+                } else {
+                    "agent://tool_call_started"
+                };
+                let _ = app_handle.emit(tool_event_name, json!({
+                    "session_id": session_id.clone(),
+                    "run_id": run_id.clone(),
+                    "tool_call_id": tc_id.clone(),
+                    "tool": tool_name.clone(),
+                    "arguments": args.clone(),
+                    "risk": risk.as_str(),
+                    "cwd": effective_cwd,
+                    "network_allowed": policy.network.allow,
+                    "landlock": policy.sandbox.landlock,
+                    "permission_mode": permission_mode.as_str(),
+                    "approval_reason": approval_decision.reason,
+                    "is_secondary_confirmation": approval_decision.is_secondary_confirmation,
+                    "role_policy_requires_approval": role_policy_requires_approval,
+                    "status": if approval_decision.needs_approval { "pending_approval" } else { "running" },
+                }));
+
                 let mut approved = true;
                 let mut cancelled_during_approval = false;
                 if approval_decision.needs_approval {
@@ -340,24 +364,7 @@ async fn handle_conn<R: tauri::Runtime>(
                     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
                     manager.set_run_cancel_signal(run_id.clone(), cancel_tx);
 
-                    // 2. 向 React 发送等待审批事件
-                    let _ = app_handle.emit("agent://tool_call_pending", json!({
-                        "session_id": session_id.clone(),
-                        "run_id": run_id.clone(),
-                        "tool_call_id": tc_id.clone(),
-                        "tool": tool_name.clone(),
-                        "arguments": args.clone(),
-                        "risk": risk.as_str(),
-                        "cwd": effective_cwd,
-                        "network_allowed": policy.network.allow,
-                        "landlock": policy.sandbox.landlock,
-                        "permission_mode": permission_mode.as_str(),
-                        "approval_reason": approval_decision.reason,
-                        "is_secondary_confirmation": approval_decision.is_secondary_confirmation,
-                        "role_policy_requires_approval": role_policy_requires_approval,
-                    }));
-
-                    // 3. 等待用户点击按钮释放，或 cancel_run 触发取消信号
+                    // 2. 等待用户点击按钮释放，或 cancel_run 触发取消信号
                     tokio::select! {
                         r = approval_rx => { approved = r.unwrap_or(false); }
                         _ = cancel_rx => { cancelled_during_approval = true; }
@@ -388,6 +395,14 @@ async fn handle_conn<R: tauri::Runtime>(
                         ),
                     };
                     let _ = db.insert_tool_call(tc_log).await;
+                    let _ = app_handle.emit("agent://tool_result", json!({
+                        "session_id": session_id.clone(),
+                        "run_id": run_id.clone(),
+                        "tool_call_id": tc_id.clone(),
+                        "tool": tool_name.clone(),
+                        "status": "denied",
+                        "output": "User rejected tool execution"
+                    }));
                     
                     let reply = Envelope::reply(msg_type::TOOL_RESULT, json!({
                         "id": tc_id,
@@ -405,6 +420,7 @@ async fn handle_conn<R: tauri::Runtime>(
                     "run_id": run_id.clone(),
                     "tool_call_id": tc_id.clone(),
                     "tool": tool_name.clone(),
+                    "status": "running",
                     "output": "Executing..."
                 }));
 
@@ -444,6 +460,7 @@ async fn handle_conn<R: tauri::Runtime>(
                             "run_id": run_id.clone(),
                             "tool_call_id": tc_id.clone(),
                             "tool": tool_name.clone(),
+                            "status": "succeeded",
                             "output": stdout.clone()
                         }));
 
@@ -461,6 +478,7 @@ async fn handle_conn<R: tauri::Runtime>(
                             "run_id": run_id.clone(),
                             "tool_call_id": tc_id.clone(),
                             "tool": tool_name.clone(),
+                            "status": "failed",
                             "output": format!("Error: {err_str}")
                         }));
 
