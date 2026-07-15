@@ -403,7 +403,14 @@ async fn handle_conn<R: tauri::Runtime>(
                 // 准备回传 Python 的结果
                 let reply_payload = match exec_res {
                     Ok(val) => {
-                        let stdout = val.get("stdout").and_then(|x| x.as_str()).unwrap_or("Success").to_string();
+                        let stdout = val
+                            .get("stdout")
+                            .and_then(|x| x.as_str())
+                            .or_else(|| val.get("content").and_then(|x| x.as_str()))
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| {
+                                serde_json::to_string(&val).unwrap_or_else(|_| "Success".to_string())
+                            });
                         // 向前端发送执行结果以渲染 terminal log
                         let _ = app_handle.emit("agent://tool_result", json!({
                             "session_id": session_id.clone(),

@@ -121,4 +121,22 @@ def test_get_available_tools():
     assert "shell" in tool_names
     assert "file_read" not in tool_names
     assert "file_write" not in tool_names
+    assert "file_edit" not in tool_names
+    assert "list_files" not in tool_names
+    assert "grep" not in tool_names
+    assert "apply_patch" not in tool_names
     assert "git" in tool_names
+
+    all_tool_names = [
+        tool["function"]["name"] for tool in get_available_tools({})
+    ]
+    assert all_tool_names == [
+        "shell",
+        "file_read",
+        "file_write",
+        "file_edit",
+        "list_files",
+        "grep",
+        "apply_patch",
+        "git",
+    ]

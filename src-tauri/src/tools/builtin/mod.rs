@@ -1,5 +1,5 @@
 //! 内置工具统一 trait 与执行上下文。
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -8,10 +8,14 @@ use crate::db::DbActorHandle;
 use crate::error::AppResult;
 use crate::tools::policy::{ApprovalTier, Risk, ToolPolicy};
 
-pub mod shell;
+pub mod apply_patch;
+pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
 pub mod git;
+pub mod grep;
+pub mod list_files;
+pub mod shell;
 
 /// 工具执行上下文：包含审计所需的 DB 句柄、参数、policy 与 workspace cwd。
 pub struct ToolCtx<'a> {
@@ -63,29 +67,89 @@ impl<'a> ToolCtx<'a> {
 /// 内置工具统一接口。
 #[async_trait]
 pub trait BuiltinTool: Send + Sync {
-    /// 该工具在给定参数下的风险等级。
+    /// Stable name used in the LLM protocol.
+    fn name(&self) -> &'static str;
+    /// JSON schema exposed to model providers.
+    fn schema(&self) -> Value;
+    /// Risk for the supplied arguments.
     fn risk(&self, args: &Value) -> Risk;
     async fn execute(&self, ctx: &ToolCtx<'_>) -> AppResult<Value>;
 }
 
-/// 注册表：返回所有内置工具实例（按 name 派发）。
-pub fn builtin_tools() -> Vec<(&'static str, Box<dyn BuiltinTool>)> {
+/// Return all registered built-in tools.
+pub fn builtin_tools() -> Vec<Box<dyn BuiltinTool>> {
     vec![
-        ("shell", Box::new(shell::ShellTool)),
-        ("file_read", Box::new(file_read::FileReadTool)),
-        ("file_write", Box::new(file_write::FileWriteTool)),
-        ("git", Box::new(git::GitTool)),
+        Box::new(shell::ShellTool),
+        Box::new(file_read::FileReadTool),
+        Box::new(file_write::FileWriteTool),
+        Box::new(file_edit::FileEditTool),
+        Box::new(list_files::ListFilesTool),
+        Box::new(grep::GrepTool),
+        Box::new(apply_patch::ApplyPatchTool),
+        Box::new(git::GitTool),
     ]
 }
 
-/// 计算某工具调用在给定参数下的风险等级。
+/// Resolve a file argument relative to the current workspace.
+pub fn resolve_path(ctx: &ToolCtx<'_>, path: &str) -> PathBuf {
+    let expanded = crate::tools::policy::expand_home(path);
+    if expanded.is_absolute() {
+        return expanded;
+    }
+
+    let base = ctx
+        .workspace_cwd
+        .clone()
+        .or_else(|| {
+            ctx.policy
+                .shell
+                .allowed_cwd
+                .first()
+                .map(|path| crate::tools::policy::expand_home(path))
+        })
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join(expanded)
+}
+
+/// Resolve a path as far as possible without requiring the leaf to exist.
+pub fn normalize_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+
+    let mut existing = path;
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            return path.to_path_buf();
+        };
+        missing.push(name.to_os_string());
+        let Some(parent) = existing.parent() else {
+            return path.to_path_buf();
+        };
+        if parent == existing {
+            return path.to_path_buf();
+        }
+        existing = parent;
+    }
+    if let Ok(mut canonical) = existing.canonicalize() {
+        for component in missing.into_iter().rev() {
+            canonical.push(component);
+        }
+        canonical
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// Compute the risk of a registered tool call.
 pub fn compute_risk(tool: &str, args: &Value) -> Risk {
-    for (name, impl_) in builtin_tools() {
-        if name == tool {
+    for impl_ in builtin_tools() {
+        if impl_.name() == tool {
             return impl_.risk(args);
         }
     }
-    Risk::Low
+    Risk::High
 }
 
 /// 判断操作是否为写操作（用于 OnWrite tier）。
@@ -96,16 +160,28 @@ pub fn is_write_op(tool: &str, args: &Value) -> bool {
         "shell" => {
             let cmd = args.get("command").and_then(|x| x.as_str()).unwrap_or("");
             const WRITE_PATTERNS: &[&str] = &[
-                " > ", " >> ", ">", ">>", "tee", "rm ", "rmdir", "mv ", "cp ", "mkdir",
-                "touch", "dd ", "chmod", "chown", "sed -i", "install",
+                " > ", " >> ", ">", ">>", "tee", "rm ", "rmdir", "mv ", "cp ", "mkdir", "touch",
+                "dd ", "chmod", "chown", "sed -i", "install",
             ];
             cmd.contains('>') || WRITE_PATTERNS.iter().any(|p| cmd.contains(p))
         }
         "git" => {
             let arr = args.get("args").and_then(|x| x.as_array());
             const WRITE_CMDS: &[&str] = &[
-                "push", "commit", "reset", "clean", "merge", "rebase", "checkout",
-                "cherry-pick", "stash", "tag", "add", "rm", "mv", "init",
+                "push",
+                "commit",
+                "reset",
+                "clean",
+                "merge",
+                "rebase",
+                "checkout",
+                "cherry-pick",
+                "stash",
+                "tag",
+                "add",
+                "rm",
+                "mv",
+                "init",
             ];
             arr.map(|a| {
                 a.iter()
@@ -183,5 +259,29 @@ mod tests {
             &json!({"path": "result.txt"}),
             &policy
         ));
+    }
+
+    #[test]
+    fn registry_contains_every_declared_builtin() {
+        let names: Vec<_> = builtin_tools()
+            .into_iter()
+            .map(|tool| tool.name())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "shell",
+                "file_read",
+                "file_write",
+                "file_edit",
+                "list_files",
+                "grep",
+                "apply_patch",
+                "git"
+            ]
+        );
+        assert!(builtin_tools()
+            .into_iter()
+            .all(|tool| tool.schema()["function"]["name"] == tool.name()));
     }
 }

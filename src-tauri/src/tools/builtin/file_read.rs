@@ -10,6 +10,27 @@ pub struct FileReadTool;
 
 #[async_trait]
 impl BuiltinTool for FileReadTool {
+    fn name(&self) -> &'static str {
+        "file_read"
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": self.name(),
+                "description": "Read a UTF-8 text file from the current workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Absolute path or a path relative to the workspace."}
+                    },
+                    "required": ["path"]
+                }
+            }
+        })
+    }
+
     fn risk(&self, args: &Value) -> Risk {
         let path = args.get("path").and_then(|x| x.as_str()).unwrap_or("");
         const SENSITIVE: &[&str] = &[".ssh", "/etc", "id_rsa", ".env", ".aws", ".gnupg"];
@@ -27,7 +48,9 @@ impl BuiltinTool for FileReadTool {
             .and_then(|x| x.as_str())
             .ok_or_else(|| AppError::Other("缺少 `path` 参数".into()))?;
 
-        let expanded_path = crate::tools::policy::expand_home(path_str);
+        let expanded_path = crate::tools::builtin::normalize_path(
+            &crate::tools::builtin::resolve_path(ctx, path_str),
+        );
 
         if let Err(e) = ctx.policy.check_file_read(&expanded_path.to_string_lossy()) {
             ctx.record_failure(&e).await?;
@@ -44,7 +67,7 @@ impl BuiltinTool for FileReadTool {
                     None,
                 )
                 .await?;
-                Ok(json!({ "content": content }))
+                Ok(json!({ "content": content, "stdout": content }))
             }
             Err(e) => {
                 let err_msg = format!("无法读取文件: {e}");

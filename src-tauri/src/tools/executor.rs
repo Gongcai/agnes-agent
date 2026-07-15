@@ -4,8 +4,8 @@
 /// 各工具的物理执行逻辑在 `builtin/*` 模块中。
 use std::path::PathBuf;
 
-use crate::db::DbActorHandle;
 use crate::db::repo::tools::NewToolCall;
+use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::tools::builtin::{builtin_tools, ToolCtx};
 use crate::tools::policy::ToolPolicy;
@@ -47,7 +47,8 @@ impl ToolExecutor {
         self.db.insert_tool_call(new_tc).await?;
 
         // B. 解析 workspace cwd（session.workspace_id → workspaces.folder_path）
-        let workspace_cwd = crate::tools::workspace::resolve_workspace_cwd(&self.db, session_id).await;
+        let workspace_cwd =
+            crate::tools::workspace::resolve_workspace_cwd(&self.db, session_id).await;
 
         // C. 合并有效 policy：workspace 自动加入 allowed_cwd / allowed_roots
         let effective_policy = effective_policy(policy, &workspace_cwd);
@@ -62,8 +63,8 @@ impl ToolExecutor {
             workspace_cwd,
         };
 
-        for (name, impl_) in builtin_tools() {
-            if name == tool {
+        for impl_ in builtin_tools() {
+            if impl_.name() == tool {
                 return impl_.execute(&ctx).await;
             }
         }
@@ -124,6 +125,19 @@ mod tests {
         };
         db.insert_agent(agent).await.unwrap();
 
+        let temp_project = std::env::current_dir()
+            .unwrap()
+            .join("target/test_tool_project");
+        let _ = fs::create_dir_all(&temp_project);
+        db.insert_workspace(crate::db::repo::workspaces::NewWorkspace {
+            id: "workspace-1".into(),
+            agent_id: "test-agent".into(),
+            name: "Tool Test Workspace".into(),
+            folder_path: temp_project.to_string_lossy().to_string(),
+        })
+        .await
+        .unwrap();
+
         let session = crate::db::repo::sessions::NewSession {
             id: "sess-1".into(),
             agent_id: "test-agent".into(),
@@ -136,13 +150,10 @@ mod tests {
             model: None,
             thinking_mode: None,
             thinking_budget: None,
-            workspace_id: None,
+            workspace_id: Some("workspace-1".into()),
             origin_device_id: None,
         };
         db.insert_session(session).await.unwrap();
-
-        let temp_project = std::env::current_dir().unwrap().join("target/test_tool_project");
-        let _ = fs::create_dir_all(&temp_project);
 
         let policy = ToolPolicy {
             shell: ShellPolicy {
@@ -166,38 +177,137 @@ mod tests {
         };
 
         let test_file = temp_project.join("test_write.txt");
-        let write_args = json!({ "path": test_file.to_string_lossy(), "content": "Hello ToolExecutor!" });
+        let write_args = json!({ "path": "test_write.txt", "content": "Hello ToolExecutor!" });
         let write_res = executor
-            .execute("sess-1", None, "tc-write-1", "file_write", &write_args, &policy)
+            .execute(
+                "sess-1",
+                None,
+                "tc-write-1",
+                "file_write",
+                &write_args,
+                &policy,
+            )
             .await
             .unwrap();
         assert_eq!(write_res.get("success").unwrap().as_bool().unwrap(), true);
-        assert_eq!(fs::read_to_string(&test_file).unwrap(), "Hello ToolExecutor!");
+        assert_eq!(
+            fs::read_to_string(&test_file).unwrap(),
+            "Hello ToolExecutor!"
+        );
 
-        let read_args = json!({ "path": test_file.to_string_lossy() });
+        let read_args = json!({ "path": "test_write.txt" });
         let read_res = executor
-            .execute("sess-1", None, "tc-read-1", "file_read", &read_args, &policy)
+            .execute(
+                "sess-1",
+                None,
+                "tc-read-1",
+                "file_read",
+                &read_args,
+                &policy,
+            )
             .await
             .unwrap();
-        assert_eq!(read_res.get("content").unwrap().as_str().unwrap(), "Hello ToolExecutor!");
+        assert_eq!(
+            read_res.get("content").unwrap().as_str().unwrap(),
+            "Hello ToolExecutor!"
+        );
+
+        let edit_args = json!({
+            "path": "test_write.txt",
+            "old_string": "Hello ToolExecutor!",
+            "new_string": "Hello Edited!"
+        });
+        executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-edit-1",
+                "file_edit",
+                &edit_args,
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(&test_file).unwrap(), "Hello Edited!");
+
+        let list_args = json!({"pattern": "*.txt"});
+        let list_res = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-list-1",
+                "list_files",
+                &list_args,
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_res["files"][0]["path"], "test_write.txt");
+
+        let grep_args = json!({"pattern": "Edited", "glob": "*.txt"});
+        let grep_res = executor
+            .execute("sess-1", None, "tc-grep-1", "grep", &grep_args, &policy)
+            .await
+            .unwrap();
+        assert_eq!(grep_res["matches"][0]["line"], 1);
+
+        let patch_args = json!({
+            "patch": "*** Begin Patch\n*** Update File: test_write.txt\n@@\n-Hello Edited!\n\\ No newline at end of file\n+Hello Patched!\n*** Add File: added.txt\n+Added by patch\n*** End Patch\n"
+        });
+        let patch_res = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-patch-1",
+                "apply_patch",
+                &patch_args,
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(patch_res["changed_files"].as_array().unwrap().len(), 2);
+        assert_eq!(fs::read_to_string(&test_file).unwrap(), "Hello Patched!\n");
+        assert_eq!(
+            fs::read_to_string(temp_project.join("added.txt")).unwrap(),
+            "Added by patch\n"
+        );
 
         let bad_read_args = json!({ "path": "/etc/passwd" });
         let read_err = executor
-            .execute("sess-1", None, "tc-read-bad", "file_read", &bad_read_args, &policy)
+            .execute(
+                "sess-1",
+                None,
+                "tc-read-bad",
+                "file_read",
+                &bad_read_args,
+                &policy,
+            )
             .await;
         assert!(read_err.is_err());
 
-        let shell_args = json!({ "command": "echo 'Hello Shell'", "cwd": temp_project.to_string_lossy() });
+        let shell_args = json!({ "command": "echo 'Hello Shell'" });
         let shell_res = executor
             .execute("sess-1", None, "tc-shell-1", "shell", &shell_args, &policy)
             .await
             .unwrap();
         assert_eq!(shell_res.get("exit_code").unwrap().as_i64().unwrap(), 0);
-        assert!(shell_res.get("stdout").unwrap().as_str().unwrap().contains("Hello Shell"));
+        assert!(shell_res
+            .get("stdout")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("Hello Shell"));
 
         let bad_shell_args = json!({ "command": "echo 'Bad'", "cwd": "/" });
         let shell_err = executor
-            .execute("sess-1", None, "tc-shell-bad", "shell", &bad_shell_args, &policy)
+            .execute(
+                "sess-1",
+                None,
+                "tc-shell-bad",
+                "shell",
+                &bad_shell_args,
+                &policy,
+            )
             .await;
         assert!(shell_err.is_err());
 

@@ -252,7 +252,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
                             <div className="p-4 space-y-3 text-xs text-stone-800">
                               <div>
-                                <span className="text-stone-500 font-mono">命令行指令:</span>
+                                <span className="text-stone-500 font-mono">调用参数:</span>
                                 <pre className="font-mono text-zinc-100 bg-zinc-900 p-3 rounded-lg border border-zinc-800 overflow-x-auto text-[11px] mt-1 shadow-inner">
                                   {tc.args}
                                 </pre>

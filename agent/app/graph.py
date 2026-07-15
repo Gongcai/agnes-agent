@@ -74,7 +74,72 @@ def get_available_tools(tool_policy: Dict[str, Any]) -> List[Dict[str, Any]]:
                 }
             }
         })
-        
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "file_edit",
+                "description": "Replace an exact string in a UTF-8 file. The old string must be unique unless replace_all is true.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Absolute path or a path relative to the workspace."},
+                        "old_string": {"type": "string", "description": "Exact text to replace."},
+                        "new_string": {"type": "string", "description": "Replacement text."},
+                        "replace_all": {"type": "boolean", "description": "Replace all matches instead of requiring one unique match."}
+                    },
+                    "required": ["path", "old_string", "new_string"]
+                }
+            }
+        })
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "list_files",
+                "description": "List files and directories below a workspace path using a glob pattern.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Directory to list; defaults to the workspace."},
+                        "pattern": {"type": "string", "description": "Glob relative to path, such as **/*.py."},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 5000}
+                    }
+                }
+            }
+        })
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "grep",
+                "description": "Search UTF-8 files recursively with a regular expression.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "Rust-compatible regular expression."},
+                        "path": {"type": "string", "description": "File or directory to search; defaults to the workspace."},
+                        "glob": {"type": "string", "description": "Optional file glob relative to path."},
+                        "case_sensitive": {"type": "boolean", "description": "Defaults to true."},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 1000}
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        })
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "apply_patch",
+                "description": "Apply a Codex-style multi-file patch within the workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "patch": {"type": "string", "description": "Patch text from *** Begin Patch through *** End Patch."},
+                        "cwd": {"type": "string", "description": "Optional base directory; defaults to the workspace."}
+                    },
+                    "required": ["patch"]
+                }
+            }
+        })
+
     # 3. Git Tool
     git_enabled = tool_policy.get("git", {}).get("enabled", True)
     if git_enabled:

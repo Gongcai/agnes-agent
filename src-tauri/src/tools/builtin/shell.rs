@@ -29,13 +29,47 @@ fn resolve_cwd(ctx: &ToolCtx<'_>) -> std::path::PathBuf {
 
 #[async_trait]
 impl BuiltinTool for ShellTool {
+    fn name(&self) -> &'static str {
+        "shell"
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": self.name(),
+                "description": "Execute a command in bash inside the current workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Command to execute."},
+                        "cwd": {"type": "string", "description": "Optional working directory; defaults to the workspace."}
+                    },
+                    "required": ["command"]
+                }
+            }
+        })
+    }
+
     fn risk(&self, args: &Value) -> Risk {
         let cmd = args.get("command").and_then(|x| x.as_str()).unwrap_or("");
         const HIGH_PATTERNS: &[&str] = &[
-            "rm ", "rmdir", "sudo", "chmod 777", "dd ", "mkfs", "shutdown", "reboot",
-            "curl ", "wget ", "nc ", "ssh ", "scp ",
+            "rm ",
+            "rmdir",
+            "sudo",
+            "chmod 777",
+            "dd ",
+            "mkfs",
+            "shutdown",
+            "reboot",
+            "curl ",
+            "wget ",
+            "nc ",
+            "ssh ",
+            "scp ",
         ];
-        if HIGH_PATTERNS.iter().any(|p| cmd.contains(p)) || cmd.contains(">") || cmd.contains(">>") {
+        if HIGH_PATTERNS.iter().any(|p| cmd.contains(p)) || cmd.contains(">") || cmd.contains(">>")
+        {
             Risk::High
         } else {
             Risk::Medium
@@ -123,14 +157,8 @@ impl BuiltinTool for ShellTool {
             Err(_) => {
                 let _ = spawned.kill().await;
                 let err_msg = format!("执行超时 (限制 {} 秒)", ctx.policy.shell.timeout_sec);
-                ctx.update_complete(
-                    "cancelled",
-                    None,
-                    Some(-9),
-                    None,
-                    Some(err_msg.clone()),
-                )
-                .await?;
+                ctx.update_complete("cancelled", None, Some(-9), None, Some(err_msg.clone()))
+                    .await?;
                 Err(AppError::Other(err_msg))
             }
         }

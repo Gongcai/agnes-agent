@@ -28,6 +28,32 @@ fn resolve_cwd(ctx: &ToolCtx<'_>) -> std::path::PathBuf {
 
 #[async_trait]
 impl BuiltinTool for GitTool {
+    fn name(&self) -> &'static str {
+        "git"
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": self.name(),
+                "description": "Run a git operation inside the current workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "args": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Arguments passed directly to git, for example ['status', '--short']."
+                        },
+                        "cwd": {"type": "string", "description": "Optional working directory; defaults to the workspace."}
+                    },
+                    "required": ["args"]
+                }
+            }
+        })
+    }
+
     fn risk(&self, args: &Value) -> Risk {
         let arr = args.get("args").and_then(|x| x.as_array());
         const HIGH_CMDS: &[&str] = &["push", "reset", "clean", "filter-branch"];
