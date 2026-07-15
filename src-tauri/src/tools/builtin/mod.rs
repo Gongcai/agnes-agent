@@ -161,11 +161,7 @@ pub fn is_write_op(tool: &str, args: &Value) -> bool {
         "file_read" | "list_files" | "grep" => false,
         "shell" => {
             let cmd = args.get("command").and_then(|x| x.as_str()).unwrap_or("");
-            const WRITE_PATTERNS: &[&str] = &[
-                " > ", " >> ", ">", ">>", "tee", "rm ", "rmdir", "mv ", "cp ", "mkdir", "touch",
-                "dd ", "chmod", "chown", "sed -i", "install",
-            ];
-            cmd.contains('>') || WRITE_PATTERNS.iter().any(|p| cmd.contains(p))
+            shell::command_is_write(cmd)
         }
         "git" => {
             let arr = args.get("args").and_then(|x| x.as_array());
@@ -181,9 +177,21 @@ pub fn is_write_op(tool: &str, args: &Value) -> bool {
                 "stash",
                 "tag",
                 "add",
+                "archive",
+                "bisect",
+                "config",
+                "fetch",
+                "hash-object",
+                "notes",
                 "rm",
                 "mv",
                 "init",
+                "pull",
+                "restore",
+                "revert",
+                "switch",
+                "update-index",
+                "update-ref",
             ];
             arr.map(|a| {
                 a.iter()

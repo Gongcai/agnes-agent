@@ -310,6 +310,14 @@ async fn handle_conn<R: tauri::Runtime>(
                 // 判断是否需要人工审批（统一 risk + tier 模型）
                 let risk = crate::tools::builtin::compute_risk(&tool_name, &args);
                 let needs_approval = crate::tools::builtin::needs_approval(&tool_name, &args, &policy);
+                let workspace_cwd = crate::tools::workspace::resolve_workspace_cwd(&db, &session_id).await;
+                let effective_cwd = args
+                    .get("cwd")
+                    .and_then(|value| value.as_str())
+                    .filter(|cwd| !cwd.is_empty())
+                    .map(ToString::to_string)
+                    .or_else(|| workspace_cwd.map(|path| path.to_string_lossy().to_string()))
+                    .or_else(|| policy.shell.allowed_cwd.first().cloned());
 
                 let mut approved = true;
                 let mut cancelled_during_approval = false;
@@ -331,6 +339,9 @@ async fn handle_conn<R: tauri::Runtime>(
                         "tool": tool_name.clone(),
                         "arguments": args.clone(),
                         "risk": risk.as_str(),
+                        "cwd": effective_cwd,
+                        "network_allowed": policy.network.allow,
+                        "landlock": policy.sandbox.landlock,
                     }));
 
                     // 3. 等待用户点击按钮释放，或 cancel_run 触发取消信号

@@ -9,6 +9,9 @@ export interface ToolCall {
   risk: string;
   status: "pending_approval" | "running" | "succeeded" | "denied" | "failed";
   output?: string;
+  cwd?: string;
+  networkAllowed?: boolean;
+  landlock?: boolean;
 }
 
 export interface MessagePart {
@@ -702,10 +705,10 @@ export function setupTauriEventListeners() {
   );
 
   listeners.push(
-    listen<{ session_id: string; run_id: string; tool_call_id: string; tool: string; arguments: any; risk: string }>(
+    listen<{ session_id: string; run_id: string; tool_call_id: string; tool: string; arguments: any; risk: string; cwd?: string; network_allowed: boolean; landlock: boolean }>(
       "agent://tool_call_pending",
       (event) => {
-        const { tool_call_id, tool, arguments: args, risk } = event.payload;
+        const { tool_call_id, tool, arguments: args, risk, cwd, network_allowed, landlock } = event.payload;
         // Inject a pending tool call into the current assistant message's parts list for visual card rendering
         const { messages } = useAgentStore.getState();
         if (messages.length === 0) return;
@@ -723,6 +726,9 @@ export function setupTauriEventListeners() {
               tool,
               args: typeof args === "string" ? args : JSON.stringify(args),
               risk: risk || (tool === "shell" ? "Medium" : "High"),
+              cwd,
+              networkAllowed: network_allowed,
+              landlock,
               status: "pending_approval"
             }
           }];

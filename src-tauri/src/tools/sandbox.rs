@@ -4,13 +4,14 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::error::{AppError, AppResult};
-use crate::tools::policy::{expand_home, ToolPolicy};
+use crate::tools::policy::{expand_home, BwrapMode, ToolPolicy};
 
 const SANDBOX_HELPER_FLAG: &str = "--agnes-sandbox-exec";
 const SANDBOX_CONFIG_ENV: &str = "AGNES_INTERNAL_SANDBOX_CONFIG";
@@ -32,6 +33,13 @@ struct ProcessSandboxSpec {
     limits: ResourceLimits,
 }
 
+enum NetworkIsolation {
+    Allowed,
+    Bubblewrap(PathBuf),
+    Heuristic,
+    RequiredUnavailable,
+}
+
 pub trait SandboxGuard: Send + Sync {
     fn check_read(&self, path: &Path) -> Result<(), String>;
     fn check_write(&self, path: &Path) -> Result<(), String>;
@@ -49,6 +57,7 @@ pub struct PolicySandbox {
     write_roots: Vec<PathBuf>,
     cwd_roots: Vec<PathBuf>,
     process_spec: ProcessSandboxSpec,
+    network_isolation: NetworkIsolation,
 }
 
 impl PolicySandbox {
@@ -92,6 +101,20 @@ impl PolicySandbox {
         process_read_write.extend(temporary_write_paths());
         deduplicate_paths(&mut process_read_write);
 
+        let network_isolation = if policy.network.allow {
+            NetworkIsolation::Allowed
+        } else {
+            match policy.sandbox.bwrap {
+                BwrapMode::Disabled => NetworkIsolation::Heuristic,
+                BwrapMode::Auto => detect_bwrap()
+                    .map(NetworkIsolation::Bubblewrap)
+                    .unwrap_or(NetworkIsolation::Heuristic),
+                BwrapMode::Required => detect_bwrap()
+                    .map(NetworkIsolation::Bubblewrap)
+                    .unwrap_or(NetworkIsolation::RequiredUnavailable),
+            }
+        };
+
         Self {
             read_roots,
             write_roots,
@@ -108,6 +131,7 @@ impl PolicySandbox {
                     max_processes: policy.sandbox.max_processes,
                 },
             },
+            network_isolation,
         }
     }
 }
@@ -131,21 +155,72 @@ impl SandboxGuard for PolicySandbox {
         args: &[String],
         env_allowlist: &[String],
     ) -> AppResult<Command> {
+        match &self.network_isolation {
+            NetworkIsolation::RequiredUnavailable => {
+                return Err(AppError::Other(
+                    "Network isolation requires bubblewrap, but it is unavailable".to_string(),
+                ));
+            }
+            NetworkIsolation::Heuristic if is_network_action(program, args) => {
+                return Err(AppError::Other(
+                    "Network access is disabled by the tool policy".to_string(),
+                ));
+            }
+            _ => {}
+        }
+
         let use_helper = !cfg!(test)
             && (self.process_spec.landlock || self.process_spec.limits.enabled)
             && cfg!(unix);
-        let mut command = if use_helper {
+        let config = if use_helper {
+            Some(serde_json::to_string(&self.process_spec)?)
+        } else {
+            None
+        };
+        let (target, target_args) = if use_helper {
             let current_exe = std::env::current_exe().map_err(|error| {
                 AppError::Other(format!(
                     "Unable to locate sandbox helper executable: {error}"
                 ))
             })?;
-            let mut command = Command::new(current_exe);
-            command.arg(SANDBOX_HELPER_FLAG).arg(program).args(args);
+            let mut helper_args =
+                vec![OsString::from(SANDBOX_HELPER_FLAG), OsString::from(program)];
+            helper_args.extend(args.iter().map(OsString::from));
+            (current_exe.into_os_string(), helper_args)
+        } else {
+            (
+                OsString::from(program),
+                args.iter().map(OsString::from).collect(),
+            )
+        };
+
+        let mut command = if let NetworkIsolation::Bubblewrap(bwrap) = &self.network_isolation {
+            let mut command = Command::new(bwrap);
+            command.args([
+                "--unshare-net",
+                "--unshare-pid",
+                "--die-with-parent",
+                "--new-session",
+                "--ro-bind",
+                "/",
+                "/",
+                "--dev-bind",
+                "/dev",
+                "/dev",
+                "--proc",
+                "/proc",
+            ]);
+            for path in &self.process_spec.read_write {
+                if !path.exists() || path.starts_with("/dev") || path == Path::new("/") {
+                    continue;
+                }
+                command.arg("--bind").arg(path).arg(path);
+            }
+            command.arg("--").arg(&target).args(&target_args);
             command
         } else {
-            let mut command = Command::new(program);
-            command.args(args);
+            let mut command = Command::new(&target);
+            command.args(&target_args);
             command
         };
 
@@ -155,13 +230,101 @@ impl SandboxGuard for PolicySandbox {
                 command.env(name, value);
             }
         }
-        if use_helper {
-            let config = serde_json::to_string(&self.process_spec)?;
+        if let Some(config) = config {
             command.env(SANDBOX_CONFIG_ENV, config);
         }
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         Ok(command)
     }
+}
+
+fn detect_bwrap() -> Option<PathBuf> {
+    static DETECTED: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DETECTED.get_or_init(probe_bwrap).clone()
+}
+
+#[cfg(target_os = "linux")]
+fn probe_bwrap() -> Option<PathBuf> {
+    let mut candidates = vec![PathBuf::from("/usr/bin/bwrap"), PathBuf::from("/bin/bwrap")];
+    if let Some(path_var) = std::env::var_os("PATH") {
+        candidates
+            .extend(std::env::split_paths(&path_var).map(|directory| directory.join("bwrap")));
+    }
+    deduplicate_paths(&mut candidates);
+    for candidate in candidates {
+        if !candidate.is_file() {
+            continue;
+        }
+        let status = std::process::Command::new(&candidate)
+            .args(["--unshare-net", "--ro-bind", "/", "/", "--", "/bin/true"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if status.is_ok_and(|status| status.success()) {
+            return candidate.canonicalize().ok().or(Some(candidate));
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn probe_bwrap() -> Option<PathBuf> {
+    None
+}
+
+fn is_network_action(program: &str, args: &[String]) -> bool {
+    let program = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let joined = args.join(" ").to_ascii_lowercase();
+    if program == "git" {
+        return [
+            "push",
+            "pull",
+            "fetch",
+            "clone",
+            "ls-remote",
+            "remote-http",
+            "remote-https",
+            "remote-ssh",
+            "submodule",
+        ]
+        .iter()
+        .any(|operation| args.iter().any(|arg| arg == operation))
+            || args
+                .windows(2)
+                .any(|pair| pair[0] == "remote" && pair[1] == "update")
+            || (args.iter().any(|arg| arg == "archive")
+                && args.iter().any(|arg| arg.starts_with("--remote")));
+    }
+
+    const NETWORK_PROGRAMS: &[&str] = &[
+        "curl", "wget", "ssh", "scp", "sftp", "nc", "ncat", "netcat", "telnet", "ftp", "rsync",
+    ];
+    let contains_network_program = joined
+        .split(|character: char| {
+            character.is_whitespace() || matches!(character, ';' | '|' | '&' | '(' | ')')
+        })
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            Path::new(token.trim_matches(|character| character == '\'' || character == '"'))
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| NETWORK_PROGRAMS.contains(&name))
+        });
+    NETWORK_PROGRAMS.contains(&program.as_str())
+        || contains_network_program
+        || joined.contains("http://")
+        || joined.contains("https://")
+        || joined.contains("/dev/tcp/")
+        || ((joined.contains("python") || joined.contains("node"))
+            && (joined.contains("socket")
+                || joined.contains("requests")
+                || joined.contains("urlopen")
+                || joined.contains("fetch(")))
 }
 
 pub fn run_sandbox_helper_if_requested() -> Option<i32> {
@@ -481,6 +644,58 @@ mod tests {
             let _ = std::fs::remove_file(link);
             let _ = std::fs::remove_dir_all(outside);
         }
+    }
+
+    #[test]
+    fn network_fallback_rejects_known_network_commands() {
+        let mut policy = ToolPolicy::default();
+        policy.network.allow = false;
+        policy.sandbox.bwrap = BwrapMode::Disabled;
+        policy.sandbox.landlock = false;
+        policy.sandbox.rlimits = false;
+        let sandbox = PolicySandbox::new(&policy, None);
+        let curl = vec!["-c".to_string(), "curl https://example.com".to_string()];
+        assert!(sandbox
+            .command("bash", &curl, &["PATH".to_string()])
+            .is_err());
+        let local = vec!["-c".to_string(), "printf local".to_string()];
+        assert!(sandbox
+            .command("bash", &local, &["PATH".to_string()])
+            .is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn bubblewrap_blocks_loopback_connections_when_available() {
+        if detect_bwrap().is_none() {
+            return;
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let workspace = std::env::current_dir()
+            .unwrap()
+            .join("target/bwrap-network");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let mut policy = ToolPolicy::default();
+        policy.network.allow = false;
+        policy.sandbox.landlock = false;
+        policy.sandbox.rlimits = false;
+        policy.shell.allowed_cwd = vec![workspace.to_string_lossy().to_string()];
+        policy.file.allowed_roots = vec![workspace.to_string_lossy().to_string()];
+        let sandbox = PolicySandbox::new(&policy, Some(&workspace));
+        let args = vec![
+            "-c".to_string(),
+            format!("exec 3<>/dev/tcp/127.0.0.1/{port}"),
+        ];
+        let mut command = sandbox
+            .command("bash", &args, &["PATH".to_string()])
+            .unwrap();
+        command.current_dir(&workspace);
+        let status = command.status().await.unwrap();
+        assert!(!status.success());
+        drop(listener);
+        let _ = std::fs::remove_dir_all(workspace);
     }
 
     #[cfg(target_os = "linux")]

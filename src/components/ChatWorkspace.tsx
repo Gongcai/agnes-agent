@@ -258,6 +258,22 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                                 </pre>
                               </div>
 
+                              {(tc.cwd || tc.networkAllowed !== undefined) && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] text-stone-500">
+                                  {tc.cwd && (
+                                    <div className="rounded-md border border-stone-200 bg-white px-2 py-1.5 truncate" title={tc.cwd}>
+                                      工作目录: <span className="font-mono text-stone-700">{tc.cwd}</span>
+                                    </div>
+                                  )}
+                                  {tc.networkAllowed !== undefined && (
+                                    <div className="rounded-md border border-stone-200 bg-white px-2 py-1.5">
+                                      网络: <span className="text-stone-700">{tc.networkAllowed ? "允许" : "已关闭"}</span>
+                                      {tc.landlock ? " · Landlock" : " · 路径策略"}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
                               {isPending && (
                                 <div className="bg-white p-2.5 rounded-lg border border-stone-200 flex items-start gap-2 shadow-sm">
                                   <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />

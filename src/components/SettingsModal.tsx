@@ -84,6 +84,7 @@ type ApprovalTier = "never" | "on_write" | "on_risk" | "always";
 interface AgentToolToggle {
   enabled: boolean;
   approval: ApprovalTier;
+  [key: string]: unknown;
 }
 
 interface AgentFormValues {
@@ -103,6 +104,13 @@ interface AgentFormValues {
     shell: AgentToolToggle;
     file: AgentToolToggle;
     git: AgentToolToggle;
+    network: { allow: boolean; [key: string]: unknown };
+    sandbox: {
+      landlock: boolean;
+      bwrap: "auto" | "disabled" | "required";
+      rlimits: boolean;
+      [key: string]: unknown;
+    };
   };
 }
 
@@ -119,6 +127,8 @@ const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
   shell: { enabled: true, approval: "on_risk" },
   file: { enabled: true, approval: "on_write" },
   git: { enabled: true, approval: "on_risk" },
+  network: { allow: true },
+  sandbox: { landlock: true, bwrap: "auto", rlimits: true },
 };
 
 const APPROVAL_OPTIONS: { value: ApprovalTier; label: string }[] = [
@@ -159,6 +169,7 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
   if (!json) return base;
   try {
     const obj = JSON.parse(json);
+    if (obj && typeof obj === "object") Object.assign(base, obj);
     (["shell", "file", "git"] as const).forEach((k) => {
       const t = obj?.[k];
       if (t && typeof t === "object") {
@@ -173,9 +184,19 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
         else if (rawApproval === false || rawApproval === "never") approval = "never";
         else if (rawApproval === "write" || rawApproval === "on_write" || rawApproval === "on-write") approval = "on_write";
         else if (rawApproval === "push" || rawApproval === "on_risk" || rawApproval === "on-risk") approval = "on_risk";
-        base[k] = { enabled: t.enabled !== false, approval };
+        base[k] = { ...t, enabled: t.enabled !== false, approval };
       }
     });
+    const network = obj?.network;
+    base.network = {
+      ...(network && typeof network === "object" ? network : {}),
+      allow: network?.allow !== false,
+    };
+    const sandbox = obj?.sandbox;
+    base.sandbox = {
+      ...DEFAULT_TOOL_POLICY.sandbox,
+      ...(sandbox && typeof sandbox === "object" ? sandbox : {}),
+    };
   } catch {
     // 解析失败则使用默认策略
   }
@@ -1035,6 +1056,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {renderToolToggle("shell", "Shell 命令执行")}
                           {renderToolToggle("file", "文件读写")}
                           {renderToolToggle("git", "Git 操作")}
+                          <div className="flex items-center justify-between py-1.5 border-b border-stone-100">
+                            <span className="text-xs text-stone-700">网络访问</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setAgentForm((form) => ({
+                                  ...form,
+                                  toolPolicy: {
+                                    ...form.toolPolicy,
+                                    network: {
+                                      ...form.toolPolicy.network,
+                                      allow: !form.toolPolicy.network.allow,
+                                    },
+                                  },
+                                }))
+                              }
+                              className={`px-2 py-1 rounded-md text-[10px] font-semibold border transition-colors ${
+                                agentForm.toolPolicy.network.allow
+                                  ? "bg-blue-50 text-blue-700 border-blue-200"
+                                  : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              }`}
+                            >
+                              {agentForm.toolPolicy.network.allow ? "允许联网" : "隔离网络"}
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-between py-1.5">
+                            <span className="text-xs text-stone-700">进程沙箱</span>
+                            <span className="text-[10px] text-stone-500">
+                              Landlock · rlimit · bwrap 自动增强
+                            </span>
+                          </div>
                         </div>
                       </div>
                     </div>

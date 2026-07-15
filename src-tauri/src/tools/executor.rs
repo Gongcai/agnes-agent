@@ -97,7 +97,7 @@ fn effective_policy(policy: &ToolPolicy, workspace_cwd: &Option<PathBuf>) -> Too
 mod tests {
     use super::*;
     use crate::db::spawn_db_actor;
-    use crate::tools::policy::{ApprovalTier, FilePolicy, GitPolicy, ShellPolicy};
+    use crate::tools::policy::{ApprovalTier, BwrapMode, FilePolicy, GitPolicy, ShellPolicy};
     use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
@@ -176,8 +176,10 @@ mod tests {
             git: GitPolicy {
                 enabled: true,
                 approval: ApprovalTier::Never,
+                timeout_sec: 5,
             },
             sandbox: Default::default(),
+            network: Default::default(),
         };
 
         let test_file = temp_project.join("test_write.txt");
@@ -332,6 +334,82 @@ mod tests {
             )
             .await;
         assert!(shell_err.is_err());
+
+        let allowed_shell_write = json!({"command": "echo allowed > shell-write.txt"});
+        executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-shell-write",
+                "shell",
+                &allowed_shell_write,
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(temp_project.join("shell-write.txt")).unwrap(),
+            "allowed\n"
+        );
+
+        let denied_shell_write = json!({"command": "echo denied > ../shell-escape.txt"});
+        let denied_shell_result = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-shell-escape",
+                "shell",
+                &denied_shell_write,
+                &policy,
+            )
+            .await;
+        assert!(denied_shell_result.is_err());
+        assert!(!temp_project
+            .parent()
+            .unwrap()
+            .join("shell-escape.txt")
+            .exists());
+
+        let git_init = json!({"args": ["init"]});
+        let git_init_result = executor
+            .execute("sess-1", None, "tc-git-init", "git", &git_init, &policy)
+            .await
+            .unwrap();
+        assert_eq!(git_init_result["exit_code"], 0);
+        let git_status = json!({"args": ["status", "--short"]});
+        let git_status_result = executor
+            .execute("sess-1", None, "tc-git-status", "git", &git_status, &policy)
+            .await
+            .unwrap();
+        assert_eq!(git_status_result["exit_code"], 0);
+        let git_global_config = json!({"args": ["config", "--global", "user.name", "Denied"]});
+        assert!(executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-git-global-config",
+                "git",
+                &git_global_config,
+                &policy,
+            )
+            .await
+            .is_err());
+
+        let mut offline_policy = policy.clone();
+        offline_policy.network.allow = false;
+        offline_policy.sandbox.bwrap = BwrapMode::Disabled;
+        let network_command = json!({"command": "curl https://example.com"});
+        assert!(executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-shell-network-denied",
+                "shell",
+                &network_command,
+                &offline_policy,
+            )
+            .await
+            .is_err());
 
         let _ = fs::remove_dir_all(&temp_project);
         let _ = fs::remove_file(&db_path);

@@ -13,6 +13,8 @@ pub struct ToolPolicy {
     pub git: GitPolicy,
     #[serde(default)]
     pub sandbox: SandboxPolicy,
+    #[serde(default)]
+    pub network: NetworkPolicy,
 }
 
 /// Risk level used by audit records and approval decisions.
@@ -120,12 +122,14 @@ impl Default for FilePolicy {
 pub struct GitPolicy {
     pub enabled: bool,
     pub approval: ApprovalTier,
+    pub timeout_sec: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct SandboxPolicy {
     pub landlock: bool,
+    pub bwrap: BwrapMode,
     pub rlimits: bool,
     pub cpu_time_sec: u64,
     pub memory_bytes: u64,
@@ -133,10 +137,62 @@ pub struct SandboxPolicy {
     pub max_processes: u64,
 }
 
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BwrapMode {
+    Auto,
+    Disabled,
+    Required,
+}
+
+impl Default for BwrapMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl<'de> Deserialize<'de> for BwrapMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Value {
+            String(String),
+            Bool(bool),
+        }
+
+        Ok(match Value::deserialize(deserializer)? {
+            Value::String(value) => match value.as_str() {
+                "auto" => Self::Auto,
+                "disabled" | "never" => Self::Disabled,
+                "required" | "always" => Self::Required,
+                _ => Self::Auto,
+            },
+            Value::Bool(true) => Self::Auto,
+            Value::Bool(false) => Self::Disabled,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct NetworkPolicy {
+    pub allow: bool,
+}
+
+impl Default for NetworkPolicy {
+    fn default() -> Self {
+        Self { allow: true }
+    }
+}
+
 impl Default for SandboxPolicy {
     fn default() -> Self {
         Self {
             landlock: true,
+            bwrap: BwrapMode::Auto,
             rlimits: true,
             cpu_time_sec: 60,
             memory_bytes: 1024 * 1024 * 1024,
@@ -151,6 +207,7 @@ impl Default for GitPolicy {
         GitPolicy {
             enabled: true,
             approval: ApprovalTier::OnRisk,
+            timeout_sec: 30,
         }
     }
 }
@@ -296,5 +353,8 @@ mod tests {
         assert_eq!(value["shell"]["approval"], "on_risk");
         assert_eq!(value["file"]["approval"], "on_write");
         assert_eq!(value["git"]["approval"], "on_risk");
+        assert_eq!(value["git"]["timeout_sec"], 30);
+        assert_eq!(value["network"]["allow"], true);
+        assert_eq!(value["sandbox"]["bwrap"], "auto");
     }
 }
