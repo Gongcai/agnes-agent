@@ -4,7 +4,7 @@ import {
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
-import type { PermissionMode } from "../store/useAgentStore";
+import type { PermissionMode, ToolCall } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ModifyMemoryModal } from "./ModifyMemoryModal";
@@ -64,6 +64,163 @@ const TOOL_STATUS_LABEL: Record<string, string> = {
   denied: "已拒绝",
   failed: "执行失败",
 };
+
+function parseToolArgs(args: string): unknown {
+  try {
+    return JSON.parse(args);
+  } catch {
+    return args;
+  }
+}
+
+function toolCallPreview(toolCall: ToolCall): string {
+  const parsed = parseToolArgs(toolCall.args);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return typeof parsed === "string" ? parsed : toolCall.args;
+  }
+
+  const values = parsed as Record<string, unknown>;
+  if (typeof values.command === "string") return values.command;
+  if (toolCall.tool === "git" && Array.isArray(values.args)) {
+    return `git ${values.args.map(String).join(" ")}`;
+  }
+  for (const key of ["path", "pattern", "query", "cwd"]) {
+    if (typeof values[key] === "string") return values[key] as string;
+  }
+  return toolCall.args;
+}
+
+function formattedToolArgs(args: string): string {
+  const parsed = parseToolArgs(args);
+  return typeof parsed === "string" ? parsed : JSON.stringify(parsed, null, 2);
+}
+
+const ToolCallCard: React.FC<{
+  toolCall: ToolCall;
+  onApprove: (toolCallId: string, approved: boolean) => Promise<void>;
+}> = React.memo(({ toolCall: tc, onApprove }) => {
+  const isHighRisk = tc.risk === "High";
+  const isPending = tc.status === "pending_approval";
+  const shouldAutoExpand = isPending || tc.status === "failed" || tc.status === "denied";
+  const [expanded, setExpanded] = useState(shouldAutoExpand);
+  const preview = toolCallPreview(tc);
+  const statusLabel = TOOL_STATUS_LABEL[tc.status] || tc.status;
+
+  useEffect(() => {
+    if (shouldAutoExpand) setExpanded(true);
+  }, [shouldAutoExpand]);
+
+  return (
+    <details
+      open={expanded}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+      className={`group/tool overflow-hidden rounded-lg border transition-colors ${
+        isPending
+          ? isHighRisk
+            ? "border-rose-300 bg-rose-50/40"
+            : "border-amber-300 bg-amber-50/40"
+          : tc.status === "failed" || tc.status === "denied"
+          ? "border-rose-200 bg-rose-50/20"
+          : "border-stone-200 bg-white"
+      }`}
+    >
+      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs select-none hover:bg-stone-50/80 [&::-webkit-details-marker]:hidden">
+        <Terminal className="h-3.5 w-3.5 shrink-0 text-stone-500" />
+        <span className="shrink-0 font-semibold text-stone-700">{tc.tool}</span>
+        <code className="min-w-0 flex-1 truncate text-[10px] font-normal text-stone-400" title={preview}>
+          {preview}
+        </code>
+        <span className={`shrink-0 rounded px-2 py-0.5 text-[10px] ${
+          tc.status === "running"
+            ? "bg-blue-100 text-blue-700 animate-pulse"
+            : tc.status === "succeeded"
+            ? "bg-emerald-100 text-emerald-700"
+            : tc.status === "failed" || tc.status === "denied"
+            ? "bg-rose-100 text-rose-700"
+            : "bg-amber-100 text-amber-700"
+        }`}>
+          {statusLabel}
+        </span>
+        <span className={`shrink-0 rounded px-2 py-0.5 text-[10px] ${
+          isHighRisk ? "bg-rose-100 text-rose-700" : "bg-stone-100 text-stone-500"
+        }`}>
+          {tc.risk}
+        </span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-stone-400 transition-transform group-open/tool:rotate-180" />
+      </summary>
+
+      {expanded && (
+        <div className="space-y-3 border-t border-stone-200/80 px-3 py-3 text-xs text-stone-700">
+          <div>
+            <div className="mb-1 text-[10px] font-medium text-stone-400">参数</div>
+            <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-md bg-stone-100 px-3 py-2 font-mono text-[10px] leading-relaxed text-stone-700">
+              {formattedToolArgs(tc.args)}
+            </pre>
+          </div>
+
+          {(tc.cwd || tc.networkAllowed !== undefined || tc.permissionMode) && (
+            <div className="flex flex-wrap gap-1.5 text-[9px] text-stone-500">
+              {tc.cwd && (
+                <span className="max-w-full truncate rounded bg-stone-100 px-2 py-1 font-mono" title={tc.cwd}>
+                  cwd: {tc.cwd}
+                </span>
+              )}
+              {tc.networkAllowed !== undefined && (
+                <span className="rounded bg-stone-100 px-2 py-1">
+                  网络: {tc.networkAllowed ? "允许" : "关闭"} · {tc.landlock ? "Landlock" : "路径策略"}
+                </span>
+              )}
+              {tc.permissionMode && (
+                <span className="rounded bg-stone-100 px-2 py-1">
+                  {PERMISSION_LABEL[tc.permissionMode]}
+                </span>
+              )}
+            </div>
+          )}
+
+          {isPending && (
+            <div className={`flex items-start gap-2 rounded-md border bg-white p-2.5 ${
+              tc.isSecondaryConfirmation ? "border-rose-200" : "border-amber-200"
+            }`}>
+              <AlertTriangle className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
+                tc.isSecondaryConfirmation ? "text-rose-500" : "text-amber-500"
+              }`} />
+              <p className="text-[10px] leading-relaxed text-stone-600">
+                {tc.approvalReason || "根据当前权限规则，此工具调用需要人工审核批准。"}
+              </p>
+            </div>
+          )}
+
+          {tc.output && (
+            <div>
+              <div className="mb-1 text-[10px] font-medium text-stone-400">输出</div>
+              <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-md bg-zinc-900 px-3 py-2 font-mono text-[10px] leading-relaxed text-zinc-300">
+                {tc.output}
+              </pre>
+            </div>
+          )}
+
+          {isPending && (
+            <div className="flex justify-end gap-2 border-t border-stone-200/70 pt-2">
+              <button
+                onClick={() => onApprove(tc.id, false).catch(console.error)}
+                className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1 text-[10px] font-medium text-rose-600 hover:bg-rose-100"
+              >
+                拒绝
+              </button>
+              <button
+                onClick={() => onApprove(tc.id, true).catch(console.error)}
+                className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-100"
+              >
+                {tc.isSecondaryConfirmation ? "确认高危操作" : "授权运行"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </details>
+  );
+});
 
 interface ChatWorkspaceProps {
   isSidebarOpen: boolean;
@@ -272,119 +429,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
                       // 2. Tool Card
                       if (part.kind === "tool_call" && part.tool_call) {
-                        const tc = part.tool_call;
-                        const isHighRisk = tc.risk === "High";
-                        const isPending = tc.status === "pending_approval";
-                        const statusLabel = TOOL_STATUS_LABEL[tc.status] || tc.status;
-
                         return (
-                          <div
+                          <ToolCallCard
                             key={part._renderKey ?? part.id}
-                            className={`border rounded-xl overflow-hidden transition-all duration-200 ${
-                              isPending
-                                ? isHighRisk
-                                  ? "border-rose-300 bg-rose-50/50"
-                                  : "border-amber-300 bg-amber-50/50 animate-pulse"
-                                : tc.status === "denied"
-                                ? "border-stone-200 bg-stone-100/40 opacity-70"
-                                : "border-stone-200 bg-white shadow-sm"
-                            }`}
-                          >
-                            <div className="px-4 py-2 flex items-center justify-between text-xs font-medium border-b border-stone-200 bg-stone-100/30">
-                              <span className="flex items-center gap-1.5 text-stone-800">
-                                <Terminal className="h-3.5 w-3.5 text-stone-500" />
-                                <span>调用本地工具: {tc.tool}</span>
-                              </span>
-                              <span className="flex items-center gap-1.5">
-                                <span className={`px-2 py-0.5 rounded text-[10px] ${
-                                  tc.status === "running"
-                                    ? "bg-blue-100 text-blue-700 animate-pulse"
-                                    : tc.status === "succeeded"
-                                    ? "bg-emerald-100 text-emerald-700"
-                                    : tc.status === "failed" || tc.status === "denied"
-                                    ? "bg-rose-100 text-rose-700"
-                                    : "bg-amber-100 text-amber-700"
-                                }`}>
-                                  {statusLabel}
-                                </span>
-                                {tc.permissionMode && (
-                                  <span className="px-2 py-0.5 rounded bg-stone-100 text-stone-500 text-[10px]">
-                                    {PERMISSION_LABEL[tc.permissionMode]}
-                                  </span>
-                                )}
-                                <span
-                                  className={`px-2 py-0.5 rounded text-[10px] ${
-                                  isHighRisk ? "bg-rose-100 text-rose-700" : "bg-stone-200/80 text-stone-600"
-                                  }`}
-                                >
-                                  风险: {tc.risk}
-                                </span>
-                              </span>
-                            </div>
-
-                            <div className="p-4 space-y-3 text-xs text-stone-800">
-                              <div>
-                                <span className="text-stone-500 font-mono">调用参数:</span>
-                                <pre className="font-mono text-zinc-100 bg-zinc-900 p-3 rounded-lg border border-zinc-800 overflow-x-auto text-[11px] mt-1 shadow-inner">
-                                  {tc.args}
-                                </pre>
-                              </div>
-
-                              {(tc.cwd || tc.networkAllowed !== undefined) && (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] text-stone-500">
-                                  {tc.cwd && (
-                                    <div className="rounded-md border border-stone-200 bg-white px-2 py-1.5 truncate" title={tc.cwd}>
-                                      工作目录: <span className="font-mono text-stone-700">{tc.cwd}</span>
-                                    </div>
-                                  )}
-                                  {tc.networkAllowed !== undefined && (
-                                    <div className="rounded-md border border-stone-200 bg-white px-2 py-1.5">
-                                      网络: <span className="text-stone-700">{tc.networkAllowed ? "允许" : "已关闭"}</span>
-                                      {tc.landlock ? " · Landlock" : " · 路径策略"}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-
-                              {isPending && (
-                                <div className={`bg-white p-2.5 rounded-lg border flex items-start gap-2 shadow-sm ${
-                                  tc.isSecondaryConfirmation ? "border-rose-200" : "border-stone-200"
-                                }`}>
-                                  <AlertTriangle className={`h-4 w-4 shrink-0 mt-0.5 ${
-                                    tc.isSecondaryConfirmation ? "text-rose-500" : "text-amber-500"
-                                  }`} />
-                                  <p className={`text-[11px] leading-relaxed ${
-                                    tc.isSecondaryConfirmation ? "text-rose-700" : "text-stone-500"
-                                  }`}>
-                                    {tc.approvalReason || "根据当前权限规则，此工具调用需要人工审核批准。"}
-                                  </p>
-                                </div>
-                              )}
-
-                              {tc.output && (
-                                <pre className="p-3 text-[10px] font-mono bg-zinc-900 text-zinc-300 max-h-36 overflow-y-auto whitespace-pre-wrap border border-zinc-800 rounded-lg shadow-inner">
-                                  {tc.output}
-                                </pre>
-                              )}
-                            </div>
-
-                            {isPending && (
-                              <div className="px-4 py-2.5 bg-stone-50 border-t border-stone-200/80 flex justify-end gap-2">
-                                <button
-                                  onClick={() => approveTool(tc.id, false).catch(console.error)}
-                                  className="px-3 py-1 text-xs text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-all font-medium"
-                                >
-                                  拒绝执行
-                                </button>
-                                <button
-                                  onClick={() => approveTool(tc.id, true).catch(console.error)}
-                                  className="px-3 py-1 text-xs text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-all font-semibold"
-                                >
-                                  {tc.isSecondaryConfirmation ? "确认高危操作" : "授权运行"}
-                                </button>
-                              </div>
-                            )}
-                          </div>
+                            toolCall={part.tool_call}
+                            onApprove={approveTool}
+                          />
                         );
                       }
 
