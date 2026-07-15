@@ -111,6 +111,7 @@ interface AgentFormValues {
       rlimits: boolean;
       [key: string]: unknown;
     };
+    [key: string]: unknown;
   };
 }
 
@@ -169,7 +170,12 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
   if (!json) return base;
   try {
     const obj = JSON.parse(json);
-    if (obj && typeof obj === "object") Object.assign(base, obj);
+    if (obj && typeof obj === "object") {
+      const knownKeys = new Set(["shell", "file", "git", "network", "sandbox"]);
+      Object.entries(obj).forEach(([key, value]) => {
+        if (!knownKeys.has(key)) base[key] = value;
+      });
+    }
     (["shell", "file", "git"] as const).forEach((k) => {
       const t = obj?.[k];
       if (t && typeof t === "object") {
@@ -193,9 +199,15 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
       allow: network?.allow !== false,
     };
     const sandbox = obj?.sandbox;
+    const bwrap = ["auto", "disabled", "required"].includes(sandbox?.bwrap)
+      ? sandbox.bwrap
+      : "auto";
     base.sandbox = {
       ...DEFAULT_TOOL_POLICY.sandbox,
       ...(sandbox && typeof sandbox === "object" ? sandbox : {}),
+      landlock: sandbox?.landlock !== false,
+      rlimits: sandbox?.rlimits !== false,
+      bwrap,
     };
   } catch {
     // 解析失败则使用默认策略

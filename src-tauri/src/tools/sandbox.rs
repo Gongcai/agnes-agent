@@ -33,9 +33,12 @@ struct ProcessSandboxSpec {
     limits: ResourceLimits,
 }
 
-enum NetworkIsolation {
+enum ProcessIsolation {
     Allowed,
-    Bubblewrap(PathBuf),
+    Bubblewrap {
+        path: PathBuf,
+        isolate_network: bool,
+    },
     Heuristic,
     RequiredUnavailable,
 }
@@ -57,7 +60,7 @@ pub struct PolicySandbox {
     write_roots: Vec<PathBuf>,
     cwd_roots: Vec<PathBuf>,
     process_spec: ProcessSandboxSpec,
-    network_isolation: NetworkIsolation,
+    process_isolation: ProcessIsolation,
 }
 
 impl PolicySandbox {
@@ -101,18 +104,25 @@ impl PolicySandbox {
         process_read_write.extend(temporary_write_paths());
         deduplicate_paths(&mut process_read_write);
 
-        let network_isolation = if policy.network.allow {
-            NetworkIsolation::Allowed
-        } else {
-            match policy.sandbox.bwrap {
-                BwrapMode::Disabled => NetworkIsolation::Heuristic,
-                BwrapMode::Auto => detect_bwrap()
-                    .map(NetworkIsolation::Bubblewrap)
-                    .unwrap_or(NetworkIsolation::Heuristic),
-                BwrapMode::Required => detect_bwrap()
-                    .map(NetworkIsolation::Bubblewrap)
-                    .unwrap_or(NetworkIsolation::RequiredUnavailable),
-            }
+        let process_isolation = match policy.sandbox.bwrap {
+            BwrapMode::Disabled if policy.network.allow => ProcessIsolation::Allowed,
+            BwrapMode::Disabled => ProcessIsolation::Heuristic,
+            BwrapMode::Auto => detect_bwrap()
+                .map(|path| ProcessIsolation::Bubblewrap {
+                    path,
+                    isolate_network: !policy.network.allow,
+                })
+                .unwrap_or(if policy.network.allow {
+                    ProcessIsolation::Allowed
+                } else {
+                    ProcessIsolation::Heuristic
+                }),
+            BwrapMode::Required => detect_bwrap()
+                .map(|path| ProcessIsolation::Bubblewrap {
+                    path,
+                    isolate_network: !policy.network.allow,
+                })
+                .unwrap_or(ProcessIsolation::RequiredUnavailable),
         };
 
         Self {
@@ -131,7 +141,7 @@ impl PolicySandbox {
                     max_processes: policy.sandbox.max_processes,
                 },
             },
-            network_isolation,
+            process_isolation,
         }
     }
 }
@@ -155,13 +165,13 @@ impl SandboxGuard for PolicySandbox {
         args: &[String],
         env_allowlist: &[String],
     ) -> AppResult<Command> {
-        match &self.network_isolation {
-            NetworkIsolation::RequiredUnavailable => {
+        match &self.process_isolation {
+            ProcessIsolation::RequiredUnavailable => {
                 return Err(AppError::Other(
                     "Network isolation requires bubblewrap, but it is unavailable".to_string(),
                 ));
             }
-            NetworkIsolation::Heuristic if is_network_action(program, args) => {
+            ProcessIsolation::Heuristic if is_network_action(program, args) => {
                 return Err(AppError::Other(
                     "Network access is disabled by the tool policy".to_string(),
                 ));
@@ -194,10 +204,16 @@ impl SandboxGuard for PolicySandbox {
             )
         };
 
-        let mut command = if let NetworkIsolation::Bubblewrap(bwrap) = &self.network_isolation {
-            let mut command = Command::new(bwrap);
+        let mut command = if let ProcessIsolation::Bubblewrap {
+            path,
+            isolate_network,
+        } = &self.process_isolation
+        {
+            let mut command = Command::new(path);
+            if *isolate_network {
+                command.arg("--unshare-net");
+            }
             command.args([
-                "--unshare-net",
                 "--unshare-pid",
                 "--die-with-parent",
                 "--new-session",
