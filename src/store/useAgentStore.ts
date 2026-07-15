@@ -45,6 +45,16 @@ export interface Session {
   model: string;
   thinking_mode: string;
   thinking_budget: number;
+  workspace_id: string | null;
+}
+
+export interface Workspace {
+  id: string;
+  agent_id: string;
+  name: string;
+  folder_path: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface AgentSummary {
@@ -93,6 +103,7 @@ interface AgentState {
   agents: AgentSummary[];
   sessions: Session[];
   messages: Message[];
+  workspaces: Workspace[];
   activeAgentId: string | null;
   activeSessionId: string | null;
   isStreaming: boolean;
@@ -103,10 +114,14 @@ interface AgentState {
   loadAgents: () => Promise<void>;
   loadSessions: (agentId: string) => Promise<void>;
   loadMessages: (sessionId: string) => Promise<void>;
-  createSession: (agentId: string, title: string) => Promise<string>;
+  createSession: (agentId: string, title: string, workspaceId?: string | null) => Promise<string>;
   deleteSession: (sessionId: string) => Promise<void>;
   pinSession: (sessionId: string, pinned: boolean) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
+  loadWorkspaces: (agentId: string) => Promise<void>;
+  createWorkspace: (agentId: string, name: string, folderPath: string) => Promise<string>;
+  renameWorkspace: (workspaceId: string, name: string) => Promise<void>;
+  deleteWorkspace: (workspaceId: string) => Promise<void>;
   sendMessage: (sessionId: string, text: string) => Promise<void>;
   cancelRun: (sessionId: string) => Promise<void>;
   approveTool: (toolCallId: string, approved: boolean) => Promise<void>;
@@ -163,6 +178,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   agents: [],
   sessions: [],
   messages: [],
+  workspaces: [],
   activeAgentId: null,
   activeSessionId: null,
   isStreaming: false,
@@ -197,6 +213,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
       const sessions = await invoke<Session[]>("list_sessions", { agentId });
       set({ sessions });
+      await get().loadWorkspaces(agentId);
 
       if (openMode === "new") {
         // 打开时自动新建会话
@@ -240,9 +257,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  createSession: async (agentId: string, title: string) => {
+  createSession: async (agentId: string, title: string, workspaceId?: string | null) => {
     try {
-      const sessionId = await invoke<string>("create_session", { agentId, title });
+      const sessionId = await invoke<string>("create_session", { agentId, title, workspaceId: workspaceId ?? null });
       await get().loadSessions(agentId);
       await get().setActiveSessionId(sessionId);
       return sessionId;
@@ -290,6 +307,51 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       if (activeAgentId) await get().loadSessions(activeAgentId);
     } catch (e) {
       console.error("Failed to rename session", e);
+    }
+  },
+
+  loadWorkspaces: async (agentId: string) => {
+    try {
+      const workspaces = await invoke<Workspace[]>("list_workspaces", { agentId });
+      set({ workspaces });
+    } catch (e) {
+      console.error("Failed to load workspaces", e);
+    }
+  },
+
+  createWorkspace: async (agentId: string, name: string, folderPath: string) => {
+    const id = await invoke<string>("create_workspace", { agentId, name, folderPath });
+    await get().loadWorkspaces(agentId);
+    return id;
+  },
+
+  renameWorkspace: async (workspaceId: string, name: string) => {
+    try {
+      await invoke("rename_workspace", { workspaceId, name });
+      const { activeAgentId } = get();
+      if (activeAgentId) await get().loadWorkspaces(activeAgentId);
+    } catch (e) {
+      console.error("Failed to rename workspace", e);
+    }
+  },
+
+  deleteWorkspace: async (workspaceId: string) => {
+    try {
+      await invoke("delete_workspace", { workspaceId });
+      const { activeAgentId, activeSessionId } = get();
+      if (activeAgentId) {
+        await get().loadWorkspaces(activeAgentId);
+        await get().loadSessions(activeAgentId);
+        // 若当前活动会话属于被删工作区，切到首个普通对话
+        const sessions = get().sessions;
+        if (sessions.find((s) => s.id === activeSessionId)?.workspace_id === workspaceId) {
+          const fallback = sessions.find((s) => !s.workspace_id) ?? sessions[0];
+          if (fallback) await get().setActiveSessionId(fallback.id);
+          else set({ activeSessionId: null, messages: [] });
+        }
+      }
+    } catch (e) {
+      console.error("Failed to delete workspace", e);
     }
   },
 
@@ -366,6 +428,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setActiveAgentId: async (agentId: string) => {
     set({ activeAgentId: agentId });
     await get().loadSessions(agentId);
+    await get().loadWorkspaces(agentId);
     // 持久化上次选中的智能体
     invoke("set_setting", { key: "ui:last_agent_id", value: agentId }).catch(() => {});
 
