@@ -51,6 +51,7 @@ fn main() {
             commands::delete_session,
             commands::set_session_pin,
             commands::set_session_llm,
+            commands::set_session_permission_mode,
             commands::list_workspaces,
             commands::create_workspace,
             commands::rename_workspace,

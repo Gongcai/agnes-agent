@@ -97,6 +97,11 @@ pub enum DbCommand {
         thinking_budget: i64,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    UpdateSessionPermissionMode {
+        id: String,
+        permission_mode: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ListWorkspaces {
         agent_id: String,
         resp: oneshot::Sender<AppResult<Vec<repo::workspaces::WorkspaceRow>>>,
@@ -399,6 +404,21 @@ impl DbActorHandle {
             model,
             thinking_mode,
             thinking_budget,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn update_session_permission_mode(
+        &self,
+        id: String,
+        permission_mode: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateSessionPermissionMode {
+            id,
+            permission_mode,
             resp,
         })?;
         rx.await
@@ -733,6 +753,17 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         thinking_budget,
                     ));
                 }
+                DbCommand::UpdateSessionPermissionMode {
+                    id,
+                    permission_mode,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::sessions::update_permission_mode(
+                        &conn,
+                        &id,
+                        &permission_mode,
+                    ));
+                }
                 DbCommand::ListWorkspaces { agent_id, resp } => {
                     let _ = resp.send(repo::workspaces::list(&conn, &agent_id));
                 }
@@ -988,6 +1019,7 @@ mod tests {
             model: None,
             thinking_mode: None,
             thinking_budget: None,
+            permission_mode: "auto".into(),
             workspace_id: None,
             origin_device_id: None,
         };
@@ -1002,6 +1034,14 @@ mod tests {
         let got_sess = handle.get_session("test-session".into()).await.unwrap().unwrap();
         assert_eq!(got_sess.title, "Test Title");
         assert_eq!(got_sess.recency_window, 15);
+        assert_eq!(got_sess.permission_mode, "auto");
+
+        handle
+            .update_session_permission_mode("test-session".into(), "accept_edits".into())
+            .await
+            .unwrap();
+        let got_sess = handle.get_session("test-session".into()).await.unwrap().unwrap();
+        assert_eq!(got_sess.permission_mode, "accept_edits");
 
         // Update title
         handle.update_session_title("test-session".into(), "New Title".into()).await.unwrap();
@@ -1108,4 +1148,3 @@ mod tests {
         let _ = fs::remove_file(&db_path);
     }
 }
-

@@ -9,6 +9,7 @@ use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::tools::builtin::{builtin_tools, ToolCtx};
 use crate::tools::policy::ToolPolicy;
+use crate::tools::PermissionMode;
 
 pub struct ToolExecutor {
     db: DbActorHandle,
@@ -20,6 +21,7 @@ impl ToolExecutor {
     }
 
     /// 执行工具调用：审计入志 → workspace cwd → 有效 policy → 派发。
+    #[cfg(test)]
     pub async fn execute(
         &self,
         session_id: &str,
@@ -28,6 +30,35 @@ impl ToolExecutor {
         tool: &str,
         arguments: &serde_json::Value,
         policy: &ToolPolicy,
+    ) -> AppResult<serde_json::Value> {
+        let permission_mode = self
+            .db
+            .get_session(session_id.to_string())
+            .await?
+            .and_then(|session| session.permission_mode.parse().ok())
+            .unwrap_or_default();
+        self.execute_with_permission_mode(
+            session_id,
+            message_id,
+            tool_call_id,
+            tool,
+            arguments,
+            policy,
+            permission_mode,
+        )
+        .await
+    }
+
+    /// Execute a tool call with the permission mode captured by the approval gate.
+    pub async fn execute_with_permission_mode(
+        &self,
+        session_id: &str,
+        message_id: Option<&str>,
+        tool_call_id: &str,
+        tool: &str,
+        arguments: &serde_json::Value,
+        policy: &ToolPolicy,
+        permission_mode: PermissionMode,
     ) -> AppResult<serde_json::Value> {
         // A. 审计初志
         let new_tc = NewToolCall {
@@ -42,7 +73,10 @@ impl ToolExecutor {
                     .as_str()
                     .to_string(),
             ),
-            approval_policy_snapshot: Some(serde_json::to_string(policy).unwrap_or_default()),
+            approval_policy_snapshot: Some(crate::tools::permissions::audit_snapshot(
+                permission_mode,
+                policy,
+            )),
         };
         self.db.insert_tool_call(new_tc).await?;
 
@@ -153,6 +187,7 @@ mod tests {
             model: None,
             thinking_mode: None,
             thinking_budget: None,
+            permission_mode: "auto".into(),
             workspace_id: Some("workspace-1".into()),
             origin_device_id: None,
         };

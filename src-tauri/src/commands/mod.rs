@@ -37,6 +37,7 @@ pub struct SessionDto {
     pub model: String,
     pub thinking_mode: String,
     pub thinking_budget: i64,
+    pub permission_mode: String,
     pub workspace_id: Option<String>,
 }
 
@@ -233,6 +234,7 @@ pub async fn create_session(
         model: if default_model.is_empty() { None } else { Some(default_model) },
         thinking_mode: if default_thinking_mode.is_empty() { None } else { Some(default_thinking_mode) },
         thinking_budget: if default_thinking_budget == 0 { None } else { Some(default_thinking_budget) },
+        permission_mode: "auto".to_string(),
         workspace_id,
         origin_device_id: None,
     };
@@ -260,6 +262,7 @@ pub async fn list_sessions(
             model: r.model.unwrap_or_default(),
             thinking_mode: r.thinking_mode.unwrap_or_default(),
             thinking_budget: r.thinking_budget.unwrap_or(0),
+            permission_mode: r.permission_mode,
             workspace_id: r.workspace_id,
         })
         .collect())
@@ -334,6 +337,22 @@ pub async fn set_session_llm(
     state
         .db
         .update_session_llm(session_id, model, thinking_mode, thinking_budget)
+        .await
+}
+
+/// Set the session-level tool permission mode.
+#[tauri::command]
+pub async fn set_session_permission_mode(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    permission_mode: String,
+) -> AppResult<()> {
+    let mode = permission_mode
+        .parse::<crate::tools::PermissionMode>()
+        .map_err(AppError::Other)?;
+    state
+        .db
+        .update_session_permission_mode(session_id, mode.as_str().to_string())
         .await
 }
 

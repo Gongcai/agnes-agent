@@ -16,7 +16,7 @@ use crate::db::repo::messages::NewMessagePart;
 use crate::db::repo::memory::NewMemory;
 use crate::db::repo::tools::NewToolCall;
 use crate::error::{AppError, AppResult};
-use crate::tools::{ToolExecutor, ToolPolicy};
+use crate::tools::{PermissionMode, ToolExecutor, ToolPolicy};
 
 pub struct ActiveRun {
     pub assistant_message_id: String,
@@ -297,7 +297,9 @@ async fn handle_conn<R: tauri::Runtime>(
 
                 // 获取 Agent 的 ToolPolicy
                 let mut policy = ToolPolicy::default();
+                let mut permission_mode = PermissionMode::default();
                 if let Ok(Some(sess)) = db.get_session(session_id.clone()).await {
+                    permission_mode = sess.permission_mode.parse().unwrap_or_default();
                     if let Ok(agents) = db.list_agents().await {
                         if let Some(agent) = agents.iter().find(|a| a.id == sess.agent_id) {
                             if let Ok(parsed) = serde_json::from_str::<ToolPolicy>(&agent.tool_policy) {
@@ -306,10 +308,17 @@ async fn handle_conn<R: tauri::Runtime>(
                         }
                     }
                 }
+                policy = permission_mode.effective_policy(&policy);
 
-                // 判断是否需要人工审批（统一 risk + tier 模型）
+                // Resolve approval from the session permission mode.
                 let risk = crate::tools::builtin::compute_risk(&tool_name, &args);
-                let needs_approval = crate::tools::builtin::needs_approval(&tool_name, &args, &policy);
+                let role_policy_requires_approval =
+                    crate::tools::builtin::needs_approval(&tool_name, &args, &policy);
+                let approval_decision = crate::tools::permissions::approval_decision(
+                    permission_mode,
+                    &tool_name,
+                    risk,
+                );
                 let workspace_cwd = crate::tools::workspace::resolve_workspace_cwd(&db, &session_id).await;
                 let effective_cwd = args
                     .get("cwd")
@@ -321,7 +330,7 @@ async fn handle_conn<R: tauri::Runtime>(
 
                 let mut approved = true;
                 let mut cancelled_during_approval = false;
-                if needs_approval {
+                if approval_decision.needs_approval {
                     // 1. 注册 Oneshot Channel 并将协程挂起
                     let (approval_tx, approval_rx) = tokio::sync::oneshot::channel::<bool>();
                     manager.register_approval(tc_id.clone(), approval_tx);
@@ -342,6 +351,10 @@ async fn handle_conn<R: tauri::Runtime>(
                         "cwd": effective_cwd,
                         "network_allowed": policy.network.allow,
                         "landlock": policy.sandbox.landlock,
+                        "permission_mode": permission_mode.as_str(),
+                        "approval_reason": approval_decision.reason,
+                        "is_secondary_confirmation": approval_decision.is_secondary_confirmation,
+                        "role_policy_requires_approval": role_policy_requires_approval,
                     }));
 
                     // 3. 等待用户点击按钮释放，或 cancel_run 触发取消信号
@@ -370,7 +383,9 @@ async fn handle_conn<R: tauri::Runtime>(
                         params: Some(args.to_string()),
                         status: "rejected".to_string(),
                         risk_level: Some(risk.as_str().to_string()),
-                        approval_policy_snapshot: Some(serde_json::to_string(&policy).unwrap_or_default()),
+                        approval_policy_snapshot: Some(
+                            crate::tools::permissions::audit_snapshot(permission_mode, &policy)
+                        ),
                     };
                     let _ = db.insert_tool_call(tc_log).await;
                     
@@ -402,13 +417,14 @@ async fn handle_conn<R: tauri::Runtime>(
                 drop(runs);
 
                 // 执行物理调用
-                let exec_res = tool_executor.execute(
+                let exec_res = tool_executor.execute_with_permission_mode(
                     &session_id,
                     assistant_msg_id.as_deref(),
                     &tc_id,
                     &tool_name,
                     &args,
                     &policy,
+                    permission_mode,
                 ).await;
 
                 // 准备回传 Python 的结果

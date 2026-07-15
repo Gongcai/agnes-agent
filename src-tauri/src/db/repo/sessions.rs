@@ -16,6 +16,7 @@ pub struct SessionRow {
     pub model: Option<String>,
     pub thinking_mode: Option<String>,
     pub thinking_budget: Option<i64>,
+    pub permission_mode: String,
     pub workspace_id: Option<String>,
     pub summary: Option<String>,
     pub summary_updated_at: Option<String>,
@@ -39,6 +40,7 @@ pub struct NewSession {
     pub model: Option<String>,
     pub thinking_mode: Option<String>,
     pub thinking_budget: Option<i64>,
+    pub permission_mode: String,
     pub workspace_id: Option<String>,
     pub origin_device_id: Option<String>,
 }
@@ -56,7 +58,7 @@ pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, title, context_limit, compress_threshold, recency_window, \
          reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
-         workspace_id, summary, summary_updated_at, \
+         permission_mode, workspace_id, summary, summary_updated_at, \
          created_at, updated_at, version, deleted_at, origin_device_id, pinned \
          FROM sessions \
          WHERE agent_id = ?1 AND deleted_at IS NULL \
@@ -76,15 +78,16 @@ pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
             model: r.get(8)?,
             thinking_mode: r.get(9)?,
             thinking_budget: r.get(10)?,
-            workspace_id: r.get(11)?,
-            summary: r.get(12)?,
-            summary_updated_at: r.get(13)?,
-            created_at: r.get(14)?,
-            updated_at: r.get(15)?,
-            version: r.get(16)?,
-            deleted_at: r.get(17)?,
-            origin_device_id: r.get(18)?,
-            pinned: r.get(19)?,
+            permission_mode: r.get(11)?,
+            workspace_id: r.get(12)?,
+            summary: r.get(13)?,
+            summary_updated_at: r.get(14)?,
+            created_at: r.get(15)?,
+            updated_at: r.get(16)?,
+            version: r.get(17)?,
+            deleted_at: r.get(18)?,
+            origin_device_id: r.get(19)?,
+            pinned: r.get(20)?,
         })
     })?;
 
@@ -100,7 +103,7 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, title, context_limit, compress_threshold, recency_window, \
          reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
-         workspace_id, summary, summary_updated_at, \
+         permission_mode, workspace_id, summary, summary_updated_at, \
          created_at, updated_at, version, deleted_at, origin_device_id, pinned \
          FROM sessions \
          WHERE id = ?1",
@@ -119,15 +122,16 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<SessionRow>> {
             model: r.get(8)?,
             thinking_mode: r.get(9)?,
             thinking_budget: r.get(10)?,
-            workspace_id: r.get(11)?,
-            summary: r.get(12)?,
-            summary_updated_at: r.get(13)?,
-            created_at: r.get(14)?,
-            updated_at: r.get(15)?,
-            version: r.get(16)?,
-            deleted_at: r.get(17)?,
-            origin_device_id: r.get(18)?,
-            pinned: r.get(19)?,
+            permission_mode: r.get(11)?,
+            workspace_id: r.get(12)?,
+            summary: r.get(13)?,
+            summary_updated_at: r.get(14)?,
+            created_at: r.get(15)?,
+            updated_at: r.get(16)?,
+            version: r.get(17)?,
+            deleted_at: r.get(18)?,
+            origin_device_id: r.get(19)?,
+            pinned: r.get(20)?,
         })
     }).optional()?;
 
@@ -143,8 +147,8 @@ pub fn insert(conn: &Connection, s: &NewSession) -> AppResult<String> {
     conn.execute(
         "INSERT INTO sessions (id, agent_id, title, context_limit, compress_threshold, \
          recency_window, reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
-         workspace_id, created_at, updated_at, version, origin_device_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 1, ?15)",
+         permission_mode, workspace_id, created_at, updated_at, version, origin_device_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 1, ?16)",
         params![
             s.id,
             s.agent_id,
@@ -157,6 +161,7 @@ pub fn insert(conn: &Connection, s: &NewSession) -> AppResult<String> {
             s.model,
             s.thinking_mode,
             s.thinking_budget,
+            s.permission_mode,
             s.workspace_id,
             now_str,
             now_str,
@@ -180,6 +185,17 @@ pub fn update_llm(
         "UPDATE sessions SET model = ?1, thinking_mode = ?2, thinking_budget = ?3, \
          updated_at = ?4, version = version + 1 WHERE id = ?5",
         params![model, thinking_mode, thinking_budget, now_str, id],
+    )?;
+    Ok(())
+}
+
+/// Update the session-level tool permission mode.
+pub fn update_permission_mode(conn: &Connection, id: &str, permission_mode: &str) -> AppResult<()> {
+    let now_str = now();
+    conn.execute(
+        "UPDATE sessions SET permission_mode = ?1, updated_at = ?2, \
+         version = version + 1 WHERE id = ?3",
+        params![permission_mode, now_str, id],
     )?;
     Ok(())
 }

@@ -95,6 +95,21 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         conn.execute("ALTER TABLE sessions ADD COLUMN thinking_budget INTEGER DEFAULT 0", [])?;
     }
 
+    // Add the session-level tool permission mode for existing databases.
+    let has_permission_mode: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'permission_mode'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_permission_mode {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'auto'",
+            [],
+        )?;
+    }
+
     // 为已存在的 sessions 表补充 workspace_id 列（幂等，兼容老库）
     let has_workspace_id: bool = conn
         .query_row(
@@ -149,4 +164,55 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adds_permission_mode_to_existing_sessions() {
+        unsafe {
+            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        let legacy_schema = crate::db::schema::SCHEMA
+            .lines()
+            .filter(|line| !line.contains("permission_mode TEXT"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        conn.execute_batch(&legacy_schema).unwrap();
+        let column_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'permission_mode'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(column_count, 0);
+        conn.execute(
+            "INSERT INTO agents (id, name) VALUES ('agnes', 'Agnes')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, title) VALUES ('legacy', 'agnes', 'Legacy')",
+            [],
+        )
+        .unwrap();
+
+        apply(&mut conn).unwrap();
+
+        let mode: String = conn
+            .query_row(
+                "SELECT permission_mode FROM sessions WHERE id = 'legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mode, "auto");
+    }
 }

@@ -4,6 +4,7 @@ import {
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
+import type { PermissionMode } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ModifyMemoryModal } from "./ModifyMemoryModal";
@@ -24,6 +25,37 @@ const THINKING_LABEL: Record<string, string> = {
   medium: "中等",
   high: "深度",
 };
+
+const PERMISSION_OPTIONS: {
+  value: PermissionMode;
+  label: string;
+  desc: string;
+}[] = [
+  {
+    value: "ask_for_approval",
+    label: "每次询问",
+    desc: "每次本地工具调用前都请求你的批准",
+  },
+  {
+    value: "auto",
+    label: "自动模式",
+    desc: "本轮暂由你决定；高风险操作需要二次确认",
+  },
+  {
+    value: "accept_edits",
+    label: "接受编辑",
+    desc: "自动读写文件，Shell 与 Git 命令仍会询问",
+  },
+  {
+    value: "full_access",
+    label: "完全访问",
+    desc: "已启用工具可访问系统并直接执行，不再询问",
+  },
+];
+
+const PERMISSION_LABEL: Record<PermissionMode, string> = Object.fromEntries(
+  PERMISSION_OPTIONS.map((option) => [option.value, option.label]),
+) as Record<PermissionMode, string>;
 
 interface ChatWorkspaceProps {
   isSidebarOpen: boolean;
@@ -48,6 +80,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     approveTool,
     cancelRun,
     setSessionLlm,
+    setSessionPermissionMode,
     switchVersion,
     createBranch,
     deleteMessage,
@@ -59,6 +92,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [inputVal, setInputVal] = useState("");
   const messageEndRef = useRef<HTMLDivElement>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [permissionPickerOpen, setPermissionPickerOpen] = useState(false);
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [memoryEditMsgId, setMemoryEditMsgId] = useState<string | null>(null);
@@ -84,11 +118,17 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
   // 当前生效的思考模式（会话级优先，回退角色卡）
   const currentThinkingMode = activeSession?.thinking_mode || activeAgent?.thinking_mode || "off";
+  const currentPermissionMode = activeSession?.permission_mode || "auto";
 
   // 持久化会话级模型/思考配置
   const applySessionLlm = (model: string, thinkingMode: string, thinkingBudget: number) => {
     if (!activeSessionId) return;
     setSessionLlm(activeSessionId, model, thinkingMode, thinkingBudget).catch(console.error);
+  };
+
+  const applyPermissionMode = (permissionMode: PermissionMode) => {
+    if (!activeSessionId) return;
+    setSessionPermissionMode(activeSessionId, permissionMode).catch(console.error);
   };
 
   // Scroll to bottom on new messages
@@ -241,12 +281,19 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                                 <Terminal className="h-3.5 w-3.5 text-stone-500" />
                                 <span>调用本地工具: {tc.tool}</span>
                               </span>
-                              <span
-                                className={`px-2 py-0.5 rounded text-[10px] ${
+                              <span className="flex items-center gap-1.5">
+                                {tc.permissionMode && (
+                                  <span className="px-2 py-0.5 rounded bg-stone-100 text-stone-500 text-[10px]">
+                                    {PERMISSION_LABEL[tc.permissionMode]}
+                                  </span>
+                                )}
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] ${
                                   isHighRisk ? "bg-rose-100 text-rose-700" : "bg-stone-200/80 text-stone-600"
-                                }`}
-                              >
-                                风险: {tc.risk}
+                                  }`}
+                                >
+                                  风险: {tc.risk}
+                                </span>
                               </span>
                             </div>
 
@@ -275,10 +322,16 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               )}
 
                               {isPending && (
-                                <div className="bg-white p-2.5 rounded-lg border border-stone-200 flex items-start gap-2 shadow-sm">
-                                  <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-                                  <p className="text-[11px] text-stone-500 leading-relaxed">
-                                    根据规则，运行此命令行需要人工审核批准。
+                                <div className={`bg-white p-2.5 rounded-lg border flex items-start gap-2 shadow-sm ${
+                                  tc.isSecondaryConfirmation ? "border-rose-200" : "border-stone-200"
+                                }`}>
+                                  <AlertTriangle className={`h-4 w-4 shrink-0 mt-0.5 ${
+                                    tc.isSecondaryConfirmation ? "text-rose-500" : "text-amber-500"
+                                  }`} />
+                                  <p className={`text-[11px] leading-relaxed ${
+                                    tc.isSecondaryConfirmation ? "text-rose-700" : "text-stone-500"
+                                  }`}>
+                                    {tc.approvalReason || "根据当前权限规则，此工具调用需要人工审核批准。"}
                                   </p>
                                 </div>
                               )}
@@ -302,7 +355,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                                   onClick={() => approveTool(tc.id, true).catch(console.error)}
                                   className="px-3 py-1 text-xs text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-all font-semibold"
                                 >
-                                  授权运行
+                                  {tc.isSecondaryConfirmation ? "确认高危操作" : "授权运行"}
                                 </button>
                               </div>
                             )}
@@ -457,12 +510,85 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             className="w-full resize-none bg-transparent px-3 py-1 text-sm text-stone-900 placeholder:text-stone-450 focus:outline-none h-12"
           />
           <div className="flex items-center justify-between border-t border-stone-100 pt-2 px-1 text-[10px] text-stone-400">
-            <span>Agent 本地执行受系统沙箱安全策略保护</span>
+            <span>
+              {currentPermissionMode === "full_access"
+                ? "完全访问已开启：文件与网络沙箱限制已放宽"
+                : "Agent 本地执行受系统沙箱安全策略保护"}
+            </span>
             <div className="flex items-center gap-2">
+              {/* Session permission mode switcher */}
+              <div className="relative">
+                <button
+                  onClick={() => {
+                    setPermissionPickerOpen((open) => !open);
+                    setModelPickerOpen(false);
+                  }}
+                  disabled={!activeSessionId || isStreaming}
+                  className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[10px] transition-colors disabled:opacity-40 ${
+                    currentPermissionMode === "full_access"
+                      ? "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                      : "border-stone-200 bg-white text-stone-600 hover:text-stone-900 hover:bg-stone-50"
+                  }`}
+                  title={PERMISSION_OPTIONS.find((option) => option.value === currentPermissionMode)?.desc}
+                >
+                  <ShieldCheck className="h-3 w-3" />
+                  <span>{PERMISSION_LABEL[currentPermissionMode]}</span>
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+
+                {permissionPickerOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setPermissionPickerOpen(false)}
+                    />
+                    <div className="absolute bottom-full right-0 mb-2 z-50 w-72 rounded-xl border border-stone-200 bg-white shadow-2xl p-2">
+                      <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-stone-400">
+                        会话权限
+                      </div>
+                      {PERMISSION_OPTIONS.map((option) => {
+                        const isActive = option.value === currentPermissionMode;
+                        const isFullAccess = option.value === "full_access";
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => {
+                              applyPermissionMode(option.value);
+                              setPermissionPickerOpen(false);
+                            }}
+                            className={`w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
+                              isActive
+                                ? isFullAccess
+                                  ? "bg-rose-50 text-rose-700"
+                                  : "bg-[#8CA38A]/10 text-[#5F735D]"
+                                : isFullAccess
+                                  ? "text-rose-600 hover:bg-rose-50"
+                                  : "text-stone-600 hover:bg-stone-100"
+                            }`}
+                          >
+                            <span className="flex items-center justify-between text-[11px] font-semibold">
+                              {option.label}
+                              {isActive && <Check className="h-3 w-3" />}
+                            </span>
+                            <span className="mt-0.5 block text-[10px] leading-relaxed opacity-70">
+                              {option.desc}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+
               {/* Model switcher (Provider -> Model) */}
               <div className="relative">
                 <button
-                  onClick={() => setModelPickerOpen((v) => !v)}
+                  onClick={() => {
+                    setModelPickerOpen((v) => !v);
+                    setPermissionPickerOpen(false);
+                  }}
                   className="flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[10px] text-stone-600 hover:text-stone-900 hover:bg-stone-50 transition-colors"
                   title="切换模型"
                 >

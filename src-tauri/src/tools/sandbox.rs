@@ -86,7 +86,13 @@ impl PolicySandbox {
         }
         deduplicate_paths(&mut read_roots);
 
-        let mut write_roots = primary_write_root.into_iter().collect::<Vec<_>>();
+        let mut write_roots = if policy.shell.deny_write_outside_workspace {
+            primary_write_root.into_iter().collect::<Vec<_>>()
+        } else {
+            let mut roots = read_roots.clone();
+            roots.extend(cwd_roots.iter().cloned());
+            roots
+        };
         deduplicate_paths(&mut write_roots);
 
         let mut process_read_only = read_roots.clone();

@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+export type PermissionMode = "ask_for_approval" | "auto" | "accept_edits" | "full_access";
+
 export interface ToolCall {
   id: string;
   tool: string;
@@ -12,6 +14,9 @@ export interface ToolCall {
   cwd?: string;
   networkAllowed?: boolean;
   landlock?: boolean;
+  permissionMode?: PermissionMode;
+  approvalReason?: string;
+  isSecondaryConfirmation?: boolean;
 }
 
 export interface MessagePart {
@@ -48,6 +53,7 @@ export interface Session {
   model: string;
   thinking_mode: string;
   thinking_budget: number;
+  permission_mode: PermissionMode;
   workspace_id: string | null;
 }
 
@@ -131,6 +137,7 @@ interface AgentState {
   setActiveAgentId: (agentId: string) => Promise<void>;
   setActiveSessionId: (sessionId: string) => Promise<void>;
   setSessionLlm: (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number) => Promise<void>;
+  setSessionPermissionMode: (sessionId: string, permissionMode: PermissionMode) => Promise<void>;
   switchVersion: (messageId: string, direction: "prev" | "next") => Promise<void>;
   createBranch: (messageId: string) => Promise<void>;
   deleteMessage: (messageId: string) => Promise<void>;
@@ -464,6 +471,19 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
+  setSessionPermissionMode: async (sessionId: string, permissionMode: PermissionMode) => {
+    try {
+      await invoke("set_session_permission_mode", { sessionId, permissionMode });
+      const sessions = get().sessions.map((session) =>
+        session.id === sessionId ? { ...session, permission_mode: permissionMode } : session
+      );
+      set({ sessions });
+    } catch (e) {
+      console.error("设置会话权限模式失败", e);
+      throw e;
+    }
+  },
+
   switchVersion: async (messageId: string, direction: "prev" | "next") => {
     try {
       await invoke("switch_version", { messageId, direction });
@@ -705,10 +725,34 @@ export function setupTauriEventListeners() {
   );
 
   listeners.push(
-    listen<{ session_id: string; run_id: string; tool_call_id: string; tool: string; arguments: any; risk: string; cwd?: string; network_allowed: boolean; landlock: boolean }>(
+    listen<{
+      session_id: string;
+      run_id: string;
+      tool_call_id: string;
+      tool: string;
+      arguments: any;
+      risk: string;
+      cwd?: string;
+      network_allowed: boolean;
+      landlock: boolean;
+      permission_mode: PermissionMode;
+      approval_reason: string;
+      is_secondary_confirmation: boolean;
+    }>(
       "agent://tool_call_pending",
       (event) => {
-        const { tool_call_id, tool, arguments: args, risk, cwd, network_allowed, landlock } = event.payload;
+        const {
+          tool_call_id,
+          tool,
+          arguments: args,
+          risk,
+          cwd,
+          network_allowed,
+          landlock,
+          permission_mode,
+          approval_reason,
+          is_secondary_confirmation,
+        } = event.payload;
         // Inject a pending tool call into the current assistant message's parts list for visual card rendering
         const { messages } = useAgentStore.getState();
         if (messages.length === 0) return;
@@ -729,6 +773,9 @@ export function setupTauriEventListeners() {
               cwd,
               networkAllowed: network_allowed,
               landlock,
+              permissionMode: permission_mode,
+              approvalReason: approval_reason,
+              isSecondaryConfirmation: is_secondary_confirmation,
               status: "pending_approval"
             }
           }];

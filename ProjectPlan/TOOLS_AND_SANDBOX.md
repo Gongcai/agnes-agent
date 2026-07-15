@@ -249,3 +249,30 @@ pub struct NetworkPolicy { pub allow: bool }
 - **沙箱主防线**：Landlock（Linux）；Windows 用路径白名单降级，后续 Phase F 引入 Job Object + Restricted Token。
 - **网络默认**：默认开（`allow=true`）；用户可在工作区策略关闭，关闭后用 bwrap `--unshare-net` 或启发式拦截。
 - **新工具范围**：file_edit + list_files + grep + apply_patch（codex 风格统一补丁）。
+
+## 十二、会话级权限模式（2026-07-16）
+
+聊天输入区在模型选择器旁新增会话级权限选择器，配置持久化到
+`sessions.permission_mode`，默认值为 `auto`。角色卡 `ToolPolicy` 继续决定工具是否启用；
+会话权限模式决定本次会话的审批自动化程度，以及 `full_access` 下的能力边界。
+原有 `ApprovalTier` 暂保留为角色审批偏好与后续 Auto 决策模型的输入；当前人工审批入口以会话权限模式为准。
+
+| 模式 | 当前行为 |
+|---|---|
+| `ask_for_approval` | 每次工具调用都请求用户批准 |
+| `auto` | 决策模型尚未接入，本轮所有调用直接请求用户决定；High 风险调用标记为用户二次确认 |
+| `accept_edits` | 文件读取、搜索、写入、精确编辑和补丁自动执行；Shell、Git 与未知工具仍请求批准 |
+| `full_access` | 已启用工具不再请求人工审批；放开文件路径与网络隔离，但保留超时、输出截断、rlimit 与审计 |
+
+审批事件额外携带 `permission_mode`、`approval_reason`、
+`is_secondary_confirmation`，前端审批卡显示触发原因，并对 Auto 下的 High 风险操作使用明确的高危确认文案。
+审计快照同时记录会话权限模式和当次有效 `ToolPolicy`。
+
+### Auto 后续接入点
+
+下一轮的“用户指定决策模型”子系统接入后，只替换 `auto` 的普通调用判定：
+
+1. Low/Medium 调用提交给用户选定的决策模型，由该模型返回允许或拒绝。
+2. 决策模型不可用、超时或输出无效时，失败关闭并请求用户决定。
+3. High 风险调用即使被决策模型允许，仍必须向用户发送二次确认卡片。
+4. 其余三种模式的语义保持不变。
