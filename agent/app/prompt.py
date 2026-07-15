@@ -24,27 +24,70 @@ def count_tokens(text: str, model: str = "gpt-4") -> int:
 def translate_messages(recent_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Translate multi-part messages from the database schema to standard OpenAI format."""
     translated: List[Dict[str, Any]] = []
-    
+    pending_exchange: Optional[Dict[str, Any]] = None
+    pending_results: List[Dict[str, Any]] = []
+    outstanding_tool_ids: set[str] = set()
+
+    def finish_incomplete_exchange() -> None:
+        """Downgrade an incomplete tool exchange instead of emitting invalid protocol history."""
+        nonlocal pending_exchange, pending_results, outstanding_tool_ids
+        if pending_exchange and pending_exchange.get("content"):
+            translated.append({
+                "role": "assistant",
+                "content": pending_exchange["content"],
+            })
+        pending_exchange = None
+        pending_results = []
+        outstanding_tool_ids = set()
+
+    def emit_assistant(content_parts: List[str], tool_calls: List[Dict[str, Any]]) -> None:
+        """Emit plain assistant content or start a buffered tool exchange."""
+        nonlocal pending_exchange, pending_results, outstanding_tool_ids
+        if not content_parts and not tool_calls:
+            return
+
+        message: Dict[str, Any] = {
+            "role": "assistant",
+            "content": "\n".join(content_parts),
+        }
+        if not tool_calls:
+            finish_incomplete_exchange()
+            translated.append(message)
+            return
+
+        finish_incomplete_exchange()
+        message["tool_calls"] = tool_calls
+        pending_exchange = message
+        pending_results = []
+        outstanding_tool_ids = {
+            tool_call["id"] for tool_call in tool_calls if tool_call.get("id")
+        }
+
     for msg in recent_messages:
         role = msg.get("role")
         parts = msg.get("parts", [])
-        
+
         content_parts: List[str] = []
         tool_calls: List[Dict[str, Any]] = []
-        has_tool_result = False
-        
+
+        def flush_assistant() -> None:
+            nonlocal content_parts, tool_calls
+            emit_assistant(content_parts, tool_calls)
+            content_parts = []
+            tool_calls = []
+
         for part in parts:
             kind = part.get("kind") or part.get("type")
             content = part.get("content", "")
-            
+
             if kind == "text":
                 content_parts.append(content)
-            elif kind == "thought":
+            elif kind in ("thought", "reasoning"):
                 # Encapsulate assistant's internal thinking process
                 content_parts.append(f"<thought>\n{content}\n</thought>")
             elif kind == "tool_call":
                 tc_info = part.get("toolCall")
-                if tc_info:
+                if tc_info and tc_info.get("id") and tc_info.get("tool"):
                     tool_calls.append({
                         "id": tc_info.get("id"),
                         "type": "function",
@@ -56,31 +99,74 @@ def translate_messages(recent_messages: List[Dict[str, Any]]) -> List[Dict[str, 
                 if content:
                     content_parts.append(content)
             elif kind == "tool_result":
-                has_tool_result = True
+                flush_assistant()
                 tc_info = part.get("toolCall")
                 tc_id = tc_info.get("id") if tc_info else ""
                 tool_name = tc_info.get("tool") if tc_info else ""
-                
+
+                if pending_exchange and tc_id in outstanding_tool_ids:
+                    pending_results.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "name": tool_name,
+                        "content": content,
+                    })
+                    outstanding_tool_ids.remove(tc_id)
+                    if not outstanding_tool_ids:
+                        translated.append(pending_exchange)
+                        translated.extend(pending_results)
+                        pending_exchange = None
+                        pending_results = []
+                # Orphan results are deliberately omitted: providers reject a tool message
+                # without a preceding assistant tool_calls declaration.
+
+        if role == "assistant":
+            flush_assistant()
+        elif role == "user":
+            finish_incomplete_exchange()
+            if content_parts:
                 translated.append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "name": tool_name,
-                    "content": content,
+                    "role": "user",
+                    "content": "\n".join(content_parts),
                 })
-        
-        if role in ("user", "assistant"):
-            # Only append the assistant message if it contains actual content/tool_calls,
-            # or if it does not contain a tool_result. (Avoids empty assistant placeholder messages).
-            if content_parts or tool_calls or not has_tool_result:
-                message_dict: Dict[str, Any] = {
-                    "role": role,
-                    "content": "\n".join(content_parts)
-                }
-                if tool_calls:
-                    message_dict["tool_calls"] = tool_calls
-                translated.append(message_dict)
-            
+
+    finish_incomplete_exchange()
     return translated
+
+
+def group_protocol_messages(messages: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Keep assistant tool calls and their tool results in one context-budget unit."""
+    groups: List[List[Dict[str, Any]]] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        tool_calls = message.get("tool_calls") if message.get("role") == "assistant" else None
+        if not tool_calls:
+            if message.get("role") != "tool":
+                groups.append([message])
+            index += 1
+            continue
+
+        outstanding = {
+            tool_call.get("id") for tool_call in tool_calls if tool_call.get("id")
+        }
+        group = [message]
+        index += 1
+        while index < len(messages) and outstanding:
+            result = messages[index]
+            result_id = result.get("tool_call_id") if result.get("role") == "tool" else None
+            if result_id not in outstanding:
+                break
+            group.append(result)
+            outstanding.remove(result_id)
+            index += 1
+
+        if not outstanding:
+            groups.append(group)
+        elif message.get("content"):
+            groups.append([{"role": "assistant", "content": message["content"]}])
+
+    return groups
 
 def summarize_history(
     messages_to_compress: List[Dict[str, Any]],
@@ -202,23 +288,27 @@ def assemble_prompt(
     raw_recent = context.get("recentMessages", [])
     translated_recent = translate_messages(raw_recent)
     
-    # Iterate backwards to add messages within budget
-    filtered_recent: List[Dict[str, Any]] = []
+    # Iterate backwards by protocol group so a tool result is never retained without
+    # the assistant tool_calls message it responds to.
+    protocol_groups = group_protocol_messages(translated_recent)
+    filtered_groups: List[List[Dict[str, Any]]] = []
     accumulated_tokens = 0
-    
-    for msg in reversed(translated_recent):
-        msg_str = msg.get("content", "")
-        # Add tool_calls structure to approximation if present
-        if "tool_calls" in msg:
-            msg_str += json.dumps(msg["tool_calls"])
-            
-        msg_tokens = count_tokens(msg_str, model_name)
-        if accumulated_tokens + msg_tokens > usable_budget:
+
+    for group in reversed(protocol_groups):
+        group_tokens = 0
+        for msg in group:
+            msg_str = msg.get("content", "")
+            if "tool_calls" in msg:
+                msg_str += json.dumps(msg["tool_calls"])
+            group_tokens += count_tokens(msg_str, model_name)
+
+        if accumulated_tokens + group_tokens > usable_budget:
             break
-        filtered_recent.append(msg)
-        accumulated_tokens += msg_tokens
-        
-    filtered_recent.reverse()
+        filtered_groups.append(group)
+        accumulated_tokens += group_tokens
+
+    filtered_groups.reverse()
+    filtered_recent = [msg for group in filtered_groups for msg in group]
     messages.extend(filtered_recent)
     
     # Append the user's latest input to the messages list

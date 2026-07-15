@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json
 import pytest
-from app.prompt import assemble_prompt, translate_messages, count_tokens
+from app.prompt import assemble_prompt, group_protocol_messages, translate_messages, count_tokens
 from app.graph import build_graph, get_available_tools
 from app.memory_extract import extract_memories
 from app.main import resolve_task_llm
@@ -57,6 +57,73 @@ def test_translate_messages():
     assert translated[2]["role"] == "tool"
     assert translated[2]["tool_call_id"] == "tc-1"
     assert translated[2]["content"] == "On branch main"
+
+
+def test_translate_interleaved_tool_history_from_one_assistant_message():
+    raw_recent = [
+        {
+            "role": "user",
+            "parts": [{"kind": "text", "content": "Inspect the repository"}],
+        },
+        {
+            "role": "assistant",
+            "parts": [
+                {"kind": "reasoning", "content": "I should list the files."},
+                {
+                    "kind": "tool_call",
+                    "content": "Calling list_files...",
+                    "toolCall": {
+                        "id": "tc-1",
+                        "tool": "list_files",
+                        "args": "{\"path\":\".\"}",
+                    },
+                },
+                {
+                    "kind": "tool_result",
+                    "content": "README.md",
+                    "toolCall": {"id": "tc-1", "tool": "list_files"},
+                },
+                {"kind": "text", "content": "The repository contains a README."},
+            ],
+        },
+    ]
+
+    translated = translate_messages(raw_recent)
+
+    assert [message["role"] for message in translated] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert translated[1]["tool_calls"][0]["id"] == "tc-1"
+    assert translated[2]["tool_call_id"] == "tc-1"
+    assert translated[3]["content"] == "The repository contains a README."
+
+
+def test_tool_exchange_is_one_context_budget_group():
+    messages = [
+        {"role": "user", "content": "Inspect the repository"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "tc-1",
+                    "type": "function",
+                    "function": {"name": "list_files", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tc-1", "content": "README.md"},
+        {"role": "assistant", "content": "Done"},
+    ]
+
+    groups = group_protocol_messages(messages)
+
+    assert [len(group) for group in groups] == [1, 2, 1]
+    assert groups[1][0]["role"] == "assistant"
+    assert groups[1][1]["role"] == "tool"
 
 def test_assemble_prompt_and_budgeting():
     snapshot = {
