@@ -97,6 +97,23 @@ pub enum DbCommand {
         thinking_budget: i64,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    ListWorkspaces {
+        agent_id: String,
+        resp: oneshot::Sender<AppResult<Vec<repo::workspaces::WorkspaceRow>>>,
+    },
+    InsertWorkspace {
+        row: repo::workspaces::NewWorkspace,
+        resp: oneshot::Sender<AppResult<String>>,
+    },
+    RenameWorkspace {
+        id: String,
+        name: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    DeleteWorkspace {
+        id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ListMessagesWithParts {
         session_id: String,
         resp: oneshot::Sender<AppResult<Vec<(repo::messages::MessageRow, Vec<repo::messages::MessagePartRow>)>>>,
@@ -382,6 +399,30 @@ impl DbActorHandle {
         })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_workspaces(&self, agent_id: String) -> AppResult<Vec<repo::workspaces::WorkspaceRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListWorkspaces { agent_id, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn insert_workspace(&self, row: repo::workspaces::NewWorkspace) -> AppResult<String> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::InsertWorkspace { row, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn rename_workspace(&self, id: String, name: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::RenameWorkspace { id, name, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn delete_workspace(&self, id: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::DeleteWorkspace { id, resp })?;
+        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
     pub async fn list_messages_with_parts(
@@ -682,6 +723,18 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         thinking_budget,
                     ));
                 }
+                DbCommand::ListWorkspaces { agent_id, resp } => {
+                    let _ = resp.send(repo::workspaces::list(&conn, &agent_id));
+                }
+                DbCommand::InsertWorkspace { row, resp } => {
+                    let _ = resp.send(repo::workspaces::insert(&conn, &row));
+                }
+                DbCommand::RenameWorkspace { id, name, resp } => {
+                    let _ = resp.send(repo::workspaces::rename(&conn, &id, &name));
+                }
+                DbCommand::DeleteWorkspace { id, resp } => {
+                    let _ = resp.send(repo::workspaces::delete(&conn, &id));
+                }
                 DbCommand::ListMessagesWithParts { session_id, resp } => {
                     let _ = resp.send(repo::messages::list_with_parts(&conn, &session_id));
                 }
@@ -922,6 +975,7 @@ mod tests {
             model: None,
             thinking_mode: None,
             thinking_budget: None,
+            workspace_id: None,
             origin_device_id: None,
         };
         let sess_id = handle.insert_session(session).await.unwrap();

@@ -16,6 +16,7 @@ use crate::state::AppState;
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 1) 初始化 SQLite（阻塞直到建表完成）
             let data_dir = app
@@ -46,6 +47,10 @@ fn main() {
             commands::delete_session,
             commands::set_session_pin,
             commands::set_session_llm,
+            commands::list_workspaces,
+            commands::create_workspace,
+            commands::rename_workspace,
+            commands::delete_workspace,
             commands::rename_session,
             commands::get_debug_prompt,
             commands::list_messages,

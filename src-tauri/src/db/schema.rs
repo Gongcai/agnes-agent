@@ -39,7 +39,17 @@ CREATE TABLE IF NOT EXISTS sessions (
   version INTEGER DEFAULT 1,
   deleted_at TEXT,
   origin_device_id TEXT,
-  pinned INTEGER DEFAULT 0
+  pinned INTEGER DEFAULT 0,
+  workspace_id TEXT REFERENCES workspaces(id)  -- NULL=普通对话，非空=归属某工作区
+);
+
+CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL REFERENCES agents(id),
+  name TEXT,
+  folder_path TEXT,
+  created_at TEXT,
+  updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (

@@ -16,6 +16,7 @@ pub struct SessionRow {
     pub model: Option<String>,
     pub thinking_mode: Option<String>,
     pub thinking_budget: Option<i64>,
+    pub workspace_id: Option<String>,
     pub summary: Option<String>,
     pub summary_updated_at: Option<String>,
     pub created_at: String,
@@ -38,6 +39,7 @@ pub struct NewSession {
     pub model: Option<String>,
     pub thinking_mode: Option<String>,
     pub thinking_budget: Option<i64>,
+    pub workspace_id: Option<String>,
     pub origin_device_id: Option<String>,
 }
 
@@ -54,7 +56,7 @@ pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, title, context_limit, compress_threshold, recency_window, \
          reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
-         summary, summary_updated_at, \
+         workspace_id, summary, summary_updated_at, \
          created_at, updated_at, version, deleted_at, origin_device_id, pinned \
          FROM sessions \
          WHERE agent_id = ?1 AND deleted_at IS NULL \
@@ -74,14 +76,15 @@ pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
             model: r.get(8)?,
             thinking_mode: r.get(9)?,
             thinking_budget: r.get(10)?,
-            summary: r.get(11)?,
-            summary_updated_at: r.get(12)?,
-            created_at: r.get(13)?,
-            updated_at: r.get(14)?,
-            version: r.get(15)?,
-            deleted_at: r.get(16)?,
-            origin_device_id: r.get(17)?,
-            pinned: r.get(18)?,
+            workspace_id: r.get(11)?,
+            summary: r.get(12)?,
+            summary_updated_at: r.get(13)?,
+            created_at: r.get(14)?,
+            updated_at: r.get(15)?,
+            version: r.get(16)?,
+            deleted_at: r.get(17)?,
+            origin_device_id: r.get(18)?,
+            pinned: r.get(19)?,
         })
     })?;
 
@@ -97,7 +100,7 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, title, context_limit, compress_threshold, recency_window, \
          reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
-         summary, summary_updated_at, \
+         workspace_id, summary, summary_updated_at, \
          created_at, updated_at, version, deleted_at, origin_device_id, pinned \
          FROM sessions \
          WHERE id = ?1",
@@ -116,14 +119,15 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<SessionRow>> {
             model: r.get(8)?,
             thinking_mode: r.get(9)?,
             thinking_budget: r.get(10)?,
-            summary: r.get(11)?,
-            summary_updated_at: r.get(12)?,
-            created_at: r.get(13)?,
-            updated_at: r.get(14)?,
-            version: r.get(15)?,
-            deleted_at: r.get(16)?,
-            origin_device_id: r.get(17)?,
-            pinned: r.get(18)?,
+            workspace_id: r.get(11)?,
+            summary: r.get(12)?,
+            summary_updated_at: r.get(13)?,
+            created_at: r.get(14)?,
+            updated_at: r.get(15)?,
+            version: r.get(16)?,
+            deleted_at: r.get(17)?,
+            origin_device_id: r.get(18)?,
+            pinned: r.get(19)?,
         })
     }).optional()?;
 
@@ -139,8 +143,8 @@ pub fn insert(conn: &Connection, s: &NewSession) -> AppResult<String> {
     conn.execute(
         "INSERT INTO sessions (id, agent_id, title, context_limit, compress_threshold, \
          recency_window, reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
-         created_at, updated_at, version, origin_device_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, ?14)",
+         workspace_id, created_at, updated_at, version, origin_device_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 1, ?15)",
         params![
             s.id,
             s.agent_id,
@@ -153,6 +157,7 @@ pub fn insert(conn: &Connection, s: &NewSession) -> AppResult<String> {
             s.model,
             s.thinking_mode,
             s.thinking_budget,
+            s.workspace_id,
             now_str,
             now_str,
             s.origin_device_id,

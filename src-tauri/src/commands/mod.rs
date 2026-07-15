@@ -37,6 +37,17 @@ pub struct SessionDto {
     pub model: String,
     pub thinking_mode: String,
     pub thinking_budget: i64,
+    pub workspace_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct WorkspaceDto {
+    pub id: String,
+    pub agent_id: String,
+    pub name: String,
+    pub folder_path: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 /// 调试面板：当前拼装好、待发送给 LLM 的提示词。
@@ -199,6 +210,7 @@ pub async fn create_session(
     state: tauri::State<'_, AppState>,
     agent_id: String,
     title: String,
+    workspace_id: Option<String>,
 ) -> AppResult<String> {
     // 新会话沿用角色卡的默认模型与思考配置，输入框可随后覆盖
     let agents = state.db.list_agents().await?;
@@ -221,6 +233,7 @@ pub async fn create_session(
         model: if default_model.is_empty() { None } else { Some(default_model) },
         thinking_mode: if default_thinking_mode.is_empty() { None } else { Some(default_thinking_mode) },
         thinking_budget: if default_thinking_budget == 0 { None } else { Some(default_thinking_budget) },
+        workspace_id,
         origin_device_id: None,
     };
     state.db.insert_session(new_sess).await?;
@@ -247,8 +260,66 @@ pub async fn list_sessions(
             model: r.model.unwrap_or_default(),
             thinking_mode: r.thinking_mode.unwrap_or_default(),
             thinking_budget: r.thinking_budget.unwrap_or(0),
+            workspace_id: r.workspace_id,
         })
         .collect())
+}
+
+/// 列出某个 Agent 的所有工作区。
+#[tauri::command]
+pub async fn list_workspaces(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> AppResult<Vec<WorkspaceDto>> {
+    let rows = state.db.list_workspaces(agent_id).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| WorkspaceDto {
+            id: r.id,
+            agent_id: r.agent_id,
+            name: r.name,
+            folder_path: r.folder_path,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        })
+        .collect())
+}
+
+/// 新建工作区（绑定一个文件夹作为 AI 默认工作环境）。
+#[tauri::command]
+pub async fn create_workspace(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    name: String,
+    folder_path: String,
+) -> AppResult<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    state.db.insert_workspace(crate::db::repo::workspaces::NewWorkspace {
+        id: id.clone(),
+        agent_id,
+        name,
+        folder_path,
+    }).await?;
+    Ok(id)
+}
+
+/// 重命名工作区。
+#[tauri::command]
+pub async fn rename_workspace(
+    state: tauri::State<'_, AppState>,
+    workspace_id: String,
+    name: String,
+) -> AppResult<()> {
+    state.db.rename_workspace(workspace_id, name).await
+}
+
+/// 删除工作区（会话的 workspace_id 置 NULL，会话保留为普通对话）。
+#[tauri::command]
+pub async fn delete_workspace(
+    state: tauri::State<'_, AppState>,
+    workspace_id: String,
+) -> AppResult<()> {
+    state.db.delete_workspace(workspace_id).await
 }
 
 /// 设置会话级模型与思考配置（输入框切换模型 / 思考强度时调用）。

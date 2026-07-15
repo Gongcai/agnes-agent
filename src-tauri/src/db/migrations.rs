@@ -95,6 +95,18 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         conn.execute("ALTER TABLE sessions ADD COLUMN thinking_budget INTEGER DEFAULT 0", [])?;
     }
 
+    // 为已存在的 sessions 表补充 workspace_id 列（幂等，兼容老库）
+    let has_workspace_id: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'workspace_id'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_workspace_id {
+        conn.execute("ALTER TABLE sessions ADD COLUMN workspace_id TEXT", [])?;
+    }
+
     // 为已存在的 messages 表补充版本树列（幂等，兼容老库）+ 回填链接
     let has_parent_id: bool = conn
         .query_row(
