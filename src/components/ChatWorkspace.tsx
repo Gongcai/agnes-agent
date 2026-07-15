@@ -197,7 +197,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             && (message.status === "pending" || message.status === "streaming");
           return (
             <div
-              key={message.id}
+              key={message._renderKey ?? message.id}
               className={`group flex gap-4 ${isUser ? "justify-end" : "justify-start"}`}
             >
               {!isUser && activeAgent && (
@@ -245,7 +245,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   )
                 ) : (
                   <div className="space-y-3.5">
-                    {message.parts.map((part, index) => {
+                    {message.parts.map((part) => {
                       // tool_result 已在工具卡片中展示（tc.output），跳过避免重复泄漏为正文
                       if (part.kind === "tool_result") return null;
                       // tool_call 片段若无关联工具数据，也不当作正文渲染
@@ -254,7 +254,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       if (part.kind === "thought") {
                         return (
                           <details
-                            key={part.id || index}
+                            key={part._renderKey ?? part.id}
                             open
                             className="group border-l-2 border-[#8CA38A] bg-stone-100/60 rounded-r-xl p-3 transition-colors"
                           >
@@ -279,7 +279,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
                         return (
                           <div
-                            key={part.id || index}
+                            key={part._renderKey ?? part.id}
                             className={`border rounded-xl overflow-hidden transition-all duration-200 ${
                               isPending
                                 ? isHighRisk
@@ -391,7 +391,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       // 3. Regular response text rendering (Markdown + LaTeX)
                       return (
                         <MarkdownMessage
-                          key={part.id || index}
+                          key={part._renderKey ?? part.id}
                           content={part.content}
                           streaming={isLiveAssistant}
                         />

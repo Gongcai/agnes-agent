@@ -72,6 +72,8 @@ export interface MessagePart {
   kind: "text" | "thought" | "tool_call" | "tool_result";
   content: string;
   tool_call?: ToolCall;
+  /** Stable React key retained when a live temporary part is replaced by its DB row. */
+  _renderKey?: string;
 }
 
 export interface Message {
@@ -88,6 +90,68 @@ export interface Message {
   is_leaf: boolean;
   /** 流式暂存：当前是否处于 <thought> 思维链中。仅用于直播渲染，不落库。 */
   _streamingInThought?: boolean;
+  /** Stable React key retained across the run-finished DB reconciliation. */
+  _renderKey?: string;
+}
+
+function preserveLatestRunRenderKeys(
+  previousMessages: Message[],
+  nextMessages: Message[],
+  sessionId: string,
+): Message[] {
+  let previousIndex = -1;
+  for (let index = previousMessages.length - 1; index >= 0; index -= 1) {
+    const message = previousMessages[index];
+    if (
+      message.session_id === sessionId
+      && message.role === "assistant"
+      && (message.status === "pending" || message.status === "streaming")
+    ) {
+      previousIndex = index;
+      break;
+    }
+  }
+  if (previousIndex < 0) return nextMessages;
+
+  let nextIndex = -1;
+  for (let index = nextMessages.length - 1; index >= 0; index -= 1) {
+    const message = nextMessages[index];
+    if (message.session_id === sessionId && message.role === "assistant") {
+      nextIndex = index;
+      break;
+    }
+  }
+  if (nextIndex < 0) return nextMessages;
+
+  const previous = previousMessages[previousIndex];
+  const next = { ...nextMessages[nextIndex] };
+  const previousParts = previous.parts.filter((part) => part.kind !== "tool_result");
+  let previousPartIndex = 0;
+
+  next.parts = next.parts.map((part) => {
+    if (part.kind === "tool_result") return part;
+
+    let matchIndex = -1;
+    for (let index = previousPartIndex; index < previousParts.length; index += 1) {
+      const candidate = previousParts[index];
+      const sameToolCall = part.kind !== "tool_call"
+        || candidate.tool_call?.id === part.tool_call?.id;
+      if (candidate.kind === part.kind && sameToolCall) {
+        matchIndex = index;
+        break;
+      }
+    }
+    if (matchIndex < 0) return part;
+
+    const match = previousParts[matchIndex];
+    previousPartIndex = matchIndex + 1;
+    return { ...part, _renderKey: match._renderKey ?? match.id };
+  });
+  next._renderKey = previous._renderKey ?? previous.id;
+
+  const reconciled = [...nextMessages];
+  reconciled[nextIndex] = next;
+  return reconciled;
 }
 
 export interface Session {
@@ -171,7 +235,7 @@ interface AgentState {
   init: () => Promise<void>;
   loadAgents: () => Promise<void>;
   loadSessions: (agentId: string) => Promise<void>;
-  loadMessages: (sessionId: string) => Promise<void>;
+  loadMessages: (sessionId: string, preserveRenderKeys?: boolean) => Promise<void>;
   createSession: (agentId: string, title: string, workspaceId?: string | null) => Promise<string>;
   deleteSession: (sessionId: string) => Promise<void>;
   pinSession: (sessionId: string, pinned: boolean) => Promise<void>;
@@ -312,10 +376,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  loadMessages: async (sessionId: string) => {
+  loadMessages: async (sessionId: string, preserveRenderKeys = false) => {
     try {
       const messages = await invoke<Message[]>("list_messages", { sessionId });
-      set({ messages });
+      set({
+        messages: preserveRenderKeys
+          ? preserveLatestRunRenderKeys(get().messages, messages, sessionId)
+          : messages,
+      });
     } catch (e) {
       console.error("Failed to load messages", e);
     }
@@ -957,7 +1025,7 @@ export function setupTauriEventListeners() {
         const store = useAgentStore.getState();
         // Reload from SQLite to ensure database-level consistency
         if (store.activeSessionId === event.payload.session_id) {
-          await store.loadMessages(event.payload.session_id);
+          await store.loadMessages(event.payload.session_id, true);
           // Also refresh sessions list in case summary changed
           if (store.activeAgentId) {
             await store.loadSessions(store.activeAgentId);
@@ -975,7 +1043,7 @@ export function setupTauriEventListeners() {
         flushBufferedDelta();
         const store = useAgentStore.getState();
         if (store.activeSessionId === event.payload.session_id) {
-          await store.loadMessages(event.payload.session_id);
+          await store.loadMessages(event.payload.session_id, true);
         }
         store.setStreamingState(false);
       }
