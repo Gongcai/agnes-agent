@@ -702,10 +702,10 @@ export function setupTauriEventListeners() {
   );
 
   listeners.push(
-    listen<{ session_id: string; run_id: string; tool_call_id: string; tool: string; arguments: any }>(
+    listen<{ session_id: string; run_id: string; tool_call_id: string; tool: string; arguments: any; risk: string }>(
       "agent://tool_call_pending",
       (event) => {
-        const { tool_call_id, tool, arguments: args } = event.payload;
+        const { tool_call_id, tool, arguments: args, risk } = event.payload;
         // Inject a pending tool call into the current assistant message's parts list for visual card rendering
         const { messages } = useAgentStore.getState();
         if (messages.length === 0) return;
@@ -722,7 +722,7 @@ export function setupTauriEventListeners() {
               id: tool_call_id,
               tool,
               args: typeof args === "string" ? args : JSON.stringify(args),
-              risk: tool === "shell" ? "Medium" : "High",
+              risk: risk || (tool === "shell" ? "Medium" : "High"),
               status: "pending_approval"
             }
           }];

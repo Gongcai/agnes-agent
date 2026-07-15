@@ -1,6 +1,6 @@
-# CODEBUDDY.md
+# AGENTS.md
 
-This file provides guidance to CodeBuddy Code when working with code in this repository.
+This file provides guidance to Codex when working with code in this repository.
 
 # 项目规划
 
@@ -24,7 +24,6 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 > 项目当前为空仓库，以下为各组件的预期命令，脚手架建立后据此核对。
 
 Rust / Tauri 桌面端：
-
 ```bash
 npm run tauri dev      # 开发模式
 npm run tauri build    # 打包
@@ -33,7 +32,6 @@ cargo test             # Rust 单元测试
 ```
 
 Python Agent sidecar：
-
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -43,7 +41,6 @@ pytest tests/test_x.py::test_y  # 单测单个用例
 ```
 
 Cloudflare Worker / D1：
-
 ```bash
 wrangler dev                    # 本地开发
 wrangler deploy                 # 部署
@@ -51,7 +48,6 @@ wrangler d1 execute <db> --local --file=schema.sql   # 初始化 D1
 ```
 
 安卓（Tauri）：
-
 ```bash
 npm run tauri android dev       # 连设备/模拟器调试
 npm run tauri android build     # 打包 APK/AAB

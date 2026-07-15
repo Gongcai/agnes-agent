@@ -9,6 +9,7 @@ use tokio::process::Command;
 
 use crate::error::{AppError, AppResult};
 use crate::tools::builtin::{BuiltinTool, ToolCtx};
+use crate::tools::policy::Risk;
 
 pub struct ShellTool;
 
@@ -28,6 +29,19 @@ fn resolve_cwd(ctx: &ToolCtx<'_>) -> std::path::PathBuf {
 
 #[async_trait]
 impl BuiltinTool for ShellTool {
+    fn risk(&self, args: &Value) -> Risk {
+        let cmd = args.get("command").and_then(|x| x.as_str()).unwrap_or("");
+        const HIGH_PATTERNS: &[&str] = &[
+            "rm ", "rmdir", "sudo", "chmod 777", "dd ", "mkfs", "shutdown", "reboot",
+            "curl ", "wget ", "nc ", "ssh ", "scp ",
+        ];
+        if HIGH_PATTERNS.iter().any(|p| cmd.contains(p)) || cmd.contains(">") || cmd.contains(">>") {
+            Risk::High
+        } else {
+            Risk::Medium
+        }
+    }
+
     async fn execute(&self, ctx: &ToolCtx<'_>) -> AppResult<Value> {
         let command_str = ctx
             .args

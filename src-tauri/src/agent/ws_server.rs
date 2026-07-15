@@ -297,10 +297,7 @@ async fn handle_conn<R: tauri::Runtime>(
 
                 // 获取 Agent 的 ToolPolicy
                 let mut policy = ToolPolicy::default();
-                let mut agent_id = String::new();
-                
                 if let Ok(Some(sess)) = db.get_session(session_id.clone()).await {
-                    agent_id = sess.agent_id.clone();
                     if let Ok(agents) = db.list_agents().await {
                         if let Some(agent) = agents.iter().find(|a| a.id == sess.agent_id) {
                             if let Ok(parsed) = serde_json::from_str::<ToolPolicy>(&agent.tool_policy) {
@@ -310,19 +307,9 @@ async fn handle_conn<R: tauri::Runtime>(
                     }
                 }
 
-                // 判断是否需要人工审批
-                let needs_approval = match tool_name.as_str() {
-                    "shell" => policy.shell.approval == "always",
-                    "file_write" => policy.file.approval == "always" || policy.file.approval == "write",
-                    "git" => {
-                        let is_push = args.get("args")
-                            .and_then(|x| x.as_array())
-                            .map(|arr| arr.iter().any(|v| v.as_str() == Some("push")))
-                            .unwrap_or(false);
-                        policy.git.approval == "always" || (policy.git.approval == "push" && is_push)
-                    }
-                    _ => false,
-                };
+                // 判断是否需要人工审批（统一 risk + tier 模型）
+                let risk = crate::tools::builtin::compute_risk(&tool_name, &args);
+                let needs_approval = crate::tools::builtin::needs_approval(&tool_name, &args, &policy);
 
                 let mut approved = true;
                 let mut cancelled_during_approval = false;
@@ -343,6 +330,7 @@ async fn handle_conn<R: tauri::Runtime>(
                         "tool_call_id": tc_id.clone(),
                         "tool": tool_name.clone(),
                         "arguments": args.clone(),
+                        "risk": risk.as_str(),
                     }));
 
                     // 3. 等待用户点击按钮释放，或 cancel_run 触发取消信号
@@ -370,7 +358,7 @@ async fn handle_conn<R: tauri::Runtime>(
                         tool: tool_name.clone(),
                         params: Some(args.to_string()),
                         status: "rejected".to_string(),
-                        risk_level: Some("Medium".to_string()),
+                        risk_level: Some(risk.as_str().to_string()),
                         approval_policy_snapshot: Some(serde_json::to_string(&policy).unwrap_or_default()),
                     };
                     let _ = db.insert_tool_call(tc_log).await;

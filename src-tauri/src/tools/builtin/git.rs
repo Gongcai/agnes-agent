@@ -8,6 +8,7 @@ use tokio::process::Command;
 
 use crate::error::{AppError, AppResult};
 use crate::tools::builtin::{BuiltinTool, ToolCtx};
+use crate::tools::policy::Risk;
 
 pub struct GitTool;
 
@@ -27,6 +28,17 @@ fn resolve_cwd(ctx: &ToolCtx<'_>) -> std::path::PathBuf {
 
 #[async_trait]
 impl BuiltinTool for GitTool {
+    fn risk(&self, args: &Value) -> Risk {
+        let arr = args.get("args").and_then(|x| x.as_array());
+        const HIGH_CMDS: &[&str] = &["push", "reset", "clean", "filter-branch"];
+        let is_high = |a: &Value| a.as_str().map(|s| HIGH_CMDS.contains(&s)).unwrap_or(false);
+        if arr.map(|a| a.iter().any(is_high)).unwrap_or(false) {
+            Risk::High
+        } else {
+            Risk::Low
+        }
+    }
+
     async fn execute(&self, ctx: &ToolCtx<'_>) -> AppResult<Value> {
         let args_val = ctx
             .args

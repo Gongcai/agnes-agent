@@ -4,11 +4,22 @@ use serde_json::{json, Value};
 
 use crate::error::{AppError, AppResult};
 use crate::tools::builtin::{BuiltinTool, ToolCtx};
+use crate::tools::policy::Risk;
 
 pub struct FileReadTool;
 
 #[async_trait]
 impl BuiltinTool for FileReadTool {
+    fn risk(&self, args: &Value) -> Risk {
+        let path = args.get("path").and_then(|x| x.as_str()).unwrap_or("");
+        const SENSITIVE: &[&str] = &[".ssh", "/etc", "id_rsa", ".env", ".aws", ".gnupg"];
+        if SENSITIVE.iter().any(|p| path.contains(p)) {
+            Risk::Medium
+        } else {
+            Risk::Low
+        }
+    }
+
     async fn execute(&self, ctx: &ToolCtx<'_>) -> AppResult<Value> {
         let path_str = ctx
             .args

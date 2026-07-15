@@ -79,9 +79,11 @@ const EMPTY_FORM: ProviderFormValues = {
   is_default: false,
 };
 
+type ApprovalTier = "never" | "on_write" | "on_risk" | "always";
+
 interface AgentToolToggle {
   enabled: boolean;
-  approval: boolean;
+  approval: ApprovalTier;
 }
 
 interface AgentFormValues {
@@ -114,10 +116,17 @@ const THINKING_MODE_OPTIONS: { value: string; label: string; desc: string }[] = 
 ];
 
 const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
-  shell: { enabled: true, approval: false },
-  file: { enabled: true, approval: false },
-  git: { enabled: true, approval: false },
+  shell: { enabled: true, approval: "on_risk" },
+  file: { enabled: true, approval: "on_write" },
+  git: { enabled: true, approval: "on_risk" },
 };
+
+const APPROVAL_OPTIONS: { value: ApprovalTier; label: string }[] = [
+  { value: "never", label: "自动执行" },
+  { value: "on_write", label: "写入时审批" },
+  { value: "on_risk", label: "高风险时审批" },
+  { value: "always", label: "始终审批" },
+];
 
 const AGENT_EMOJIS: string[] = [
   "🤖", "🧑‍💻", "👩‍💻", "🦊", "🐱", "🐶", "🦁", "🐯",
@@ -153,7 +162,18 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
     (["shell", "file", "git"] as const).forEach((k) => {
       const t = obj?.[k];
       if (t && typeof t === "object") {
-        base[k] = { enabled: t.enabled !== false, approval: t.approval === true };
+        const legacyDefaults: Record<typeof k, ApprovalTier> = {
+          shell: "on_risk",
+          file: "on_write",
+          git: "on_risk",
+        };
+        const rawApproval = t.approval;
+        let approval = legacyDefaults[k];
+        if (rawApproval === true || rawApproval === "always") approval = "always";
+        else if (rawApproval === false || rawApproval === "never") approval = "never";
+        else if (rawApproval === "write" || rawApproval === "on_write" || rawApproval === "on-write") approval = "on_write";
+        else if (rawApproval === "push" || rawApproval === "on_risk" || rawApproval === "on-risk") approval = "on_risk";
+        base[k] = { enabled: t.enabled !== false, approval };
       }
     });
   } catch {
@@ -270,7 +290,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  // 渲染单个工具策略开关行（启用 / 需人工审批）
+  // Render capability and approval controls for one tool group.
   const renderToolToggle = (key: "shell" | "file" | "git", label: string) => (
     <div className="flex items-center justify-between py-1.5 border-b border-stone-100 last:border-0">
       <span className="text-xs text-stone-700">{label}</span>
@@ -294,25 +314,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         >
           {agentForm.toolPolicy[key].enabled ? "已启用" : "已禁用"}
         </button>
-        <button
-          type="button"
-          onClick={() =>
+        <select
+          value={agentForm.toolPolicy[key].approval}
+          onChange={(event) =>
             setAgentForm((f) => ({
               ...f,
               toolPolicy: {
                 ...f.toolPolicy,
-                [key]: { ...f.toolPolicy[key], approval: !f.toolPolicy[key].approval },
+                [key]: { ...f.toolPolicy[key], approval: event.target.value as ApprovalTier },
               },
             }))
           }
-          className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors ${
-            agentForm.toolPolicy[key].approval
-              ? "bg-amber-50 text-amber-700 border border-amber-200"
-              : "bg-stone-100 text-stone-400 border border-stone-200"
-          }`}
+          className="px-2 py-1 rounded-md text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 outline-none"
         >
-          {agentForm.toolPolicy[key].approval ? "需审批" : "自动执行"}
-        </button>
+          {APPROVAL_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
       </div>
     </div>
   );

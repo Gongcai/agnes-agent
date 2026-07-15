@@ -13,12 +13,67 @@ pub struct ToolPolicy {
     pub git: GitPolicy,
 }
 
+/// Risk level used by audit records and approval decisions.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Risk {
+    Low,
+    Medium,
+    High,
+}
+
+impl Risk {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Risk::Low => "Low",
+            Risk::Medium => "Medium",
+            Risk::High => "High",
+        }
+    }
+}
+
+/// Unified approval tier.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalTier {
+    Never,
+    OnWrite,
+    OnRisk,
+    Always,
+}
+
+/// Accept legacy string and boolean policy values while serializing the new tier names.
+impl<'de> Deserialize<'de> for ApprovalTier {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum ApprovalTierValue {
+            String(String),
+            Bool(bool),
+        }
+
+        Ok(match ApprovalTierValue::deserialize(deserializer)? {
+            ApprovalTierValue::String(value) => match value.as_str() {
+                "never" => ApprovalTier::Never,
+                "on_write" | "on-write" | "write" => ApprovalTier::OnWrite,
+                "on_risk" | "on-risk" | "push" => ApprovalTier::OnRisk,
+                "always" => ApprovalTier::Always,
+                _ => ApprovalTier::Always,
+            },
+            ApprovalTierValue::Bool(true) => ApprovalTier::Always,
+            ApprovalTierValue::Bool(false) => ApprovalTier::Never,
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct ShellPolicy {
     pub enabled: bool,
-    /// always | never（是否需人工审批）
-    pub approval: String,
+    pub approval: ApprovalTier,
     pub allowed_cwd: Vec<String>,
     pub deny_write_outside_workspace: bool,
     pub timeout_sec: u32,
@@ -30,7 +85,7 @@ impl Default for ShellPolicy {
     fn default() -> Self {
         ShellPolicy {
             enabled: true,
-            approval: "always".into(),
+            approval: ApprovalTier::OnRisk,
             allowed_cwd: vec!["~/Projects".into()],
             deny_write_outside_workspace: true,
             timeout_sec: 30,
@@ -44,8 +99,7 @@ impl Default for ShellPolicy {
 #[serde(default)]
 pub struct FilePolicy {
     pub enabled: bool,
-    /// write | never（写操作需审批）
-    pub approval: String,
+    pub approval: ApprovalTier,
     pub allowed_roots: Vec<String>,
 }
 
@@ -53,7 +107,7 @@ impl Default for FilePolicy {
     fn default() -> Self {
         FilePolicy {
             enabled: true,
-            approval: "write".into(),
+            approval: ApprovalTier::OnWrite,
             allowed_roots: vec!["~/Projects".into(), "~/.agnes".into()],
         }
     }
@@ -63,15 +117,14 @@ impl Default for FilePolicy {
 #[serde(default)]
 pub struct GitPolicy {
     pub enabled: bool,
-    /// push | never（push 需审批）
-    pub approval: String,
+    pub approval: ApprovalTier,
 }
 
 impl Default for GitPolicy {
     fn default() -> Self {
         GitPolicy {
             enabled: true,
-            approval: "push".into(),
+            approval: ApprovalTier::OnRisk,
         }
     }
 }
@@ -168,5 +221,54 @@ impl ToolPolicy {
             return Err("Git 工具已被禁用".into());
         }
         Ok(())
+    }
+
+    /// Return the approval tier for a tool. Unknown tools fail closed.
+    pub fn approval_for(&self, tool: &str) -> ApprovalTier {
+        match tool {
+            "shell" => self.shell.approval,
+            "file_read" | "list_files" | "grep" => ApprovalTier::Never,
+            "file_write" | "file_edit" | "apply_patch" => self.file.approval,
+            "git" => self.git.approval,
+            _ => ApprovalTier::Always,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approval_tier_accepts_legacy_values() {
+        let legacy: ToolPolicy = serde_json::from_str(
+            r#"{
+                "shell": {"approval": "always"},
+                "file": {"approval": "write"},
+                "git": {"approval": "push"}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.shell.approval, ApprovalTier::Always);
+        assert_eq!(legacy.file.approval, ApprovalTier::OnWrite);
+        assert_eq!(legacy.git.approval, ApprovalTier::OnRisk);
+
+        let boolean: ToolPolicy = serde_json::from_str(
+            r#"{
+                "shell": {"approval": true},
+                "file": {"approval": false}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(boolean.shell.approval, ApprovalTier::Always);
+        assert_eq!(boolean.file.approval, ApprovalTier::Never);
+    }
+
+    #[test]
+    fn approval_tier_serializes_with_new_names() {
+        let value = serde_json::to_value(ToolPolicy::default()).unwrap();
+        assert_eq!(value["shell"]["approval"], "on_risk");
+        assert_eq!(value["file"]["approval"], "on_write");
+        assert_eq!(value["git"]["approval"], "on_risk");
     }
 }

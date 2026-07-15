@@ -4,11 +4,16 @@ use serde_json::{json, Value};
 
 use crate::error::{AppError, AppResult};
 use crate::tools::builtin::{BuiltinTool, ToolCtx};
+use crate::tools::policy::Risk;
 
 pub struct FileWriteTool;
 
 #[async_trait]
 impl BuiltinTool for FileWriteTool {
+    fn risk(&self, _args: &Value) -> Risk {
+        Risk::Medium
+    }
+
     async fn execute(&self, ctx: &ToolCtx<'_>) -> AppResult<Value> {
         let path_str = ctx
             .args

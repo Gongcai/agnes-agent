@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::db::DbActorHandle;
 use crate::error::AppResult;
-use crate::tools::policy::ToolPolicy;
+use crate::tools::policy::{ApprovalTier, Risk, ToolPolicy};
 
 pub mod shell;
 pub mod file_read;
@@ -63,6 +63,8 @@ impl<'a> ToolCtx<'a> {
 /// 内置工具统一接口。
 #[async_trait]
 pub trait BuiltinTool: Send + Sync {
+    /// 该工具在给定参数下的风险等级。
+    fn risk(&self, args: &Value) -> Risk;
     async fn execute(&self, ctx: &ToolCtx<'_>) -> AppResult<Value>;
 }
 
@@ -74,4 +76,112 @@ pub fn builtin_tools() -> Vec<(&'static str, Box<dyn BuiltinTool>)> {
         ("file_write", Box::new(file_write::FileWriteTool)),
         ("git", Box::new(git::GitTool)),
     ]
+}
+
+/// 计算某工具调用在给定参数下的风险等级。
+pub fn compute_risk(tool: &str, args: &Value) -> Risk {
+    for (name, impl_) in builtin_tools() {
+        if name == tool {
+            return impl_.risk(args);
+        }
+    }
+    Risk::Low
+}
+
+/// 判断操作是否为写操作（用于 OnWrite tier）。
+pub fn is_write_op(tool: &str, args: &Value) -> bool {
+    match tool {
+        "file_write" | "file_edit" | "apply_patch" => true,
+        "file_read" | "list_files" | "grep" => false,
+        "shell" => {
+            let cmd = args.get("command").and_then(|x| x.as_str()).unwrap_or("");
+            const WRITE_PATTERNS: &[&str] = &[
+                " > ", " >> ", ">", ">>", "tee", "rm ", "rmdir", "mv ", "cp ", "mkdir",
+                "touch", "dd ", "chmod", "chown", "sed -i", "install",
+            ];
+            cmd.contains('>') || WRITE_PATTERNS.iter().any(|p| cmd.contains(p))
+        }
+        "git" => {
+            let arr = args.get("args").and_then(|x| x.as_array());
+            const WRITE_CMDS: &[&str] = &[
+                "push", "commit", "reset", "clean", "merge", "rebase", "checkout",
+                "cherry-pick", "stash", "tag", "add", "rm", "mv", "init",
+            ];
+            arr.map(|a| {
+                a.iter()
+                    .any(|v| v.as_str().map(|s| WRITE_CMDS.contains(&s)).unwrap_or(false))
+            })
+            .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+/// 统一审批判定：tier + risk + 是否写操作。
+pub fn needs_approval(tool: &str, args: &Value, policy: &ToolPolicy) -> bool {
+    let tier = policy.approval_for(tool);
+    let risk = compute_risk(tool, args);
+    match tier {
+        ApprovalTier::Never => false,
+        ApprovalTier::OnWrite => is_write_op(tool, args),
+        ApprovalTier::OnRisk => risk == Risk::High,
+        ApprovalTier::Always => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn risk_drives_on_risk_approval() {
+        let policy = ToolPolicy::default();
+        assert!(!needs_approval(
+            "shell",
+            &json!({"command": "cargo test"}),
+            &policy
+        ));
+        assert!(needs_approval(
+            "shell",
+            &json!({"command": "rm -rf target"}),
+            &policy
+        ));
+        assert!(needs_approval(
+            "git",
+            &json!({"args": ["push", "origin", "main"]}),
+            &policy
+        ));
+        assert!(!needs_approval(
+            "git",
+            &json!({"args": ["status", "--short"]}),
+            &policy
+        ));
+    }
+
+    #[test]
+    fn on_write_distinguishes_read_and_write_operations() {
+        let mut policy = ToolPolicy::default();
+        policy.shell.approval = ApprovalTier::OnWrite;
+        assert!(!needs_approval(
+            "shell",
+            &json!({"command": "rg TODO src"}),
+            &policy
+        ));
+        assert!(needs_approval(
+            "shell",
+            &json!({"command": "echo done > result.txt"}),
+            &policy
+        ));
+        assert!(needs_approval(
+            "file_write",
+            &json!({"path": "result.txt", "content": "done"}),
+            &policy
+        ));
+        assert!(!needs_approval(
+            "file_read",
+            &json!({"path": "result.txt"}),
+            &policy
+        ));
+    }
 }

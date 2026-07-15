@@ -37,7 +37,11 @@ impl ToolExecutor {
             tool: tool.to_string(),
             params: Some(arguments.to_string()),
             status: "running".to_string(),
-            risk_level: Some(determine_risk(tool, arguments)),
+            risk_level: Some(
+                crate::tools::builtin::compute_risk(tool, arguments)
+                    .as_str()
+                    .to_string(),
+            ),
             approval_policy_snapshot: Some(serde_json::to_string(policy).unwrap_or_default()),
         };
         self.db.insert_tool_call(new_tc).await?;
@@ -85,41 +89,11 @@ fn effective_policy(policy: &ToolPolicy, workspace_cwd: &Option<PathBuf>) -> Too
     p
 }
 
-/// 评估任务的风险等级 (Low | Medium | High)。
-/// 注：Phase B 将重构为统一 risk 模型并真正驱动审批。
-fn determine_risk(tool: &str, arguments: &serde_json::Value) -> String {
-    match tool {
-        "shell" => {
-            let cmd = arguments
-                .get("command")
-                .and_then(|x| x.as_str())
-                .unwrap_or("");
-            if cmd.contains("rm ") || cmd.contains("delete") || cmd.contains("sudo") {
-                "High".to_string()
-            } else {
-                "Medium".to_string()
-            }
-        }
-        "file_write" => "Medium".to_string(),
-        "file_read" => "Low".to_string(),
-        "git" => {
-            let args = arguments.get("args").and_then(|x| x.as_array());
-            if let Some(arr) = args {
-                if arr.iter().any(|v| v.as_str() == Some("push")) {
-                    return "High".to_string();
-                }
-            }
-            "Low".to_string()
-        }
-        _ => "Low".to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::spawn_db_actor;
-    use crate::tools::policy::{FilePolicy, GitPolicy, ShellPolicy};
+    use crate::tools::policy::{ApprovalTier, FilePolicy, GitPolicy, ShellPolicy};
     use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
@@ -173,7 +147,7 @@ mod tests {
         let policy = ToolPolicy {
             shell: ShellPolicy {
                 enabled: true,
-                approval: "never".to_string(),
+                approval: ApprovalTier::Never,
                 allowed_cwd: vec![temp_project.to_string_lossy().to_string()],
                 deny_write_outside_workspace: true,
                 timeout_sec: 5,
@@ -182,12 +156,12 @@ mod tests {
             },
             file: FilePolicy {
                 enabled: true,
-                approval: "never".to_string(),
+                approval: ApprovalTier::Never,
                 allowed_roots: vec![temp_project.to_string_lossy().to_string()],
             },
             git: GitPolicy {
                 enabled: true,
-                approval: "never".to_string(),
+                approval: ApprovalTier::Never,
             },
         };
 
