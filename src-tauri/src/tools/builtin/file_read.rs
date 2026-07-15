@@ -42,11 +42,14 @@ impl BuiltinTool for FileReadTool {
     }
 
     async fn execute(&self, ctx: &ToolCtx<'_>) -> AppResult<Value> {
-        let path_str = ctx
-            .args
-            .get("path")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| AppError::Other("缺少 `path` 参数".into()))?;
+        let path_str = match ctx.args.get("path").and_then(|value| value.as_str()) {
+            Some(path) => path,
+            None => {
+                let error = "Missing `path` argument";
+                ctx.record_failure(error).await?;
+                return Err(AppError::Other(error.to_string()));
+            }
+        };
 
         let expanded_path = crate::tools::builtin::normalize_path(
             &crate::tools::builtin::resolve_path(ctx, path_str),
@@ -55,6 +58,10 @@ impl BuiltinTool for FileReadTool {
         if let Err(e) = ctx.policy.check_file_read(&expanded_path.to_string_lossy()) {
             ctx.record_failure(&e).await?;
             return Err(AppError::Other(e));
+        }
+        if let Err(error) = ctx.sandbox.check_read(&expanded_path) {
+            ctx.record_failure(&error).await?;
+            return Err(AppError::Other(error));
         }
 
         match tokio::fs::read_to_string(&expanded_path).await {

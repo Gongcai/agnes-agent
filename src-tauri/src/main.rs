@@ -15,6 +15,10 @@ use tauri::Manager;
 use crate::state::AppState;
 
 fn main() {
+    if let Some(exit_code) = tools::sandbox::run_sandbox_helper_if_requested() {
+        std::process::exit(exit_code);
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {

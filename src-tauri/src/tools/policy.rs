@@ -11,6 +11,8 @@ pub struct ToolPolicy {
     pub file: FilePolicy,
     #[serde(default)]
     pub git: GitPolicy,
+    #[serde(default)]
+    pub sandbox: SandboxPolicy,
 }
 
 /// Risk level used by audit records and approval decisions.
@@ -118,6 +120,30 @@ impl Default for FilePolicy {
 pub struct GitPolicy {
     pub enabled: bool,
     pub approval: ApprovalTier,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct SandboxPolicy {
+    pub landlock: bool,
+    pub rlimits: bool,
+    pub cpu_time_sec: u64,
+    pub memory_bytes: u64,
+    pub file_size_bytes: u64,
+    pub max_processes: u64,
+}
+
+impl Default for SandboxPolicy {
+    fn default() -> Self {
+        Self {
+            landlock: true,
+            rlimits: true,
+            cpu_time_sec: 60,
+            memory_bytes: 1024 * 1024 * 1024,
+            file_size_bytes: 50 * 1024 * 1024,
+            max_processes: 64,
+        }
+    }
 }
 
 impl Default for GitPolicy {

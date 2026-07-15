@@ -1,11 +1,8 @@
 //! shell 工具：bash -c 执行，env_clear + 白名单 + 超时 + 输出截断。
-use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 
 use crate::error::{AppError, AppResult};
 use crate::tools::builtin::{BuiltinTool, ToolCtx};
@@ -14,17 +11,13 @@ use crate::tools::policy::Risk;
 pub struct ShellTool;
 
 fn resolve_cwd(ctx: &ToolCtx<'_>) -> std::path::PathBuf {
-    let cwd_str = ctx.args.get("cwd").and_then(|x| x.as_str());
-    let raw = match cwd_str {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => ctx
-            .workspace_cwd
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| ".".to_string()),
-    };
-    let expanded = crate::tools::policy::expand_home(&raw);
-    expanded.canonicalize().unwrap_or(expanded)
+    let raw = ctx
+        .args
+        .get("cwd")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(".");
+    crate::tools::builtin::normalize_path(&crate::tools::builtin::resolve_path(ctx, raw))
 }
 
 #[async_trait]
@@ -77,11 +70,14 @@ impl BuiltinTool for ShellTool {
     }
 
     async fn execute(&self, ctx: &ToolCtx<'_>) -> AppResult<Value> {
-        let command_str = ctx
-            .args
-            .get("command")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| AppError::Other("缺少 `command` 参数".into()))?;
+        let command_str = match ctx.args.get("command").and_then(|value| value.as_str()) {
+            Some(command) => command,
+            None => {
+                let error = "Missing `command` argument";
+                ctx.record_failure(error).await?;
+                return Err(AppError::Other(error.to_string()));
+            }
+        };
 
         let cwd_absolute = resolve_cwd(ctx);
 
@@ -89,20 +85,26 @@ impl BuiltinTool for ShellTool {
             ctx.record_failure(&e).await?;
             return Err(AppError::Other(e));
         }
+        if let Err(error) = ctx.sandbox.check_cwd(&cwd_absolute) {
+            ctx.record_failure(&error).await?;
+            return Err(AppError::Other(error));
+        }
 
         ctx.update_running(&cwd_absolute.to_string_lossy()).await?;
 
-        let mut child = Command::new("bash");
-        child.arg("-c").arg(command_str);
+        let command_args = vec!["-c".to_string(), command_str.to_string()];
+        let mut child =
+            match ctx
+                .sandbox
+                .command("bash", &command_args, &ctx.policy.shell.env_allowlist)
+            {
+                Ok(command) => command,
+                Err(error) => {
+                    ctx.record_failure(&error.to_string()).await?;
+                    return Err(error);
+                }
+            };
         child.current_dir(&cwd_absolute);
-        child.stdout(Stdio::piped());
-        child.stderr(Stdio::piped());
-        child.env_clear();
-        for env_name in &ctx.policy.shell.env_allowlist {
-            if let Some(val) = std::env::var_os(env_name) {
-                child.env(env_name, val);
-            }
-        }
 
         let mut spawned = match child.spawn() {
             Ok(c) => c,
@@ -113,27 +115,31 @@ impl BuiltinTool for ShellTool {
             }
         };
 
+        let max_output = ctx.policy.shell.max_output_bytes as usize;
+        let stdout_task = spawned.stdout.take().map(|stdout| {
+            tokio::spawn(crate::tools::sandbox::read_stream_capped(
+                stdout, max_output,
+            ))
+        });
+        let stderr_task = spawned.stderr.take().map(|stderr| {
+            tokio::spawn(crate::tools::sandbox::read_stream_capped(
+                stderr, max_output,
+            ))
+        });
+
         let timeout_duration = Duration::from_secs(ctx.policy.shell.timeout_sec as u64);
         let run_result = tokio::time::timeout(timeout_duration, spawned.wait()).await;
 
         match run_result {
             Ok(Ok(status)) => {
-                let mut stdout_buf = Vec::new();
-                let mut stderr_buf = Vec::new();
-                if let Some(mut stdout) = spawned.stdout.take() {
-                    let _ = stdout
-                        .take(ctx.policy.shell.max_output_bytes as u64)
-                        .read_to_end(&mut stdout_buf)
-                        .await;
-                }
-                if let Some(mut stderr) = spawned.stderr.take() {
-                    let _ = stderr
-                        .take(ctx.policy.shell.max_output_bytes as u64)
-                        .read_to_end(&mut stderr_buf)
-                        .await;
-                }
-                let stdout_str = String::from_utf8_lossy(&stdout_buf).to_string();
-                let stderr_str = String::from_utf8_lossy(&stderr_buf).to_string();
+                let (stdout_buf, stdout_truncated) =
+                    crate::tools::sandbox::join_capture(stdout_task).await;
+                let (stderr_buf, stderr_truncated) =
+                    crate::tools::sandbox::join_capture(stderr_task).await;
+                let stdout_str =
+                    crate::tools::sandbox::render_captured_output(stdout_buf, stdout_truncated);
+                let stderr_str =
+                    crate::tools::sandbox::render_captured_output(stderr_buf, stderr_truncated);
                 let exit_code = status.code().unwrap_or(-1);
                 let success = status.success();
                 let status_name = if success { "done" } else { "failed" };
@@ -150,12 +156,17 @@ impl BuiltinTool for ShellTool {
                 Ok(json!({ "exit_code": exit_code, "stdout": stdout_str, "stderr": stderr_str }))
             }
             Ok(Err(e)) => {
+                let _ = crate::tools::sandbox::join_capture(stdout_task).await;
+                let _ = crate::tools::sandbox::join_capture(stderr_task).await;
                 let err_msg = format!("执行出错: {e}");
                 ctx.record_failure(&err_msg).await?;
                 Err(AppError::Other(err_msg))
             }
             Err(_) => {
                 let _ = spawned.kill().await;
+                let _ = spawned.wait().await;
+                let _ = crate::tools::sandbox::join_capture(stdout_task).await;
+                let _ = crate::tools::sandbox::join_capture(stderr_task).await;
                 let err_msg = format!("执行超时 (限制 {} 秒)", ctx.policy.shell.timeout_sec);
                 ctx.update_complete("cancelled", None, Some(-9), None, Some(err_msg.clone()))
                     .await?;

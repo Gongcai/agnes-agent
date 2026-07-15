@@ -47,6 +47,9 @@ impl BuiltinTool for ListFilesTool {
         if let Err(error) = ctx.policy.check_file_read(&root.to_string_lossy()) {
             return fail(ctx, &error).await;
         }
+        if let Err(error) = ctx.sandbox.check_read(&root) {
+            return fail(ctx, &error).await;
+        }
         if !root.is_dir() {
             return fail(ctx, &format!("Not a directory: {}", root.display())).await;
         }

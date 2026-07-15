@@ -58,6 +58,9 @@ impl BuiltinTool for FileEditTool {
         if let Err(error) = ctx.policy.check_file_write(&path.to_string_lossy()) {
             return fail(ctx, &error).await;
         }
+        if let Err(error) = ctx.sandbox.check_write(&path) {
+            return fail(ctx, &error).await;
+        }
         ctx.update_running(&path.to_string_lossy()).await?;
 
         let content = match tokio::fs::read_to_string(&path).await {

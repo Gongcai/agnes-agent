@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::db::DbActorHandle;
 use crate::error::AppResult;
 use crate::tools::policy::{ApprovalTier, Risk, ToolPolicy};
+use crate::tools::sandbox::SandboxGuard;
 
 pub mod apply_patch;
 pub mod file_edit;
@@ -26,6 +27,7 @@ pub struct ToolCtx<'a> {
     /// 已合并 workspace cwd 的有效 policy（workspace 自动加入 allowed_cwd/allowed_roots）
     pub policy: &'a ToolPolicy,
     pub workspace_cwd: Option<PathBuf>,
+    pub sandbox: &'a dyn SandboxGuard,
 }
 
 impl<'a> ToolCtx<'a> {

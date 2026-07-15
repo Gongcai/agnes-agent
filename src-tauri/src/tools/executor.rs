@@ -52,6 +52,8 @@ impl ToolExecutor {
 
         // C. 合并有效 policy：workspace 自动加入 allowed_cwd / allowed_roots
         let effective_policy = effective_policy(policy, &workspace_cwd);
+        let sandbox =
+            crate::tools::sandbox::PolicySandbox::new(&effective_policy, workspace_cwd.as_deref());
 
         // D. 派发到内置工具
         let ctx = ToolCtx {
@@ -61,6 +63,7 @@ impl ToolExecutor {
             args: arguments,
             policy: &effective_policy,
             workspace_cwd,
+            sandbox: &sandbox,
         };
 
         for impl_ in builtin_tools() {
@@ -168,12 +171,13 @@ mod tests {
             file: FilePolicy {
                 enabled: true,
                 approval: ApprovalTier::Never,
-                allowed_roots: vec![temp_project.to_string_lossy().to_string()],
+                allowed_roots: vec![temp_project.parent().unwrap().to_string_lossy().to_string()],
             },
             git: GitPolicy {
                 enabled: true,
                 approval: ApprovalTier::Never,
             },
+            sandbox: Default::default(),
         };
 
         let test_file = temp_project.join("test_write.txt");
@@ -271,6 +275,24 @@ mod tests {
             fs::read_to_string(temp_project.join("added.txt")).unwrap(),
             "Added by patch\n"
         );
+
+        let outside_file = temp_project.parent().unwrap().join("sandbox-denied.txt");
+        let outside_write = json!({
+            "path": outside_file.to_string_lossy(),
+            "content": "must not be written"
+        });
+        let outside_result = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-write-outside",
+                "file_write",
+                &outside_write,
+                &policy,
+            )
+            .await;
+        assert!(outside_result.is_err());
+        assert!(!outside_file.exists());
 
         let bad_read_args = json!({ "path": "/etc/passwd" });
         let read_err = executor

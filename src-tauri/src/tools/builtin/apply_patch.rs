@@ -89,6 +89,9 @@ impl BuiltinTool for ApplyPatchTool {
             if let Err(error) = ctx.policy.check_file_write(&target.to_string_lossy()) {
                 return fail(ctx, &error).await;
             }
+            if let Err(error) = ctx.sandbox.check_write(&target) {
+                return fail(ctx, &error).await;
+            }
             if !virtual_files.contains_key(&target) {
                 let initial = match tokio::fs::read_to_string(&target).await {
                     Ok(content) => Some(content),
