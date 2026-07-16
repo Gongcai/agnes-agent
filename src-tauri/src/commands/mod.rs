@@ -447,6 +447,21 @@ pub async fn resolve_sync_conflict(
 }
 
 #[tauri::command]
+pub async fn list_sync_devices(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<crate::sync::protocol::SyncDevice>> {
+    state.sync.list_devices().await
+}
+
+#[tauri::command]
+pub async fn revoke_sync_device(
+    state: tauri::State<'_, AppState>,
+    device_id: String,
+) -> AppResult<crate::sync::protocol::SyncDevice> {
+    state.sync.revoke_device(&device_id).await
+}
+
+#[tauri::command]
 pub async fn sync_now(
     state: tauri::State<'_, AppState>,
 ) -> AppResult<crate::sync::engine::SyncStatus> {

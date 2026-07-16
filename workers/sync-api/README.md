@@ -59,5 +59,7 @@ Zone，无法为 Worker 绑定自定义域名 Access，因此按设计回退为 
 - `GET /v1/sync/pull?after={serverSeq}&limit={n}`
 - `GET /v1/sync/bootstrap?cursor={token}&limit={n}`
 - `POST /v1/sync/ack`
+- `GET /v1/devices`
+- `POST /v1/devices/{deviceId}/revoke`
 
 协议版本固定为 `1`，单次 push 最多 20 条 change，请求体上限 256 KiB。完整设计见 `ProjectPlan/CLOUDFLARE_SYNC.md`。

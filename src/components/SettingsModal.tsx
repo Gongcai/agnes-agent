@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -21,10 +21,13 @@ import {
 import {
   getSyncStatus,
   listSyncConflicts,
+  listSyncDevices,
   resolveSyncConflict,
+  revokeSyncDevice,
   setSyncCredential,
   syncNow,
   type SyncConflict,
+  type SyncDevice,
   type SyncStatus,
 } from "../lib/ipc";
 
@@ -100,6 +103,16 @@ function conflictPayloadPreview(
       .map((field) => [field, payload[field]]),
   );
   return JSON.stringify(Object.keys(selected).length > 0 ? selected : payload, null, 2);
+}
+
+function formatSyncDeviceTime(value: number | null): string {
+  if (value == null) return "从未连接";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 type ProviderKind = "openai" | "anthropic" | "ollama" | "openai_compatible" | "google";
@@ -416,6 +429,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isSavingSyncCredential, setIsSavingSyncCredential] = useState(false);
   const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
   const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
+  const [syncDevices, setSyncDevices] = useState<SyncDevice[]>([]);
+  const [revokingDeviceId, setRevokingDeviceId] = useState<string | null>(null);
 
   // Debug prompt panel state
   const [debugPrompt, setDebugPrompt] = useState<DebugPromptPreview | null>(null);
@@ -730,11 +745,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (!isOpen || activeTab !== "llm") return;
     let active = true;
     const refresh = () => {
-      void Promise.all([getSyncStatus(), listSyncConflicts()])
-        .then(([status, conflicts]) => {
+      void getSyncStatus()
+        .then(async (status) => {
+          const [conflicts, devices] = await Promise.all([
+            listSyncConflicts(),
+            status.credentialConfigured ? listSyncDevices() : Promise.resolve([]),
+          ]);
           if (!active) return;
           setSyncStatus(status);
           setSyncConflicts(conflicts);
+          setSyncDevices(devices);
           setSyncStatusError(null);
         })
         .catch((error) => {
@@ -753,12 +773,35 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setIsSyncingNow(true);
     setSyncStatusError(null);
     try {
-      setSyncStatus(await syncNow());
-      setSyncConflicts(await listSyncConflicts());
+      const status = await syncNow();
+      const [conflicts, devices] = await Promise.all([
+        listSyncConflicts(),
+        status.credentialConfigured ? listSyncDevices() : Promise.resolve([]),
+      ]);
+      setSyncStatus(status);
+      setSyncConflicts(conflicts);
+      setSyncDevices(devices);
     } catch (error) {
       setSyncStatusError(String(error));
     } finally {
       setIsSyncingNow(false);
+    }
+  };
+
+  const handleRevokeSyncDevice = async (device: SyncDevice) => {
+    if (device.current || device.revokedAt != null) return;
+    if (!window.confirm(`确定撤销设备“${device.name}”吗？`)) return;
+    setRevokingDeviceId(device.id);
+    setSyncStatusError(null);
+    try {
+      const revoked = await revokeSyncDevice(device.id);
+      setSyncDevices((devices) =>
+        devices.map((current) => (current.id === revoked.id ? revoked : current)),
+      );
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setRevokingDeviceId(null);
     }
   };
 
@@ -787,7 +830,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setIsSavingSyncCredential(true);
     setSyncStatusError(null);
     try {
-      setSyncStatus(await setSyncCredential({ kind: "bearer", token: syncToken }));
+      const status = await setSyncCredential({ kind: "bearer", token: syncToken });
+      setSyncStatus(status);
+      setSyncDevices(await listSyncDevices());
       setSyncToken("");
       setShowSyncToken(false);
     } catch (error) {
@@ -803,6 +848,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     try {
       setSyncStatus(await setSyncCredential(null));
       setSyncToken("");
+      setSyncDevices([]);
     } catch (error) {
       setSyncStatusError(String(error));
     } finally {
@@ -2639,6 +2685,69 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </div>
+                    )}
+                    {syncStatus?.credentialConfigured && syncDevices.length > 0 && (
+                      <section className="border-y border-stone-200">
+                        <div className="flex h-9 items-center justify-between border-b border-stone-200 px-3">
+                          <span className="flex items-center gap-2 text-xs font-semibold text-stone-700">
+                            <Laptop className="h-3.5 w-3.5" />
+                            同步设备
+                          </span>
+                          <span className="text-[10px] tabular-nums text-stone-400">
+                            {syncDevices.filter((device) => device.revokedAt == null).length} / {syncDevices.length}
+                          </span>
+                        </div>
+                        <div className="divide-y divide-stone-200">
+                          {syncDevices.map((device) => {
+                            const revoked = device.revokedAt != null;
+                            const revoking = revokingDeviceId === device.id;
+                            return (
+                              <div
+                                key={device.id}
+                                className={`flex min-h-16 items-center gap-3 px-3 py-2.5 ${revoked ? "bg-stone-50 opacity-65" : "bg-white"}`}
+                              >
+                                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border ${
+                                  revoked
+                                    ? "border-stone-200 bg-stone-100 text-stone-400"
+                                    : device.current
+                                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                      : "border-stone-200 bg-stone-50 text-stone-600"
+                                }`}>
+                                  {revoked ? <ShieldOff className="h-4 w-4" /> : <Laptop className="h-4 w-4" />}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="truncate text-xs font-semibold text-stone-800">{device.name}</span>
+                                    {device.current && (
+                                      <span className="rounded-sm border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">本机</span>
+                                    )}
+                                    {revoked && (
+                                      <span className="rounded-sm border border-stone-200 bg-white px-1.5 py-0.5 text-[9px] font-semibold text-stone-500">已撤销</span>
+                                    )}
+                                  </div>
+                                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-[9px] text-stone-400">
+                                    <span>{device.platform || "未知平台"}</span>
+                                    <span>在线 {formatSyncDeviceTime(device.lastSeenAt)}</span>
+                                    <span className="tabular-nums">ack {device.lastAckCursor}</span>
+                                    <span className="max-w-44 truncate font-mono" title={device.id}>{device.id}</span>
+                                  </div>
+                                </div>
+                                {!device.current && !revoked && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRevokeSyncDevice(device)}
+                                    disabled={revoking}
+                                    title="撤销设备"
+                                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <ShieldOff className={`h-4 w-4 ${revoking ? "animate-pulse" : ""}`} />
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </section>
                     )}
                     {syncStatus?.lastErrorCode && (
                       <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 px-3 py-2 rounded-md">

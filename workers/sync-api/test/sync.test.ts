@@ -106,6 +106,79 @@ describe("authentication and health", () => {
   });
 });
 
+describe("device management", () => {
+  it("lists only the authenticated owner devices with current and ack state", async () => {
+    await request("/v1/health", TOKEN_A);
+    await request("/v1/health", TOKEN_B);
+    await request("/v1/health", OTHER_OWNER_TOKEN);
+    await env.SYNC_DB.prepare(
+      "INSERT INTO sync_acks (owner_id, device_id, last_server_seq, updated_at) VALUES (?, ?, ?, ?)",
+    )
+      .bind("owner-a", DEVICE_B, 7, Date.now())
+      .run();
+
+    const response = await request("/v1/devices", TOKEN_A);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      devices: Array<Record<string, unknown>>;
+    };
+    expect(body.devices).toHaveLength(2);
+    expect(body.devices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: DEVICE_A,
+          name: "Owner A desktop",
+          platform: "linux",
+          current: true,
+          revokedAt: null,
+        }),
+        expect.objectContaining({
+          id: DEVICE_B,
+          name: "Owner A phone",
+          platform: "android",
+          current: false,
+          lastAckCursor: 7,
+        }),
+      ]),
+    );
+    expect(body.devices.some((device) => device.id === OTHER_OWNER_DEVICE)).toBe(false);
+  });
+
+  it("revokes another owner device idempotently and blocks its credential", async () => {
+    await request("/v1/health", TOKEN_A);
+    await request("/v1/health", TOKEN_B);
+
+    const first = await request(`/v1/devices/${DEVICE_B}/revoke`, TOKEN_A, { method: "POST" });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({
+      device: { id: DEVICE_B, current: false, revokedAt: expect.any(Number) },
+    });
+    const repeated = await request(`/v1/devices/${DEVICE_B}/revoke`, TOKEN_A, { method: "POST" });
+    expect(repeated.status).toBe(200);
+
+    const rejected = await request("/v1/health", TOKEN_B);
+    expect(rejected.status).toBe(403);
+    expect(await rejected.json()).toMatchObject({ error: { code: "DEVICE_REVOKED" } });
+
+    const self = await request(`/v1/devices/${DEVICE_A}/revoke`, TOKEN_A, { method: "POST" });
+    expect(self.status).toBe(400);
+    const current = await request("/v1/health", TOKEN_A);
+    expect(current.status).toBe(200);
+  });
+
+  it("does not reveal or revoke another owner device", async () => {
+    await request("/v1/health", TOKEN_A);
+    await request("/v1/health", OTHER_OWNER_TOKEN);
+    const response = await request(
+      `/v1/devices/${OTHER_OWNER_DEVICE}/revoke`,
+      TOKEN_A,
+      { method: "POST" },
+    );
+    expect(response.status).toBe(404);
+    expect(await request("/v1/health", OTHER_OWNER_TOKEN).then((value) => value.status)).toBe(200);
+  });
+});
+
 describe("push and pull", () => {
   it("replays a change idempotently without duplicating rows", async () => {
     const change = makeChange({ entityId: "agnes" });

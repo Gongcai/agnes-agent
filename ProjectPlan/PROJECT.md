@@ -169,7 +169,7 @@ System Prompt
 |---|---|---|
 | V0.1 | Tauri 2 + React 聊天 UI + SQLite + Python LangGraph sidecar + LiteLLM | 主链路已完成；发布态 sidecar 打包待收口 |
 | V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 已完成：摘要、抽取、结构化字段、AI 创建/更新、记忆决策提示词、`MEMORY.md` 专用工具、动态维度 sqlite-vec + RRF 混合检索；已使用 Qwen3-Embedding-8B 完成真实服务端到端验证，手动向量化、覆盖率统计与检索链路均可用 |
-| V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 进行中：Phase 0-2、3A、3B 与 3C 冲突闭环已完成；同步冲突保存 base/local/remote，非重叠字段可自动三方合并，同字段冲突可在设置页选择本机或云端。下一步完成设备列表/撤销与剩余类型策略，然后进入 E2EE |
+| V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 进行中：Phase 0-2、3A、3B 与 3C 冲突/设备管理已完成；设置页可处理 base/local/remote 冲突并查看或撤销同账户设备。下一步补齐 Session HLC 与 Explicit Memory 文本合并策略，然后进入 E2EE |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 未开始 |
 | V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；MCP 等能力待后续补齐 |
 | V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + R2/Google Drive Provider | 设计已写入 `STORAGE_AND_RAG.md`；未实现 |

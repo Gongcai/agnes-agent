@@ -191,6 +191,34 @@ pub struct AckResponse {
     pub server_time: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SyncDevice {
+    pub id: String,
+    pub name: String,
+    pub platform: Option<String>,
+    pub created_at: i64,
+    pub last_seen_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+    pub last_ack_cursor: i64,
+    pub current: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeviceListResponse {
+    #[serde(default)]
+    pub devices: Vec<SyncDevice>,
+    pub server_time: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokeDeviceResponse {
+    pub device: SyncDevice,
+    pub server_time: i64,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ErrorResponse {
     pub error: ErrorDetail,

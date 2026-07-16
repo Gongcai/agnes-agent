@@ -14,8 +14,8 @@ use crate::secrets::{SecretStore, SYNC_CREDENTIAL_SECRET_ID};
 use crate::sync::auth::SyncCredential;
 use crate::sync::client::{FailureKind, HttpSyncTransport, SyncTransport, TransportFailure};
 use crate::sync::protocol::{
-    AckRequest, PushRequest, PushResponse, RemoteChange, RemoteEntity, DEFAULT_PAGE_LIMIT,
-    PROTOCOL_VERSION,
+    AckRequest, DeviceListResponse, PushRequest, PushResponse, RemoteChange, RemoteEntity,
+    RevokeDeviceResponse, SyncDevice, DEFAULT_PAGE_LIMIT, PROTOCOL_VERSION,
 };
 
 pub const SYNC_GATEWAY_URL: &str = "https://agnes-sync-api.caiwengong136.workers.dev";
@@ -89,12 +89,56 @@ impl SyncService {
     }
 
     pub async fn run_once(&self) -> AppResult<SyncStatus> {
-        let Some(secret) = self.secrets.get(SYNC_CREDENTIAL_SECRET_ID).await? else {
+        let Some(transport) = self.http_transport().await? else {
             return self.status().await;
         };
-        let credential = SyncCredential::parse(&secret)?;
-        let transport = HttpSyncTransport::new(self.client.clone(), SYNC_GATEWAY_URL, credential);
         self.run_with_transport(&transport).await
+    }
+
+    pub async fn list_devices(&self) -> AppResult<Vec<SyncDevice>> {
+        let transport = self
+            .http_transport()
+            .await?
+            .ok_or_else(|| AppError::Other("Sync credential is not configured".into()))?;
+        let current_device_id = self.db.get_sync_status().await?.device_id;
+        let response = transport
+            .list_devices()
+            .await
+            .map_err(admin_transport_error)?;
+        validate_device_list(response, &current_device_id)
+    }
+
+    pub async fn revoke_device(&self, target_device_id: &str) -> AppResult<SyncDevice> {
+        let target_device_id = uuid::Uuid::parse_str(target_device_id)
+            .map_err(|_| AppError::Other("Device id is invalid".into()))?
+            .to_string();
+        let current_device_id = self.db.get_sync_status().await?.device_id;
+        if target_device_id == current_device_id {
+            return Err(AppError::Other(
+                "The current device cannot revoke itself".into(),
+            ));
+        }
+        let transport = self
+            .http_transport()
+            .await?
+            .ok_or_else(|| AppError::Other("Sync credential is not configured".into()))?;
+        let response = transport
+            .revoke_device(&target_device_id)
+            .await
+            .map_err(admin_transport_error)?;
+        validate_revoked_device(response, &target_device_id)
+    }
+
+    async fn http_transport(&self) -> AppResult<Option<HttpSyncTransport>> {
+        let Some(secret) = self.secrets.get(SYNC_CREDENTIAL_SECRET_ID).await? else {
+            return Ok(None);
+        };
+        let credential = SyncCredential::parse(&secret)?;
+        Ok(Some(HttpSyncTransport::new(
+            self.client.clone(),
+            SYNC_GATEWAY_URL,
+            credential,
+        )))
     }
 
     pub fn schedule(self: &Arc<Self>) {
@@ -412,6 +456,61 @@ impl SyncService {
     }
 }
 
+fn validate_device_list(
+    response: DeviceListResponse,
+    current_device_id: &str,
+) -> AppResult<Vec<SyncDevice>> {
+    if response.server_time < 0 || response.devices.is_empty() {
+        return Err(AppError::Other("Invalid device list response".into()));
+    }
+    let mut ids = HashSet::new();
+    let mut current_count = 0;
+    for device in &response.devices {
+        if uuid::Uuid::parse_str(&device.id).is_err()
+            || !ids.insert(device.id.as_str())
+            || device.name.trim().is_empty()
+            || device.created_at < 0
+            || device.last_seen_at.is_some_and(|value| value < 0)
+            || device.revoked_at.is_some_and(|value| value < 0)
+            || device.last_ack_cursor < 0
+            || (device.current && device.id != current_device_id)
+        {
+            return Err(AppError::Other("Invalid device list response".into()));
+        }
+        if device.current {
+            current_count += 1;
+        }
+    }
+    if current_count != 1 {
+        return Err(AppError::Other(
+            "Device list did not identify the current device".into(),
+        ));
+    }
+    Ok(response.devices)
+}
+
+fn validate_revoked_device(
+    response: RevokeDeviceResponse,
+    target_device_id: &str,
+) -> AppResult<SyncDevice> {
+    if response.server_time < 0
+        || response.device.id != target_device_id
+        || response.device.current
+        || response.device.revoked_at.is_none()
+        || response.device.created_at < 0
+        || response.device.last_seen_at.is_some_and(|value| value < 0)
+        || response.device.revoked_at.is_some_and(|value| value < 0)
+        || response.device.last_ack_cursor < 0
+    {
+        return Err(AppError::Other("Invalid revoke device response".into()));
+    }
+    Ok(response.device)
+}
+
+fn admin_transport_error(error: TransportFailure) -> AppError {
+    AppError::Other(format!("{}: {}", error.code, error.message))
+}
+
 fn remote_entity_from_change(change: RemoteChange) -> AppResult<RemoteEntityInput> {
     if change.protocol_version != PROTOCOL_VERSION
         || uuid::Uuid::parse_str(&change.change_id).is_err()
@@ -510,6 +609,62 @@ mod tests {
         AcceptedChange as ProtocolAccepted, AckResponse, BootstrapResponse, PullResponse,
         PushResponse, RemoteEntity,
     };
+
+    const DEVICE_A: &str = "00000000-0000-4000-8000-000000000001";
+    const DEVICE_B: &str = "00000000-0000-4000-8000-000000000002";
+
+    fn device(id: &str, current: bool) -> SyncDevice {
+        SyncDevice {
+            id: id.into(),
+            name: if current { "Desktop" } else { "Phone" }.into(),
+            platform: Some(if current { "linux" } else { "android" }.into()),
+            created_at: 1,
+            last_seen_at: Some(2),
+            revoked_at: None,
+            last_ack_cursor: 3,
+            current,
+        }
+    }
+
+    #[test]
+    fn device_responses_require_one_unique_matching_current_device() {
+        let valid = DeviceListResponse {
+            devices: vec![device(DEVICE_A, true), device(DEVICE_B, false)],
+            server_time: 4,
+        };
+        assert_eq!(validate_device_list(valid, DEVICE_A).unwrap().len(), 2);
+
+        let duplicate = DeviceListResponse {
+            devices: vec![device(DEVICE_A, true), device(DEVICE_A, false)],
+            server_time: 4,
+        };
+        assert!(validate_device_list(duplicate, DEVICE_A).is_err());
+        let wrong_current = DeviceListResponse {
+            devices: vec![device(DEVICE_B, true)],
+            server_time: 4,
+        };
+        assert!(validate_device_list(wrong_current, DEVICE_A).is_err());
+    }
+
+    #[test]
+    fn revoke_response_must_match_a_non_current_revoked_target() {
+        let mut target = device(DEVICE_B, false);
+        target.revoked_at = Some(5);
+        let response = RevokeDeviceResponse {
+            device: target,
+            server_time: 6,
+        };
+        assert_eq!(
+            validate_revoked_device(response, DEVICE_B).unwrap().id,
+            DEVICE_B
+        );
+
+        let invalid = RevokeDeviceResponse {
+            device: device(DEVICE_B, false),
+            server_time: 6,
+        };
+        assert!(validate_revoked_device(invalid, DEVICE_B).is_err());
+    }
 
     struct AcceptTransport {
         calls: AtomicUsize,

@@ -124,6 +124,8 @@ fn main() {
             commands::get_sync_status,
             commands::list_sync_conflicts,
             commands::resolve_sync_conflict,
+            commands::list_sync_devices,
+            commands::revoke_sync_device,
             commands::sync_now,
             commands::set_sync_credential
         ])

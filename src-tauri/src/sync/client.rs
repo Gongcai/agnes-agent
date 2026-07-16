@@ -3,8 +3,8 @@ use serde::de::DeserializeOwned;
 
 use crate::sync::auth::SyncCredential;
 use crate::sync::protocol::{
-    AckRequest, AckResponse, BootstrapResponse, ErrorResponse, PullResponse, PushRequest,
-    PushResponse,
+    AckRequest, AckResponse, BootstrapResponse, DeviceListResponse, ErrorResponse, PullResponse,
+    PushRequest, PushResponse, RevokeDeviceResponse,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +105,22 @@ impl HttpSyncTransport {
             message,
             retry_after_ms,
         })
+    }
+
+    pub async fn list_devices(&self) -> Result<DeviceListResponse, TransportFailure> {
+        let request_builder = self.client.get(format!("{}/v1/devices", self.gateway_url));
+        self.execute(self.credential.apply(request_builder)).await
+    }
+
+    pub async fn revoke_device(
+        &self,
+        device_id: &str,
+    ) -> Result<RevokeDeviceResponse, TransportFailure> {
+        let request_builder = self.client.post(format!(
+            "{}/v1/devices/{}/revoke",
+            self.gateway_url, device_id
+        ));
+        self.execute(self.credential.apply(request_builder)).await
     }
 }
 

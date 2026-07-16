@@ -68,6 +68,25 @@ export async function resolveSyncConflict(
   return invoke("resolve_sync_conflict", { conflictId, resolution });
 }
 
+export interface SyncDevice {
+  id: string;
+  name: string;
+  platform: string | null;
+  createdAt: number;
+  lastSeenAt: number | null;
+  revokedAt: number | null;
+  lastAckCursor: number;
+  current: boolean;
+}
+
+export async function listSyncDevices(): Promise<SyncDevice[]> {
+  return invoke<SyncDevice[]>("list_sync_devices");
+}
+
+export async function revokeSyncDevice(deviceId: string): Promise<SyncDevice> {
+  return invoke<SyncDevice>("revoke_sync_device", { deviceId });
+}
+
 export type SyncCredentialInput =
   | { kind: "bearer"; token: string }
   | { kind: "cloudflare_access"; client_id: string; client_secret: string };

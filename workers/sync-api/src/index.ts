@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { authorizeDevice, resolveIdentity } from "./auth";
 import { ApiError, errorResponse } from "./errors";
 import { PROTOCOL_VERSION } from "./protocol";
+import { listDevices, revokeDevice } from "./routes/devices";
 import { ack, bootstrap, pull, push } from "./routes/sync";
 import type { AppEnv } from "./types";
 
@@ -29,6 +30,8 @@ app.post("/v1/sync/push", push);
 app.get("/v1/sync/pull", pull);
 app.get("/v1/sync/bootstrap", bootstrap);
 app.post("/v1/sync/ack", ack);
+app.get("/v1/devices", listDevices);
+app.post("/v1/devices/:deviceId/revoke", revokeDevice);
 
 app.notFound(() =>
   errorResponse(new ApiError(404, "INVALID_REQUEST", "The requested endpoint does not exist")),
