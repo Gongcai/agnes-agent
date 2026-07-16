@@ -70,4 +70,4 @@ Auto 不额外调用审批模型。当前主模型通过是否发起工具调用
 - 语音输入转文本后再进入普通消息链路，并新增 `audio` 输入能力标签。
 - 划线悬浮窗只调用快速模型，不污染主会话历史。
 - 图像生成调用落地后启用 `output_modalities=['image']` 的模型。
-- 扩展图片、文档 chunk 等索引对象时，复用现有动态维度表和 `embedding_items` 元数据，不把向量纳入云同步。
+- 扩展图片、文档 chunk 等索引对象时，复用动态维度表和 `embedding_items` 元数据，并将 partition key 抽象为 namespace type/id。原始向量行不进 D1；大型 RAG 可按 `STORAGE_AND_RAG.md` 导出客户端加密的便携制品到 R2/Google Drive。

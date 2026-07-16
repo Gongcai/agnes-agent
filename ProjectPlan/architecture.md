@@ -1,8 +1,8 @@
 # 架构方案 v2（agnes-agent，经审计修正的主方案）
 
 > 前端框架：**React**（Vite + TypeScript + Tailwind + shadcn/ui）。
-> 设计原则：**架构优良设计优先于敏捷/MVP**。本版为经用户审计通过的三平面架构，已修正协议方向、WS 主从、DB 驱动、记忆真相源、工具 sandbox、sync_log 六处关键点。
-> 总览见 `PROJECT.md`；本文件为其细化落地。
+> 设计原则：**架构优良设计优先于敏捷/MVP**。本版为经用户审计通过的三平面架构，已修正协议方向、WS 主从、DB 驱动、记忆真相源、工具 sandbox 和事务性 outbox 等关键边界。
+> 总览见 `PROJECT.md`；本文件为其细化落地。RAG、大文件、向量制品和外部 Provider 见 `STORAGE_AND_RAG.md`。
 
 ---
 
@@ -253,8 +253,12 @@ embedding_items(                     -- 元数据表（与向量索引分离）
 )
 -- 向量虚拟表（sqlite-vec）：vec_embeddings_{dims}(embedding_id, vector)
 -- 按实际维度延迟创建，cosine 距离，按 embedding_id 关联 embedding_items
-documents(id PK, agent_id FK, title, path, created_at)
-document_chunks(id PK, document_id FK, content, embedding_id FK)
+knowledge_collections(id PK, name, scope, workspace_id, version, deleted_at)
+collection_agents(collection_id FK, agent_id FK, permission)
+documents(id PK, collection_id FK, title, media_type, current_version_id, version, deleted_at)
+document_sources(id PK, document_id FK, provider_account_id, encrypted_locator, provider_revision)
+document_versions(id PK, document_id FK, logical_version, plaintext_hash, size, parser_profile_id)
+document_chunks(id PK, document_version_id FK, ordinal, content, content_hash, metadata)
 tool_calls(
   id PK, session_id FK, message_id FK, tool TEXT,
   params TEXT, result TEXT, status TEXT
@@ -271,7 +275,9 @@ sync_log(
 settings(key PK, value TEXT)
 ```
 
-**embeddings 拆分原因**：sqlite-vec 需要专门的向量虚拟表/索引表，不与普通 metadata 混在一张表。`embedding_items` 保留 `model/dims/content_hash` 以便换 embedding 模型时重算、去重、失效判定。当前仅嵌入记忆正文 `content`，允许 1 到 8192 维；不同维度可同时存在，查询按 Agent 和模型引用隔离。
+**embeddings 拆分原因**：sqlite-vec 需要专门的向量虚拟表/索引表，不与普通 metadata 混在一张表。`embedding_items` 保留 model revision、dims、normalization、instruction/content hash 等 profile 信息，用于重算、去重和失效判定。当前记忆嵌入允许 1 到 8192 维，查询按 Agent 和 profile 隔离；RAG 扩展后改用 collection/profile namespace，避免多 Agent 重复索引。
+
+**向量制品边界**：原始向量行、sqlite-vec 虚拟表和运行中 SQLite 文件不进 D1。大型 RAG 可按 document version + embedding/parser/chunker fingerprint 导出便携分片，客户端压缩、E2EE 后存入 R2/Google Drive；其他设备验证指纹与 Hash 后导入本地 sqlite-vec。
 
 **可同步实体的版本/墓碑**：`agents/sessions/messages/explicit_memories/memory_store/workspaces` 均具备 `updated_at`、`deleted_at`、`version`、`origin_device_id`，配合后续事务性 outbox（HLC + `entity_version`）支撑离线同步与冲突解决。聊天消息正文完成后不可变；记忆、workspace 逻辑信息和 Agent 配置必须有版本。通用 settings 与 workspace 本地路径不作为同步实体。
 
@@ -317,11 +323,11 @@ settings(key PK, value TEXT)
 
 ---
 
-## 10. 同步层（V0.3 预留接口）
+## 10. 同步层
 
-- Rust `sync/` 读 `sync_log` 增量，push 到 Cloudflare Worker（Hono/D1），拉取远端变更；离线优先（本地队列，联网再同步）。
-- 规则：聊天消息 append-only；记忆/设置/Agent 配置用 `version` + 墓碑（`deleted_at`）做冲突解决；`device_id` 安装时生成；**embedding 不跨端同步**，各端本地重算。
-- 现阶段 `sync_log` 表与写入点先就位，逻辑 V0.3 填充。
+- Rust `sync/` 使用事务性 `sync_outbox`，push 到 Cloudflare Worker（Hono/D1）并按 cursor 拉取远端变更；本地写入不等待网络。
+- 规则：聊天消息 append-only；记忆、Agent 配置和日历/待办等 mutable entity 使用 version/HLC/墓碑做冲突解决；`device_id` 按安装生成。
+- D1 另作为大对象和向量制品的控制面，保存 manifest/replica/device state；密文对象位于 R2/Google Drive，具体决策见 `STORAGE_AND_RAG.md`。
 
 ---
 

@@ -6,6 +6,8 @@
 
 模型能力标签与任务分工详见 `ProjectPlan/MODEL_ROUTING.md`。
 
+大文件、RAG、加密向量制品、多网盘、日历和待办详见 `ProjectPlan/STORAGE_AND_RAG.md`。
+
 # 项目定位
 
 `agnes-agent` 是一个**带 Agent 能力的酒馆式多角色聊天应用**（更接近 SillyTavern + Agents，而非纯 Agent 工具）。核心是可创建/管理多个 **AGENTS（角色卡）**，每个 Agent 有独立人设、系统提示词、工具权限与长期记忆；用户与某个 Agent 在 session 中对话，Agent 背后挂 Python LangGraph 运行时执行工具。**桌面端（Tauri）是真正的执行器**，负责本地文件、终端、Git、SSH、工具调用；**安卓端优先做轻客户端 + SSH 控制器**，不在 Android 内置 Termux/Ubuntu 跑完整 Agent（维护成本、权限、后台存活、依赖安装都太烦）。
@@ -19,6 +21,7 @@
 | Agent 运行时 | Python 3.12+ + LangGraph + LangChain tools + LiteLLM + MCP + FastAPI/WebSocket |
 | 向量库 | 本地 SQLite + sqlite-vec（关注官方 Vec1 作为后续替换） |
 | 云端同步 | Cloudflare Workers + Hono + D1 + Drizzle ORM |
+| 大对象存储 | 本地内容库 + Cloudflare R2 / Google Drive 加密副本 |
 | Embedding | BGE-M3 / Qwen Embedding / Ollama embeddinggemma（本地优先），Cloudflare Workers AI 也提供 BGE-M3 |
 | 安卓 | Tauri Android（聊天/历史/记忆 → 后续 SSH 控制桌面 Agent） |
 
@@ -33,12 +36,12 @@
 │  Python LangGraph Agent      │
 │  PTY / Shell / Git / MCP     │
 └──────────────┬──────────────┘
-               │ sync（增量日志，不传向量）
+               │ sync（结构化增量 + 大对象清单）
                ▼
 ┌─────────────────────────────┐
 │ Cloudflare Worker API        │
 │  Hono + D1 + Auth            │
-│  sync_log 冲突解决           │
+│  sync_changes / manifest CAS │
 └──────────────┬──────────────┘
                │ sync
                ▼
@@ -53,15 +56,17 @@
 
 **工具层直接围绕 MCP 设计**，分内置工具（shell/file_read/file_write/git/ripgrep/python_exec/terminal_session/ssh_exec/browser_open）与外部工具（MCP server / OpenAPI adapter / 用户脚本），避免自造协议。
 
+结构化小数据通过 Worker/D1 增量同步；源文件、附件和向量制品在客户端压缩/E2EE 后存入 R2 或 Google Drive。D1 只保存这些大对象的 manifest、密文 Hash、Provider 副本和设备落地状态。
+
 # 本地数据库（SQLite 表）
 
-`agents / sessions / messages / message_parts / explicit_memories / memory_store / workspace_bindings / embeddings / documents / document_chunks / tool_calls / sync_log / settings`
+`agents / sessions / messages / message_parts / explicit_memories / memory_store / workspace_bindings / embeddings / knowledge_collections / documents / document_versions / document_chunks / blob_objects / calendars / calendar_events / task_lists / tasks / tool_calls / sync_outbox / settings`
 
 - `agents`：角色卡（人设/指令/默认模型/工具权限），见"AGENTS / 角色卡"。
 - `sessions.agent_id` → `agents.id`（多对一：一个 Agent 可有多个 session，但每个 session 只属于一个 Agent）。
 - `memory_store.agent_id`：长期记忆库按 Agent 隔离。
 
-**同步策略**：云端只同步白名单内的文本与用户实体（agents/sessions/messages/explicit_memories/memory_store/workspaces）；通用 settings 保持设备本地。**向量不跨端同步，每台设备本地重新生成 embedding**（避免模型版本不一致、避免绑定 Cloudflare Vectorize）。后续事务性 outbox 使用 `device_id + HLC` 做增量 push/pull 与冲突解决；聊天消息正文完成后不可变，记忆和角色配置才需字段级冲突处理。
+**同步策略**：云端只同步白名单内的结构化用户实体（agents/sessions/messages/explicit_memories/memory_store/workspaces，后续扩展日历/待办和文件清单）；通用 settings 保持设备本地。**原始向量行和 sqlite-vec 表不进 D1**：每台设备可本地重建，也可在 embedding/parser/chunker 指纹完全一致时从 R2/Google Drive 下载客户端加密的便携向量制品。D1 只保存最新版本、密文 Hash、Provider 副本和设备落地状态。事务性 outbox 使用 `device_id + HLC` 做增量 push/pull 与冲突解决；聊天消息正文完成后不可变，记忆和角色配置才需字段级冲突处理。
 
 # AGENTS / 角色卡
 
@@ -145,10 +150,18 @@ System Prompt
 提示词调试面板按实际模型请求结构分别展示 `system prompt`、`tools` schema 和 `messages`；
 工具定义通过模型 API 的 `tools` 参数发送，不重复拼进 system prompt。
 
-## 同步影响（沿用"向量不跨端同步"规则）
+## 同步影响
 
 - USER.md / MEMORY.md：纯文本，随其他文本全量同步上云（D1）。
-- memory_store 文本同步；embedding 各端本地重算，不跨端传向量（避免模型版本漂移）。
+- memory_store 文本同步；embedding 默认各端本地重算。大型 RAG 向量可作为指纹严格匹配的加密制品在 R2/Google Drive 间复用，但不进入 D1 payload。
+
+# 知识库、网盘与个人效率子功能
+
+- RAG 文档归属独立 `knowledge_collection`，通过授权分配给一个或多个 Agent，不按 Agent 重复存储源文件和向量。
+- D1 是文件/制品同步控制面；R2 / Google Drive 是加密大对象数据面；sqlite-vec 是本地检索引擎。
+- 网盘通过 `ObjectStorageProvider` 端口接入；R2 和 Google Drive 使用官方 API，夸克逆向 API 只作为默认禁用的社区插件。
+- 日历和待办是用户级结构化数据，分别使用 `CalendarProvider / TaskProvider` 适配外部服务，Agent 读写受 tool policy 约束。
+- 主界面侧边栏将调整为子功能列表 + 可折叠聊天会话 + 可折叠工作区会话，详见 `UI_DESIGN.md`。
 
 # 版本路线图与当前进度
 
@@ -159,6 +172,8 @@ System Prompt
 | V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 进行中：Phase 0 数据边界、Phase 1 Worker/D1 和 Phase 2 Agent/Session 事务性 push 已完成；远端启用每设备 Bearer 指纹映射，真实 Rust SyncService 假 Agent 端到端验证通过并已清空远端业务表。下一步进入 Phase 3 pull/bootstrap、消息/记忆同步与类型化冲突合并 |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 未开始 |
 | V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；MCP 等能力待后续补齐 |
+| V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + R2/Google Drive Provider | 设计已写入 `STORAGE_AND_RAG.md`；未实现 |
+| V0.7 | 日历 + 待办 + 外部 Calendar/Task Provider | 设计已写入文档；未实现 |
 
 # 关键决策约束
 
@@ -166,7 +181,9 @@ System Prompt
 - session 与 AGENTS 多对一；长期记忆（USER.md / MEMORY.md / memory_store）按 AGENTS 隔离，不是全局单一记忆。
 - 桌面端是执行器，安卓端轻交互，不要在 Android 内置完整 Agent 作为 MVP。
 - 向量库本地优先，不跨端同步；云端只同步文本与用户数据。
+- 上一条中“向量不跨端同步”专指原始向量行不进 D1/服务端检索；大型 RAG 允许以客户端加密、指纹完全匹配的便携制品存入 R2/Google Drive。
 - Provider API Key、同步凭证和 E2EE 主密钥只进入 OS Keyring / Android Keystore，不进入 SQLite、renderer 明文 IPC 或同步 payload。
+- 外部存储/日历/待办使用应用定义的端口和 Provider adapter；域服务不直接依赖 Google/R2/夸克/CalDAV SDK 类型。
 - 同步 payload 必须由 Rust 按实体字段白名单投影；不得直接序列化业务表，也不得扫描全部 settings 猜测同步范围。
 - 工具系统 MCP 优先，复用现有 MCP server 而非自造协议。
 - LangGraph 用于多步 Agent / 检查点 / human-in-the-loop（敏感工具调用前暂停让用户审核）。
