@@ -1434,8 +1434,10 @@ fn update_conflicting_fields(tx: &Transaction<'_>, conflict_id: &str) -> AppResu
         conflict.local_payload.as_ref(),
         conflict.remote_payload.as_ref(),
     ) {
-        match crate::sync::merge::three_way_merge(conflict.base_payload.as_ref(), local, remote)? {
-            crate::sync::merge::MergeOutcome::Merged(_) => Vec::new(),
+        match merge_conflict_payload(&conflict, local, remote)? {
+            crate::sync::merge::MergeOutcome::Merged {
+                resolved_fields, ..
+            } => resolved_fields,
             crate::sync::merge::MergeOutcome::Conflict(fields) => fields,
         }
     } else {
@@ -1459,7 +1461,7 @@ fn try_auto_resolve_conflict(
         || conflict.remote_deleted
         || !matches!(
             conflict.entity_type.as_str(),
-            "agent" | "session" | "workspace" | "message"
+            "agent" | "session" | "workspace" | "message" | "explicit_memory"
         )
     {
         return Ok(false);
@@ -1470,8 +1472,9 @@ fn try_auto_resolve_conflict(
     ) else {
         return Ok(false);
     };
-    let crate::sync::merge::MergeOutcome::Merged(merged) =
-        crate::sync::merge::three_way_merge(conflict.base_payload.as_ref(), local, remote)?
+    let crate::sync::merge::MergeOutcome::Merged {
+        payload: merged, ..
+    } = merge_conflict_payload(&conflict, local, remote)?
     else {
         return Ok(false);
     };
@@ -1480,6 +1483,25 @@ fn try_auto_resolve_conflict(
     apply_local_resolution(tx, &conflict, merged, now_ms)?;
     mark_conflict_resolved(tx, conflict_id, "auto_merge", now_ms)?;
     Ok(true)
+}
+
+fn merge_conflict_payload(
+    conflict: &ConflictRecord,
+    local: &Value,
+    remote: &Value,
+) -> AppResult<crate::sync::merge::MergeOutcome> {
+    let remote_hlc = conflict
+        .remote_hlc
+        .as_deref()
+        .ok_or_else(|| AppError::Other("Remote conflict HLC is missing".into()))?;
+    crate::sync::merge::merge_entity(
+        &conflict.entity_type,
+        conflict.base_payload.as_ref(),
+        local,
+        remote,
+        &conflict.local_hlc,
+        remote_hlc,
+    )
 }
 
 pub fn list_conflicts(conn: &Connection) -> AppResult<Vec<SyncConflictRow>> {
@@ -2028,10 +2050,20 @@ mod tests {
     }
 
     fn explicit_memory_payload(id: &str, agent_id: &str, content: &str, version: i64) -> Value {
+        explicit_memory_payload_for_kind(id, agent_id, "memory_md", content, version)
+    }
+
+    fn explicit_memory_payload_for_kind(
+        id: &str,
+        agent_id: &str,
+        kind: &str,
+        content: &str,
+        version: i64,
+    ) -> Value {
         json!({
             "id": id,
             "agent_id": agent_id,
-            "kind": "memory_md",
+            "kind": kind,
             "content": content,
             "created_at": "1",
             "updated_at": version.to_string(),
@@ -2619,6 +2651,192 @@ mod tests {
             )
             .unwrap();
         assert_eq!(merged, ("Remote name".into(), "local/model".into(), 3));
+        let pending_base: i64 = conn
+            .query_row(
+                "SELECT base_revision FROM sync_outbox WHERE status = 'pending' \
+                 ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending_base, 2);
+    }
+
+    #[test]
+    fn session_same_field_conflict_uses_hlc_and_records_auto_merge_event() {
+        let mut conn = setup();
+        let mut base_session = session_payload("session-1", "agent-1", "workspace-1");
+        base_session["title"] = json!("Base title");
+        apply_bootstrap_page(
+            &mut conn,
+            "required",
+            &[
+                remote(
+                    "agent",
+                    "agent-1",
+                    1,
+                    1,
+                    agent_payload("agent-1", "Agent", 1),
+                ),
+                remote(
+                    "workspace",
+                    "workspace-1",
+                    1,
+                    2,
+                    workspace_payload("workspace-1", "agent-1"),
+                ),
+                remote("session", "session-1", 1, 3, base_session),
+            ],
+            3,
+            None,
+            false,
+            2_000,
+        )
+        .unwrap();
+        crate::db::repo::sessions::update_title(&mut conn, "session-1", "Local title").unwrap();
+        let local = claim_pending(&mut conn, 20, i64::MAX).unwrap();
+        assert_eq!(local.len(), 1);
+
+        let mut remote_session = session_payload("session-1", "agent-1", "workspace-1");
+        remote_session["title"] = json!("Remote title");
+        apply_pull_page(
+            &mut conn,
+            3,
+            &[remote("session", "session-1", 2, 4, remote_session)],
+            4,
+            false,
+            3_000,
+        )
+        .unwrap();
+
+        assert!(list_conflicts(&conn).unwrap().is_empty());
+        let session: (String, i64) = conn
+            .query_row(
+                "SELECT title, version FROM sessions WHERE id = 'session-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(session, ("Local title".into(), 3));
+        let event: (String, String, String) = conn
+            .query_row(
+                "SELECT status, resolution, conflicting_fields FROM sync_conflicts",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            event,
+            ("resolved".into(), "auto_merge".into(), "[\"title\"]".into())
+        );
+        let pending_base: i64 = conn
+            .query_row(
+                "SELECT base_revision FROM sync_outbox WHERE status = 'pending' \
+                 ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending_base, 2);
+    }
+
+    #[test]
+    fn explicit_memory_diff3_auto_merges_and_requeues_against_remote_revision() {
+        let mut conn = setup();
+        let user_id =
+            crate::db::repo::explicit_memories::sync_entity_id("agent-1", "user_md").unwrap();
+        let memory_id =
+            crate::db::repo::explicit_memories::sync_entity_id("agent-1", "memory_md").unwrap();
+        let base = "# Profile\n\nLanguage: C++\n\n# Preferences\n\nTheme: light\n";
+        let local = "# Profile\n\nLanguage: C++ and Rust\n\n# Preferences\n\nTheme: light\n";
+        let remote_content = "# Profile\n\nLanguage: C++\n\n# Preferences\n\nTheme: dark\n";
+        apply_bootstrap_page(
+            &mut conn,
+            "required",
+            &[
+                remote(
+                    "agent",
+                    "agent-1",
+                    1,
+                    1,
+                    agent_payload("agent-1", "Agent", 1),
+                ),
+                remote(
+                    "explicit_memory",
+                    &user_id,
+                    1,
+                    2,
+                    explicit_memory_payload_for_kind(&user_id, "agent-1", "user_md", "# User\n", 1),
+                ),
+                remote(
+                    "explicit_memory",
+                    &memory_id,
+                    1,
+                    3,
+                    explicit_memory_payload(&memory_id, "agent-1", base, 1),
+                ),
+            ],
+            3,
+            None,
+            false,
+            2_000,
+        )
+        .unwrap();
+        crate::db::repo::explicit_memories::save_pair(
+            &mut conn,
+            "agent-1",
+            "unused-user-id",
+            "# User\n",
+            "unused-memory-id",
+            local,
+        )
+        .unwrap();
+        assert_eq!(claim_pending(&mut conn, 20, i64::MAX).unwrap().len(), 1);
+
+        apply_pull_page(
+            &mut conn,
+            3,
+            &[remote(
+                "explicit_memory",
+                &memory_id,
+                2,
+                4,
+                explicit_memory_payload(&memory_id, "agent-1", remote_content, 2),
+            )],
+            4,
+            false,
+            3_000,
+        )
+        .unwrap();
+
+        assert!(list_conflicts(&conn).unwrap().is_empty());
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM explicit_memories \
+                 WHERE agent_id = 'agent-1' AND kind = 'memory_md'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            content,
+            "# Profile\n\nLanguage: C++ and Rust\n\n# Preferences\n\nTheme: dark\n"
+        );
+        let event: (String, String, String) = conn
+            .query_row(
+                "SELECT status, resolution, conflicting_fields FROM sync_conflicts",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            event,
+            (
+                "resolved".into(),
+                "auto_merge".into(),
+                "[\"content\"]".into()
+            )
+        );
         let pending_base: i64 = conn
             .query_row(
                 "SELECT base_revision FROM sync_outbox WHERE status = 'pending' \
