@@ -530,6 +530,13 @@ pub async fn begin_sync_e2ee_setup(
 }
 
 #[tauri::command]
+pub async fn begin_sync_e2ee_rotation(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::sync::crypto::RecoveryMaterial> {
+    state.sync.begin_e2ee_rotation().await
+}
+
+#[tauri::command]
 pub async fn confirm_sync_e2ee_setup(
     state: tauri::State<'_, AppState>,
 ) -> AppResult<crate::sync::engine::SyncStatus> {
@@ -555,6 +562,51 @@ pub async fn discard_sync_e2ee_setup(
     state: tauri::State<'_, AppState>,
 ) -> AppResult<crate::sync::engine::SyncStatus> {
     state.sync.discard_e2ee_setup().await
+}
+
+#[tauri::command]
+pub async fn start_sync_pairing(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::sync::pairing::PairingInvite> {
+    state.sync.start_pairing().await
+}
+
+#[tauri::command]
+pub async fn get_sync_pairing_request(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> AppResult<crate::sync::engine::PendingPairingDevice> {
+    state.sync.pending_pairing_device(&session_id).await
+}
+
+#[tauri::command]
+pub async fn approve_sync_pairing(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> AppResult<crate::sync::engine::PendingPairingDevice> {
+    state.sync.approve_pairing(&session_id).await
+}
+
+#[tauri::command]
+pub async fn join_sync_pairing(
+    state: tauri::State<'_, AppState>,
+    mut pairing_code: String,
+    device_name: String,
+) -> AppResult<crate::sync::engine::PairingJoinStarted> {
+    let result = state
+        .sync
+        .join_pairing(&pairing_code, &device_name)
+        .await;
+    pairing_code.zeroize();
+    result
+}
+
+#[tauri::command]
+pub async fn finish_sync_pairing(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> AppResult<crate::sync::engine::PairingCompletion> {
+    state.sync.finish_pairing(&session_id).await
 }
 
 /// 调试面板：调用 Python 框架拼装当前智能体（含可选会话历史）将要发送给 LLM 的完整提示词。

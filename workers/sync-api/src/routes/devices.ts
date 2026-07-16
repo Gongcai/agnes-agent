@@ -79,11 +79,15 @@ export async function revokeDevice(context: Context<AppEnv>): Promise<Response> 
   }
   if (existing.revoked_at == null) {
     const revokedAt = Date.now();
-    await context.env.SYNC_DB.prepare(
-      "UPDATE devices SET revoked_at = ? WHERE owner_id = ? AND id = ? AND revoked_at IS NULL",
-    )
-      .bind(revokedAt, identity.ownerId, deviceId)
-      .run();
+    await context.env.SYNC_DB.batch([
+      context.env.SYNC_DB.prepare(
+        "UPDATE devices SET revoked_at = ? WHERE owner_id = ? AND id = ? AND revoked_at IS NULL",
+      ).bind(revokedAt, identity.ownerId, deviceId),
+      context.env.SYNC_DB.prepare(
+        `DELETE FROM pairing_sessions
+         WHERE owner_id = ? AND (initiator_device_id = ? OR requested_device_id = ?)`,
+      ).bind(identity.ownerId, deviceId, deviceId),
+    ]);
   }
   const revoked = await selectDevice(context.env.SYNC_DB, identity.ownerId, deviceId);
   if (!revoked?.revoked_at) {

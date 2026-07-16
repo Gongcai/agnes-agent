@@ -3,7 +3,10 @@ use serde::de::DeserializeOwned;
 
 use crate::sync::auth::SyncCredential;
 use crate::sync::protocol::{
-    AckRequest, AckResponse, BootstrapResponse, DeviceListResponse, ErrorResponse, PullResponse,
+    AckRequest, AckResponse, BootstrapResponse, CreatePairingSessionRequest,
+    CreatePairingSessionResponse, DeviceListResponse, ErrorResponse, FinalizePairingSessionRequest,
+    FinalizePairingSessionResponse, JoinPairingSessionRequest, PairingJoinResponse,
+    PairingPackageResponse, PairingStatusResponse, PublicPairingSessionResponse, PullResponse,
     PushRequest, PushResponse, RevokeDeviceResponse,
 };
 
@@ -37,7 +40,7 @@ pub trait SyncTransport: Send + Sync {
 pub struct HttpSyncTransport {
     client: reqwest::Client,
     gateway_url: String,
-    credential: SyncCredential,
+    credential: Option<SyncCredential>,
 }
 
 impl HttpSyncTransport {
@@ -45,8 +48,31 @@ impl HttpSyncTransport {
         Self {
             client,
             gateway_url: gateway_url.trim_end_matches('/').to_string(),
-            credential,
+            credential: Some(credential),
         }
+    }
+
+    pub fn new_public(client: reqwest::Client, gateway_url: &str) -> Self {
+        Self {
+            client,
+            gateway_url: gateway_url.trim_end_matches('/').to_string(),
+            credential: None,
+        }
+    }
+
+    fn authenticate(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, TransportFailure> {
+        self.credential
+            .as_ref()
+            .map(|credential| credential.apply(request))
+            .ok_or_else(|| TransportFailure {
+                kind: FailureKind::Authentication,
+                code: "UNAUTHENTICATED".into(),
+                message: "Sync credential is not configured".into(),
+                retry_after_ms: None,
+            })
     }
 
     async fn execute<T>(
@@ -95,7 +121,7 @@ impl HttpSyncTransport {
             .unwrap_or_else(|| format!("sync gateway returned HTTP {status}"));
         let kind = match status.as_u16() {
             401 | 403 => FailureKind::Authentication,
-            400 | 404 | 409 | 413 => FailureKind::Permanent,
+            400 | 404 | 409 | 410 | 413 => FailureKind::Permanent,
             429 | 500..=599 => FailureKind::Retryable,
             _ => FailureKind::Retryable,
         };
@@ -109,7 +135,7 @@ impl HttpSyncTransport {
 
     pub async fn list_devices(&self) -> Result<DeviceListResponse, TransportFailure> {
         let request_builder = self.client.get(format!("{}/v1/devices", self.gateway_url));
-        self.execute(self.credential.apply(request_builder)).await
+        self.execute(self.authenticate(request_builder)?).await
     }
 
     pub async fn revoke_device(
@@ -120,7 +146,87 @@ impl HttpSyncTransport {
             "{}/v1/devices/{}/revoke",
             self.gateway_url, device_id
         ));
-        self.execute(self.credential.apply(request_builder)).await
+        self.execute(self.authenticate(request_builder)?).await
+    }
+
+    pub async fn create_pairing_session(
+        &self,
+        request: &CreatePairingSessionRequest,
+    ) -> Result<CreatePairingSessionResponse, TransportFailure> {
+        let request_builder = self
+            .client
+            .post(format!("{}/v1/pairing/sessions", self.gateway_url));
+        self.execute(self.authenticate(request_builder)?.json(request))
+            .await
+    }
+
+    pub async fn get_pairing_join(
+        &self,
+        session_id: &str,
+    ) -> Result<PairingJoinResponse, TransportFailure> {
+        let request_builder = self.client.get(format!(
+            "{}/v1/pairing/sessions/{session_id}/join",
+            self.gateway_url
+        ));
+        self.execute(self.authenticate(request_builder)?).await
+    }
+
+    pub async fn finalize_pairing_session(
+        &self,
+        session_id: &str,
+        request: &FinalizePairingSessionRequest,
+    ) -> Result<FinalizePairingSessionResponse, TransportFailure> {
+        let request_builder = self.client.post(format!(
+            "{}/v1/pairing/sessions/{session_id}/finalize",
+            self.gateway_url
+        ));
+        self.execute(self.authenticate(request_builder)?.json(request))
+            .await
+    }
+
+    pub async fn get_public_pairing_session(
+        &self,
+        session_id: &str,
+    ) -> Result<PublicPairingSessionResponse, TransportFailure> {
+        let request_builder = self.client.get(format!(
+            "{}/v1/pairing/sessions/{session_id}",
+            self.gateway_url
+        ));
+        self.execute(request_builder).await
+    }
+
+    pub async fn join_pairing_session(
+        &self,
+        session_id: &str,
+        request: &JoinPairingSessionRequest,
+    ) -> Result<PairingStatusResponse, TransportFailure> {
+        let request_builder = self.client.post(format!(
+            "{}/v1/pairing/sessions/{session_id}/join",
+            self.gateway_url
+        ));
+        self.execute(request_builder.json(request)).await
+    }
+
+    pub async fn get_pairing_package(
+        &self,
+        session_id: &str,
+    ) -> Result<PairingPackageResponse, TransportFailure> {
+        let request_builder = self.client.get(format!(
+            "{}/v1/pairing/sessions/{session_id}/package",
+            self.gateway_url
+        ));
+        self.execute(request_builder).await
+    }
+
+    pub async fn consume_pairing_session(
+        &self,
+        session_id: &str,
+    ) -> Result<PairingStatusResponse, TransportFailure> {
+        let request_builder = self.client.post(format!(
+            "{}/v1/pairing/sessions/{session_id}/consume",
+            self.gateway_url
+        ));
+        self.execute(self.authenticate(request_builder)?).await
     }
 }
 
@@ -130,7 +236,7 @@ impl SyncTransport for HttpSyncTransport {
         let request_builder = self
             .client
             .post(format!("{}/v1/sync/push", self.gateway_url));
-        self.execute(self.credential.apply(request_builder).json(request))
+        self.execute(self.authenticate(request_builder)?.json(request))
             .await
     }
 
@@ -139,7 +245,7 @@ impl SyncTransport for HttpSyncTransport {
             .client
             .get(format!("{}/v1/sync/pull", self.gateway_url))
             .query(&[("after", after.to_string()), ("limit", limit.to_string())]);
-        self.execute(self.credential.apply(request_builder)).await
+        self.execute(self.authenticate(request_builder)?).await
     }
 
     async fn bootstrap(
@@ -154,14 +260,14 @@ impl SyncTransport for HttpSyncTransport {
         if let Some(cursor) = cursor {
             request_builder = request_builder.query(&[("cursor", cursor)]);
         }
-        self.execute(self.credential.apply(request_builder)).await
+        self.execute(self.authenticate(request_builder)?).await
     }
 
     async fn ack(&self, request: &AckRequest) -> Result<AckResponse, TransportFailure> {
         let request_builder = self
             .client
             .post(format!("{}/v1/sync/ack", self.gateway_url));
-        self.execute(self.credential.apply(request_builder).json(request))
+        self.execute(self.authenticate(request_builder)?.json(request))
             .await
     }
 }

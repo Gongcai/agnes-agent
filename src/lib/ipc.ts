@@ -19,6 +19,8 @@ export interface SyncE2eeStatus {
   keysetConfigured: boolean;
   confirmed: boolean;
   activeKeyVersion: number | null;
+  confirmedKeyVersion: number | null;
+  rotationPending: boolean;
   transportReady: boolean;
 }
 
@@ -124,6 +126,10 @@ export async function beginSyncE2eeSetup(): Promise<SyncRecoveryMaterial> {
   return invoke<SyncRecoveryMaterial>("begin_sync_e2ee_setup");
 }
 
+export async function beginSyncE2eeRotation(): Promise<SyncRecoveryMaterial> {
+  return invoke<SyncRecoveryMaterial>("begin_sync_e2ee_rotation");
+}
+
 export async function confirmSyncE2eeSetup(): Promise<SyncStatus> {
   return invoke<SyncStatus>("confirm_sync_e2ee_setup");
 }
@@ -137,4 +143,51 @@ export async function restoreSyncE2ee(
 
 export async function discardSyncE2eeSetup(): Promise<SyncStatus> {
   return invoke<SyncStatus>("discard_sync_e2ee_setup");
+}
+
+export interface SyncPairingInvite {
+  sessionId: string;
+  pairingCode: string;
+  expiresAt: number;
+}
+
+export interface SyncPairingDevice {
+  sessionId: string;
+  deviceId: string;
+  deviceName: string;
+  platform: string | null;
+  expiresAt: number;
+}
+
+export interface SyncPairingJoinStarted {
+  sessionId: string;
+  expiresAt: number;
+}
+
+export interface SyncPairingCompletion {
+  status: "pending" | "complete";
+  syncStatus: SyncStatus | null;
+}
+
+export async function startSyncPairing(): Promise<SyncPairingInvite> {
+  return invoke<SyncPairingInvite>("start_sync_pairing");
+}
+
+export async function getSyncPairingRequest(sessionId: string): Promise<SyncPairingDevice> {
+  return invoke<SyncPairingDevice>("get_sync_pairing_request", { sessionId });
+}
+
+export async function approveSyncPairing(sessionId: string): Promise<SyncPairingDevice> {
+  return invoke<SyncPairingDevice>("approve_sync_pairing", { sessionId });
+}
+
+export async function joinSyncPairing(
+  pairingCode: string,
+  deviceName: string,
+): Promise<SyncPairingJoinStarted> {
+  return invoke<SyncPairingJoinStarted>("join_sync_pairing", { pairingCode, deviceName });
+}
+
+export async function finishSyncPairing(sessionId: string): Promise<SyncPairingCompletion> {
+  return invoke<SyncPairingCompletion>("finish_sync_pairing", { sessionId });
 }

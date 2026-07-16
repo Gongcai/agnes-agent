@@ -4,20 +4,28 @@ import { beforeEach, describe, expect, it } from "vitest";
 const DEVICE_A = "00000000-0000-4000-8000-000000000001";
 const DEVICE_B = "00000000-0000-4000-8000-000000000002";
 const OTHER_OWNER_DEVICE = "00000000-0000-4000-8000-000000000003";
+const PAIRED_DEVICE = "00000000-0000-4000-8000-000000000004";
 const TOKEN_A = "test-token-owner-a-device-a";
 const TOKEN_B = "test-token-owner-a-device-b";
 const OTHER_OWNER_TOKEN = "test-token-owner-b-device-a";
+const PAIRED_TOKEN = "paired-device-token-with-256-bits-of-randomness-placeholder";
 const EMPTY_PAYLOAD_HASH =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 beforeEach(async () => {
   await env.SYNC_DB.batch([
+    env.SYNC_DB.prepare("DELETE FROM pairing_sessions"),
     env.SYNC_DB.prepare("DELETE FROM sync_acks"),
     env.SYNC_DB.prepare("DELETE FROM sync_changes"),
     env.SYNC_DB.prepare("DELETE FROM sync_entities"),
     env.SYNC_DB.prepare("DELETE FROM devices"),
   ]);
 });
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 interface TestChangeOptions {
   changeId?: string;
@@ -155,12 +163,26 @@ describe("device management", () => {
   it("revokes another owner device idempotently and blocks its credential", async () => {
     await request("/v1/health", TOKEN_A);
     await request("/v1/health", TOKEN_B);
+    await request("/v1/pairing/sessions", TOKEN_B, {
+      method: "POST",
+      body: JSON.stringify({
+        protocolVersion: 1,
+        sessionId: "30000000-0000-4000-8000-000000000002",
+        initiatorMessage: "revoked_device_pairing_message",
+      }),
+    });
 
     const first = await request(`/v1/devices/${DEVICE_B}/revoke`, TOKEN_A, { method: "POST" });
     expect(first.status).toBe(200);
     expect(await first.json()).toMatchObject({
       device: { id: DEVICE_B, current: false, revokedAt: expect.any(Number) },
     });
+    const pairingCount = await env.SYNC_DB.prepare(
+      "SELECT COUNT(*) AS count FROM pairing_sessions WHERE initiator_device_id = ?",
+    )
+      .bind(DEVICE_B)
+      .first<{ count: number }>();
+    expect(pairingCount?.count).toBe(0);
     const repeated = await request(`/v1/devices/${DEVICE_B}/revoke`, TOKEN_A, { method: "POST" });
     expect(repeated.status).toBe(200);
 
@@ -184,6 +206,142 @@ describe("device management", () => {
     );
     expect(response.status).toBe(404);
     expect(await request("/v1/health", OTHER_OWNER_TOKEN).then((value) => value.status)).toBe(200);
+  });
+});
+
+describe("secure device pairing relay", () => {
+  const sessionId = "30000000-0000-4000-8000-000000000001";
+
+  it("relays an opaque one-time PAKE exchange and activates a dynamic credential", async () => {
+    await request("/v1/health", TOKEN_A);
+    const created = await request("/v1/pairing/sessions", TOKEN_A, {
+      method: "POST",
+      body: JSON.stringify({
+        protocolVersion: 1,
+        sessionId,
+        initiatorMessage: "spake2_initiator_message",
+      }),
+    });
+    expect(created.status).toBe(200);
+
+    const publicSession = await request(`/v1/pairing/sessions/${sessionId}`);
+    expect(publicSession.status).toBe(200);
+    expect(await publicSession.json()).toMatchObject({
+      sessionId,
+      initiatorMessage: "spake2_initiator_message",
+    });
+
+    const joined = await request(`/v1/pairing/sessions/${sessionId}/join`, undefined, {
+      method: "POST",
+      body: JSON.stringify({
+        protocolVersion: 1,
+        deviceId: PAIRED_DEVICE,
+        deviceName: "Paired laptop",
+        platform: "linux",
+        responderMessage: "spake2_responder_message",
+        responderProof: "encrypted_responder_proof",
+      }),
+    });
+    expect(joined.status).toBe(200);
+    const duplicateJoin = await request(`/v1/pairing/sessions/${sessionId}/join`, undefined, {
+      method: "POST",
+      body: JSON.stringify({
+        protocolVersion: 1,
+        deviceId: PAIRED_DEVICE,
+        deviceName: "Paired laptop",
+        platform: "linux",
+        responderMessage: "different_message",
+        responderProof: "different_proof",
+      }),
+    });
+    expect(duplicateJoin.status).toBe(409);
+
+    const pendingJoin = await request(`/v1/pairing/sessions/${sessionId}/join`, TOKEN_A);
+    expect(pendingJoin.status).toBe(200);
+    expect(await pendingJoin.json()).toMatchObject({
+      deviceId: PAIRED_DEVICE,
+      deviceName: "Paired laptop",
+      responderMessage: "spake2_responder_message",
+      responderProof: "encrypted_responder_proof",
+    });
+    const isolated = await request(`/v1/pairing/sessions/${sessionId}/join`, OTHER_OWNER_TOKEN);
+    expect(isolated.status).toBe(404);
+
+    const finalized = await request(`/v1/pairing/sessions/${sessionId}/finalize`, TOKEN_A, {
+      method: "POST",
+      body: JSON.stringify({
+        protocolVersion: 1,
+        deviceId: PAIRED_DEVICE,
+        credentialFingerprint: await sha256Hex(PAIRED_TOKEN),
+        transferBundle: "encrypted_keyset_and_device_credential",
+      }),
+    });
+    expect(finalized.status).toBe(200);
+    const repeatedFinalize = await request(`/v1/pairing/sessions/${sessionId}/finalize`, TOKEN_A, {
+      method: "POST",
+      body: JSON.stringify({
+        protocolVersion: 1,
+        deviceId: PAIRED_DEVICE,
+        credentialFingerprint: await sha256Hex(PAIRED_TOKEN),
+        transferBundle: "encrypted_keyset_and_device_credential",
+      }),
+    });
+    expect(repeatedFinalize.status).toBe(200);
+
+    const packageResponse = await request(`/v1/pairing/sessions/${sessionId}/package`);
+    expect(packageResponse.status).toBe(200);
+    expect(await packageResponse.json()).toMatchObject({
+      status: "ready",
+      transferBundle: "encrypted_keyset_and_device_credential",
+    });
+    const authenticated = await request("/v1/health", PAIRED_TOKEN);
+    expect(authenticated.status).toBe(200);
+
+    const consumed = await request(`/v1/pairing/sessions/${sessionId}/consume`, PAIRED_TOKEN, {
+      method: "POST",
+    });
+    expect(consumed.status).toBe(200);
+    const replay = await request(`/v1/pairing/sessions/${sessionId}/package`);
+    expect(replay.status).toBe(410);
+
+    const device = await env.SYNC_DB.prepare(
+      "SELECT owner_id, name, credential_fingerprint FROM devices WHERE id = ?",
+    )
+      .bind(PAIRED_DEVICE)
+      .first();
+    expect(device).toEqual({
+      owner_id: "owner-a",
+      name: "Paired laptop",
+      credential_fingerprint: await sha256Hex(PAIRED_TOKEN),
+    });
+  });
+
+  it("expires public sessions and never exposes an unencrypted transfer", async () => {
+    await request("/v1/health", TOKEN_A);
+    await request("/v1/pairing/sessions", TOKEN_A, {
+      method: "POST",
+      body: JSON.stringify({
+        protocolVersion: 1,
+        sessionId,
+        initiatorMessage: "opaque_message_only",
+      }),
+    });
+    const row = await env.SYNC_DB.prepare(
+      "SELECT initiator_message, responder_proof, transfer_bundle FROM pairing_sessions WHERE id = ?",
+    )
+      .bind(sessionId)
+      .first();
+    expect(row).toEqual({
+      initiator_message: "opaque_message_only",
+      responder_proof: null,
+      transfer_bundle: null,
+    });
+    await env.SYNC_DB.prepare("UPDATE pairing_sessions SET expires_at = 0 WHERE id = ?")
+      .bind(sessionId)
+      .run();
+    const expired = await request(`/v1/pairing/sessions/${sessionId}`);
+    expect(expired.status).toBe(410);
+    expect(await expired.json()).toMatchObject({ error: { code: "PAIRING_EXPIRED" } });
   });
 });
 

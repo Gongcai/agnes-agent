@@ -9,6 +9,13 @@ interface DeviceIdentity extends AuthIdentity {
   tokenSha256: string;
 }
 
+interface StoredDeviceIdentity {
+  owner_id: string;
+  id: string;
+  name: string;
+  platform: string | null;
+}
+
 function isIdentity(candidate: Record<string, unknown>): boolean {
   return (
     typeof candidate.ownerId === "string" &&
@@ -84,20 +91,37 @@ export async function resolveIdentity(request: Request, env: Bindings): Promise<
   }
   const token = bearerToken(request);
   const tokenSha256 = await sha256Hex(token);
-  const resolved =
+  const configured =
     env.AUTH_MODE === "bearer"
       ? parseDeviceIdentities(env.SYNC_DEVICE_IDENTITIES).find(
           (candidate) => candidate.tokenSha256 === tokenSha256,
         )
       : parseTestIdentities(env.SYNC_TEST_IDENTITIES).find((candidate) => candidate.token === token);
-  if (!resolved) {
+  if (configured) {
+    return {
+      ownerId: configured.ownerId,
+      deviceId: configured.deviceId,
+      deviceName: configured.deviceName,
+      ...(configured.platform ? { platform: configured.platform } : {}),
+      credentialFingerprint: tokenSha256,
+    };
+  }
+
+  const stored = await env.SYNC_DB.prepare(
+    `SELECT owner_id, id, name, platform
+     FROM devices
+     WHERE credential_fingerprint = ?`,
+  )
+    .bind(tokenSha256)
+    .first<StoredDeviceIdentity>();
+  if (!stored) {
     throw new ApiError(401, "UNAUTHENTICATED", "The sync credential is invalid");
   }
   return {
-    ownerId: resolved.ownerId,
-    deviceId: resolved.deviceId,
-    deviceName: resolved.deviceName,
-    ...(resolved.platform ? { platform: resolved.platform } : {}),
+    ownerId: stored.owner_id,
+    deviceId: stored.id,
+    deviceName: stored.name,
+    ...(stored.platform ? { platform: stored.platform } : {}),
     credentialFingerprint: tokenSha256,
   };
 }

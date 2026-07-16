@@ -20,19 +20,28 @@ import {
 } from "../lib/memory";
 import {
   beginSyncE2eeSetup,
+  beginSyncE2eeRotation,
+  approveSyncPairing,
   confirmSyncE2eeSetup,
   discardSyncE2eeSetup,
+  finishSyncPairing,
   getSyncStatus,
+  getSyncPairingRequest,
+  joinSyncPairing,
   listSyncConflicts,
   listSyncDevices,
   resolveSyncConflict,
   revokeSyncDevice,
   restoreSyncE2ee,
   setSyncCredential,
+  startSyncPairing,
   syncNow,
   type SyncConflict,
   type SyncDevice,
   type SyncRecoveryMaterial,
+  type SyncPairingDevice,
+  type SyncPairingInvite,
+  type SyncPairingJoinStarted,
   type SyncStatus,
 } from "../lib/ipc";
 
@@ -442,6 +451,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [syncRecoveryKeyInput, setSyncRecoveryKeyInput] = useState("");
   const [syncRecoveryBundleInput, setSyncRecoveryBundleInput] = useState("");
   const [isConfiguringSyncE2ee, setIsConfiguringSyncE2ee] = useState(false);
+  const [syncPairingInvite, setSyncPairingInvite] = useState<SyncPairingInvite | null>(null);
+  const [syncPairingDevice, setSyncPairingDevice] = useState<SyncPairingDevice | null>(null);
+  const [syncPairingCodeInput, setSyncPairingCodeInput] = useState("");
+  const [syncPairingDeviceName, setSyncPairingDeviceName] = useState("新设备");
+  const [syncPairingJoin, setSyncPairingJoin] = useState<SyncPairingJoinStarted | null>(null);
+  const [isPairingSyncDevice, setIsPairingSyncDevice] = useState(false);
 
   // Debug prompt panel state
   const [debugPrompt, setDebugPrompt] = useState<DebugPromptPreview | null>(null);
@@ -787,6 +802,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setShowSyncRestore(false);
     setSyncRecoveryKeyInput("");
     setSyncRecoveryBundleInput("");
+    setSyncPairingInvite(null);
+    setSyncPairingDevice(null);
+    setSyncPairingCodeInput("");
+    setSyncPairingJoin(null);
   }, [activeTab, isOpen]);
 
   const handleSyncNow = async () => {
@@ -810,7 +829,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleRevokeSyncDevice = async (device: SyncDevice) => {
     if (device.current || device.revokedAt != null) return;
-    if (!window.confirm(`确定撤销设备“${device.name}”吗？`)) return;
+    if (!window.confirm(`确定撤销设备“${device.name}”吗？撤销只会阻止后续联网；若设备可能失控，请随后立即轮换密钥。`)) return;
     setRevokingDeviceId(device.id);
     setSyncStatusError(null);
     try {
@@ -892,6 +911,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
+  const handleBeginSyncE2eeRotation = async () => {
+    if (!window.confirm("轮换后，新写入将立即改用新密钥；其他设备需通过配对或本次恢复材料升级后才能读取。继续吗？")) return;
+    setIsConfiguringSyncE2ee(true);
+    setSyncStatusError(null);
+    try {
+      const material = await beginSyncE2eeRotation();
+      setSyncRecoveryMaterial(material);
+      setSyncRecoveryAcknowledged(false);
+      setShowSyncRestore(false);
+      setSyncStatus(await getSyncStatus());
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsConfiguringSyncE2ee(false);
+    }
+  };
+
   const handleConfirmSyncE2eeSetup = async () => {
     if (!syncRecoveryAcknowledged) return;
     setIsConfiguringSyncE2ee(true);
@@ -948,6 +984,95 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setIsConfiguringSyncE2ee(false);
     }
   };
+
+  const handleStartSyncPairing = async () => {
+    setIsPairingSyncDevice(true);
+    setSyncStatusError(null);
+    try {
+      setSyncPairingInvite(await startSyncPairing());
+      setSyncPairingDevice(null);
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsPairingSyncDevice(false);
+    }
+  };
+
+  const handleCheckSyncPairing = async () => {
+    if (!syncPairingInvite) return;
+    setIsPairingSyncDevice(true);
+    setSyncStatusError(null);
+    try {
+      setSyncPairingDevice(await getSyncPairingRequest(syncPairingInvite.sessionId));
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsPairingSyncDevice(false);
+    }
+  };
+
+  const handleApproveSyncPairing = async () => {
+    if (!syncPairingInvite || !syncPairingDevice) return;
+    if (!window.confirm(`允许“${syncPairingDevice.deviceName}”获取同步凭证与当前完整密钥集吗？`)) return;
+    setIsPairingSyncDevice(true);
+    setSyncStatusError(null);
+    try {
+      await approveSyncPairing(syncPairingInvite.sessionId);
+      setSyncPairingInvite(null);
+      setSyncPairingDevice(null);
+      setSyncDevices(await listSyncDevices());
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsPairingSyncDevice(false);
+    }
+  };
+
+  const handleJoinSyncPairing = async () => {
+    const pairingCode = syncPairingCodeInput.trim();
+    const deviceName = syncPairingDeviceName.trim();
+    if (!pairingCode || !deviceName) return;
+    setIsPairingSyncDevice(true);
+    setSyncStatusError(null);
+    try {
+      setSyncPairingJoin(await joinSyncPairing(pairingCode, deviceName));
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsPairingSyncDevice(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!syncPairingJoin) return;
+    let active = true;
+    const finish = async () => {
+      if (Date.now() >= syncPairingJoin.expiresAt) {
+        if (active) {
+          setSyncStatusError("配对会话已过期，请重新生成配对码");
+          setSyncPairingJoin(null);
+        }
+        return;
+      }
+      try {
+        const completion = await finishSyncPairing(syncPairingJoin.sessionId);
+        if (!active || completion.status !== "complete" || !completion.syncStatus) return;
+        setSyncStatus(completion.syncStatus);
+        setSyncPairingCodeInput("");
+        setSyncPairingJoin(null);
+        setSyncStatusError(null);
+        setSyncDevices(await listSyncDevices());
+      } catch (error) {
+        if (active) setSyncStatusError(String(error));
+      }
+    };
+    void finish();
+    const timer = window.setInterval(() => void finish(), 2_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [syncPairingJoin]);
 
   useEffect(() => {
     setModelRoleForm(modelRoles);
@@ -2660,7 +2785,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 ? "text-amber-700"
                                 : "text-stone-400"
                           }`}>
-                            {syncStatus.e2ee.confirmed
+                            {syncStatus.e2ee.rotationPending
+                              ? `v${syncStatus.e2ee.confirmedKeyVersion} → v${syncStatus.e2ee.activeKeyVersion} 待确认`
+                              : syncStatus.e2ee.confirmed
                               ? `Key v${syncStatus.e2ee.activeKeyVersion}`
                               : syncStatus.e2ee.keysetConfigured
                                 ? "待确认"
@@ -2677,11 +2804,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             }`}>
                               {syncStatus.e2ee.confirmed && !syncStatus.e2ee.transportReady
                                 ? "加密传输待接入"
-                                : syncStatus.e2ee.keysetConfigured
-                                  ? "恢复材料尚未确认"
+                                : syncStatus.e2ee.rotationPending
+                                  ? "保存新恢复材料并确认后才会启用新密钥"
+                                  : syncStatus.e2ee.keysetConfigured
+                                    ? "恢复材料尚未确认"
                                   : "需要本机密钥与恢复材料"}
                             </span>
-                            <div className="flex shrink-0 items-center gap-2">
+                            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                               {!syncStatus.e2ee.keysetConfigured && (
                                 <button
                                   type="button"
@@ -2693,7 +2822,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                   恢复
                                 </button>
                               )}
-                              {syncStatus.e2ee.keysetConfigured && !syncStatus.e2ee.confirmed && (
+                              {syncStatus.e2ee.keysetConfigured && syncStatus.e2ee.confirmedKeyVersion == null && (
                                 <button
                                   type="button"
                                   onClick={handleDiscardSyncE2eeSetup}
@@ -2713,6 +2842,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 <Key className="h-3.5 w-3.5" />
                                 {syncStatus.e2ee.keysetConfigured ? "导出恢复材料" : "创建密钥"}
                               </button>
+                              {syncStatus.e2ee.confirmed && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => setShowSyncRestore(true)}
+                                    disabled={isConfiguringSyncE2ee}
+                                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-40"
+                                  >
+                                    <FileKey2 className="h-3.5 w-3.5" />
+                                    导入升级
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={handleBeginSyncE2eeRotation}
+                                    disabled={isConfiguringSyncE2ee}
+                                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 text-[11px] font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-40"
+                                  >
+                                    <RefreshCw className="h-3.5 w-3.5" />
+                                    轮换
+                                  </button>
+                                </>
+                              )}
                             </div>
                           </div>
                         )}
@@ -2844,6 +2995,95 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </section>
                     )}
 
+                    {syncStatus?.credentialConfigured && syncStatus.e2ee.confirmed && (
+                      <section className="border-y border-stone-200 bg-white">
+                        <div className="flex min-h-10 items-center justify-between gap-3 border-b border-stone-200 px-3 py-2">
+                          <span className="flex items-center gap-2 text-xs font-semibold text-stone-700">
+                            <Laptop className="h-3.5 w-3.5" />
+                            安全配对
+                          </span>
+                          {!syncPairingInvite && (
+                            <button
+                              type="button"
+                              onClick={handleStartSyncPairing}
+                              disabled={isPairingSyncDevice}
+                              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-stone-800 px-2.5 text-[11px] font-medium text-white hover:bg-stone-700 disabled:opacity-40"
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                              配对新设备
+                            </button>
+                          )}
+                        </div>
+                        {syncPairingInvite ? (
+                          <div className="space-y-2.5 px-3 py-3">
+                            <p className="text-[10px] leading-relaxed text-amber-700">
+                              仅通过可信通道发送此一次性配对码；它将在 {formatSyncDeviceTime(syncPairingInvite.expiresAt)} 失效。
+                            </p>
+                            <div className="relative">
+                              <textarea
+                                readOnly
+                                value={syncPairingInvite.pairingCode}
+                                rows={3}
+                                spellCheck={false}
+                                className="w-full resize-none rounded-md border border-stone-200 bg-stone-50 px-2.5 py-2 pr-9 font-mono text-[10px] leading-relaxed text-stone-700"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleCopyRecoveryValue(syncPairingInvite.pairingCode)}
+                                title="复制一次性配对码"
+                                className="absolute bottom-1.5 right-1.5 flex h-7 w-7 items-center justify-center rounded-md text-stone-400 hover:bg-white hover:text-stone-700"
+                              >
+                                <Copy className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                            {syncPairingDevice && (
+                              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+                                <span className="font-semibold">{syncPairingDevice.deviceName}</span>
+                                <span className="ml-2 text-amber-700">{syncPairingDevice.platform || "未知平台"}</span>
+                                <p className="mt-1 break-all font-mono text-[9px] text-amber-700">{syncPairingDevice.deviceId}</p>
+                              </div>
+                            )}
+                            <div className="flex flex-wrap justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSyncPairingInvite(null);
+                                  setSyncPairingDevice(null);
+                                }}
+                                className="h-8 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-medium text-stone-700 hover:bg-stone-50"
+                              >
+                                关闭
+                              </button>
+                              {!syncPairingDevice ? (
+                                <button
+                                  type="button"
+                                  onClick={handleCheckSyncPairing}
+                                  disabled={isPairingSyncDevice}
+                                  className="h-8 rounded-md bg-stone-800 px-2.5 text-[11px] font-medium text-white hover:bg-stone-700 disabled:opacity-40"
+                                >
+                                  {isPairingSyncDevice ? "检查中..." : "检查申请"}
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={handleApproveSyncPairing}
+                                  disabled={isPairingSyncDevice}
+                                  className="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-700 px-2.5 text-[11px] font-medium text-white hover:bg-emerald-800 disabled:opacity-40"
+                                >
+                                  <ShieldCheck className="h-3.5 w-3.5" />
+                                  批准并发送密钥
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="px-3 py-2.5 text-[10px] leading-relaxed text-stone-500">
+                            使用 SPAKE2 建立一次性认证通道，新设备会同时获得独立设备凭证与当前多版本 keyset。
+                          </p>
+                        )}
+                      </section>
+                    )}
+
                     {syncConflicts.length > 0 && (
                       <section className="border-y border-rose-200 bg-rose-50/40">
                         <div className="flex h-9 items-center justify-between border-b border-rose-200 px-3">
@@ -2933,6 +3173,48 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               </article>
                             );
                           })}
+                        </div>
+                      </section>
+                    )}
+
+                    {syncStatus && !syncStatus.credentialConfigured && !syncStatus.e2ee.keysetConfigured && (
+                      <section className="border-y border-stone-200 bg-white">
+                        <div className="flex h-9 items-center gap-2 border-b border-stone-200 px-3 text-xs font-semibold text-stone-700">
+                          <Laptop className="h-3.5 w-3.5" />
+                          加入已有设备
+                        </div>
+                        <div className="space-y-2.5 px-3 py-3">
+                          <input
+                            value={syncPairingDeviceName}
+                            onChange={(event) => setSyncPairingDeviceName(event.target.value)}
+                            placeholder="本机设备名称"
+                            disabled={syncPairingJoin != null}
+                            className="h-9 w-full rounded-md border border-stone-200 bg-white px-2.5 text-xs text-stone-700 outline-none focus:border-stone-400 disabled:bg-stone-50"
+                          />
+                          <textarea
+                            value={syncPairingCodeInput}
+                            onChange={(event) => setSyncPairingCodeInput(event.target.value)}
+                            placeholder="粘贴旧设备生成的一次性配对码"
+                            rows={3}
+                            spellCheck={false}
+                            autoComplete="off"
+                            disabled={syncPairingJoin != null}
+                            className="w-full resize-none rounded-md border border-stone-200 bg-white px-2.5 py-2 font-mono text-[10px] leading-relaxed text-stone-700 outline-none focus:border-stone-400 disabled:bg-stone-50"
+                          />
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] text-stone-500">
+                              {syncPairingJoin ? "已发出申请，等待旧设备批准…" : "配对完成后自动安装凭证和 E2EE keyset"}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={handleJoinSyncPairing}
+                              disabled={isPairingSyncDevice || syncPairingJoin != null || !syncPairingCodeInput.trim() || !syncPairingDeviceName.trim()}
+                              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-stone-800 px-2.5 text-[11px] font-medium text-white hover:bg-stone-700 disabled:opacity-40"
+                            >
+                              <ShieldCheck className={`h-3.5 w-3.5 ${syncPairingJoin ? "animate-pulse" : ""}`} />
+                              {syncPairingJoin ? "等待批准" : "申请配对"}
+                            </button>
+                          </div>
                         </div>
                       </section>
                     )}

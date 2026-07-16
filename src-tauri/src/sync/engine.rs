@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,9 +20,13 @@ use crate::sync::crypto::{
     open_json, seal_json, PayloadMetadata, RecoveryMaterial, SyncKeyset, EMPTY_PAYLOAD_HASH,
     PAYLOAD_ENCODING, TOMBSTONE_ENCODING,
 };
+use crate::sync::pairing::{
+    self, PairingDevice, PairingExchange, PairingKey, PreparedPairingTransfer,
+};
 use crate::sync::protocol::{
-    AckRequest, DeviceListResponse, PushRequest, PushResponse, RemoteChange, RemoteEntity,
-    RevokeDeviceResponse, SyncDevice, DEFAULT_PAGE_LIMIT, PROTOCOL_VERSION,
+    AckRequest, CreatePairingSessionRequest, DeviceListResponse, FinalizePairingSessionRequest,
+    JoinPairingSessionRequest, PairingJoinResponse, PushRequest, PushResponse, RemoteChange,
+    RemoteEntity, RevokeDeviceResponse, SyncDevice, DEFAULT_PAGE_LIMIT, PROTOCOL_VERSION,
 };
 
 pub const SYNC_GATEWAY_URL: &str = "https://agnes-sync-api.caiwengong136.workers.dev";
@@ -37,6 +41,8 @@ pub struct SyncE2eeStatus {
     pub keyset_configured: bool,
     pub confirmed: bool,
     pub active_key_version: Option<i64>,
+    pub confirmed_key_version: Option<i64>,
+    pub rotation_pending: bool,
     pub transport_ready: bool,
 }
 
@@ -52,11 +58,56 @@ pub struct SyncStatus {
     pub database: SyncDbStatus,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingPairingDevice {
+    pub session_id: String,
+    pub device_id: String,
+    pub device_name: String,
+    pub platform: Option<String>,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingJoinStarted {
+    pub session_id: String,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingCompletion {
+    pub status: String,
+    pub sync_status: Option<SyncStatus>,
+}
+
+enum PendingInitiatorPairing {
+    Exchange {
+        exchange: PairingExchange,
+        expires_at: i64,
+    },
+    Prepared {
+        transfer: PreparedPairingTransfer,
+        device: PairingDevice,
+        expires_at: i64,
+    },
+}
+
+struct PendingResponderPairing {
+    key: PairingKey,
+    device: PairingDevice,
+    join_request: JoinPairingSessionRequest,
+    expires_at: i64,
+}
+
 pub struct SyncService {
     db: DbActorHandle,
     secrets: Arc<dyn SecretStore>,
     client: reqwest::Client,
     run_gate: Mutex<()>,
+    pairing_initiators: Mutex<HashMap<String, PendingInitiatorPairing>>,
+    pairing_responders: Mutex<HashMap<String, PendingResponderPairing>>,
     syncing: AtomicBool,
     debounce_scheduled: AtomicBool,
 }
@@ -72,12 +123,15 @@ impl SyncService {
             secrets,
             client,
             run_gate: Mutex::new(()),
+            pairing_initiators: Mutex::new(HashMap::new()),
+            pairing_responders: Mutex::new(HashMap::new()),
             syncing: AtomicBool::new(false),
             debounce_scheduled: AtomicBool::new(false),
         })
     }
 
     pub async fn status(&self) -> AppResult<SyncStatus> {
+        self.cleanup_expired_pairings(unix_millis()).await;
         let database = self.db.get_sync_status().await?;
         let credential_configured = match self.secrets.get(SYNC_CREDENTIAL_SECRET_ID).await? {
             Some(secret) => {
@@ -93,6 +147,8 @@ impl SyncService {
             "syncing"
         } else if !credential_configured {
             "auth_required"
+        } else if e2ee.rotation_pending {
+            "e2ee_pending"
         } else if !e2ee.confirmed {
             "e2ee_required"
         } else if !e2ee.transport_ready {
@@ -147,6 +203,42 @@ impl SyncService {
         keyset.create_recovery_material()
     }
 
+    pub async fn begin_e2ee_rotation(&self) -> AppResult<RecoveryMaterial> {
+        let _guard = self.run_gate.lock().await;
+        let confirmed_version = self
+            .db
+            .get_sync_status()
+            .await?
+            .e2ee_key_version
+            .ok_or_else(|| AppError::Other("Sync encryption keys are not confirmed".into()))?;
+        let mut keyset = self
+            .load_keyset()
+            .await?
+            .ok_or_else(|| AppError::Other("Sync encryption keys are not configured".into()))?;
+        if keyset.active_key_version() != confirmed_version {
+            if keyset.active_key_version() > confirmed_version
+                && keyset.key(confirmed_version).is_some()
+            {
+                return keyset.create_recovery_material();
+            }
+            return Err(AppError::Other(
+                "Local sync encryption state cannot be rotated safely".into(),
+            ));
+        }
+
+        let previous = Zeroizing::new(keyset.serialize()?);
+        keyset.rotate()?;
+        let material = keyset.create_recovery_material()?;
+        let replacement = Zeroizing::new(keyset.serialize()?);
+        self.replace_secret_verified(
+            SYNC_E2EE_KEYSET_SECRET_ID,
+            Some(replacement.as_str()),
+            Some(previous.as_str()),
+        )
+        .await?;
+        Ok(material)
+    }
+
     pub async fn confirm_e2ee_setup(&self) -> AppResult<SyncStatus> {
         let _guard = self.run_gate.lock().await;
         let keyset = self
@@ -167,16 +259,31 @@ impl SyncService {
     ) -> AppResult<SyncStatus> {
         let _guard = self.run_gate.lock().await;
         let recovered = SyncKeyset::recover(recovery_key, recovery_bundle)?;
-        let installed_new = match self.load_keyset().await? {
-            Some(existing) => {
-                let existing = Zeroizing::new(existing.serialize()?);
-                let recovered_serialized = Zeroizing::new(recovered.serialize()?);
-                if existing.as_str() != recovered_serialized.as_str() {
+        let previous = self
+            .secrets
+            .get(SYNC_E2EE_KEYSET_SECRET_ID)
+            .await?
+            .map(Zeroizing::new);
+        let changed_keyset = match previous.as_ref() {
+            Some(raw) => {
+                let existing = SyncKeyset::parse(raw.as_str())?;
+                if recovered.is_same_keyset(&existing) {
+                    false
+                } else if recovered.is_compatible_upgrade_from(&existing) {
+                    let replacement = Zeroizing::new(recovered.serialize()?);
+                    self.replace_secret_verified(
+                        SYNC_E2EE_KEYSET_SECRET_ID,
+                        Some(replacement.as_str()),
+                        Some(raw.as_str()),
+                    )
+                    .await?;
+                    true
+                } else {
                     return Err(AppError::Other(
-                        "A different sync encryption keyset is already configured".into(),
+                        "Recovery material is not a monotonic upgrade of the configured keyset"
+                            .into(),
                     ));
                 }
-                false
             }
             None => {
                 self.persist_new_keyset(&recovered).await?;
@@ -188,8 +295,14 @@ impl SyncService {
             .set_sync_e2ee_key_version(Some(recovered.active_key_version()))
             .await
         {
-            if installed_new {
-                let rollback = self.secrets.delete(SYNC_E2EE_KEYSET_SECRET_ID).await.err();
+            if changed_keyset {
+                let rollback = self
+                    .restore_secret_value(
+                        SYNC_E2EE_KEYSET_SECRET_ID,
+                        previous.as_deref().map(String::as_str),
+                    )
+                    .await
+                    .err();
                 return Err(AppError::SecretStore(format!(
                     "restore local E2EE state failed: {error}{}",
                     rollback
@@ -249,6 +362,20 @@ impl SyncService {
         SyncKeyset::parse(raw.as_str()).map(Some)
     }
 
+    async fn cleanup_expired_pairings(&self, now: i64) {
+        self.pairing_initiators
+            .lock()
+            .await
+            .retain(|_, pairing| match pairing {
+                PendingInitiatorPairing::Exchange { expires_at, .. }
+                | PendingInitiatorPairing::Prepared { expires_at, .. } => *expires_at > now,
+            });
+        self.pairing_responders
+            .lock()
+            .await
+            .retain(|_, pairing| pairing.expires_at > now);
+    }
+
     async fn persist_new_keyset(&self, keyset: &SyncKeyset) -> AppResult<()> {
         if self
             .secrets
@@ -291,6 +418,55 @@ impl SyncService {
         Ok(())
     }
 
+    async fn replace_secret_verified(
+        &self,
+        secret_id: &str,
+        replacement: Option<&str>,
+        previous: Option<&str>,
+    ) -> AppResult<()> {
+        let write = match replacement {
+            Some(value) => self.secrets.set(secret_id, value).await,
+            None => self.secrets.delete(secret_id).await,
+        };
+        if let Err(error) = write {
+            let rollback = self.restore_secret_value(secret_id, previous).await.err();
+            return Err(AppError::SecretStore(format!(
+                "secret write failed: {error}{}",
+                rollback
+                    .map(|rollback| format!("; rollback failed: {rollback}"))
+                    .unwrap_or_default()
+            )));
+        }
+        let verified = self.secrets.get(secret_id).await;
+        let matches = verified
+            .as_ref()
+            .ok()
+            .is_some_and(|stored| stored.as_deref() == replacement);
+        if !matches {
+            if let Ok(Some(stored)) = verified {
+                drop(Zeroizing::new(stored));
+            }
+            let rollback = self.restore_secret_value(secret_id, previous).await.err();
+            return Err(AppError::SecretStore(format!(
+                "secret verification failed{}",
+                rollback
+                    .map(|rollback| format!("; rollback failed: {rollback}"))
+                    .unwrap_or_default()
+            )));
+        }
+        if let Ok(Some(stored)) = verified {
+            drop(Zeroizing::new(stored));
+        }
+        Ok(())
+    }
+
+    async fn restore_secret_value(&self, secret_id: &str, value: Option<&str>) -> AppResult<()> {
+        match value {
+            Some(value) => self.secrets.set(secret_id, value).await,
+            None => self.secrets.delete(secret_id).await,
+        }
+    }
+
     pub async fn list_devices(&self) -> AppResult<Vec<SyncDevice>> {
         let transport = self
             .http_transport()
@@ -323,6 +499,413 @@ impl SyncService {
             .await
             .map_err(admin_transport_error)?;
         validate_revoked_device(response, &target_device_id)
+    }
+
+    pub async fn start_pairing(&self) -> AppResult<pairing::PairingInvite> {
+        let _guard = self.run_gate.lock().await;
+        let status = self.status().await?;
+        if !status.credential_configured || !status.e2ee.confirmed {
+            return Err(AppError::Other(
+                "A confirmed encrypted sync device is required to start pairing".into(),
+            ));
+        }
+        let transport = self
+            .http_transport()
+            .await?
+            .ok_or_else(|| AppError::Other("Sync credential is not configured".into()))?;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let started = pairing::start_initiator(&session_id)?;
+        let response = transport
+            .create_pairing_session(&CreatePairingSessionRequest {
+                protocol_version: PROTOCOL_VERSION,
+                session_id: session_id.clone(),
+                initiator_message: started.initiator_message,
+            })
+            .await
+            .map_err(admin_transport_error)?;
+        if response.session_id != session_id
+            || response.server_time < 0
+            || response.expires_at <= response.server_time
+            || response.expires_at.saturating_sub(response.server_time) > 15 * 60 * 1_000
+        {
+            return Err(AppError::Other(
+                "Invalid create pairing session response".into(),
+            ));
+        }
+        let mut pairings = self.pairing_initiators.lock().await;
+        pairings.retain(|_, pairing| match pairing {
+            PendingInitiatorPairing::Exchange { expires_at, .. }
+            | PendingInitiatorPairing::Prepared { expires_at, .. } => {
+                *expires_at > response.server_time
+            }
+        });
+        pairings.insert(
+            session_id.clone(),
+            PendingInitiatorPairing::Exchange {
+                exchange: started.exchange,
+                expires_at: response.expires_at,
+            },
+        );
+        Ok(pairing::PairingInvite {
+            session_id,
+            pairing_code: started.pairing_code,
+            expires_at: response.expires_at,
+        })
+    }
+
+    pub async fn pending_pairing_device(
+        &self,
+        session_id: &str,
+    ) -> AppResult<PendingPairingDevice> {
+        let session_id = canonical_uuid(session_id, "Pairing session id is invalid")?;
+        if !self
+            .pairing_initiators
+            .lock()
+            .await
+            .contains_key(&session_id)
+        {
+            return Err(AppError::Other(
+                "Pairing session is not active on this device".into(),
+            ));
+        }
+        let transport = self
+            .http_transport()
+            .await?
+            .ok_or_else(|| AppError::Other("Sync credential is not configured".into()))?;
+        let response = transport
+            .get_pairing_join(&session_id)
+            .await
+            .map_err(admin_transport_error)?;
+        validate_pairing_join(&session_id, &response)
+    }
+
+    pub async fn approve_pairing(&self, session_id: &str) -> AppResult<PendingPairingDevice> {
+        let _guard = self.run_gate.lock().await;
+        let session_id = canonical_uuid(session_id, "Pairing session id is invalid")?;
+        let transport = self
+            .http_transport()
+            .await?
+            .ok_or_else(|| AppError::Other("Sync credential is not configured".into()))?;
+        let needs_join = matches!(
+            self.pairing_initiators.lock().await.get(&session_id),
+            Some(PendingInitiatorPairing::Exchange { .. })
+        );
+        let join = if needs_join {
+            let response = transport
+                .get_pairing_join(&session_id)
+                .await
+                .map_err(admin_transport_error)?;
+            let pending = validate_pairing_join(&session_id, &response)?;
+            Some((pending, response))
+        } else {
+            None
+        };
+        let state = self
+            .pairing_initiators
+            .lock()
+            .await
+            .remove(&session_id)
+            .ok_or_else(|| {
+                AppError::Other("Pairing session is not active on this device".into())
+            })?;
+        let (transfer, device, expires_at) = match state {
+            PendingInitiatorPairing::Exchange {
+                exchange,
+                expires_at: _,
+            } => {
+                let (pending, response) =
+                    join.expect("exchange pairing always fetches the pending device");
+                let device = PairingDevice {
+                    device_id: pending.device_id.clone(),
+                    device_name: pending.device_name.clone(),
+                    platform: pending.platform.clone(),
+                };
+                let key = pairing::finish_initiator(
+                    exchange,
+                    &session_id,
+                    &response.responder_message,
+                    &response.responder_proof,
+                    &device,
+                )?;
+                let keyset = self.load_keyset().await?.ok_or_else(|| {
+                    AppError::Other("Sync encryption keys are not configured".into())
+                })?;
+                let transfer =
+                    pairing::prepare_transfer(&key, &session_id, &pending.device_id, &keyset)?;
+                (transfer, device, pending.expires_at)
+            }
+            PendingInitiatorPairing::Prepared {
+                transfer,
+                device,
+                expires_at,
+            } => (transfer, device, expires_at),
+        };
+        let finalize = transport
+            .finalize_pairing_session(
+                &session_id,
+                &FinalizePairingSessionRequest {
+                    protocol_version: PROTOCOL_VERSION,
+                    device_id: transfer.device_id.clone(),
+                    credential_fingerprint: transfer.credential_fingerprint.clone(),
+                    transfer_bundle: transfer.transfer_bundle.clone(),
+                },
+            )
+            .await;
+        let response = match finalize {
+            Ok(response) => response,
+            Err(error) => {
+                self.pairing_initiators.lock().await.insert(
+                    session_id,
+                    PendingInitiatorPairing::Prepared {
+                        transfer,
+                        device,
+                        expires_at,
+                    },
+                );
+                return Err(admin_transport_error(error));
+            }
+        };
+        if response.status != "ready"
+            || response.device_id != device.device_id
+            || response.server_time < 0
+        {
+            self.pairing_initiators.lock().await.insert(
+                session_id,
+                PendingInitiatorPairing::Prepared {
+                    transfer,
+                    device,
+                    expires_at,
+                },
+            );
+            return Err(AppError::Other(
+                "Invalid finalize pairing session response".into(),
+            ));
+        }
+        Ok(PendingPairingDevice {
+            session_id,
+            device_id: device.device_id,
+            device_name: device.device_name,
+            platform: device.platform,
+            expires_at,
+        })
+    }
+
+    pub async fn join_pairing(
+        &self,
+        pairing_code: &str,
+        device_name: &str,
+    ) -> AppResult<PairingJoinStarted> {
+        let _guard = self.run_gate.lock().await;
+        if self.secret_configured(SYNC_CREDENTIAL_SECRET_ID).await?
+            || self.secret_configured(SYNC_E2EE_KEYSET_SECRET_ID).await?
+            || self.db.get_sync_status().await?.e2ee_key_version.is_some()
+        {
+            return Err(AppError::Other(
+                "Pairing can only be joined on an unconfigured device".into(),
+            ));
+        }
+        let device_name = device_name.trim();
+        let session_id = pairing::pairing_session_id(pairing_code)?;
+        let transport = self.public_pairing_transport();
+        let session = transport
+            .get_public_pairing_session(&session_id)
+            .await
+            .map_err(admin_transport_error)?;
+        if session.protocol_version != PROTOCOL_VERSION
+            || session.session_id != session_id
+            || session.server_time < 0
+            || session.expires_at <= session.server_time
+        {
+            return Err(AppError::Other("Invalid public pairing response".into()));
+        }
+        let device = PairingDevice {
+            device_id: self.db.get_sync_status().await?.device_id,
+            device_name: device_name.to_string(),
+            platform: Some(std::env::consts::OS.to_string()),
+        };
+        let (opened_session_id, responder) =
+            pairing::start_responder(pairing_code, &session.initiator_message, &device)?;
+        if opened_session_id != session_id {
+            return Err(AppError::Other("Pairing session did not match".into()));
+        }
+        let request = JoinPairingSessionRequest {
+            protocol_version: PROTOCOL_VERSION,
+            device_id: device.device_id.clone(),
+            device_name: device.device_name.clone(),
+            platform: device.platform.clone(),
+            responder_message: responder.responder_message,
+            responder_proof: responder.responder_proof,
+        };
+        let response = transport
+            .join_pairing_session(&session_id, &request)
+            .await
+            .map_err(admin_transport_error)?;
+        if response.status != "joined"
+            || response.server_time < 0
+            || response.expires_at != Some(session.expires_at)
+        {
+            return Err(AppError::Other("Invalid pairing join response".into()));
+        }
+        let mut pairings = self.pairing_responders.lock().await;
+        pairings.retain(|_, pairing| pairing.expires_at > session.server_time);
+        pairings.insert(
+            session_id.clone(),
+            PendingResponderPairing {
+                key: responder.key,
+                device,
+                join_request: request,
+                expires_at: session.expires_at,
+            },
+        );
+        Ok(PairingJoinStarted {
+            session_id,
+            expires_at: session.expires_at,
+        })
+    }
+
+    pub async fn finish_pairing(&self, session_id: &str) -> AppResult<PairingCompletion> {
+        let _guard = self.run_gate.lock().await;
+        let session_id = canonical_uuid(session_id, "Pairing session id is invalid")?;
+        let (join_request, expires_at) = {
+            let states = self.pairing_responders.lock().await;
+            let state = states.get(&session_id).ok_or_else(|| {
+                AppError::Other("Pairing session is not active on this device".into())
+            })?;
+            (state.join_request.clone(), state.expires_at)
+        };
+        if expires_at <= unix_millis() {
+            self.pairing_responders.lock().await.remove(&session_id);
+            return Err(AppError::Other("Pairing session expired".into()));
+        }
+        let public_transport = self.public_pairing_transport();
+        public_transport
+            .join_pairing_session(&session_id, &join_request)
+            .await
+            .map_err(admin_transport_error)?;
+        let package = public_transport
+            .get_pairing_package(&session_id)
+            .await
+            .map_err(admin_transport_error)?;
+        if package.server_time < 0 || package.expires_at != expires_at {
+            return Err(AppError::Other("Invalid pairing package response".into()));
+        }
+        if package.status == "pending" && package.transfer_bundle.is_none() {
+            return Ok(PairingCompletion {
+                status: "pending".into(),
+                sync_status: None,
+            });
+        }
+        if package.status != "ready" || package.transfer_bundle.is_none() {
+            return Err(AppError::Other("Invalid pairing package response".into()));
+        }
+        let state = self
+            .pairing_responders
+            .lock()
+            .await
+            .remove(&session_id)
+            .ok_or_else(|| {
+                AppError::Other("Pairing session is not active on this device".into())
+            })?;
+        let (keyset, opened) = pairing::open_transfer(
+            &state.key,
+            &session_id,
+            &state.device.device_id,
+            package.transfer_bundle.as_deref().unwrap_or_default(),
+        )?;
+        let credential = SyncCredential::Bearer {
+            token: opened.bearer_token.clone(),
+        };
+        let credential_secret = Zeroizing::new(credential.clone().into_secret()?);
+        if let Err(error) = self
+            .install_paired_secrets(&keyset, &opened.keyset_json, credential_secret.as_str())
+            .await
+        {
+            self.pairing_responders
+                .lock()
+                .await
+                .insert(session_id.clone(), state);
+            return Err(error);
+        }
+        let authenticated =
+            HttpSyncTransport::new(self.client.clone(), SYNC_GATEWAY_URL, credential);
+        if let Err(error) = authenticated.consume_pairing_session(&session_id).await {
+            eprintln!("[sync] pairing package cleanup failed: {}", error.code);
+        }
+        Ok(PairingCompletion {
+            status: "complete".into(),
+            sync_status: Some(self.status().await?),
+        })
+    }
+
+    async fn install_paired_secrets(
+        &self,
+        keyset: &SyncKeyset,
+        keyset_json: &str,
+        credential_secret: &str,
+    ) -> AppResult<()> {
+        if self.secret_configured(SYNC_E2EE_KEYSET_SECRET_ID).await?
+            || self.secret_configured(SYNC_CREDENTIAL_SECRET_ID).await?
+            || self.db.get_sync_status().await?.e2ee_key_version.is_some()
+        {
+            return Err(AppError::Other(
+                "Pairing cannot overwrite configured sync secrets".into(),
+            ));
+        }
+        self.replace_secret_verified(SYNC_E2EE_KEYSET_SECRET_ID, Some(keyset_json), None)
+            .await?;
+        if let Err(error) = self
+            .replace_secret_verified(SYNC_CREDENTIAL_SECRET_ID, Some(credential_secret), None)
+            .await
+        {
+            let rollback = self
+                .restore_secret_value(SYNC_E2EE_KEYSET_SECRET_ID, None)
+                .await
+                .err();
+            return Err(AppError::SecretStore(format!(
+                "paired credential installation failed: {error}{}",
+                rollback
+                    .map(|rollback| format!("; keyset rollback failed: {rollback}"))
+                    .unwrap_or_default()
+            )));
+        }
+        if let Err(error) = self
+            .db
+            .set_sync_e2ee_key_version(Some(keyset.active_key_version()))
+            .await
+        {
+            let credential_rollback = self
+                .restore_secret_value(SYNC_CREDENTIAL_SECRET_ID, None)
+                .await
+                .err();
+            let keyset_rollback = self
+                .restore_secret_value(SYNC_E2EE_KEYSET_SECRET_ID, None)
+                .await
+                .err();
+            return Err(AppError::SecretStore(format!(
+                "paired E2EE state installation failed: {error}{}{}",
+                credential_rollback
+                    .map(|rollback| format!("; credential rollback failed: {rollback}"))
+                    .unwrap_or_default(),
+                keyset_rollback
+                    .map(|rollback| format!("; keyset rollback failed: {rollback}"))
+                    .unwrap_or_default()
+            )));
+        }
+        Ok(())
+    }
+
+    fn public_pairing_transport(&self) -> HttpSyncTransport {
+        HttpSyncTransport::new_public(self.client.clone(), SYNC_GATEWAY_URL)
+    }
+
+    async fn secret_configured(&self, secret_id: &str) -> AppResult<bool> {
+        match self.secrets.get(secret_id).await? {
+            Some(secret) => {
+                drop(Zeroizing::new(secret));
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     async fn http_transport(&self) -> AppResult<Option<HttpSyncTransport>> {
@@ -911,11 +1494,22 @@ fn validate_e2ee_status(
                 "E2EE key version {version} is missing from the local keyset"
             )));
         }
+        if keyset.active_key_version() < version {
+            return Err(AppError::Other(
+                "The active E2EE key version is behind the confirmed version".into(),
+            ));
+        }
     }
+    let active_key_version = keyset.map(SyncKeyset::active_key_version);
+    let rotation_pending = confirmed_version
+        .zip(active_key_version)
+        .is_some_and(|(confirmed, active)| active > confirmed);
     Ok(SyncE2eeStatus {
         keyset_configured: keyset.is_some(),
-        confirmed: confirmed_version.is_some(),
-        active_key_version: keyset.map(SyncKeyset::active_key_version),
+        confirmed: confirmed_version.is_some() && !rotation_pending,
+        active_key_version,
+        confirmed_key_version: confirmed_version,
+        rotation_pending,
         transport_ready: E2EE_TRANSPORT_READY,
     })
 }
@@ -940,6 +1534,39 @@ fn validate_revoked_device(
 
 fn admin_transport_error(error: TransportFailure) -> AppError {
     AppError::Other(format!("{}: {}", error.code, error.message))
+}
+
+fn canonical_uuid(value: &str, message: &str) -> AppResult<String> {
+    uuid::Uuid::parse_str(value)
+        .map(|value| value.to_string())
+        .map_err(|_| AppError::Other(message.into()))
+}
+
+fn validate_pairing_join(
+    session_id: &str,
+    response: &PairingJoinResponse,
+) -> AppResult<PendingPairingDevice> {
+    if uuid::Uuid::parse_str(&response.device_id).is_err()
+        || response.device_name.trim().is_empty()
+        || response.device_name.len() > 80
+        || response
+            .platform
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty() || value.len() > 40)
+        || response.responder_message.is_empty()
+        || response.responder_proof.is_empty()
+        || response.server_time < 0
+        || response.expires_at <= response.server_time
+    {
+        return Err(AppError::Other("Invalid pairing join response".into()));
+    }
+    Ok(PendingPairingDevice {
+        session_id: session_id.to_string(),
+        device_id: response.device_id.clone(),
+        device_name: response.device_name.clone(),
+        platform: response.platform.clone(),
+        expires_at: response.expires_at,
+    })
 }
 
 fn remote_entity_from_change(
@@ -1634,7 +2261,7 @@ mod tests {
             .unwrap_err();
         assert!(error
             .to_string()
-            .contains("different sync encryption keyset"));
+            .contains("not a monotonic upgrade"));
         assert_eq!(
             target.status().await.unwrap().e2ee.active_key_version,
             Some(1)
@@ -1650,6 +2277,93 @@ mod tests {
         let _ = std::fs::remove_file(source_path);
         let _ = std::fs::remove_file(target_path);
         let _ = std::fs::remove_file(other_path);
+    }
+
+    #[tokio::test]
+    async fn rotation_and_recovery_rehearsal_preserves_old_and_new_key_versions() {
+        let (source_path, source) = test_service("rotation-source");
+        let initial = source.begin_e2ee_setup().await.unwrap();
+        source.confirm_e2ee_setup().await.unwrap();
+        let (target_path, target) = test_service("rotation-target");
+        target
+            .restore_e2ee(&initial.recovery_key, &initial.recovery_bundle)
+            .await
+            .unwrap();
+
+        let old_keyset = target.load_keyset().await.unwrap().unwrap();
+        let old_metadata = PayloadMetadata {
+            protocol_version: PROTOCOL_VERSION,
+            entity_type: "memory",
+            entity_id: "rotation-rehearsal-old",
+            revision: 1,
+            hlc: "1000-0001-device01",
+            payload_schema_version: 1,
+            origin_device_id: DEVICE_A,
+            key_version: 1,
+        };
+        let old_payload = seal_json(
+            old_keyset.key(1).unwrap(),
+            &old_metadata,
+            &json!({"content": "before rotation"}),
+        )
+        .unwrap();
+
+        let rotated_material = source.begin_e2ee_rotation().await.unwrap();
+        let pending = source.status().await.unwrap();
+        assert_eq!(pending.state, "auth_required");
+        assert!(pending.e2ee.rotation_pending);
+        assert!(!pending.e2ee.confirmed);
+        assert_eq!(pending.e2ee.confirmed_key_version, Some(1));
+        assert_eq!(pending.e2ee.active_key_version, Some(2));
+        source.confirm_e2ee_setup().await.unwrap();
+
+        let upgraded = target
+            .restore_e2ee(
+                &rotated_material.recovery_key,
+                &rotated_material.recovery_bundle,
+            )
+            .await
+            .unwrap();
+        assert!(upgraded.e2ee.confirmed);
+        assert!(!upgraded.e2ee.rotation_pending);
+        assert_eq!(upgraded.e2ee.active_key_version, Some(2));
+        let upgraded_keyset = target.load_keyset().await.unwrap().unwrap();
+        assert_eq!(
+            open_json(
+                upgraded_keyset.key(1).unwrap(),
+                &old_metadata,
+                &old_payload.payload,
+                &old_payload.payload_hash,
+            )
+            .unwrap(),
+            json!({"content": "before rotation"})
+        );
+        let new_metadata = PayloadMetadata {
+            entity_id: "rotation-rehearsal-new",
+            key_version: 2,
+            ..old_metadata
+        };
+        let new_payload = seal_json(
+            upgraded_keyset.key(2).unwrap(),
+            &new_metadata,
+            &json!({"content": "after rotation"}),
+        )
+        .unwrap();
+        assert_eq!(
+            open_json(
+                upgraded_keyset.key(2).unwrap(),
+                &new_metadata,
+                &new_payload.payload,
+                &new_payload.payload_hash,
+            )
+            .unwrap(),
+            json!({"content": "after rotation"})
+        );
+
+        drop(source);
+        drop(target);
+        let _ = std::fs::remove_file(source_path);
+        let _ = std::fs::remove_file(target_path);
     }
 
     #[tokio::test]

@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::error::{AppError, AppResult};
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SyncCredential {
     Bearer {
@@ -22,21 +23,19 @@ impl SyncCredential {
         Ok(credential)
     }
 
-    pub fn into_secret(self) -> AppResult<String> {
-        let normalized = match self {
-            Self::Bearer { token } => Self::Bearer {
-                token: token.trim().to_string(),
-            },
+    pub fn into_secret(mut self) -> AppResult<String> {
+        match &mut self {
+            Self::Bearer { token } => *token = token.trim().to_string(),
             Self::CloudflareAccess {
                 client_id,
                 client_secret,
-            } => Self::CloudflareAccess {
-                client_id: client_id.trim().to_string(),
-                client_secret: client_secret.trim().to_string(),
-            },
-        };
-        normalized.validate()?;
-        serde_json::to_string(&normalized).map_err(Into::into)
+            } => {
+                *client_id = client_id.trim().to_string();
+                *client_secret = client_secret.trim().to_string();
+            }
+        }
+        self.validate()?;
+        serde_json::to_string(&self).map_err(Into::into)
     }
 
     fn validate(&self) -> AppResult<()> {

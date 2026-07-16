@@ -96,6 +96,37 @@ export const ackRequestSchema = z
   })
   .strict();
 
+const pairingOpaqueSchema = (maximum: number) =>
+  z.string().min(1).max(maximum).regex(/^[A-Za-z0-9_-]+$/);
+
+export const createPairingSessionSchema = z
+  .object({
+    protocolVersion: z.literal(PROTOCOL_VERSION),
+    sessionId: uuidSchema,
+    initiatorMessage: pairingOpaqueSchema(256),
+  })
+  .strict();
+
+export const joinPairingSessionSchema = z
+  .object({
+    protocolVersion: z.literal(PROTOCOL_VERSION),
+    deviceId: uuidSchema,
+    deviceName: z.string().trim().min(1).max(80),
+    platform: z.string().trim().min(1).max(40).nullable(),
+    responderMessage: pairingOpaqueSchema(256),
+    responderProof: pairingOpaqueSchema(2_048),
+  })
+  .strict();
+
+export const finalizePairingSessionSchema = z
+  .object({
+    protocolVersion: z.literal(PROTOCOL_VERSION),
+    deviceId: uuidSchema,
+    credentialFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    transferBundle: pairingOpaqueSchema(32 * 1_024),
+  })
+  .strict();
+
 export type SyncChange = z.infer<typeof syncChangeSchema>;
 
 export interface ApiErrorBody {
@@ -106,6 +137,9 @@ export interface ApiErrorBody {
       | "DEVICE_REVOKED"
       | "REVISION_CONFLICT"
       | "PAYLOAD_TOO_LARGE"
+      | "PAIRING_EXPIRED"
+      | "PAIRING_NOT_READY"
+      | "PAIRING_CONFLICT"
       | "RATE_LIMITED"
       | "SYNC_TEMPORARILY_UNAVAILABLE";
     message: string;

@@ -12,7 +12,33 @@ export const devices = sqliteTable(
     lastSeenAt: integer("last_seen_at"),
     revokedAt: integer("revoked_at"),
   },
-  (table) => [index("idx_devices_owner").on(table.ownerId, table.revokedAt)],
+  (table) => [
+    index("idx_devices_owner").on(table.ownerId, table.revokedAt),
+    uniqueIndex("idx_devices_credential_fingerprint").on(table.credentialFingerprint),
+  ],
+);
+
+export const pairingSessions = sqliteTable(
+  "pairing_sessions",
+  {
+    id: text("id").primaryKey(),
+    ownerId: text("owner_id").notNull(),
+    initiatorDeviceId: text("initiator_device_id").notNull(),
+    initiatorMessage: text("initiator_message").notNull(),
+    responderMessage: text("responder_message"),
+    responderProof: text("responder_proof"),
+    requestedDeviceId: text("requested_device_id"),
+    requestedDeviceName: text("requested_device_name"),
+    requestedPlatform: text("requested_platform"),
+    transferBundle: text("transfer_bundle"),
+    status: text("status").notNull(),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    joinedAt: integer("joined_at"),
+    finalizedAt: integer("finalized_at"),
+    consumedAt: integer("consumed_at"),
+  },
+  (table) => [index("idx_pairing_sessions_owner").on(table.ownerId, table.status, table.expiresAt)],
 );
 
 export const syncEntities = sqliteTable(

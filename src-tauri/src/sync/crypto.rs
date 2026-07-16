@@ -149,6 +149,27 @@ impl SyncKeyset {
         self.keys.get(&version)
     }
 
+    pub fn is_same_keyset(&self, other: &Self) -> bool {
+        self.active_key_version == other.active_key_version
+            && self.keys.len() == other.keys.len()
+            && self.keys.iter().all(|(version, key)| {
+                other
+                    .keys
+                    .get(version)
+                    .is_some_and(|other_key| key.0 == other_key.0)
+            })
+    }
+
+    pub fn is_compatible_upgrade_from(&self, existing: &Self) -> bool {
+        self.active_key_version > existing.active_key_version
+            && self.keys.len() > existing.keys.len()
+            && existing.keys.iter().all(|(version, key)| {
+                self.keys
+                    .get(version)
+                    .is_some_and(|upgraded_key| key.0 == upgraded_key.0)
+            })
+    }
+
     pub fn rotate(&mut self) -> AppResult<i64> {
         if self.keys.len() >= MAX_KEY_VERSIONS {
             return Err(AppError::Other(
@@ -259,7 +280,7 @@ impl SyncKeyset {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryMaterial {
     pub recovery_key: String,
@@ -491,6 +512,14 @@ mod tests {
         assert_eq!(decoded.active_key_version(), 2);
         assert!(decoded.key(1).is_some());
         assert!(decoded.key(2).is_some());
+        assert!(decoded.is_same_keyset(&keyset));
+
+        let previous = SyncKeyset {
+            active_key_version: 1,
+            keys: BTreeMap::from([(1, SyncMasterKey::from_bytes([7; MASTER_KEY_BYTES]))]),
+        };
+        assert!(decoded.is_compatible_upgrade_from(&previous));
+        assert!(!previous.is_compatible_upgrade_from(&decoded));
 
         let mut invalid: Value = serde_json::from_str(&encoded).unwrap();
         invalid["activeKeyVersion"] = 99.into();
@@ -605,7 +634,7 @@ mod tests {
 
         let other = keyset.create_recovery_material().unwrap();
         assert!(SyncKeyset::recover(&other.recovery_key, &material.recovery_bundle).is_err());
-        let mut tampered = material.recovery_bundle;
+        let mut tampered = material.recovery_bundle.clone();
         let replacement = if tampered.ends_with('A') { "B" } else { "A" };
         tampered.replace_range(tampered.len() - 1.., replacement);
         assert!(SyncKeyset::recover(&material.recovery_key, &tampered).is_err());

@@ -1,9 +1,10 @@
 # 同步端到端加密设计
 
 本文冻结 Agnes Sync E2EE v1 的密码学格式、密钥边界与上线顺序。Cloudflare Worker、D1、R2
-和网盘 Provider 都不持有解密密钥。当前实现状态为 **Phase 4C：密文传输已接入并部署**；桌面端
-push/pull/bootstrap 和线上 Worker 均已启用 encrypted-only 契约，production D1 已复核为空。在
-新设备配对、密钥轮换和恢复演练完成前，仍不上传真实业务数据。
+和网盘 Provider 都不持有解密密钥。当前实现状态为 **Phase 4D：安全配对、密钥轮换与恢复演练已完成**；
+桌面端和线上 Worker 已启用 encrypted-only、SPAKE2 一次性配对与多版本 keyset 契约。Worker 版本
+`7316feb3-48b1-4635-8363-a83e78e7dc33` 已部署，production D1 的业务表、设备表与配对表均复核为
+0。本轮仍未上传真实业务数据。
 
 ## 1. 安全目标
 
@@ -167,10 +168,92 @@ Recovery Key 是随机 256-bit 高熵密钥，不是用户口令，因此 HKDF-S
 
 每次导出都会为同一 keyset 生成新的 Recovery Key、salt 和 nonce。Renderer 只能一次性接收这两项
 恢复材料，不能读取 master key 或 keyset JSON。新设备恢复后把 keyset 写入 Keyring 并读回验证；
-已有不同 keyset 时拒绝覆盖。未确认的本机 keyset 可显式丢弃后改用旧设备恢复材料，已确认 keyset
-不能通过当前 UI 清除。
+已有 keyset 时只允许“所有旧 version 与 key 字节完全相同、active version 单调增加、至少新增一个
+version”的升级，拒绝分叉、替换旧 key、删减或降级。未确认的本机 keyset 可显式丢弃后改用旧设备
+恢复材料，已确认 keyset 不能通过当前 UI 清除。
 
-## 8. 接入顺序
+## 8. 新设备安全配对
+
+### 8.1 协议与格式
+
+配对使用 RustCrypto `spake2 0.4` 的 SPAKE2/Ed25519Group，不自行拼装 ECDH。旧设备固定为 A 角色，
+新设备固定为 B 角色；双方 identity 绑定协议域与 `sessionId`：
+
+```text
+idA = agnes-sync-pairing-initiator-v1:<sessionId>
+idB = agnes-sync-pairing-responder-v1:<sessionId>
+```
+
+旧设备生成随机 256-bit pairing secret，与随机 UUID session ID 一起编码为一次性能力码：
+
+```text
+agnes-pair-v1.BASE64URL_NOPAD({ formatVersion, sessionId, secret })
+```
+
+能力码必须通过用户认可的可信通道传递。SPAKE2 共享结果再用 HKDF-SHA256 和固定 info
+`agnes-sync-pairing-wrap-key-v1` 派生 256-bit wrapping key。新设备先发送使用
+`agnes-sync-pairing-responder-proof-v1\0` AAD 加密的设备声明，旧设备只有成功解密且逐字段匹配
+Worker 外层元数据后才批准。旧设备随后用 `agnes-sync-pairing-transfer-v1\0` AAD 加密以下严格结构：
+
+```json
+{
+  "formatVersion": 1,
+  "sessionId": "UUID",
+  "deviceId": "UUID",
+  "bearerToken": "agnes-device-token-v1.BASE64URL_NOPAD(random 32 bytes)",
+  "keysetJson": "FULL_KEYSET_JSON"
+}
+```
+
+Worker 仅保存 SPAKE2 消息、设备元数据、Bearer SHA-256 指纹和 XChaCha20-Poly1305 密文包，不得到
+pairing secret、Bearer 明文或 keyset。新设备解密后在 Rust 内把凭证和 keyset 原子写入 Keyring，
+逐项读回验证，再提交本地 `e2ee_key_version`；Renderer 只持有一次性配对码和状态。
+
+### 8.2 服务端会话约束
+
+- 会话 10 分钟过期，每个发起设备同时最多 5 个活动会话，一个 session 只接受第一个 join；
+- create/inspect/finalize 只允许原发起设备凭证，公开 get/join/package 依赖不可猜测 session UUID 和
+  高熵 pairing secret，返回内容仍由 PAKE/AEAD 保护；
+- finalize 在 D1 batch 内同时登记独立设备凭证指纹和 transfer bundle，重复相同请求幂等；
+- 新设备安装并认证后 consume 会立即清除 transfer bundle；Cron 每小时删除所有过期会话；
+- 撤销设备时同时删除它发起或请求的未完成配对会话。
+
+### 8.3 威胁模型
+
+| 威胁 | 缓解 | 剩余风险 / 操作要求 |
+|---|---|---|
+| 恶意 Worker / 网络 MITM 替换 SPAKE2 消息 | SPAKE2 identity 绑定 session；proof 和 transfer 使用不同 AAD 的 AEAD | 可阻断或延迟配对，不能静默得到 keyset |
+| 被动监听后离线猜测 | pairing secret 为随机 256 bit；SPAKE2 不暴露可验证的离线口令材料 | 用户泄露完整能力码等同授权一次配对 |
+| 在线抢先 join / DoS | session UUID 不可猜；只接受一次 join；10 分钟过期；每设备限 5 个会话 | 获得能力码的攻击者可抢先 join，用户需关闭并重新生成 |
+| 重放 proof / transfer | session ID、设备 ID、SPAKE2 transcript 与 AEAD 绑定；finalize/consume 状态机一次性 | finalize 响应丢失可幂等重试；已 consume/过期包不可再取 |
+| Worker 读取 Bearer 或 keyset | 只接收 token SHA-256 指纹和加密 transfer bundle | Worker 仍可见设备名、平台、时间和密文长度 |
+| 已攻陷旧设备 | 旧设备本就持有完整 keyset，并可在凭证有效时批准新设备 | 立即撤销该设备并在可信设备上轮换；旧数据不能追溯保密 |
+| SPAKE2 实现计时与进程内存残留 | 使用成熟 RustCrypto 实现；秘密为单次随机 256 bit；原始解码 buffer 使用 `zeroize`；过期 exchange 在状态刷新/后台周期内清理 | `spake2 0.4` 自述非恒定时间且内部 state 未实现 `zeroize`，因此不用于低熵长期口令认证；已解锁进程内存读取不在 v1 防护范围 |
+| Renderer / 剪贴板泄露能力码 | 配对码关闭设置页或完成后清空 React state；keyset/token 不经 IPC | 复制后的系统剪贴板由用户和操作系统负责清理 |
+
+## 9. 密钥轮换与撤销处置
+
+轮换是显式两阶段事务：
+
+1. Rust 在现有 keyset 末尾生成新随机 key，先把 `activeKeyVersion + 1` 的完整 keyset 写入 Keyring
+   并读回验证；SQLite 中已确认的 `e2ee_key_version` 暂不变化；
+2. `activeKeyVersion != e2ee_key_version` 时状态为 `rotation_pending`，后台同步完全暂停，避免用户尚未
+   保存新恢复材料时产生只有单份副本可解密的 vNext 密文；
+3. 用户分别保存新的 Recovery Key/Bundle 并确认后，SQLite 原子推进 confirmed version。之后新
+   outbox 首次加密使用 vNext，已固化的旧 outbox 和远端旧密文继续按 envelope version 读取；
+4. 其他已配置设备导入新 Recovery Bundle 时，仅接受对本机 keyset 的单调超集升级；新配对设备
+   直接获得当前完整多版本 keyset。
+
+设备撤销只阻断其 Worker 凭证，不能抹除它已经获得的旧 key 或明文。因此疑似失控设备的标准处置
+是“先撤销，再立即轮换”。新 key 不发给已撤销设备，可保护轮换后的新增/修改内容；它仍可能解密
+轮换前已经持有或从云端取得的旧版本密文。当前不淘汰旧 key，也不承诺旧数据的追溯保密；未来只有
+在全量远端快照重加密、所有保留设备确认和独立恢复审计完成后，才允许设计旧 key 归档/删除流程。
+
+恢复演练由隔离的 source/target 两套 DB 与 Keyring 替身执行：target 先用 v1 Recovery Bundle 完成
+新设备恢复，source 生成并确认 v2，target 再导入 v2 多版本 bundle；最终同一 target 分别成功解密
+轮换前 v1 和轮换后 v2 的固定业务 payload，并验证分叉/降级材料被拒绝。
+
+## 10. 接入顺序
 
 ### Phase 4A：密码学核心（已完成）
 
@@ -204,7 +287,12 @@ Recovery Key 是随机 256-bit 高熵密钥，不是用户口令，因此 HKDF-S
 
 ### Phase 4D：配对、轮换与上线
 
-- 配对协议必须使用成熟的认证密钥交换/封装库，单独完成威胁建模，不自行拼装 ECDH；
-- 轮换期间新写入使用 active key，读取按 envelope key version 选择旧 key；
-- 使用现有加密 Recovery Bundle 完成新设备和多版本 keyset 的实际恢复演练；
-- 完成 Worker 日志审计、设备撤销后的密钥处置和轮换恢复验证后再开放真实数据。
+**已完成（2026-07-17）**：
+
+- 使用 RustCrypto SPAKE2 + HKDF + XChaCha20-Poly1305 完成一次性新设备配对；Worker 只做短期
+  不透明中继和设备凭证指纹登记；
+- 完成两阶段密钥轮换、同步暂停门禁、Recovery Bundle 单调升级与新旧 key version 共存读取；
+- 完成 source/target 跨设备恢复和 v1 → v2 轮换演练，错误密钥、分叉和降级均被拒绝；
+- 实时 tail 审计显示 health 和假配对 POST 仅记录 method、脱敏 URL 与 outcome，不记录 header/body；
+- production D1 migration `0003_secure_pairing.sql` 已应用，Worker 版本
+  `7316feb3-48b1-4635-8363-a83e78e7dc33` 已部署；五张相关表复核为 0，本轮未上传业务数据。

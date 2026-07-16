@@ -219,6 +219,89 @@ pub struct RevokeDeviceResponse {
     pub server_time: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePairingSessionRequest {
+    pub protocol_version: u8,
+    pub session_id: String,
+    pub initiator_message: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreatePairingSessionResponse {
+    pub session_id: String,
+    pub expires_at: i64,
+    pub server_time: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicPairingSessionResponse {
+    pub protocol_version: u8,
+    pub session_id: String,
+    pub initiator_message: String,
+    pub expires_at: i64,
+    pub server_time: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinPairingSessionRequest {
+    pub protocol_version: u8,
+    pub device_id: String,
+    pub device_name: String,
+    pub platform: Option<String>,
+    pub responder_message: String,
+    pub responder_proof: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PairingStatusResponse {
+    pub status: String,
+    pub expires_at: Option<i64>,
+    pub server_time: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PairingJoinResponse {
+    pub device_id: String,
+    pub device_name: String,
+    pub platform: Option<String>,
+    pub responder_message: String,
+    pub responder_proof: String,
+    pub expires_at: i64,
+    pub server_time: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalizePairingSessionRequest {
+    pub protocol_version: u8,
+    pub device_id: String,
+    pub credential_fingerprint: String,
+    pub transfer_bundle: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FinalizePairingSessionResponse {
+    pub status: String,
+    pub device_id: String,
+    pub server_time: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PairingPackageResponse {
+    pub status: String,
+    pub transfer_bundle: Option<String>,
+    pub expires_at: i64,
+    pub server_time: i64,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ErrorResponse {
     pub error: ErrorDetail,
