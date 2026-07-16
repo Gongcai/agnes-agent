@@ -2,11 +2,13 @@ import { useState, useEffect } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { SettingsModal } from "./components/SettingsModal";
+import type { AppFeatureId } from "./lib/features";
 import { useAgentStore, setupTauriEventListeners } from "./store/useAgentStore";
 
 export default function App() {
   const { init } = useAgentStore();
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+  const [activeFeature, setActiveFeature] = useState<AppFeatureId>("chat");
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [settingsTab, setSettingsTab] = useState<"general" | "agents" | "memory" | "llm" | "audit" | "debug">("agents");
 
@@ -32,15 +34,19 @@ export default function App() {
       {/* Collapsible Left Sidebar */}
       <Sidebar
         isOpen={isSidebarOpen}
+        activeFeature={activeFeature}
+        onSelectFeature={setActiveFeature}
         onOpenSettings={handleOpenSettings}
       />
 
-      {/* Main Chat Workspace */}
-      <ChatWorkspace
-        isSidebarOpen={isSidebarOpen}
-        onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
-        onOpenSettings={handleOpenSettings}
-      />
+      {/* Feature view host. New local features are mounted here when enabled. */}
+      {activeFeature === "chat" && (
+        <ChatWorkspace
+          isSidebarOpen={isSidebarOpen}
+          onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
+          onOpenSettings={handleOpenSettings}
+        />
+      )}
 
       {/* Configuration Modal Panels */}
       <SettingsModal
