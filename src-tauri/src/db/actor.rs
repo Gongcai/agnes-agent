@@ -278,6 +278,32 @@ pub enum DbCommand {
         now_ms: i64,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    ApplySyncBootstrapPage {
+        expected_state: String,
+        entities: Vec<repo::sync::RemoteEntityInput>,
+        snapshot_cursor: i64,
+        next_cursor: Option<String>,
+        has_more: bool,
+        now_ms: i64,
+        resp: oneshot::Sender<AppResult<i64>>,
+    },
+    ApplySyncPullPage {
+        after: i64,
+        entities: Vec<repo::sync::RemoteEntityInput>,
+        next_cursor: i64,
+        has_more: bool,
+        now_ms: i64,
+        resp: oneshot::Sender<AppResult<i64>>,
+    },
+    RecordSyncRuntimeFailure {
+        error_code: String,
+        backoff_until: Option<i64>,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    RecordSyncRuntimeSuccess {
+        now_ms: i64,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ScheduleSyncRetry {
         change_ids: Vec<String>,
         error_code: String,
@@ -824,6 +850,72 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn apply_sync_bootstrap_page(
+        &self,
+        expected_state: String,
+        entities: Vec<repo::sync::RemoteEntityInput>,
+        snapshot_cursor: i64,
+        next_cursor: Option<String>,
+        has_more: bool,
+        now_ms: i64,
+    ) -> AppResult<i64> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ApplySyncBootstrapPage {
+            expected_state,
+            entities,
+            snapshot_cursor,
+            next_cursor,
+            has_more,
+            now_ms,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn apply_sync_pull_page(
+        &self,
+        after: i64,
+        entities: Vec<repo::sync::RemoteEntityInput>,
+        next_cursor: i64,
+        has_more: bool,
+        now_ms: i64,
+    ) -> AppResult<i64> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ApplySyncPullPage {
+            after,
+            entities,
+            next_cursor,
+            has_more,
+            now_ms,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn record_sync_runtime_failure(
+        &self,
+        error_code: String,
+        backoff_until: Option<i64>,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::RecordSyncRuntimeFailure {
+            error_code,
+            backoff_until,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn record_sync_runtime_success(&self, now_ms: i64) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::RecordSyncRuntimeSuccess { now_ms, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn schedule_sync_retry(
         &self,
         change_ids: Vec<String>,
@@ -1036,7 +1128,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     let _ = resp.send(repo::workspaces::insert(&mut conn, &row));
                 }
                 DbCommand::RenameWorkspace { id, name, resp } => {
-                    let _ = resp.send(repo::workspaces::rename(&conn, &id, &name));
+                    let _ = resp.send(repo::workspaces::rename(&mut conn, &id, &name));
                 }
                 DbCommand::DeleteWorkspace { id, resp } => {
                     let _ = resp.send(repo::workspaces::delete(&mut conn, &id));
@@ -1247,6 +1339,56 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         &conflicts,
                         now_ms,
                     ));
+                }
+                DbCommand::ApplySyncBootstrapPage {
+                    expected_state,
+                    entities,
+                    snapshot_cursor,
+                    next_cursor,
+                    has_more,
+                    now_ms,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::sync::apply_bootstrap_page(
+                        &mut conn,
+                        &expected_state,
+                        &entities,
+                        snapshot_cursor,
+                        next_cursor.as_deref(),
+                        has_more,
+                        now_ms,
+                    ));
+                }
+                DbCommand::ApplySyncPullPage {
+                    after,
+                    entities,
+                    next_cursor,
+                    has_more,
+                    now_ms,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::sync::apply_pull_page(
+                        &mut conn,
+                        after,
+                        &entities,
+                        next_cursor,
+                        has_more,
+                        now_ms,
+                    ));
+                }
+                DbCommand::RecordSyncRuntimeFailure {
+                    error_code,
+                    backoff_until,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::sync::record_runtime_failure(
+                        &conn,
+                        &error_code,
+                        backoff_until,
+                    ));
+                }
+                DbCommand::RecordSyncRuntimeSuccess { now_ms, resp } => {
+                    let _ = resp.send(repo::sync::record_runtime_success(&conn, now_ms));
                 }
                 DbCommand::ScheduleSyncRetry {
                     change_ids,

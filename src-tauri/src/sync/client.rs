@@ -1,7 +1,11 @@
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 
 use crate::sync::auth::SyncCredential;
-use crate::sync::protocol::{ErrorResponse, PushRequest, PushResponse};
+use crate::sync::protocol::{
+    AckRequest, AckResponse, BootstrapResponse, ErrorResponse, PullResponse, PushRequest,
+    PushResponse,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
@@ -21,6 +25,13 @@ pub struct TransportFailure {
 #[async_trait]
 pub trait SyncTransport: Send + Sync {
     async fn push(&self, request: &PushRequest) -> Result<PushResponse, TransportFailure>;
+    async fn pull(&self, after: i64, limit: usize) -> Result<PullResponse, TransportFailure>;
+    async fn bootstrap(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<BootstrapResponse, TransportFailure>;
+    async fn ack(&self, request: &AckRequest) -> Result<AckResponse, TransportFailure>;
 }
 
 pub struct HttpSyncTransport {
@@ -37,18 +48,15 @@ impl HttpSyncTransport {
             credential,
         }
     }
-}
 
-#[async_trait]
-impl SyncTransport for HttpSyncTransport {
-    async fn push(&self, request: &PushRequest) -> Result<PushResponse, TransportFailure> {
-        let request_builder = self
-            .client
-            .post(format!("{}/v1/sync/push", self.gateway_url));
-        let response = self
-            .credential
-            .apply(request_builder)
-            .json(request)
+    async fn execute<T>(
+        &self,
+        request_builder: reqwest::RequestBuilder,
+    ) -> Result<T, TransportFailure>
+    where
+        T: DeserializeOwned,
+    {
+        let response = request_builder
             .send()
             .await
             .map_err(|error| TransportFailure {
@@ -66,7 +74,7 @@ impl SyncTransport for HttpSyncTransport {
             .map(|seconds| seconds.saturating_mul(1_000));
         if status.is_success() {
             return response
-                .json::<PushResponse>()
+                .json::<T>()
                 .await
                 .map_err(|error| TransportFailure {
                     kind: FailureKind::Retryable,
@@ -75,6 +83,7 @@ impl SyncTransport for HttpSyncTransport {
                     retry_after_ms: None,
                 });
         }
+
         let fallback_code = format!("HTTP_{}", status.as_u16());
         let body = response.json::<ErrorResponse>().await.ok();
         let code = body
@@ -96,5 +105,47 @@ impl SyncTransport for HttpSyncTransport {
             message,
             retry_after_ms,
         })
+    }
+}
+
+#[async_trait]
+impl SyncTransport for HttpSyncTransport {
+    async fn push(&self, request: &PushRequest) -> Result<PushResponse, TransportFailure> {
+        let request_builder = self
+            .client
+            .post(format!("{}/v1/sync/push", self.gateway_url));
+        self.execute(self.credential.apply(request_builder).json(request))
+            .await
+    }
+
+    async fn pull(&self, after: i64, limit: usize) -> Result<PullResponse, TransportFailure> {
+        let request_builder = self
+            .client
+            .get(format!("{}/v1/sync/pull", self.gateway_url))
+            .query(&[("after", after.to_string()), ("limit", limit.to_string())]);
+        self.execute(self.credential.apply(request_builder)).await
+    }
+
+    async fn bootstrap(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<BootstrapResponse, TransportFailure> {
+        let mut request_builder = self
+            .client
+            .get(format!("{}/v1/sync/bootstrap", self.gateway_url))
+            .query(&[("limit", limit.to_string())]);
+        if let Some(cursor) = cursor {
+            request_builder = request_builder.query(&[("cursor", cursor)]);
+        }
+        self.execute(self.credential.apply(request_builder)).await
+    }
+
+    async fn ack(&self, request: &AckRequest) -> Result<AckResponse, TransportFailure> {
+        let request_builder = self
+            .client
+            .post(format!("{}/v1/sync/ack", self.gateway_url));
+        self.execute(self.credential.apply(request_builder).json(request))
+            .await
     }
 }

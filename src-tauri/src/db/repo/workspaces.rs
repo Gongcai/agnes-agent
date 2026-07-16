@@ -1,9 +1,11 @@
 //! workspaces repo - 工作区（绑定文件夹）的 CRUD。
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use serde::Serialize;
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
+use crate::sync::payload::SyncEntityType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceRow {
     pub id: String,
     pub agent_id: String,
@@ -89,11 +91,12 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<WorkspaceRow>> {
 /// 插入一个新工作区。
 pub fn insert(conn: &mut Connection, w: &NewWorkspace) -> AppResult<String> {
     let now_str = now();
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
     tx.execute(
-        "INSERT INTO workspaces (id, agent_id, name, created_at, updated_at, version) \
-         VALUES (?1, ?2, ?3, ?4, ?4, 1)",
-        params![w.id, w.agent_id, w.name, now_str],
+        "INSERT INTO workspaces (id, agent_id, name, created_at, updated_at, version, origin_device_id) \
+         VALUES (?1, ?2, ?3, ?4, ?4, 1, ?5)",
+        params![w.id, w.agent_id, w.name, now_str, device_id],
     )?;
     tx.execute(
         "INSERT INTO workspace_bindings \
@@ -101,39 +104,102 @@ pub fn insert(conn: &mut Connection, w: &NewWorkspace) -> AppResult<String> {
          VALUES (?1, ?2, ?3, ?3, ?3)",
         params![w.id, w.folder_path, now_str],
     )?;
+    enqueue_current(&tx, &w.id)?;
     tx.commit()?;
     Ok(w.id.clone())
 }
 
 /// 重命名工作区。
-pub fn rename(conn: &Connection, id: &str, name: &str) -> AppResult<()> {
-    conn.execute(
-        "UPDATE workspaces SET name = ?1, updated_at = ?2, version = version + 1 \
-         WHERE id = ?3 AND deleted_at IS NULL",
-        params![name, now(), id],
+pub fn rename(conn: &mut Connection, id: &str, name: &str) -> AppResult<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
+    let changed = tx.execute(
+        "UPDATE workspaces SET name = ?1, updated_at = ?2, version = version + 1, \
+         origin_device_id = ?3 WHERE id = ?4 AND deleted_at IS NULL",
+        params![name, now(), device_id, id],
     )?;
+    if changed > 0 {
+        enqueue_current(&tx, id)?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
 /// Soft-delete the logical workspace and remove only this device's path binding.
 pub fn delete(conn: &mut Connection, id: &str) -> AppResult<()> {
     let now_str = now();
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
+    let session_ids = {
+        let mut statement =
+            tx.prepare("SELECT id FROM sessions WHERE workspace_id = ?1 AND deleted_at IS NULL")?;
+        let rows = statement
+            .query_map([id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
     tx.execute(
-        "UPDATE sessions SET workspace_id = NULL, updated_at = ?1, version = version + 1 \
-         WHERE workspace_id = ?2 AND deleted_at IS NULL",
-        params![now_str, id],
+        "UPDATE sessions SET workspace_id = NULL, updated_at = ?1, version = version + 1, \
+         origin_device_id = ?2 WHERE workspace_id = ?3 AND deleted_at IS NULL",
+        params![now_str, device_id, id],
     )?;
-    tx.execute(
-        "UPDATE workspaces SET deleted_at = ?1, updated_at = ?1, version = version + 1 \
-         WHERE id = ?2 AND deleted_at IS NULL",
-        params![now_str, id],
+    for session_id in session_ids {
+        super::sessions::enqueue_current(&tx, &session_id)?;
+    }
+    let changed = tx.execute(
+        "UPDATE workspaces SET deleted_at = ?1, updated_at = ?1, version = version + 1, \
+         origin_device_id = ?2 WHERE id = ?3 AND deleted_at IS NULL",
+        params![now_str, device_id, id],
     )?;
     tx.execute(
         "DELETE FROM workspace_bindings WHERE workspace_id = ?1",
         [id],
     )?;
+    if changed > 0 {
+        enqueue_current(&tx, id)?;
+    }
     tx.commit()?;
+    Ok(())
+}
+
+fn get_any(conn: &Connection, id: &str) -> AppResult<Option<WorkspaceRow>> {
+    conn.query_row(
+        "SELECT w.id, w.agent_id, w.name, COALESCE(b.folder_path, ''), \
+                w.created_at, w.updated_at, w.version, w.deleted_at, w.origin_device_id \
+         FROM workspaces w LEFT JOIN workspace_bindings b ON b.workspace_id = w.id \
+         WHERE w.id = ?1",
+        [id],
+        |row| {
+            Ok(WorkspaceRow {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                name: row.get(2)?,
+                folder_path: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                version: row.get(6)?,
+                deleted_at: row.get(7)?,
+                origin_device_id: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn enqueue_current(conn: &Connection, id: &str) -> AppResult<()> {
+    let row = get_any(conn, id)?.ok_or_else(|| {
+        AppError::Other(format!("workspace `{id}` disappeared during sync enqueue"))
+    })?;
+    let source = serde_json::to_value(&row)?;
+    super::sync::enqueue_projection(
+        conn,
+        SyncEntityType::Workspace,
+        &row.id,
+        row.version,
+        row.deleted_at.is_some(),
+        &source,
+    )?;
     Ok(())
 }
 
@@ -147,6 +213,11 @@ mod tests {
         conn.execute_batch(crate::db::schema::SCHEMA).unwrap();
         conn.execute(
             "INSERT INTO agents (id, name) VALUES ('agent-1', 'Agent')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_runtime_state (singleton, device_id) VALUES (1, '12345678-device')",
             [],
         )
         .unwrap();
@@ -180,5 +251,15 @@ mod tests {
             .unwrap();
         assert_eq!(version, 2);
         assert!(deleted_at.is_some());
+        let operations: Vec<String> = conn
+            .prepare(
+                "SELECT operation FROM sync_outbox WHERE entity_type = 'workspace' ORDER BY rowid",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(operations, vec!["upsert", "delete"]);
     }
 }

@@ -85,6 +85,33 @@ interface BootstrapCursor {
 }
 
 const APPEND_ONLY_ENTITY_TYPES = new Set(["message"]);
+const BOOTSTRAP_ENTITY_ORDER_SQL = `CASE entity_type
+  WHEN 'agent' THEN 0
+  WHEN 'workspace' THEN 1
+  WHEN 'session' THEN 2
+  WHEN 'message' THEN 3
+  WHEN 'explicit_memory' THEN 4
+  WHEN 'memory' THEN 5
+  ELSE 99 END`;
+
+function bootstrapEntityOrder(entityType: string): number {
+  switch (entityType) {
+    case "agent":
+      return 0;
+    case "workspace":
+      return 1;
+    case "session":
+      return 2;
+    case "message":
+      return 3;
+    case "explicit_memory":
+      return 4;
+    case "memory":
+      return 5;
+    default:
+      return -1;
+  }
+}
 
 function stateKey(entityType: string, entityId: string): string {
   return `${entityType}\u0000${entityId}`;
@@ -561,13 +588,17 @@ export async function bootstrap(context: Context<AppEnv>): Promise<Response> {
      FROM sync_entities
      WHERE owner_id = ?
        AND latest_server_seq <= ?
-       AND (entity_type > ? OR (entity_type = ? AND entity_id > ?))
-     ORDER BY entity_type, entity_id
+       AND (${BOOTSTRAP_ENTITY_ORDER_SQL} > ? OR
+            (${BOOTSTRAP_ENTITY_ORDER_SQL} = ? AND
+             (entity_type > ? OR (entity_type = ? AND entity_id > ?))))
+     ORDER BY ${BOOTSTRAP_ENTITY_ORDER_SQL}, entity_type, entity_id
      LIMIT ?`,
   )
     .bind(
       identity.ownerId,
       cursor.snapshotCursor,
+      bootstrapEntityOrder(cursor.entityType),
+      bootstrapEntityOrder(cursor.entityType),
       cursor.entityType,
       cursor.entityType,
       cursor.entityId,

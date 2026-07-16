@@ -251,6 +251,41 @@ describe("push and pull", () => {
 });
 
 describe("bootstrap and ack", () => {
+  it("orders bootstrap entities by local foreign-key dependencies", async () => {
+    const agent = makeChange({
+      changeId: "10000000-0000-4000-8000-000000000021",
+      entityId: "20000000-0000-4000-8000-000000000021",
+    });
+    const workspace = makeChange({
+      changeId: "10000000-0000-4000-8000-000000000022",
+      entityId: "20000000-0000-4000-8000-000000000022",
+      entityType: "workspace",
+    });
+    const session = makeChange({
+      changeId: "10000000-0000-4000-8000-000000000023",
+      entityId: "20000000-0000-4000-8000-000000000023",
+      entityType: "session",
+    });
+    await push(TOKEN_A, DEVICE_A, [session, workspace, agent]);
+
+    const entityTypes: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const query = cursor
+        ? `/v1/sync/bootstrap?limit=1&cursor=${encodeURIComponent(cursor)}`
+        : "/v1/sync/bootstrap?limit=1";
+      const response = await request(query, TOKEN_B);
+      const page = (await response.json()) as {
+        entities: Array<{ entityType: string }>;
+        nextCursor: string | null;
+      };
+      entityTypes.push(...page.entities.map((entity) => entity.entityType));
+      cursor = page.nextCursor;
+    } while (cursor);
+
+    expect(entityTypes).toEqual(["agent", "workspace", "session"]);
+  });
+
   it("uses a stable bootstrap high-water cursor", async () => {
     const first = makeChange();
     const second = makeChange({

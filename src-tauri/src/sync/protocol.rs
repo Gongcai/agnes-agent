@@ -5,6 +5,7 @@ use crate::db::repo::sync::OutboxRow;
 use crate::error::{AppError, AppResult};
 
 pub const PROTOCOL_VERSION: u8 = 1;
+pub const DEFAULT_PAGE_LIMIT: usize = 100;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,6 +103,92 @@ pub struct ConflictChange {
     pub entity_id: String,
     pub current_revision: Option<i64>,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PullResponse {
+    #[serde(default)]
+    pub changes: Vec<RemoteChange>,
+    pub next_cursor: i64,
+    pub has_more: bool,
+    pub server_time: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteChange {
+    pub protocol_version: u8,
+    pub server_seq: i64,
+    pub change_id: String,
+    pub device_id: String,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub operation: String,
+    pub base_revision: Option<i64>,
+    pub resulting_revision: i64,
+    pub hlc: String,
+    pub payload_schema_version: i64,
+    pub payload_encoding: String,
+    pub payload: Option<Value>,
+    pub payload_hash: String,
+    pub key_version: Option<i64>,
+    pub created_at: i64,
+    pub accepted_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BootstrapResponse {
+    #[serde(default)]
+    pub entities: Vec<RemoteEntity>,
+    pub snapshot_cursor: i64,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+    pub server_time: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteEntity {
+    pub entity_type: String,
+    pub entity_id: String,
+    pub revision: i64,
+    pub hlc: String,
+    pub deleted: bool,
+    pub payload_schema_version: i64,
+    pub payload_encoding: String,
+    pub payload: Option<Value>,
+    pub payload_hash: String,
+    pub key_version: Option<i64>,
+    pub changed_by_device_id: String,
+    pub latest_server_seq: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AckRequest {
+    pub protocol_version: u8,
+    pub device_id: String,
+    pub cursor: i64,
+}
+
+impl AckRequest {
+    pub fn new(device_id: String, cursor: i64) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            device_id,
+            cursor,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AckResponse {
+    pub acknowledged_cursor: i64,
+    pub server_time: i64,
 }
 
 #[derive(Debug, Deserialize)]

@@ -320,6 +320,7 @@ pub async fn create_workspace(
         name,
         folder_path,
     }).await?;
+    state.sync.schedule();
     Ok(id)
 }
 
@@ -330,7 +331,9 @@ pub async fn rename_workspace(
     workspace_id: String,
     name: String,
 ) -> AppResult<()> {
-    state.db.rename_workspace(workspace_id, name).await
+    state.db.rename_workspace(workspace_id, name).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 /// 删除工作区（会话的 workspace_id 置 NULL，会话保留为普通对话）。
@@ -339,7 +342,9 @@ pub async fn delete_workspace(
     state: tauri::State<'_, AppState>,
     workspace_id: String,
 ) -> AppResult<()> {
-    state.db.delete_workspace(workspace_id).await
+    state.db.delete_workspace(workspace_id).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 /// 设置会话级模型与思考配置（输入框切换模型 / 思考强度时调用）。

@@ -60,6 +60,7 @@ pub fn project(entity_type: SyncEntityType, source: &Value) -> AppResult<Value> 
             "model",
             "thinking_mode",
             "thinking_budget",
+            "workspace_id",
             "summary",
             "summary_updated_at",
             "pinned",
@@ -223,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn session_projection_keeps_user_state_but_drops_device_execution_policy() {
+    fn session_projection_keeps_logical_workspace_but_drops_device_execution_policy() {
         let source = json!({
             "id": "session-1",
             "agent_id": "agent-1",
@@ -241,7 +242,8 @@ mod tests {
                 "id": "session-1",
                 "agent_id": "agent-1",
                 "title": "Synced session",
-                "pinned": 1
+                "pinned": 1,
+                "workspace_id": "local-workspace"
             })
         );
     }

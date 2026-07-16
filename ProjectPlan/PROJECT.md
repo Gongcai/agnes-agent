@@ -169,7 +169,7 @@ System Prompt
 |---|---|---|
 | V0.1 | Tauri 2 + React 聊天 UI + SQLite + Python LangGraph sidecar + LiteLLM | 主链路已完成；发布态 sidecar 打包待收口 |
 | V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 已完成：摘要、抽取、结构化字段、AI 创建/更新、记忆决策提示词、`MEMORY.md` 专用工具、动态维度 sqlite-vec + RRF 混合检索；已使用 Qwen3-Embedding-8B 完成真实服务端到端验证，手动向量化、覆盖率统计与检索链路均可用 |
-| V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 进行中：Phase 0 数据边界、Phase 1 Worker/D1 和 Phase 2 Agent/Session 事务性 push 已完成；远端启用每设备 Bearer 指纹映射，真实 Rust SyncService 假 Agent 端到端验证通过并已清空远端业务表。下一步进入 Phase 3 pull/bootstrap、消息/记忆同步与类型化冲突合并 |
+| V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 进行中：Phase 0-2 与 Phase 3A 已完成；Rust 已具备事务性 bootstrap/pull/ack，Agent/Workspace/Session 可无回声远端落库，Session 同步逻辑 workspace 归属但不泄漏路径，Worker bootstrap 使用外键依赖排序。下一步进入 Phase 3B：完成状态消息、显式记忆、记忆库及类型化冲突合并/UI |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 未开始 |
 | V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；MCP 等能力待后续补齐 |
 | V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + R2/Google Drive Provider | 设计已写入 `STORAGE_AND_RAG.md`；未实现 |

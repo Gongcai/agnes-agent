@@ -296,7 +296,7 @@ pub fn set_pin(conn: &mut Connection, id: &str, pinned: bool) -> AppResult<()> {
     Ok(())
 }
 
-fn enqueue_current(conn: &Connection, id: &str) -> AppResult<()> {
+pub(super) fn enqueue_current(conn: &Connection, id: &str) -> AppResult<()> {
     let row = get(conn, id)?.ok_or_else(|| {
         AppError::Other(format!("session `{id}` disappeared during sync enqueue"))
     })?;
@@ -386,8 +386,8 @@ mod tests {
         assert_eq!(rows[3].2, "delete");
         let initial_payload = rows[0].3.as_deref().unwrap();
         assert!(!initial_payload.contains("permission_mode"));
-        assert!(!initial_payload.contains("workspace_id"));
-        assert!(!initial_payload.contains("local-workspace"));
+        assert!(initial_payload.contains("workspace_id"));
+        assert!(initial_payload.contains("local-workspace"));
     }
 
     #[test]

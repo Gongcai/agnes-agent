@@ -7,17 +7,21 @@ use rand::Rng;
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::db::repo::sync::{AcceptedChange, ConflictChange, SyncDbStatus};
+use crate::db::repo::sync::{AcceptedChange, ConflictChange, RemoteEntityInput, SyncDbStatus};
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::secrets::{SecretStore, SYNC_CREDENTIAL_SECRET_ID};
 use crate::sync::auth::SyncCredential;
 use crate::sync::client::{FailureKind, HttpSyncTransport, SyncTransport, TransportFailure};
-use crate::sync::protocol::{PushRequest, PushResponse};
+use crate::sync::protocol::{
+    AckRequest, PushRequest, PushResponse, RemoteChange, RemoteEntity, DEFAULT_PAGE_LIMIT,
+    PROTOCOL_VERSION,
+};
 
 pub const SYNC_GATEWAY_URL: &str = "https://agnes-sync-api.caiwengong136.workers.dev";
 const MAX_BATCHES_PER_RUN: usize = 5;
 const MAX_PUSH_CHANGES: usize = 20;
+const MAX_REMOTE_PAGES_PER_RUN: usize = 5;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,7 +71,10 @@ impl SyncService {
             "conflict"
         } else if database.dead_letter_count > 0 || database.last_error_code.is_some() {
             "error"
-        } else if database.pending_count > 0 || database.in_flight_count > 0 {
+        } else if database.pending_count > 0
+            || database.in_flight_count > 0
+            || database.bootstrap_state != "complete"
+        {
             "pending"
         } else {
             "idle"
@@ -131,6 +138,93 @@ impl SyncService {
     }
 
     async fn run_locked(&self, transport: &dyn SyncTransport) -> AppResult<()> {
+        let initial_status = self.db.get_sync_status().await?;
+        if initial_status
+            .backoff_until
+            .is_some_and(|value| value > unix_millis())
+        {
+            return Ok(());
+        }
+        if !self.run_bootstrap(transport).await? {
+            return Ok(());
+        }
+        if !self.push_pending(transport).await? {
+            return Ok(());
+        }
+        self.pull_remote(transport).await?;
+        Ok(())
+    }
+
+    async fn run_bootstrap(&self, transport: &dyn SyncTransport) -> AppResult<bool> {
+        for _ in 0..MAX_REMOTE_PAGES_PER_RUN {
+            let status = self.db.get_sync_status().await?;
+            if status.bootstrap_state == "complete" {
+                return Ok(true);
+            }
+            let (expected_snapshot_cursor, cursor) = if status.bootstrap_state == "required" {
+                (None, None)
+            } else {
+                let value = status
+                    .bootstrap_state
+                    .strip_prefix("cursor:")
+                    .and_then(|value| value.split_once(':'))
+                    .ok_or_else(|| {
+                        AppError::Other(format!(
+                            "invalid local bootstrap state `{}`",
+                            status.bootstrap_state
+                        ))
+                    })?;
+                let snapshot_cursor = value.0.parse::<i64>().map_err(|_| {
+                    AppError::Other(format!(
+                        "invalid local bootstrap state `{}`",
+                        status.bootstrap_state
+                    ))
+                })?;
+                (Some(snapshot_cursor), Some(value.1.to_string()))
+            };
+            let response = match transport
+                .bootstrap(cursor.as_deref(), DEFAULT_PAGE_LIMIT)
+                .await
+            {
+                Ok(response) => response,
+                Err(failure) => {
+                    self.record_runtime_failure(&failure).await?;
+                    return Ok(false);
+                }
+            };
+            if expected_snapshot_cursor.is_some_and(|expected| expected != response.snapshot_cursor)
+            {
+                return Err(AppError::Other(format!(
+                    "bootstrap snapshot cursor changed from {} to {}",
+                    expected_snapshot_cursor.unwrap_or_default(),
+                    response.snapshot_cursor
+                )));
+            }
+            let snapshot_cursor = response.snapshot_cursor;
+            let has_more = response.has_more;
+            let entities = response
+                .entities
+                .into_iter()
+                .map(remote_entity_from_bootstrap)
+                .collect::<AppResult<Vec<_>>>()?;
+            self.db
+                .apply_sync_bootstrap_page(
+                    status.bootstrap_state,
+                    entities,
+                    snapshot_cursor,
+                    response.next_cursor,
+                    has_more,
+                    unix_millis(),
+                )
+                .await?;
+            if !has_more {
+                return self.ack_cursor(transport, snapshot_cursor).await;
+            }
+        }
+        Ok(false)
+    }
+
+    async fn push_pending(&self, transport: &dyn SyncTransport) -> AppResult<bool> {
         for _ in 0..MAX_BATCHES_PER_RUN {
             let now_ms = unix_millis();
             let batch = self.db.claim_sync_outbox(MAX_PUSH_CHANGES, now_ms).await?;
@@ -154,11 +248,80 @@ impl SyncService {
                 Ok(response) => self.apply_response(&batch, response).await?,
                 Err(failure) => {
                     self.apply_failure(&batch, failure).await?;
-                    break;
+                    return Ok(false);
                 }
             }
         }
+        Ok(true)
+    }
+
+    async fn pull_remote(&self, transport: &dyn SyncTransport) -> AppResult<()> {
+        for _ in 0..MAX_REMOTE_PAGES_PER_RUN {
+            let after = self.db.get_sync_status().await?.last_pull_cursor;
+            let response = match transport.pull(after, DEFAULT_PAGE_LIMIT).await {
+                Ok(response) => response,
+                Err(failure) => {
+                    self.record_runtime_failure(&failure).await?;
+                    return Ok(());
+                }
+            };
+            let next_cursor = response.next_cursor;
+            let has_more = response.has_more;
+            let entities = response
+                .changes
+                .into_iter()
+                .map(remote_entity_from_change)
+                .collect::<AppResult<Vec<_>>>()?;
+            self.db
+                .apply_sync_pull_page(after, entities, next_cursor, has_more, unix_millis())
+                .await?;
+            if !self.ack_cursor(transport, next_cursor).await? || !has_more {
+                break;
+            }
+        }
         Ok(())
+    }
+
+    async fn ack_cursor(&self, transport: &dyn SyncTransport, cursor: i64) -> AppResult<bool> {
+        let device_id = self.db.get_sync_status().await?.device_id;
+        match transport.ack(&AckRequest::new(device_id, cursor)).await {
+            Ok(response) if response.acknowledged_cursor >= cursor => {
+                self.db.record_sync_runtime_success(unix_millis()).await?;
+                Ok(true)
+            }
+            Ok(response) => {
+                self.db
+                    .record_sync_runtime_failure(
+                        "INVALID_RESPONSE".into(),
+                        Some(unix_millis() + 5_000),
+                    )
+                    .await?;
+                Err(AppError::Other(format!(
+                    "acknowledged cursor {} is behind local cursor {cursor}",
+                    response.acknowledged_cursor
+                )))
+            }
+            Err(failure) => {
+                self.record_runtime_failure(&failure).await?;
+                Ok(false)
+            }
+        }
+    }
+
+    async fn record_runtime_failure(&self, failure: &TransportFailure) -> AppResult<()> {
+        let delay = failure
+            .retry_after_ms
+            .unwrap_or_else(|| match failure.kind {
+                FailureKind::Permanent => 300_000,
+                FailureKind::Authentication => 60_000,
+                FailureKind::Retryable => retry_delay_ms(1),
+            });
+        self.db
+            .record_sync_runtime_failure(
+                failure.code.clone(),
+                Some(unix_millis().saturating_add(delay)),
+            )
+            .await
     }
 
     async fn apply_response(
@@ -249,6 +412,75 @@ impl SyncService {
     }
 }
 
+fn remote_entity_from_change(change: RemoteChange) -> AppResult<RemoteEntityInput> {
+    if change.protocol_version != PROTOCOL_VERSION
+        || uuid::Uuid::parse_str(&change.change_id).is_err()
+        || change.created_at < 0
+        || change.accepted_at < 0
+        || change.resulting_revision <= 0
+        || change
+            .base_revision
+            .map_or(change.resulting_revision != 1, |base| {
+                base <= 0 || base.saturating_add(1) != change.resulting_revision
+            })
+    {
+        return Err(AppError::Other(format!(
+            "invalid remote change `{}`",
+            change.change_id
+        )));
+    }
+    let deleted = match change.operation.as_str() {
+        "upsert" => false,
+        "delete" => true,
+        operation => {
+            return Err(AppError::Other(format!(
+                "unsupported remote operation `{operation}`"
+            )));
+        }
+    };
+    Ok(RemoteEntityInput {
+        protocol_version: change.protocol_version.into(),
+        entity_type: change.entity_type,
+        entity_id: change.entity_id,
+        revision: change.resulting_revision,
+        hlc: change.hlc,
+        deleted,
+        payload_schema_version: change.payload_schema_version,
+        payload_encoding: change.payload_encoding,
+        payload: change.payload,
+        payload_hash: change.payload_hash,
+        key_version: change.key_version,
+        origin_device_id: change.device_id,
+        server_seq: change.server_seq,
+        updated_at: change.accepted_at,
+    })
+}
+
+fn remote_entity_from_bootstrap(entity: RemoteEntity) -> AppResult<RemoteEntityInput> {
+    if entity.latest_server_seq <= 0 || entity.updated_at < 0 {
+        return Err(AppError::Other(format!(
+            "invalid bootstrap entity {} `{}`",
+            entity.entity_type, entity.entity_id
+        )));
+    }
+    Ok(RemoteEntityInput {
+        protocol_version: PROTOCOL_VERSION.into(),
+        entity_type: entity.entity_type,
+        entity_id: entity.entity_id,
+        revision: entity.revision,
+        hlc: entity.hlc,
+        deleted: entity.deleted,
+        payload_schema_version: entity.payload_schema_version,
+        payload_encoding: entity.payload_encoding,
+        payload: entity.payload,
+        payload_hash: entity.payload_hash,
+        key_version: entity.key_version,
+        origin_device_id: entity.changed_by_device_id,
+        server_seq: entity.latest_server_seq,
+        updated_at: entity.updated_at,
+    })
+}
+
 fn retry_delay_ms(attempt: i64) -> i64 {
     let exponent = attempt.saturating_sub(1).clamp(0, 6) as u32;
     let base = 5_000_i64.saturating_mul(2_i64.pow(exponent)).min(300_000);
@@ -264,15 +496,20 @@ fn unix_millis() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
+    use serde_json::json;
 
     use super::*;
     use crate::db::repo::agents::NewAgent;
     use crate::secrets::InMemorySecretStore;
     use crate::sync::client::TransportFailure;
-    use crate::sync::protocol::{AcceptedChange as ProtocolAccepted, PushResponse};
+    use crate::sync::protocol::{
+        AcceptedChange as ProtocolAccepted, AckResponse, BootstrapResponse, PullResponse,
+        PushResponse, RemoteEntity,
+    };
 
     struct AcceptTransport {
         calls: AtomicUsize,
@@ -302,6 +539,36 @@ mod tests {
                 server_time: 1,
             })
         }
+
+        async fn pull(&self, after: i64, _limit: usize) -> Result<PullResponse, TransportFailure> {
+            Ok(PullResponse {
+                changes: Vec::new(),
+                next_cursor: after,
+                has_more: false,
+                server_time: 1,
+            })
+        }
+
+        async fn bootstrap(
+            &self,
+            _cursor: Option<&str>,
+            _limit: usize,
+        ) -> Result<BootstrapResponse, TransportFailure> {
+            Ok(BootstrapResponse {
+                entities: Vec::new(),
+                snapshot_cursor: 0,
+                next_cursor: None,
+                has_more: false,
+                server_time: 1,
+            })
+        }
+
+        async fn ack(&self, request: &AckRequest) -> Result<AckResponse, TransportFailure> {
+            Ok(AckResponse {
+                acknowledged_cursor: request.cursor,
+                server_time: 1,
+            })
+        }
     }
 
     struct RetryTransport;
@@ -314,6 +581,123 @@ mod tests {
                 code: "SYNC_TEMPORARILY_UNAVAILABLE".into(),
                 message: "temporary outage".into(),
                 retry_after_ms: Some(30_000),
+            })
+        }
+
+        async fn pull(&self, after: i64, _limit: usize) -> Result<PullResponse, TransportFailure> {
+            Ok(PullResponse {
+                changes: Vec::new(),
+                next_cursor: after,
+                has_more: false,
+                server_time: 1,
+            })
+        }
+
+        async fn bootstrap(
+            &self,
+            _cursor: Option<&str>,
+            _limit: usize,
+        ) -> Result<BootstrapResponse, TransportFailure> {
+            Ok(BootstrapResponse {
+                entities: Vec::new(),
+                snapshot_cursor: 0,
+                next_cursor: None,
+                has_more: false,
+                server_time: 1,
+            })
+        }
+
+        async fn ack(&self, request: &AckRequest) -> Result<AckResponse, TransportFailure> {
+            Ok(AckResponse {
+                acknowledged_cursor: request.cursor,
+                server_time: 1,
+            })
+        }
+    }
+
+    struct BootstrapCommitTransport {
+        path: PathBuf,
+        acknowledgements: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl SyncTransport for BootstrapCommitTransport {
+        async fn push(&self, _request: &PushRequest) -> Result<PushResponse, TransportFailure> {
+            panic!("bootstrap-only test must not push")
+        }
+
+        async fn pull(&self, after: i64, _limit: usize) -> Result<PullResponse, TransportFailure> {
+            Ok(PullResponse {
+                changes: Vec::new(),
+                next_cursor: after,
+                has_more: false,
+                server_time: 1,
+            })
+        }
+
+        async fn bootstrap(
+            &self,
+            cursor: Option<&str>,
+            _limit: usize,
+        ) -> Result<BootstrapResponse, TransportFailure> {
+            assert!(cursor.is_none());
+            Ok(BootstrapResponse {
+                entities: vec![RemoteEntity {
+                    entity_type: "agent".into(),
+                    entity_id: "remote-agent".into(),
+                    revision: 1,
+                    hlc: "1000-0001-remote02".into(),
+                    deleted: false,
+                    payload_schema_version: 1,
+                    payload_encoding: "json".into(),
+                    payload: Some(json!({
+                        "id": "remote-agent",
+                        "name": "Remote agent",
+                        "persona": "",
+                        "scenario": "",
+                        "system_prompt": "",
+                        "greeting": "",
+                        "example_dialogue": "",
+                        "model": "",
+                        "tool_policy": "{}",
+                        "tags": "",
+                        "thinking_mode": "off",
+                        "thinking_budget": 0,
+                        "created_at": "1",
+                        "updated_at": "1",
+                        "version": 1,
+                        "deleted_at": null,
+                        "origin_device_id": "00000000-0000-4000-8000-000000000002"
+                    })),
+                    payload_hash: "a".repeat(64),
+                    key_version: None,
+                    changed_by_device_id: "00000000-0000-4000-8000-000000000002".into(),
+                    latest_server_seq: 1,
+                    updated_at: 1_000,
+                }],
+                snapshot_cursor: 1,
+                next_cursor: None,
+                has_more: false,
+                server_time: 1,
+            })
+        }
+
+        async fn ack(&self, request: &AckRequest) -> Result<AckResponse, TransportFailure> {
+            let conn = rusqlite::Connection::open(&self.path).unwrap();
+            let committed: (String, i64, i64) = conn
+                .query_row(
+                    "SELECT r.bootstrap_state, r.last_pull_cursor, \
+                            (SELECT COUNT(*) FROM agents WHERE id = 'remote-agent') \
+                     FROM sync_runtime_state r WHERE r.singleton = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(committed, ("complete".into(), 1, 1));
+            self.acknowledgements.fetch_add(1, Ordering::SeqCst);
+            Ok(AckResponse {
+                acknowledged_cursor: request.cursor,
+                server_time: 1,
             })
         }
     }
@@ -444,6 +828,26 @@ mod tests {
         second.unwrap();
         assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
         assert_eq!(service.db.get_sync_status().await.unwrap().pending_count, 0);
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_ack_happens_only_after_the_page_transaction_commits() {
+        let (path, service) = test_service("bootstrap-commit-before-ack");
+        service.db.get_sync_status().await.unwrap();
+        let transport = BootstrapCommitTransport {
+            path: path.clone(),
+            acknowledgements: AtomicUsize::new(0),
+        };
+
+        service.run_with_transport(&transport).await.unwrap();
+
+        assert_eq!(transport.acknowledgements.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            service.db.get_sync_status().await.unwrap().last_pull_cursor,
+            1
+        );
         drop(service);
         let _ = std::fs::remove_file(path);
     }
