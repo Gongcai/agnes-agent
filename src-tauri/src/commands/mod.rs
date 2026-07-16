@@ -1831,6 +1831,124 @@ pub async fn search_knowledge(
         .await
 }
 
+#[tauri::command]
+pub async fn list_calendars(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<crate::db::repo::planner::CalendarRow>> {
+    state.db.list_calendars().await
+}
+#[tauri::command]
+pub async fn create_calendar(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    color: Option<String>,
+    timezone: String,
+) -> AppResult<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    state
+        .db
+        .create_calendar(id.clone(), name, color, timezone)
+        .await?;
+    Ok(id)
+}
+#[tauri::command]
+pub async fn list_calendar_events(
+    state: tauri::State<'_, AppState>,
+    calendar_id: String,
+    range_start: String,
+    range_end: String,
+) -> AppResult<Vec<crate::db::repo::planner::EventRow>> {
+    state
+        .db
+        .list_calendar_events(calendar_id, range_start, range_end)
+        .await
+}
+#[tauri::command]
+pub async fn create_calendar_event(
+    state: tauri::State<'_, AppState>,
+    calendar_id: String,
+    title: String,
+    starts_at: String,
+    ends_at: String,
+    timezone: String,
+    all_day: bool,
+    recurrence_rule: Option<String>,
+) -> AppResult<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    state
+        .db
+        .create_calendar_event(
+            id.clone(),
+            calendar_id,
+            title,
+            starts_at,
+            ends_at,
+            timezone,
+            all_day,
+            recurrence_rule,
+        )
+        .await?;
+    Ok(id)
+}
+#[tauri::command]
+pub async fn list_task_lists(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<crate::db::repo::planner::TaskListRow>> {
+    state.db.list_task_lists().await
+}
+#[tauri::command]
+pub async fn create_task_list(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    color: Option<String>,
+) -> AppResult<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    state.db.create_task_list(id.clone(), name, color).await?;
+    Ok(id)
+}
+#[tauri::command]
+pub async fn list_tasks(
+    state: tauri::State<'_, AppState>,
+    task_list_id: String,
+) -> AppResult<Vec<crate::db::repo::planner::TaskRow>> {
+    state.db.list_tasks(task_list_id).await
+}
+#[tauri::command]
+pub async fn create_task(
+    state: tauri::State<'_, AppState>,
+    task_list_id: String,
+    parent_id: Option<String>,
+    title: String,
+    description: Option<String>,
+    priority: i64,
+    due_at: Option<String>,
+    sort_order: f64,
+) -> AppResult<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    state
+        .db
+        .create_task(
+            id.clone(),
+            task_list_id,
+            parent_id,
+            title,
+            description,
+            priority,
+            due_at,
+            sort_order,
+        )
+        .await?;
+    Ok(id)
+}
+#[tauri::command]
+pub async fn complete_task(
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+    completed: bool,
+) -> AppResult<()> {
+    state.db.complete_task(task_id, completed).await
+}
+
 #[derive(serde::Serialize)]
 pub struct AuditLogDto {
     pub id: String,

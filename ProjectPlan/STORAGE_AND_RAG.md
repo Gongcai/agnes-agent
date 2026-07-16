@@ -554,7 +554,8 @@ tasks
 ### Phase F：日历、待办与外部适配器
 
 - [x] 完成本地 Calendar/TODO 领域表与索引，覆盖时区、全天事件、RRULE、例外、子任务、优先级与完成状态；
-- [ ] 完成 Local Provider、CRUD 页面与受 policy 约束的 Agent 工具；
+- [x] 完成 Local Provider 的本地 CRUD 与 Tauri IPC：日历/事件、任务列表/任务、任务完成状态；
+- [ ] 完成 CRUD 页面与受 policy 约束的 Agent 工具；
 - [ ] 接入 D1 E2EE 同步；
 - 再接 Google Calendar / Google Tasks / CalDAV；
 

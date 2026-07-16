@@ -122,6 +122,62 @@ pub enum DbCommand {
         limit: usize,
         resp: oneshot::Sender<AppResult<Vec<repo::knowledge::KnowledgeSearchResult>>>,
     },
+    ListCalendars {
+        resp: oneshot::Sender<AppResult<Vec<repo::planner::CalendarRow>>>,
+    },
+    CreateCalendar {
+        id: String,
+        name: String,
+        color: Option<String>,
+        timezone: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    ListCalendarEvents {
+        calendar_id: String,
+        range_start: String,
+        range_end: String,
+        resp: oneshot::Sender<AppResult<Vec<repo::planner::EventRow>>>,
+    },
+    CreateCalendarEvent {
+        id: String,
+        calendar_id: String,
+        title: String,
+        starts_at: String,
+        ends_at: String,
+        timezone: String,
+        all_day: bool,
+        recurrence_rule: Option<String>,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    ListTaskLists {
+        resp: oneshot::Sender<AppResult<Vec<repo::planner::TaskListRow>>>,
+    },
+    CreateTaskList {
+        id: String,
+        name: String,
+        color: Option<String>,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    ListTasks {
+        task_list_id: String,
+        resp: oneshot::Sender<AppResult<Vec<repo::planner::TaskRow>>>,
+    },
+    CreateTask {
+        id: String,
+        task_list_id: String,
+        parent_id: Option<String>,
+        title: String,
+        description: Option<String>,
+        priority: i64,
+        due_at: Option<String>,
+        sort_order: f64,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    CompleteTask {
+        id: String,
+        completed: bool,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ListSessions {
         agent_id: String,
         resp: oneshot::Sender<AppResult<Vec<repo::sessions::SessionRow>>>,
@@ -630,6 +686,137 @@ impl DbActorHandle {
             query,
             collection_id,
             limit,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_calendars(&self) -> AppResult<Vec<repo::planner::CalendarRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListCalendars { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+    pub async fn create_calendar(
+        &self,
+        id: String,
+        name: String,
+        color: Option<String>,
+        timezone: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::CreateCalendar {
+            id,
+            name,
+            color,
+            timezone,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+    pub async fn list_calendar_events(
+        &self,
+        calendar_id: String,
+        range_start: String,
+        range_end: String,
+    ) -> AppResult<Vec<repo::planner::EventRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListCalendarEvents {
+            calendar_id,
+            range_start,
+            range_end,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+    pub async fn create_calendar_event(
+        &self,
+        id: String,
+        calendar_id: String,
+        title: String,
+        starts_at: String,
+        ends_at: String,
+        timezone: String,
+        all_day: bool,
+        recurrence_rule: Option<String>,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::CreateCalendarEvent {
+            id,
+            calendar_id,
+            title,
+            starts_at,
+            ends_at,
+            timezone,
+            all_day,
+            recurrence_rule,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+    pub async fn list_task_lists(&self) -> AppResult<Vec<repo::planner::TaskListRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListTaskLists { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+    pub async fn create_task_list(
+        &self,
+        id: String,
+        name: String,
+        color: Option<String>,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::CreateTaskList {
+            id,
+            name,
+            color,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+    pub async fn list_tasks(&self, task_list_id: String) -> AppResult<Vec<repo::planner::TaskRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListTasks { task_list_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+    pub async fn create_task(
+        &self,
+        id: String,
+        task_list_id: String,
+        parent_id: Option<String>,
+        title: String,
+        description: Option<String>,
+        priority: i64,
+        due_at: Option<String>,
+        sort_order: f64,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::CreateTask {
+            id,
+            task_list_id,
+            parent_id,
+            title,
+            description,
+            priority,
+            due_at,
+            sort_order,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+    pub async fn complete_task(&self, id: String, completed: bool) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::CompleteTask {
+            id,
+            completed,
             resp,
         })?;
         rx.await
@@ -1355,6 +1542,100 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         collection_id.as_deref(),
                         limit,
                     ));
+                }
+                DbCommand::ListCalendars { resp } => {
+                    let _ = resp.send(repo::planner::list_calendars(&conn));
+                }
+                DbCommand::CreateCalendar {
+                    id,
+                    name,
+                    color,
+                    timezone,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::planner::create_calendar(
+                        &conn, &id, &name, color, &timezone,
+                    ));
+                }
+                DbCommand::ListCalendarEvents {
+                    calendar_id,
+                    range_start,
+                    range_end,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::planner::list_events(
+                        &conn,
+                        &calendar_id,
+                        &range_start,
+                        &range_end,
+                    ));
+                }
+                DbCommand::CreateCalendarEvent {
+                    id,
+                    calendar_id,
+                    title,
+                    starts_at,
+                    ends_at,
+                    timezone,
+                    all_day,
+                    recurrence_rule,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::planner::create_event(
+                        &conn,
+                        &id,
+                        &calendar_id,
+                        &title,
+                        &starts_at,
+                        &ends_at,
+                        &timezone,
+                        all_day,
+                        recurrence_rule,
+                    ));
+                }
+                DbCommand::ListTaskLists { resp } => {
+                    let _ = resp.send(repo::planner::list_task_lists(&conn));
+                }
+                DbCommand::CreateTaskList {
+                    id,
+                    name,
+                    color,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::planner::create_task_list(&conn, &id, &name, color));
+                }
+                DbCommand::ListTasks { task_list_id, resp } => {
+                    let _ = resp.send(repo::planner::list_tasks(&conn, &task_list_id));
+                }
+                DbCommand::CreateTask {
+                    id,
+                    task_list_id,
+                    parent_id,
+                    title,
+                    description,
+                    priority,
+                    due_at,
+                    sort_order,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::planner::create_task(
+                        &conn,
+                        &id,
+                        &task_list_id,
+                        parent_id,
+                        &title,
+                        description,
+                        priority,
+                        due_at,
+                        sort_order,
+                    ));
+                }
+                DbCommand::CompleteTask {
+                    id,
+                    completed,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::planner::complete_task(&conn, &id, completed));
                 }
                 DbCommand::ListSessions { agent_id, resp } => {
                     let _ = resp.send(repo::sessions::list(&conn, &agent_id));
