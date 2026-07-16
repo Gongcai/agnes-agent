@@ -23,3 +23,17 @@ pub fn set(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
     )?;
     Ok(())
 }
+
+/// Delete a setting instead of retaining an empty sensitive row.
+pub fn delete(conn: &Connection, key: &str) -> AppResult<()> {
+    conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+    Ok(())
+}
+
+pub fn list_with_prefix(conn: &Connection, prefix: &str) -> AppResult<Vec<(String, String)>> {
+    let pattern = format!("{prefix}%");
+    let mut stmt =
+        conn.prepare("SELECT key, value FROM settings WHERE key LIKE ?1 ORDER BY key")?;
+    let rows = stmt.query_map([pattern], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}

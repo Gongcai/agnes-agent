@@ -14,6 +14,8 @@ pub enum AppError {
     Agent(String),
     #[error("ws error: {0}")]
     Ws(String),
+    #[error("secret store error: {0}")]
+    SecretStore(String),
     #[error("{0}")]
     Other(String),
 }

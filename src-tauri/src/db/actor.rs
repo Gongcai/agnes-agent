@@ -63,6 +63,14 @@ pub enum DbCommand {
         value: String,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    DeleteSetting {
+        key: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    ListSettingsWithPrefix {
+        prefix: String,
+        resp: oneshot::Sender<AppResult<Vec<(String, String)>>>,
+    },
     UpsertMemoryEmbedding {
         embedding_id: String,
         memory_id: String,
@@ -352,6 +360,23 @@ impl DbActorHandle {
     pub async fn set_setting(&self, key: String, value: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::SetSetting { key, value, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn delete_setting(&self, key: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::DeleteSetting { key, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_settings_with_prefix(
+        &self,
+        prefix: String,
+    ) -> AppResult<Vec<(String, String)>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListSettingsWithPrefix { prefix, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -758,6 +783,12 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::SetSetting { key, value, resp } => {
                     let _ = resp.send(repo::settings::set(&conn, &key, &value));
+                }
+                DbCommand::DeleteSetting { key, resp } => {
+                    let _ = resp.send(repo::settings::delete(&conn, &key));
+                }
+                DbCommand::ListSettingsWithPrefix { prefix, resp } => {
+                    let _ = resp.send(repo::settings::list_with_prefix(&conn, &prefix));
                 }
                 DbCommand::UpsertMemoryEmbedding {
                     embedding_id,

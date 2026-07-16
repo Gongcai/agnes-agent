@@ -11,6 +11,7 @@ use crate::model_registry::{
     descriptor_from_api, load_model_roles, normalize_model_catalog, parse_model_catalog,
     save_model_roles, ModelDescriptor, ModelRoleAssignments,
 };
+use crate::secrets::{provider_api_key_secret_id, SecretStore};
 
 #[derive(Serialize)]
 pub struct AgentSummary {
@@ -455,7 +456,7 @@ pub async fn get_debug_prompt(
         (String::new(), None, None)
     };
     let api_key = if let Some(ref pid) = provider_resolved_id {
-        state.db.get_setting(format!("provider:{}:api_key", pid)).await?
+        state.secrets.get(&provider_api_key_secret_id(pid)).await?
     } else {
         None
     };
@@ -508,7 +509,7 @@ pub async fn get_debug_prompt(
         }
     }
 
-    let task_llm_configs = resolve_task_llm_configs(&state.db, &model_roles).await?;
+    let task_llm_configs = resolve_task_llm_configs(&state, &model_roles).await?;
     let snapshot = json!({
         "input": "",
         "context": {
@@ -862,7 +863,7 @@ struct ResolvedLlm {
 
 /// Resolve a routed model reference into the same provider configuration used by the main model.
 async fn resolve_routed_llm_config(
-    db: &crate::db::DbActorHandle,
+    state: &AppState,
     model_ref: Option<&str>,
 ) -> AppResult<Option<serde_json::Value>> {
     let Some(model_ref) = model_ref.filter(|value| !value.is_empty()) else {
@@ -871,11 +872,12 @@ async fn resolve_routed_llm_config(
     let Some((provider_id, model_name)) = model_ref.split_once('/') else {
         return Ok(None);
     };
-    let Some(provider) = db.get_model_provider(provider_id.to_string()).await? else {
+    let Some(provider) = state.db.get_model_provider(provider_id.to_string()).await? else {
         return Ok(None);
     };
-    let api_key = db
-        .get_setting(format!("provider:{}:api_key", provider.id))
+    let api_key = state
+        .secrets
+        .get(&provider_api_key_secret_id(&provider.id))
         .await?;
     let litellm_model = match provider.kind.as_str() {
         "openai" | "anthropic" => model_name.to_string(),
@@ -897,7 +899,7 @@ async fn resolve_routed_llm_config(
 
 /// Build task-specific LLM configs. Unimplemented consumers can adopt these keys without a DB change.
 async fn resolve_task_llm_configs(
-    db: &crate::db::DbActorHandle,
+    state: &AppState,
     roles: &ModelRoleAssignments,
 ) -> AppResult<serde_json::Value> {
     let mut configs = serde_json::Map::new();
@@ -909,7 +911,7 @@ async fn resolve_task_llm_configs(
         ("quick", roles.quick_model.as_deref()),
         ("embedding", roles.embedding_model.as_deref()),
     ] {
-        if let Some(config) = resolve_routed_llm_config(db, selection).await? {
+        if let Some(config) = resolve_routed_llm_config(state, selection).await? {
             configs.insert(key.to_string(), config);
         }
     }
@@ -955,7 +957,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         (String::new(), None, None)
     };
     let api_key = if let Some(ref pid) = provider_resolved_id {
-        state.db.get_setting(format!("provider:{}:api_key", pid)).await?
+        state.secrets.get(&provider_api_key_secret_id(pid)).await?
     } else {
         None
     };
@@ -974,7 +976,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
     };
     let thinking_budget = session.thinking_budget.or(Some(agent.thinking_budget)).unwrap_or(0);
 
-    let task_llm_configs = resolve_task_llm_configs(&state.db, &model_roles).await?;
+    let task_llm_configs = resolve_task_llm_configs(state, &model_roles).await?;
     Ok(ResolvedLlm {
         agent,
         session_context_limit: session.context_limit,
@@ -1196,7 +1198,7 @@ pub async fn vectorize_memories(
         .embedding_model
         .as_deref()
         .ok_or_else(|| AppError::Other("尚未配置嵌入模型".into()))?;
-    let config = resolve_routed_llm_config(&state.db, Some(model_ref))
+    let config = resolve_routed_llm_config(&state, Some(model_ref))
         .await?
         .ok_or_else(|| AppError::Other("嵌入模型配置不可用".into()))?;
     let indexed_now = crate::embeddings::ensure_agent_memory_index(
@@ -1330,6 +1332,34 @@ pub struct TestProviderResult {
     pub message: String,
 }
 
+async fn restore_provider_secret(
+    store: &dyn SecretStore,
+    secret_id: &str,
+    previous: Option<&str>,
+) -> AppResult<()> {
+    match previous {
+        Some(value) => store.set(secret_id, value).await,
+        None => store.delete(secret_id).await,
+    }
+}
+
+fn normalized_api_base(value: Option<&str>) -> &str {
+    value
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('/')
+}
+
+fn saved_provider_endpoint_matches(
+    stored_kind: &str,
+    stored_api_base: Option<&str>,
+    requested_kind: &str,
+    requested_api_base: Option<&str>,
+) -> bool {
+    stored_kind == requested_kind
+        && normalized_api_base(stored_api_base) == normalized_api_base(requested_api_base)
+}
+
 /// 列出所有已配置的模型提供商。
 #[tauri::command]
 pub async fn list_providers(
@@ -1339,13 +1369,11 @@ pub async fn list_providers(
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         let models = parse_model_catalog(r.models_json.as_deref(), &r.kind);
-        // 出于安全不返回明文 key，仅判断是否已配置
+        // Only expose whether the OS keyring contains a credential.
         let stored_key = state
-            .db
-            .get_setting(format!("provider:{}:api_key", r.id))
-            .await
-            .ok()
-            .flatten();
+            .secrets
+            .get(&provider_api_key_secret_id(&r.id))
+            .await?;
         let has_api_key = stored_key.map(|k| !k.is_empty()).unwrap_or(false);
         out.push(ModelProviderDto {
             id: r.id,
@@ -1369,13 +1397,49 @@ pub async fn upsert_provider(
     provider: UpsertProviderInput,
 ) -> AppResult<String> {
     let id = provider.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-    // 存储 API Key 到 settings 表
-    if let Some(ref key) = provider.api_key {
-        state
-            .db
-            .set_setting(format!("provider:{}:api_key", id), key.clone())
-            .await?;
+    let secret_id = provider_api_key_secret_id(&id);
+    let replacement_key = provider.api_key.filter(|key| !key.is_empty());
+    let previous_key = if replacement_key.is_some() {
+        state.secrets.get(&secret_id).await?
+    } else {
+        None
+    };
+    if let Some(ref key) = replacement_key {
+        if let Err(write_error) = state.secrets.set(&secret_id, key).await {
+            let rollback_error = restore_provider_secret(
+                state.secrets.as_ref(),
+                &secret_id,
+                previous_key.as_deref(),
+            )
+            .await
+            .err();
+            return Err(AppError::SecretStore(format!(
+                "credential write failed: {write_error}{}",
+                rollback_error
+                    .map(|error| format!("; rollback failed: {error}"))
+                    .unwrap_or_default()
+            )));
+        }
+        let verification_error = match state.secrets.get(&secret_id).await {
+            Ok(Some(stored)) if stored == *key => None,
+            Ok(_) => Some("stored credential did not match the submitted value".to_string()),
+            Err(error) => Some(error.to_string()),
+        };
+        if let Some(verification_error) = verification_error {
+            let rollback_error = restore_provider_secret(
+                state.secrets.as_ref(),
+                &secret_id,
+                previous_key.as_deref(),
+            )
+            .await
+            .err();
+            return Err(AppError::SecretStore(format!(
+                "credential verification failed: {verification_error}{}",
+                rollback_error
+                    .map(|error| format!("; rollback failed: {error}"))
+                    .unwrap_or_default()
+            )));
+        }
     }
 
     let normalized_models = normalize_model_catalog(provider.models.unwrap_or_default(), &provider.kind);
@@ -1393,7 +1457,22 @@ pub async fn upsert_provider(
         extra_config: None,
     };
 
-    state.db.upsert_model_provider(new_row, set_default).await?;
+    if let Err(db_error) = state.db.upsert_model_provider(new_row, set_default).await {
+        if replacement_key.is_some() {
+            if let Err(rollback_error) = restore_provider_secret(
+                state.secrets.as_ref(),
+                &secret_id,
+                previous_key.as_deref(),
+            )
+            .await
+            {
+                return Err(AppError::SecretStore(format!(
+                    "provider save failed: {db_error}; credential rollback failed: {rollback_error}"
+                )));
+            }
+        }
+        return Err(db_error);
+    }
     let mut roles = load_model_roles(&state.db).await?;
     roles.retain_valid_provider_models(&id, &normalized_models);
     save_model_roles(&state.db, &roles).await?;
@@ -1406,12 +1485,23 @@ pub async fn delete_provider(
     state: tauri::State<'_, AppState>,
     provider_id: String,
 ) -> AppResult<()> {
-    state.db.delete_model_provider(provider_id.clone()).await?;
-    // 清理 settings 中的 API Key
-    state
-        .db
-        .set_setting(format!("provider:{}:api_key", provider_id), String::new())
-        .await?;
+    let secret_id = provider_api_key_secret_id(&provider_id);
+    let previous_key = state.secrets.get(&secret_id).await?;
+    state.secrets.delete(&secret_id).await?;
+    if let Err(db_error) = state.db.delete_model_provider(provider_id.clone()).await {
+        if let Err(rollback_error) = restore_provider_secret(
+            state.secrets.as_ref(),
+            &secret_id,
+            previous_key.as_deref(),
+        )
+        .await
+        {
+            return Err(AppError::SecretStore(format!(
+                "provider delete failed: {db_error}; credential rollback failed: {rollback_error}"
+            )));
+        }
+        return Err(db_error);
+    }
     let mut roles = load_model_roles(&state.db).await?;
     roles.clear_provider(&provider_id);
     save_model_roles(&state.db, &roles).await?;
@@ -1459,17 +1549,28 @@ pub async fn set_model_roles(
     save_model_roles(&state.db, &roles).await
 }
 
-/// 获取已保存的 API Key 明文（本地应用，仅供设置界面回显，默认以密码形式展示）。
+#[derive(Serialize)]
+pub struct SecretStoreStatusDto {
+    pub available: bool,
+    pub backend: &'static str,
+    pub error: Option<String>,
+}
+
+/// Report whether the native credential store is available without exposing any secret.
 #[tauri::command]
-pub async fn get_provider_api_key(
+pub async fn get_secret_store_status(
     state: tauri::State<'_, AppState>,
-    provider_id: String,
-) -> AppResult<Option<String>> {
-    Ok(state
-        .db
-        .get_setting(format!("provider:{}:api_key", provider_id))
-        .await?
-        .filter(|k| !k.is_empty()))
+) -> AppResult<SecretStoreStatusDto> {
+    let runtime_error = crate::secrets::verify_secret_store(state.secrets.as_ref())
+        .await
+        .err()
+        .map(|error| error.to_string());
+    let error = state.secret_store_startup_error.clone().or(runtime_error);
+    Ok(SecretStoreStatusDto {
+        available: error.is_none(),
+        backend: "OS Keyring",
+        error,
+    })
 }
 
 /// 测试模型提供商配置是否有效（V0.1 仅检查是否存在及 API Key 已配置）。
@@ -1493,8 +1594,8 @@ pub async fn test_provider(
                 });
             }
             let api_key = state
-                .db
-                .get_setting(format!("provider:{}:api_key", provider_id))
+                .secrets
+                .get(&provider_api_key_secret_id(&provider_id))
                 .await?;
             match api_key {
                 Some(k) if !k.is_empty() => Ok(TestProviderResult {
@@ -1513,12 +1614,41 @@ pub async fn test_provider(
 /// 从服务端自动获取可用模型列表
 #[tauri::command]
 pub async fn fetch_provider_models(
+    state: tauri::State<'_, AppState>,
+    provider_id: Option<String>,
     kind: String,
     api_base: Option<String>,
     api_key: Option<String>,
 ) -> AppResult<Vec<ModelDescriptor>> {
     let client = reqwest::Client::new();
     let mut models = Vec::new();
+    let api_key = match api_key.filter(|key| !key.is_empty()) {
+        Some(key) => Some(key),
+        None => match provider_id {
+            Some(provider_id) => {
+                let provider = state
+                    .db
+                    .get_model_provider(provider_id)
+                    .await?
+                    .ok_or_else(|| AppError::Other("模型服务商不存在".into()))?;
+                if !saved_provider_endpoint_matches(
+                    &provider.kind,
+                    provider.api_base.as_deref(),
+                    &kind,
+                    api_base.as_deref(),
+                ) {
+                    return Err(AppError::Other(
+                        "服务商类型或 API 地址已修改；请重新输入 API Key 后再获取模型".into(),
+                    ));
+                }
+                state
+                    .secrets
+                    .get(&provider_api_key_secret_id(&provider.id))
+                    .await?
+            }
+            None => None,
+        },
+    };
 
     if kind == "openai" || kind == "openai_compatible" {
         let base = api_base.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
@@ -1586,6 +1716,11 @@ pub async fn get_setting(
     state: tauri::State<'_, AppState>,
     key: String,
 ) -> AppResult<Option<String>> {
+    if !crate::sync::settings::renderer_access_allowed(&key) {
+        return Err(AppError::Other(format!(
+            "Setting `{key}` is not available through generic renderer IPC"
+        )));
+    }
     state.db.get_setting(key).await
 }
 
@@ -1596,5 +1731,37 @@ pub async fn set_setting(
     key: String,
     value: String,
 ) -> AppResult<()> {
+    if !crate::sync::settings::renderer_access_allowed(&key) {
+        return Err(AppError::Other(format!(
+            "Setting `{key}` is not writable through generic renderer IPC"
+        )));
+    }
     state.db.set_setting(key, value).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::saved_provider_endpoint_matches;
+
+    #[test]
+    fn stored_credentials_are_only_reused_for_the_saved_endpoint() {
+        assert!(saved_provider_endpoint_matches(
+            "openai_compatible",
+            Some("https://models.example.test/v1/"),
+            "openai_compatible",
+            Some("https://models.example.test/v1"),
+        ));
+        assert!(!saved_provider_endpoint_matches(
+            "openai_compatible",
+            Some("https://models.example.test/v1"),
+            "openai_compatible",
+            Some("https://attacker.example.test/v1"),
+        ));
+        assert!(!saved_provider_endpoint_matches(
+            "openai",
+            None,
+            "openai_compatible",
+            None,
+        ));
+    }
 }

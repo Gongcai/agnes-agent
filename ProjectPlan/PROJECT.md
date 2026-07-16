@@ -155,8 +155,8 @@ System Prompt
 | 版本 | 范围 | 当前状态（2026-07-16） |
 |---|---|---|
 | V0.1 | Tauri 2 + React 聊天 UI + SQLite + Python LangGraph sidecar + LiteLLM | 主链路已完成；发布态 sidecar 打包待收口 |
-| V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 已完成：摘要、抽取、结构化字段、AI 创建/更新、记忆决策提示词、`MEMORY.md` 专用工具，以及动态维度 sqlite-vec + RRF 混合检索；后续只需结合真实嵌入服务继续做端到端兼容验证 |
-| V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 已完成详细设计，尚未实现；先执行 `CLOUDFLARE_SYNC.md` Phase 0 |
+| V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 已完成：摘要、抽取、结构化字段、AI 创建/更新、记忆决策提示词、`MEMORY.md` 专用工具、动态维度 sqlite-vec + RRF 混合检索；已使用 Qwen3-Embedding-8B 完成真实服务端到端验证，手动向量化、覆盖率统计与检索链路均可用 |
+| V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 进行中：Phase 0A 已完成 OS Keyring 迁移、settings 分类、renderer IPC 收口和同步 payload 白名单；下一步继续完成明确同步实体、workspace folder binding 拆分及 tombstone/version 基础字段 |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 未开始 |
 | V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；MCP 等能力待后续补齐 |
 
@@ -166,5 +166,7 @@ System Prompt
 - session 与 AGENTS 多对一；长期记忆（USER.md / MEMORY.md / memory_store）按 AGENTS 隔离，不是全局单一记忆。
 - 桌面端是执行器，安卓端轻交互，不要在 Android 内置完整 Agent 作为 MVP。
 - 向量库本地优先，不跨端同步；云端只同步文本与用户数据。
+- Provider API Key、同步凭证和 E2EE 主密钥只进入 OS Keyring / Android Keystore，不进入 SQLite、renderer 明文 IPC 或同步 payload。
+- 同步 payload 必须由 Rust 按实体字段白名单投影；不得直接序列化业务表，也不得扫描全部 settings 猜测同步范围。
 - 工具系统 MCP 优先，复用现有 MCP server 而非自造协议。
 - LangGraph 用于多步 Agent / 检查点 / human-in-the-loop（敏感工具调用前暂停让用户审核）。
