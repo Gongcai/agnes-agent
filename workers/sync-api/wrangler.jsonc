@@ -11,7 +11,7 @@
     {
       "binding": "SYNC_DB",
       "database_name": "agnes-sync",
-      "database_id": "local",
+      "database_id": "44283e54-cfec-4d16-8db8-fa572ff8a9ad",
       "migrations_dir": "migrations"
     }
   ],

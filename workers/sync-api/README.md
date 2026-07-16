@@ -2,6 +2,13 @@
 
 V0.3 云同步的 Cloudflare Worker。当前 Phase 1 只允许使用假数据验证协议；真实聊天、角色卡和记忆必须等 E2EE 完成后再上传。
 
+当前远端资源：
+
+- Worker：`https://agnes-sync-api.caiwengong136.workers.dev`
+- D1：`agnes-sync`（APAC）
+
+远端 Worker 默认 `AUTH_MODE=disabled`，POC 数据和测试 secret 已在验证完成后清理。
+
 ## 本地验证
 
 ```bash
@@ -34,7 +41,7 @@ pnpm sync:dev
 pnpm --filter @agnes/sync-api exec wrangler login
 pnpm --filter @agnes/sync-api exec wrangler d1 create agnes-sync --location=apac
 pnpm --filter @agnes/sync-api db:migrate:remote
-pnpm --filter @agnes/sync-api deploy
+pnpm --filter @agnes/sync-api run deploy
 ```
 
 D1 创建后需要将 Wrangler 返回的 `database_id` 写入 `wrangler.jsonc`。测试身份映射通过 Wrangler secret 配置，不进入 Git。正式认证将在目标域名上接入 Cloudflare Access Service Token；未完成 Access/E2EE 前，远端数据库只保存协议假数据。
