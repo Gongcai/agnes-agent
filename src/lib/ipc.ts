@@ -39,3 +39,13 @@ export async function getSyncStatus(): Promise<SyncStatus> {
 export async function syncNow(): Promise<SyncStatus> {
   return invoke<SyncStatus>("sync_now");
 }
+
+export type SyncCredentialInput =
+  | { kind: "bearer"; token: string }
+  | { kind: "cloudflare_access"; client_id: string; client_secret: string };
+
+export async function setSyncCredential(
+  credential: SyncCredentialInput | null,
+): Promise<SyncStatus> {
+  return invoke<SyncStatus>("set_sync_credential", { credential });
+}

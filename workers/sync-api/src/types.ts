@@ -1,6 +1,7 @@
 export interface Bindings {
   SYNC_DB: D1Database;
   AUTH_MODE?: string;
+  SYNC_DEVICE_IDENTITIES?: string;
   SYNC_TEST_IDENTITIES?: string;
 }
 
@@ -9,6 +10,7 @@ export interface AuthIdentity {
   deviceId: string;
   deviceName: string;
   platform?: string;
+  credentialFingerprint?: string;
 }
 
 export interface AppEnv {

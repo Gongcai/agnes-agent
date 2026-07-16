@@ -18,7 +18,7 @@ import {
   memoryMatchesQuery,
   parseMemoryKeywords,
 } from "../lib/memory";
-import { getSyncStatus, syncNow, type SyncStatus } from "../lib/ipc";
+import { getSyncStatus, setSyncCredential, syncNow, type SyncStatus } from "../lib/ipc";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -379,6 +379,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncStatusError, setSyncStatusError] = useState<string | null>(null);
   const [isSyncingNow, setIsSyncingNow] = useState(false);
+  const [syncToken, setSyncToken] = useState("");
+  const [showSyncToken, setShowSyncToken] = useState(false);
+  const [isSavingSyncCredential, setIsSavingSyncCredential] = useState(false);
 
   // Debug prompt panel state
   const [debugPrompt, setDebugPrompt] = useState<DebugPromptPreview | null>(null);
@@ -708,6 +711,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setSyncStatusError(String(error));
     } finally {
       setIsSyncingNow(false);
+    }
+  };
+
+  const handleSaveSyncCredential = async () => {
+    if (!syncToken.trim()) return;
+    setIsSavingSyncCredential(true);
+    setSyncStatusError(null);
+    try {
+      setSyncStatus(await setSyncCredential({ kind: "bearer", token: syncToken }));
+      setSyncToken("");
+      setShowSyncToken(false);
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsSavingSyncCredential(false);
+    }
+  };
+
+  const handleClearSyncCredential = async () => {
+    setIsSavingSyncCredential(true);
+    setSyncStatusError(null);
+    try {
+      setSyncStatus(await setSyncCredential(null));
+      setSyncToken("");
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsSavingSyncCredential(false);
     }
   };
 
@@ -2400,9 +2431,52 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </div>
                     )}
 
-                    {syncStatus?.state === "auth_required" && (
-                      <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-3 py-2 rounded-md">
-                        同步凭证尚未配置
+                    {syncStatus && !syncStatus.credentialConfigured && (
+                      <div className="flex items-center gap-2">
+                        <div className="relative min-w-0 flex-1">
+                          <Key className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-stone-400" />
+                          <input
+                            type={showSyncToken ? "text" : "password"}
+                            value={syncToken}
+                            onChange={(event) => setSyncToken(event.target.value)}
+                            placeholder="设备同步令牌"
+                            autoComplete="off"
+                            className="h-9 w-full rounded-md border border-stone-200 bg-white pl-8 pr-9 text-xs text-stone-700 outline-none focus:border-stone-400"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowSyncToken((visible) => !visible)}
+                            title={showSyncToken ? "隐藏令牌" : "显示令牌"}
+                            className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center text-stone-400 hover:text-stone-700"
+                          >
+                            {showSyncToken ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleSaveSyncCredential}
+                          disabled={!syncToken.trim() || isSavingSyncCredential}
+                          className="h-9 shrink-0 rounded-md bg-stone-800 px-3 text-xs font-medium text-white hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          保存
+                        </button>
+                      </div>
+                    )}
+                    {syncStatus?.credentialConfigured && (
+                      <div className="flex h-9 items-center justify-between rounded-md border border-emerald-200 bg-emerald-50 px-3 text-xs text-emerald-700">
+                        <span className="flex items-center gap-2">
+                          <ShieldCheck className="h-3.5 w-3.5" />
+                          凭证已存入系统密钥环
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleClearSyncCredential}
+                          disabled={isSavingSyncCredential || isSyncingNow || syncStatus.syncing}
+                          title="清除同步凭证"
+                          className="flex h-7 w-7 items-center justify-center text-emerald-700 hover:text-rose-600 disabled:opacity-40"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                       </div>
                     )}
                     {syncStatus?.lastErrorCode && (

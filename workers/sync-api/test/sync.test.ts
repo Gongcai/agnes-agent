@@ -78,7 +78,7 @@ describe("authentication and health", () => {
       protocolVersion: 1,
     });
     const device = await env.SYNC_DB.prepare(
-      "SELECT owner_id, name, platform FROM devices WHERE id = ?",
+      "SELECT owner_id, name, platform, credential_fingerprint FROM devices WHERE id = ?",
     )
       .bind(DEVICE_A)
       .first();
@@ -86,7 +86,12 @@ describe("authentication and health", () => {
       owner_id: "owner-a",
       name: "Owner A desktop",
       platform: "linux",
+      credential_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
+
+    const invalid = await request("/v1/health", "not-a-configured-token");
+    expect(invalid.status).toBe(401);
+    expect(await invalid.json()).toMatchObject({ error: { code: "UNAUTHENTICATED" } });
   });
 
   it("blocks a revoked device", async () => {

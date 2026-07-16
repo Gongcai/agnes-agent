@@ -9,7 +9,7 @@ import type { AppEnv } from "./types";
 const app = new Hono<AppEnv>();
 
 app.use("/v1/*", async (context, next) => {
-  const identity = resolveIdentity(context.req.raw, context.env);
+  const identity = await resolveIdentity(context.req.raw, context.env);
   await authorizeDevice(context.env.SYNC_DB, identity, Date.now());
   context.set("auth", identity);
   await next();

@@ -5,6 +5,19 @@ interface TestIdentity extends AuthIdentity {
   token: string;
 }
 
+interface DeviceIdentity extends AuthIdentity {
+  tokenSha256: string;
+}
+
+function isIdentity(candidate: Record<string, unknown>): boolean {
+  return (
+    typeof candidate.ownerId === "string" &&
+    typeof candidate.deviceId === "string" &&
+    typeof candidate.deviceName === "string" &&
+    (candidate.platform === undefined || typeof candidate.platform === "string")
+  );
+}
+
 function parseTestIdentities(value: string | undefined): TestIdentity[] {
   if (!value) {
     return [];
@@ -19,12 +32,31 @@ function parseTestIdentities(value: string | undefined): TestIdentity[] {
         return false;
       }
       const candidate = entry as Record<string, unknown>;
+      return typeof candidate.token === "string" && isIdentity(candidate);
+    });
+  } catch {
+    return [];
+  }
+}
+
+function parseDeviceIdentities(value: string | undefined): DeviceIdentity[] {
+  if (!value) {
+    return [];
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((entry): entry is DeviceIdentity => {
+      if (typeof entry !== "object" || entry === null) {
+        return false;
+      }
+      const candidate = entry as Record<string, unknown>;
       return (
-        typeof candidate.token === "string" &&
-        typeof candidate.ownerId === "string" &&
-        typeof candidate.deviceId === "string" &&
-        typeof candidate.deviceName === "string" &&
-        (candidate.platform === undefined || typeof candidate.platform === "string")
+        typeof candidate.tokenSha256 === "string" &&
+        /^[a-f0-9]{64}$/.test(candidate.tokenSha256) &&
+        isIdentity(candidate)
       );
     });
   } catch {
@@ -32,28 +64,41 @@ function parseTestIdentities(value: string | undefined): TestIdentity[] {
   }
 }
 
-export function resolveIdentity(request: Request, env: Bindings): AuthIdentity {
-  if (env.AUTH_MODE !== "test") {
-    throw new ApiError(401, "UNAUTHENTICATED", "Sync authentication is not configured");
-  }
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
+function bearerToken(request: Request): string {
   const authorization = request.headers.get("Authorization");
   const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : null;
-  if (!token) {
+  if (!token || token.length > 512) {
     throw new ApiError(401, "UNAUTHENTICATED", "A bearer token is required");
   }
+  return token;
+}
 
-  const identity = parseTestIdentities(env.SYNC_TEST_IDENTITIES).find(
-    (candidate) => candidate.token === token,
-  );
-  if (!identity) {
+export async function resolveIdentity(request: Request, env: Bindings): Promise<AuthIdentity> {
+  if (env.AUTH_MODE !== "bearer" && env.AUTH_MODE !== "test") {
+    throw new ApiError(401, "UNAUTHENTICATED", "Sync authentication is not configured");
+  }
+  const token = bearerToken(request);
+  const tokenSha256 = await sha256Hex(token);
+  const resolved =
+    env.AUTH_MODE === "bearer"
+      ? parseDeviceIdentities(env.SYNC_DEVICE_IDENTITIES).find(
+          (candidate) => candidate.tokenSha256 === tokenSha256,
+        )
+      : parseTestIdentities(env.SYNC_TEST_IDENTITIES).find((candidate) => candidate.token === token);
+  if (!resolved) {
     throw new ApiError(401, "UNAUTHENTICATED", "The sync credential is invalid");
   }
   return {
-    ownerId: identity.ownerId,
-    deviceId: identity.deviceId,
-    deviceName: identity.deviceName,
-    ...(identity.platform ? { platform: identity.platform } : {}),
+    ownerId: resolved.ownerId,
+    deviceId: resolved.deviceId,
+    deviceName: resolved.deviceName,
+    ...(resolved.platform ? { platform: resolved.platform } : {}),
+    credentialFingerprint: tokenSha256,
   };
 }
 
@@ -79,13 +124,14 @@ export async function authorizeDevice(
       .prepare(
         `INSERT OR IGNORE INTO devices (
           id, owner_id, name, platform, credential_fingerprint, created_at, last_seen_at, revoked_at
-        ) VALUES (?, ?, ?, ?, NULL, ?, ?, NULL)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
       )
       .bind(
         identity.deviceId,
         identity.ownerId,
         identity.deviceName,
         identity.platform ?? null,
+        identity.credentialFingerprint ?? null,
         now,
         now,
       )
@@ -107,7 +153,17 @@ export async function authorizeDevice(
   }
 
   await database
-    .prepare("UPDATE devices SET last_seen_at = ? WHERE id = ?")
-    .bind(now, identity.deviceId)
+    .prepare(
+      `UPDATE devices
+       SET name = ?, platform = ?, credential_fingerprint = ?, last_seen_at = ?
+       WHERE id = ?`,
+    )
+    .bind(
+      identity.deviceName,
+      identity.platform ?? null,
+      identity.credentialFingerprint ?? null,
+      now,
+      identity.deviceId,
+    )
     .run();
 }

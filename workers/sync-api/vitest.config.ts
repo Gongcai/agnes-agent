@@ -1,25 +1,26 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const identities = [
   {
-    token: "test-token-owner-a-device-a",
+    tokenSha256: createHash("sha256").update("test-token-owner-a-device-a").digest("hex"),
     ownerId: "owner-a",
     deviceId: "00000000-0000-4000-8000-000000000001",
     deviceName: "Owner A desktop",
     platform: "linux",
   },
   {
-    token: "test-token-owner-a-device-b",
+    tokenSha256: createHash("sha256").update("test-token-owner-a-device-b").digest("hex"),
     ownerId: "owner-a",
     deviceId: "00000000-0000-4000-8000-000000000002",
     deviceName: "Owner A phone",
     platform: "android",
   },
   {
-    token: "test-token-owner-b-device-a",
+    tokenSha256: createHash("sha256").update("test-token-owner-b-device-a").digest("hex"),
     ownerId: "owner-b",
     deviceId: "00000000-0000-4000-8000-000000000003",
     deviceName: "Owner B desktop",
@@ -35,8 +36,8 @@ export default defineConfig(async () => {
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
           bindings: {
-            AUTH_MODE: "test",
-            SYNC_TEST_IDENTITIES: JSON.stringify(identities),
+            AUTH_MODE: "bearer",
+            SYNC_DEVICE_IDENTITIES: JSON.stringify(identities),
             TEST_MIGRATIONS: migrations,
           },
         },

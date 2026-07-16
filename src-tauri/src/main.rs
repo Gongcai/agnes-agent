@@ -122,7 +122,8 @@ fn main() {
             commands::get_setting,
             commands::set_setting,
             commands::get_sync_status,
-            commands::sync_now
+            commands::sync_now,
+            commands::set_sync_credential
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -11,7 +11,10 @@ use crate::model_registry::{
     descriptor_from_api, load_model_roles, normalize_model_catalog, parse_model_catalog,
     save_model_roles, ModelDescriptor, ModelRoleAssignments,
 };
-use crate::secrets::{provider_api_key_secret_id, SecretStore};
+use crate::secrets::{
+    provider_api_key_secret_id, SecretStore, SYNC_CREDENTIAL_SECRET_ID,
+};
+use crate::sync::auth::SyncCredential;
 
 #[derive(Serialize)]
 pub struct AgentSummary {
@@ -422,6 +425,59 @@ pub async fn sync_now(
     state: tauri::State<'_, AppState>,
 ) -> AppResult<crate::sync::engine::SyncStatus> {
     state.sync.run_once().await
+}
+
+#[tauri::command]
+pub async fn set_sync_credential(
+    state: tauri::State<'_, AppState>,
+    credential: Option<SyncCredential>,
+) -> AppResult<crate::sync::engine::SyncStatus> {
+    let previous = state.secrets.get(SYNC_CREDENTIAL_SECRET_ID).await?;
+    let replacement = credential.map(SyncCredential::into_secret).transpose()?;
+    let write_result = match replacement.as_deref() {
+        Some(secret) => state
+            .secrets
+            .set(SYNC_CREDENTIAL_SECRET_ID, secret)
+            .await,
+        None => state.secrets.delete(SYNC_CREDENTIAL_SECRET_ID).await,
+    };
+    if let Err(write_error) = write_result {
+        let rollback_error = restore_secret(
+            state.secrets.as_ref(),
+            SYNC_CREDENTIAL_SECRET_ID,
+            previous.as_deref(),
+        )
+        .await
+        .err();
+        return Err(AppError::SecretStore(format!(
+            "sync credential write failed: {write_error}{}",
+            rollback_error
+                .map(|error| format!("; rollback failed: {error}"))
+                .unwrap_or_default()
+        )));
+    }
+
+    let verification_error = match state.secrets.get(SYNC_CREDENTIAL_SECRET_ID).await {
+        Ok(stored) if stored == replacement => None,
+        Ok(_) => Some("stored credential did not match the submitted value".to_string()),
+        Err(error) => Some(error.to_string()),
+    };
+    if let Some(verification_error) = verification_error {
+        let rollback_error = restore_secret(
+            state.secrets.as_ref(),
+            SYNC_CREDENTIAL_SECRET_ID,
+            previous.as_deref(),
+        )
+        .await
+        .err();
+        return Err(AppError::SecretStore(format!(
+            "sync credential verification failed: {verification_error}{}",
+            rollback_error
+                .map(|error| format!("; rollback failed: {error}"))
+                .unwrap_or_default()
+        )));
+    }
+    state.sync.status().await
 }
 
 /// 调试面板：调用 Python 框架拼装当前智能体（含可选会话历史）将要发送给 LLM 的完整提示词。
@@ -1365,7 +1421,7 @@ pub struct TestProviderResult {
     pub message: String,
 }
 
-async fn restore_provider_secret(
+async fn restore_secret(
     store: &dyn SecretStore,
     secret_id: &str,
     previous: Option<&str>,
@@ -1439,7 +1495,7 @@ pub async fn upsert_provider(
     };
     if let Some(ref key) = replacement_key {
         if let Err(write_error) = state.secrets.set(&secret_id, key).await {
-            let rollback_error = restore_provider_secret(
+            let rollback_error = restore_secret(
                 state.secrets.as_ref(),
                 &secret_id,
                 previous_key.as_deref(),
@@ -1459,7 +1515,7 @@ pub async fn upsert_provider(
             Err(error) => Some(error.to_string()),
         };
         if let Some(verification_error) = verification_error {
-            let rollback_error = restore_provider_secret(
+            let rollback_error = restore_secret(
                 state.secrets.as_ref(),
                 &secret_id,
                 previous_key.as_deref(),
@@ -1492,7 +1548,7 @@ pub async fn upsert_provider(
 
     if let Err(db_error) = state.db.upsert_model_provider(new_row, set_default).await {
         if replacement_key.is_some() {
-            if let Err(rollback_error) = restore_provider_secret(
+            if let Err(rollback_error) = restore_secret(
                 state.secrets.as_ref(),
                 &secret_id,
                 previous_key.as_deref(),
@@ -1522,7 +1578,7 @@ pub async fn delete_provider(
     let previous_key = state.secrets.get(&secret_id).await?;
     state.secrets.delete(&secret_id).await?;
     if let Err(db_error) = state.db.delete_model_provider(provider_id.clone()).await {
-        if let Err(rollback_error) = restore_provider_secret(
+        if let Err(rollback_error) = restore_secret(
             state.secrets.as_ref(),
             &secret_id,
             previous_key.as_deref(),

@@ -447,4 +447,60 @@ mod tests {
         drop(service);
         let _ = std::fs::remove_file(path);
     }
+
+    #[tokio::test]
+    #[ignore = "requires a temporary remote bearer identity"]
+    async fn remote_bearer_push_accepts_a_fake_agent() {
+        let token = std::env::var("AGNES_SYNC_E2E_TOKEN")
+            .expect("AGNES_SYNC_E2E_TOKEN must contain the temporary bearer token");
+        let device_id = std::env::var("AGNES_SYNC_E2E_DEVICE_ID")
+            .expect("AGNES_SYNC_E2E_DEVICE_ID must match the remote identity mapping");
+        uuid::Uuid::parse_str(&device_id).expect("the E2E device id must be a UUID");
+
+        let path = std::env::temp_dir().join(format!(
+            "agnes-sync-engine-remote-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = crate::db::spawn_db_actor(path.clone());
+        db.get_sync_status().await.unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "UPDATE sync_runtime_state SET device_id = ?1 WHERE singleton = 1",
+            [&device_id],
+        )
+        .unwrap();
+        drop(conn);
+
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .set(
+                SYNC_CREDENTIAL_SECRET_ID,
+                &SyncCredential::Bearer { token }.into_secret().unwrap(),
+            )
+            .await
+            .unwrap();
+        let service = Arc::new(SyncService::new(db, secrets).unwrap());
+        let agent_id = format!("e2e-{}", uuid::Uuid::new_v4());
+        service.db.insert_agent(new_agent(&agent_id)).await.unwrap();
+
+        let status = service.run_once().await.unwrap();
+
+        assert_eq!(status.database.pending_count, 0);
+        assert_eq!(status.database.in_flight_count, 0);
+        assert_eq!(status.database.conflict_count, 0);
+        assert_eq!(status.database.dead_letter_count, 0);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let remote_revision: i64 = conn
+            .query_row(
+                "SELECT remote_revision FROM sync_entity_state \
+                 WHERE entity_type = 'agent' AND entity_id = ?1",
+                [&agent_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remote_revision, 1);
+        drop(conn);
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
 }

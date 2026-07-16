@@ -1,13 +1,14 @@
 # Agnes Sync API
 
-V0.3 云同步的 Cloudflare Worker。当前 Phase 1 只允许使用假数据验证协议；真实聊天、角色卡和记忆必须等 E2EE 完成后再上传。
+V0.3 云同步的 Cloudflare Worker。当前 Phase 2 只允许使用假数据验证协议；真实聊天、角色卡和记忆必须等 E2EE 完成后再上传。
 
 当前远端资源：
 
 - Worker：`https://agnes-sync-api.caiwengong136.workers.dev`
 - D1：`agnes-sync`（APAC）
 
-远端 Worker 默认 `AUTH_MODE=disabled`，POC 数据和测试 secret 已在验证完成后清理。
+远端 Worker 使用 `AUTH_MODE=bearer`，通过 Wrangler secret `SYNC_DEVICE_IDENTITIES`
+配置每台设备的 token SHA-256 指纹和 owner/device 映射，不在 Worker 配置或仓库中保存明文令牌。
 
 ## 本地验证
 
@@ -44,7 +45,12 @@ pnpm --filter @agnes/sync-api db:migrate:remote
 pnpm --filter @agnes/sync-api run deploy
 ```
 
-D1 创建后需要将 Wrangler 返回的 `database_id` 写入 `wrangler.jsonc`。测试身份映射通过 Wrangler secret 配置，不进入 Git。正式认证将在目标域名上接入 Cloudflare Access Service Token；未完成 Access/E2EE 前，远端数据库只保存协议假数据。
+D1 创建后需要将 Wrangler 返回的 `database_id` 写入 `wrangler.jsonc`。本地 POC 使用
+`SYNC_TEST_IDENTITIES`；远端 `SYNC_DEVICE_IDENTITIES` 条目格式为
+`{"tokenSha256":"...","ownerId":"...","deviceId":"...","deviceName":"...","platform":"..."}`，
+两者均只通过未提交的本地变量或 Wrangler secret 配置。当前 Cloudflare 账户没有可用
+Zone，无法为 Worker 绑定自定义域名 Access，因此按设计回退为 Worker 自管设备令牌；
+未完成 E2EE 前，远端数据库只保存协议假数据。
 
 ## API
 
