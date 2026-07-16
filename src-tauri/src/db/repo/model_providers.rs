@@ -127,6 +127,9 @@ pub fn get_default(conn: &Connection) -> AppResult<Option<ModelProviderRow>> {
 }
 
 pub fn clear_default(conn: &Connection) -> AppResult<()> {
-    conn.execute("UPDATE model_providers SET is_default = 0 WHERE is_default = 1", [])?;
+    conn.execute(
+        "UPDATE model_providers SET is_default = 0 WHERE is_default = 1",
+        [],
+    )?;
     Ok(())
 }

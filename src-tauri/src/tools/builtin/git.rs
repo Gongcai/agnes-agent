@@ -108,16 +108,17 @@ impl BuiltinTool for GitTool {
             "tag.gpgSign=false".to_string(),
         ];
         execution_args.extend(args.iter().cloned());
-        let mut child = match ctx
-            .sandbox
-            .command("git", &execution_args, &ctx.policy.shell.env_allowlist)
-        {
-            Ok(command) => command,
-            Err(error) => {
-                ctx.record_failure(&error.to_string()).await?;
-                return Err(error);
-            }
-        };
+        let mut child =
+            match ctx
+                .sandbox
+                .command("git", &execution_args, &ctx.policy.shell.env_allowlist)
+            {
+                Ok(command) => command,
+                Err(error) => {
+                    ctx.record_failure(&error.to_string()).await?;
+                    return Err(error);
+                }
+            };
         child.current_dir(&cwd_absolute);
         child.env("GIT_TERMINAL_PROMPT", "0");
         child.env("GIT_EDITOR", "true");
@@ -361,9 +362,9 @@ fn validate_git_args(args: &[String]) -> Result<(), String> {
         return Err("Git bisect run is not allowed".to_string());
     }
     if operation == "clone"
-        && operation_args.iter().any(|arg| {
-            arg == "-u" || arg == "--upload-pack" || arg.starts_with("--upload-pack=")
-        })
+        && operation_args
+            .iter()
+            .any(|arg| arg == "-u" || arg == "--upload-pack" || arg.starts_with("--upload-pack="))
     {
         return Err("Git clone cannot override the upload-pack command".to_string());
     }

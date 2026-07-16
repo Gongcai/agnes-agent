@@ -98,6 +98,30 @@ pub enum DbCommand {
         query_embedding: Option<repo::memory::QueryEmbedding>,
         resp: oneshot::Sender<AppResult<Vec<repo::memory::MemoryRow>>>,
     },
+    ListKnowledgeCollections {
+        agent_id: String,
+        resp: oneshot::Sender<AppResult<Vec<repo::knowledge::KnowledgeCollectionRow>>>,
+    },
+    CreateKnowledgeCollection {
+        row: repo::knowledge::NewKnowledgeCollection,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    ListKnowledgeDocuments {
+        collection_id: String,
+        agent_id: String,
+        resp: oneshot::Sender<AppResult<Vec<repo::knowledge::KnowledgeDocumentRow>>>,
+    },
+    ImportLocalKnowledgeDocument {
+        input: repo::knowledge::NewLocalDocument,
+        resp: oneshot::Sender<AppResult<repo::knowledge::ImportDocumentResult>>,
+    },
+    SearchKnowledge {
+        agent_id: String,
+        query: String,
+        collection_id: Option<String>,
+        limit: usize,
+        resp: oneshot::Sender<AppResult<Vec<repo::knowledge::KnowledgeSearchResult>>>,
+    },
     ListSessions {
         agent_id: String,
         resp: oneshot::Sender<AppResult<Vec<repo::sessions::SessionRow>>>,
@@ -164,7 +188,14 @@ pub enum DbCommand {
     },
     ListMessagesWithParts {
         session_id: String,
-        resp: oneshot::Sender<AppResult<Vec<(repo::messages::MessageRow, Vec<repo::messages::MessagePartRow>)>>>,
+        resp: oneshot::Sender<
+            AppResult<
+                Vec<(
+                    repo::messages::MessageRow,
+                    Vec<repo::messages::MessagePartRow>,
+                )>,
+            >,
+        >,
     },
     InsertMessage {
         msg: repo::messages::NewMessage,
@@ -365,7 +396,11 @@ impl DbActorHandle {
 
     pub async fn update_agent_model(&self, agent_id: String, model: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::UpdateAgentModel { agent_id, model, resp })?;
+        self.send(DbCommand::UpdateAgentModel {
+            agent_id,
+            model,
+            resp,
+        })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -420,7 +455,12 @@ impl DbActorHandle {
         changes: repo::memory::MemoryUpdate,
     ) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::UpdateMemory { id, agent_id, changes, resp })?;
+        self.send(DbCommand::UpdateMemory {
+            id,
+            agent_id,
+            changes,
+            resp,
+        })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -532,7 +572,74 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn list_sessions(&self, agent_id: String) -> AppResult<Vec<repo::sessions::SessionRow>> {
+    pub async fn list_knowledge_collections(
+        &self,
+        agent_id: String,
+    ) -> AppResult<Vec<repo::knowledge::KnowledgeCollectionRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListKnowledgeCollections { agent_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn create_knowledge_collection(
+        &self,
+        row: repo::knowledge::NewKnowledgeCollection,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::CreateKnowledgeCollection { row, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_knowledge_documents(
+        &self,
+        collection_id: String,
+        agent_id: String,
+    ) -> AppResult<Vec<repo::knowledge::KnowledgeDocumentRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListKnowledgeDocuments {
+            collection_id,
+            agent_id,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn import_local_knowledge_document(
+        &self,
+        input: repo::knowledge::NewLocalDocument,
+    ) -> AppResult<repo::knowledge::ImportDocumentResult> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ImportLocalKnowledgeDocument { input, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn search_knowledge(
+        &self,
+        agent_id: String,
+        query: String,
+        collection_id: Option<String>,
+        limit: usize,
+    ) -> AppResult<Vec<repo::knowledge::KnowledgeSearchResult>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SearchKnowledge {
+            agent_id,
+            query,
+            collection_id,
+            limit,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_sessions(
+        &self,
+        agent_id: String,
+    ) -> AppResult<Vec<repo::sessions::SessionRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListSessions { agent_id, resp })?;
         rx.await
@@ -615,40 +722,56 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn list_workspaces(&self, agent_id: String) -> AppResult<Vec<repo::workspaces::WorkspaceRow>> {
+    pub async fn list_workspaces(
+        &self,
+        agent_id: String,
+    ) -> AppResult<Vec<repo::workspaces::WorkspaceRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListWorkspaces { agent_id, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn get_workspace(&self, id: String) -> AppResult<Option<repo::workspaces::WorkspaceRow>> {
+    pub async fn get_workspace(
+        &self,
+        id: String,
+    ) -> AppResult<Option<repo::workspaces::WorkspaceRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::GetWorkspace { id, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
     pub async fn insert_workspace(&self, row: repo::workspaces::NewWorkspace) -> AppResult<String> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::InsertWorkspace { row, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
     pub async fn rename_workspace(&self, id: String, name: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::RenameWorkspace { id, name, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
     pub async fn delete_workspace(&self, id: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::DeleteWorkspace { id, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
     pub async fn list_messages_with_parts(
         &self,
         session_id: String,
-    ) -> AppResult<Vec<(repo::messages::MessageRow, Vec<repo::messages::MessagePartRow>)>> {
+    ) -> AppResult<
+        Vec<(
+            repo::messages::MessageRow,
+            Vec<repo::messages::MessagePartRow>,
+        )>,
+    > {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListMessagesWithParts { session_id, resp })?;
         rx.await
@@ -686,37 +809,62 @@ impl DbActorHandle {
     pub async fn get_message(&self, id: String) -> AppResult<Option<repo::messages::MessageRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::GetMessage { id, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn list_active_with_parts(&self, session_id: String) -> AppResult<repo::messages::ActivePathResult> {
+    pub async fn list_active_with_parts(
+        &self,
+        session_id: String,
+    ) -> AppResult<repo::messages::ActivePathResult> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListActiveWithParts { session_id, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
     pub async fn count_children(&self, id: String) -> AppResult<u64> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::CountChildren { id, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn set_selected_child(&self, parent_id: String, child_id: Option<String>) -> AppResult<()> {
+    pub async fn set_selected_child(
+        &self,
+        parent_id: String,
+        child_id: Option<String>,
+    ) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::SetSelectedChild { parent_id, child_id, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        self.send(DbCommand::SetSelectedChild {
+            parent_id,
+            child_id,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
     pub async fn delete_message(&self, id: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::DeleteMessage { id, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn replace_message_parts(&self, message_id: String, parts: Vec<repo::messages::NewMessagePart>) -> AppResult<()> {
+    pub async fn replace_message_parts(
+        &self,
+        message_id: String,
+        parts: Vec<repo::messages::NewMessagePart>,
+    ) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::ReplaceMessageParts { message_id, parts, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        self.send(DbCommand::ReplaceMessageParts {
+            message_id,
+            parts,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
     pub async fn append_user_and_assistant(
@@ -727,8 +875,15 @@ impl DbActorHandle {
         model: String,
     ) -> AppResult<(String, String)> {
         let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::AppendUserAndAssistant { session_id, parent_id, user_text, model, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        self.send(DbCommand::AppendUserAndAssistant {
+            session_id,
+            parent_id,
+            user_text,
+            model,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
     pub async fn append_assistant_sibling(
@@ -738,8 +893,14 @@ impl DbActorHandle {
         model: String,
     ) -> AppResult<String> {
         let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::AppendAssistantSibling { session_id, parent_user_id, model, resp })?;
-        rx.await.map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+        self.send(DbCommand::AppendAssistantSibling {
+            session_id,
+            parent_user_id,
+            model,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
     pub async fn insert_tool_call(&self, row: repo::tools::NewToolCall) -> AppResult<()> {
@@ -786,30 +947,46 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn list_tool_calls(&self, session_id: String) -> AppResult<Vec<repo::tools::ToolCallRow>> {
+    pub async fn list_tool_calls(
+        &self,
+        session_id: String,
+    ) -> AppResult<Vec<repo::tools::ToolCallRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListToolCalls { session_id, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn list_model_providers(&self) -> AppResult<Vec<repo::model_providers::ModelProviderRow>> {
+    pub async fn list_model_providers(
+        &self,
+    ) -> AppResult<Vec<repo::model_providers::ModelProviderRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListModelProviders { resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn get_model_provider(&self, id: String) -> AppResult<Option<repo::model_providers::ModelProviderRow>> {
+    pub async fn get_model_provider(
+        &self,
+        id: String,
+    ) -> AppResult<Option<repo::model_providers::ModelProviderRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::GetModelProvider { id, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn upsert_model_provider(&self, row: repo::model_providers::NewModelProvider, set_default: bool) -> AppResult<String> {
+    pub async fn upsert_model_provider(
+        &self,
+        row: repo::model_providers::NewModelProvider,
+        set_default: bool,
+    ) -> AppResult<String> {
         let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::UpsertModelProvider { row, set_default, resp })?;
+        self.send(DbCommand::UpsertModelProvider {
+            row,
+            set_default,
+            resp,
+        })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -821,7 +998,9 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn get_default_model_provider(&self) -> AppResult<Option<repo::model_providers::ModelProviderRow>> {
+    pub async fn get_default_model_provider(
+        &self,
+    ) -> AppResult<Option<repo::model_providers::ModelProviderRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::GetDefaultModelProvider { resp })?;
         rx.await
@@ -1050,7 +1229,11 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::InsertAgent { row, resp } => {
                     let _ = resp.send(repo::agents::insert(&mut conn, &row));
                 }
-                DbCommand::UpdateAgentModel { agent_id, model, resp } => {
+                DbCommand::UpdateAgentModel {
+                    agent_id,
+                    model,
+                    resp,
+                } => {
                     let _ = resp.send(repo::agents::update_model(&mut conn, &agent_id, &model));
                 }
                 DbCommand::UpdateAgent { id, changes, resp } => {
@@ -1068,7 +1251,12 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::GetMemory { id, agent_id, resp } => {
                     let _ = resp.send(repo::memory::get(&conn, &id, &agent_id));
                 }
-                DbCommand::UpdateMemory { id, agent_id, changes, resp } => {
+                DbCommand::UpdateMemory {
+                    id,
+                    agent_id,
+                    changes,
+                    resp,
+                } => {
                     let _ = resp.send(repo::memory::update(&mut conn, &id, &agent_id, &changes));
                 }
                 DbCommand::DeleteMemory { id, agent_id, resp } => {
@@ -1086,12 +1274,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     resp,
                 } => {
                     let _ = resp.send(repo::explicit_memories::save_pair(
-                        &mut conn,
-                        &agent_id,
-                        &user_id,
-                        &user_md,
-                        &memory_id,
-                        &memory_md,
+                        &mut conn, &agent_id, &user_id, &user_md, &memory_id, &memory_md,
                     ));
                 }
                 DbCommand::GetSetting { key, resp } => {
@@ -1138,6 +1321,41 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         query_embedding.as_ref(),
                     ));
                 }
+                DbCommand::ListKnowledgeCollections { agent_id, resp } => {
+                    let _ = resp.send(repo::knowledge::list_collections(&conn, &agent_id));
+                }
+                DbCommand::CreateKnowledgeCollection { row, resp } => {
+                    let _ = resp.send(repo::knowledge::create_collection(&mut conn, &row));
+                }
+                DbCommand::ListKnowledgeDocuments {
+                    collection_id,
+                    agent_id,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::knowledge::list_documents(
+                        &conn,
+                        &collection_id,
+                        &agent_id,
+                    ));
+                }
+                DbCommand::ImportLocalKnowledgeDocument { input, resp } => {
+                    let _ = resp.send(repo::knowledge::import_local_document(&mut conn, &input));
+                }
+                DbCommand::SearchKnowledge {
+                    agent_id,
+                    query,
+                    collection_id,
+                    limit,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::knowledge::search(
+                        &conn,
+                        &agent_id,
+                        &query,
+                        collection_id.as_deref(),
+                        limit,
+                    ));
+                }
                 DbCommand::ListSessions { agent_id, resp } => {
                     let _ = resp.send(repo::sessions::list(&conn, &agent_id));
                 }
@@ -1159,7 +1377,13 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::SetSessionPin { id, pinned, resp } => {
                     let _ = resp.send(repo::sessions::set_pin(&mut conn, &id, pinned));
                 }
-                DbCommand::UpdateSessionLlm { id, model, thinking_mode, thinking_budget, resp } => {
+                DbCommand::UpdateSessionLlm {
+                    id,
+                    model,
+                    thinking_mode,
+                    thinking_budget,
+                    resp,
+                } => {
                     let _ = resp.send(repo::sessions::update_llm(
                         &mut conn,
                         &id,
@@ -1199,7 +1423,8 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::InsertMessage { msg, parts, resp } => {
                     let transaction_res = (|| -> AppResult<()> {
-                        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                        let tx = conn
+                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                         repo::messages::insert(&tx, &msg)?;
                         for part in &parts {
                             repo::messages::insert_part(&tx, part)?;
@@ -1231,7 +1456,11 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::CountChildren { id, resp } => {
                     let _ = resp.send(repo::messages::count_children(&conn, &id));
                 }
-                DbCommand::SetSelectedChild { parent_id, child_id, resp } => {
+                DbCommand::SetSelectedChild {
+                    parent_id,
+                    child_id,
+                    resp,
+                } => {
                     let _ = resp.send(repo::messages::set_selected_child(
                         &mut conn,
                         &parent_id,
@@ -1241,9 +1470,14 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::DeleteMessage { id, resp } => {
                     let _ = resp.send(repo::messages::delete_message(&mut conn, &id));
                 }
-                DbCommand::ReplaceMessageParts { message_id, parts, resp } => {
+                DbCommand::ReplaceMessageParts {
+                    message_id,
+                    parts,
+                    resp,
+                } => {
                     let transaction_res = (|| -> AppResult<()> {
-                        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                        let tx = conn
+                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                         repo::messages::delete_parts(&tx, &message_id)?;
                         for (i, mut p) in parts.into_iter().enumerate() {
                             p.ordinal = i as i32;
@@ -1256,48 +1490,64 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     })();
                     let _ = resp.send(transaction_res);
                 }
-                DbCommand::AppendUserAndAssistant { session_id, parent_id, user_text, model, resp } => {
+                DbCommand::AppendUserAndAssistant {
+                    session_id,
+                    parent_id,
+                    user_text,
+                    model,
+                    resp,
+                } => {
                     let transaction_res = (|| -> AppResult<(String, String)> {
-                        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                        let tx = conn
+                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                         let user_id = uuid::Uuid::new_v4().to_string();
                         let seq_u = repo::messages::get_next_seq(&tx, &session_id)?;
-                        repo::messages::insert(&tx, &repo::messages::NewMessage {
-                            id: user_id.clone(),
-                            session_id: session_id.clone(),
-                            role: "user".into(),
-                            seq: seq_u,
-                            status: "complete".into(),
-                            model: None,
-                            token_count: None,
-                            metadata: None,
-                            parent_id: parent_id.clone(),
-                            selected_child_id: None,
-                        })?;
+                        repo::messages::insert(
+                            &tx,
+                            &repo::messages::NewMessage {
+                                id: user_id.clone(),
+                                session_id: session_id.clone(),
+                                role: "user".into(),
+                                seq: seq_u,
+                                status: "complete".into(),
+                                model: None,
+                                token_count: None,
+                                metadata: None,
+                                parent_id: parent_id.clone(),
+                                selected_child_id: None,
+                            },
+                        )?;
                         let user_part_id = uuid::Uuid::new_v4().to_string();
-                        repo::messages::insert_part(&tx, &repo::messages::NewMessagePart {
-                            id: user_part_id,
-                            message_id: user_id.clone(),
-                            kind: "text".into(),
-                            ordinal: 0,
-                            mime_type: None,
-                            tool_call_id: None,
-                            content: user_text,
-                            metadata: None,
-                        })?;
+                        repo::messages::insert_part(
+                            &tx,
+                            &repo::messages::NewMessagePart {
+                                id: user_part_id,
+                                message_id: user_id.clone(),
+                                kind: "text".into(),
+                                ordinal: 0,
+                                mime_type: None,
+                                tool_call_id: None,
+                                content: user_text,
+                                metadata: None,
+                            },
+                        )?;
                         let ai_id = uuid::Uuid::new_v4().to_string();
                         let seq_a = repo::messages::get_next_seq(&tx, &session_id)?;
-                        repo::messages::insert(&tx, &repo::messages::NewMessage {
-                            id: ai_id.clone(),
-                            session_id: session_id.clone(),
-                            role: "assistant".into(),
-                            seq: seq_a,
-                            status: "pending".into(),
-                            model: Some(model.clone()),
-                            token_count: None,
-                            metadata: None,
-                            parent_id: Some(user_id.clone()),
-                            selected_child_id: None,
-                        })?;
+                        repo::messages::insert(
+                            &tx,
+                            &repo::messages::NewMessage {
+                                id: ai_id.clone(),
+                                session_id: session_id.clone(),
+                                role: "assistant".into(),
+                                seq: seq_a,
+                                status: "pending".into(),
+                                model: Some(model.clone()),
+                                token_count: None,
+                                metadata: None,
+                                parent_id: Some(user_id.clone()),
+                                selected_child_id: None,
+                            },
+                        )?;
                         // 链接：父→user→ai
                         if let Some(ref pid) = parent_id {
                             repo::messages::set_selected_child_local(&tx, pid, Some(&user_id))?;
@@ -1310,23 +1560,32 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     })();
                     let _ = resp.send(transaction_res);
                 }
-                DbCommand::AppendAssistantSibling { session_id, parent_user_id, model, resp } => {
+                DbCommand::AppendAssistantSibling {
+                    session_id,
+                    parent_user_id,
+                    model,
+                    resp,
+                } => {
                     let transaction_res = (|| -> AppResult<String> {
-                        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                        let tx = conn
+                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                         let ai_id = uuid::Uuid::new_v4().to_string();
                         let seq_a = repo::messages::get_next_seq(&tx, &session_id)?;
-                        repo::messages::insert(&tx, &repo::messages::NewMessage {
-                            id: ai_id.clone(),
-                            session_id: session_id.clone(),
-                            role: "assistant".into(),
-                            seq: seq_a,
-                            status: "pending".into(),
-                            model: Some(model.clone()),
-                            token_count: None,
-                            metadata: None,
-                            parent_id: Some(parent_user_id.clone()),
-                            selected_child_id: None,
-                        })?;
+                        repo::messages::insert(
+                            &tx,
+                            &repo::messages::NewMessage {
+                                id: ai_id.clone(),
+                                session_id: session_id.clone(),
+                                role: "assistant".into(),
+                                seq: seq_a,
+                                status: "pending".into(),
+                                model: Some(model.clone()),
+                                token_count: None,
+                                metadata: None,
+                                parent_id: Some(parent_user_id.clone()),
+                                selected_child_id: None,
+                            },
+                        )?;
                         // 把活动路径切到新 AI 同级
                         repo::messages::set_selected_child_local(
                             &tx,
@@ -1376,7 +1635,11 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::GetModelProvider { id, resp } => {
                     let _ = resp.send(repo::model_providers::get(&conn, &id));
                 }
-                DbCommand::UpsertModelProvider { row, set_default, resp } => {
+                DbCommand::UpsertModelProvider {
+                    row,
+                    set_default,
+                    resp,
+                } => {
                     let res = (|| -> AppResult<String> {
                         if set_default {
                             repo::model_providers::clear_default(&conn)?;
@@ -1430,10 +1693,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     resp,
                 } => {
                     let _ = resp.send(repo::sync::apply_push_result(
-                        &mut conn,
-                        &accepted,
-                        &conflicts,
-                        now_ms,
+                        &mut conn, &accepted, &conflicts, now_ms,
                     ));
                 }
                 DbCommand::ApplySyncBootstrapPage {
@@ -1583,7 +1843,11 @@ mod tests {
         assert_eq!(sessions[0].title, "Test Title");
 
         // Get Session
-        let got_sess = handle.get_session("test-session".into()).await.unwrap().unwrap();
+        let got_sess = handle
+            .get_session("test-session".into())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(got_sess.title, "Test Title");
         assert_eq!(got_sess.recency_window, 15);
         assert_eq!(got_sess.permission_mode, "auto");
@@ -1592,17 +1856,35 @@ mod tests {
             .update_session_permission_mode("test-session".into(), "accept_edits".into())
             .await
             .unwrap();
-        let got_sess = handle.get_session("test-session".into()).await.unwrap().unwrap();
+        let got_sess = handle
+            .get_session("test-session".into())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(got_sess.permission_mode, "accept_edits");
 
         // Update title
-        handle.update_session_title("test-session".into(), "New Title".into()).await.unwrap();
-        let got_sess = handle.get_session("test-session".into()).await.unwrap().unwrap();
+        handle
+            .update_session_title("test-session".into(), "New Title".into())
+            .await
+            .unwrap();
+        let got_sess = handle
+            .get_session("test-session".into())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(got_sess.title, "New Title");
 
         // Update summary
-        handle.update_session_summary("test-session".into(), "Session Summary".into()).await.unwrap();
-        let got_sess = handle.get_session("test-session".into()).await.unwrap().unwrap();
+        handle
+            .update_session_summary("test-session".into(), "Session Summary".into())
+            .await
+            .unwrap();
+        let got_sess = handle
+            .get_session("test-session".into())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(got_sess.summary.unwrap(), "Session Summary");
 
         // 3. Insert Messages
@@ -1630,15 +1912,24 @@ mod tests {
         };
         handle.insert_message(msg, vec![part1]).await.unwrap();
 
-        let msg_with_parts = handle.list_messages_with_parts("test-session".into()).await.unwrap();
+        let msg_with_parts = handle
+            .list_messages_with_parts("test-session".into())
+            .await
+            .unwrap();
         assert_eq!(msg_with_parts.len(), 1);
         assert_eq!(msg_with_parts[0].0.id, "msg-1");
         assert_eq!(msg_with_parts[0].1.len(), 1);
         assert_eq!(msg_with_parts[0].1[0].content, "Hello Agent!");
 
         // Update message status
-        handle.update_message_status("msg-1".into(), "failed".into()).await.unwrap();
-        let msg_with_parts = handle.list_messages_with_parts("test-session".into()).await.unwrap();
+        handle
+            .update_message_status("msg-1".into(), "failed".into())
+            .await
+            .unwrap();
+        let msg_with_parts = handle
+            .list_messages_with_parts("test-session".into())
+            .await
+            .unwrap();
         assert_eq!(msg_with_parts[0].0.status, "failed");
 
         // 4. Insert Tool Call
@@ -1659,20 +1950,26 @@ mod tests {
         assert_eq!(tc.status, "pending_approval");
 
         // Update running
-        handle.update_tool_call_running("tc-1".into(), "/projects".into()).await.unwrap();
+        handle
+            .update_tool_call_running("tc-1".into(), "/projects".into())
+            .await
+            .unwrap();
         let tc = handle.get_tool_call("tc-1".into()).await.unwrap().unwrap();
         assert_eq!(tc.status, "running");
         assert_eq!(tc.cwd.unwrap(), "/projects");
 
         // Update complete
-        handle.update_tool_call_complete(
-            "tc-1".into(),
-            "done".into(),
-            Some("success".into()),
-            Some(0),
-            Some("file1.txt\n".into()),
-            None,
-        ).await.unwrap();
+        handle
+            .update_tool_call_complete(
+                "tc-1".into(),
+                "done".into(),
+                Some("success".into()),
+                Some(0),
+                Some("file1.txt\n".into()),
+                None,
+            )
+            .await
+            .unwrap();
         let tc = handle.get_tool_call("tc-1".into()).await.unwrap().unwrap();
         assert_eq!(tc.status, "done");
         assert_eq!(tc.result.unwrap(), "success");
@@ -1688,11 +1985,18 @@ mod tests {
         // Since list_sessions filters out deleted_at IS NULL, it should be 0 now
         assert_eq!(sessions.len(), 0);
 
-        let got_sess = handle.get_session("test-session".into()).await.unwrap().unwrap();
+        let got_sess = handle
+            .get_session("test-session".into())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(got_sess.deleted_at.is_some());
 
         // 6. Test Settings
-        handle.set_setting("test-key".into(), "test-value".into()).await.unwrap();
+        handle
+            .set_setting("test-key".into(), "test-value".into())
+            .await
+            .unwrap();
         let val = handle.get_setting("test-key".into()).await.unwrap();
         assert_eq!(val, Some("test-value".into()));
 

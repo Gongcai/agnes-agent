@@ -1397,12 +1397,15 @@ fn validate_encrypted_outbox_row(
             return Ok(());
         }
     } else if row.operation == "upsert" && row.payload_encoding == PAYLOAD_ENCODING {
-        let key_version = row.key_version.filter(|version| *version > 0).ok_or_else(|| {
-            AppError::Other(format!(
-                "encrypted outbox key version is missing for `{}`",
-                row.change_id
-            ))
-        })?;
+        let key_version = row
+            .key_version
+            .filter(|version| *version > 0)
+            .ok_or_else(|| {
+                AppError::Other(format!(
+                    "encrypted outbox key version is missing for `{}`",
+                    row.change_id
+                ))
+            })?;
         let key = keyset.key(key_version).ok_or_else(|| {
             AppError::Other(format!(
                 "Sync encryption key version {key_version} is not available"
@@ -1411,7 +1414,9 @@ fn validate_encrypted_outbox_row(
         let payload: serde_json::Value = row
             .payload
             .as_deref()
-            .ok_or_else(|| AppError::Other(format!("encrypted payload `{}` is missing", row.change_id)))
+            .ok_or_else(|| {
+                AppError::Other(format!("encrypted payload `{}` is missing", row.change_id))
+            })
             .and_then(|payload| serde_json::from_str(payload).map_err(Into::into))?;
         let source: serde_json::Value = row
             .source_payload
@@ -2259,9 +2264,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("not a monotonic upgrade"));
+        assert!(error.to_string().contains("not a monotonic upgrade"));
         assert_eq!(
             target.status().await.unwrap().e2ee.active_key_version,
             Some(1)

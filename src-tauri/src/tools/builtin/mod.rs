@@ -168,11 +168,7 @@ pub fn compute_risk(tool: &str, args: &Value) -> Risk {
 /// 判断操作是否为写操作（用于 OnWrite tier）。
 pub fn is_write_op(tool: &str, args: &Value) -> bool {
     match tool {
-        "file_write"
-        | "file_edit"
-        | "apply_patch"
-        | "memory_create"
-        | "memory_update"
+        "file_write" | "file_edit" | "apply_patch" | "memory_create" | "memory_update"
         | "memory_md_edit" => true,
         "file_read" | "list_files" | "grep" | "memory_search" | "memory_md_view" => false,
         "shell" => {

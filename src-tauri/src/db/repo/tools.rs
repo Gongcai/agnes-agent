@@ -146,26 +146,28 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<ToolCallRow>> {
          WHERE id = ?1",
     )?;
 
-    let res = stmt.query_row([id], |r| {
-        Ok(ToolCallRow {
-            id: r.get(0)?,
-            session_id: r.get(1)?,
-            message_id: r.get(2)?,
-            tool: r.get(3)?,
-            params: r.get(4)?,
-            result: r.get(5)?,
-            status: r.get(6)?,
-            risk_level: r.get(7)?,
-            cwd: r.get(8)?,
-            exit_code: r.get(9)?,
-            stdout: r.get(10)?,
-            stderr: r.get(11)?,
-            started_at: r.get(12)?,
-            completed_at: r.get(13)?,
-            approval_policy_snapshot: r.get(14)?,
-            created_at: r.get(15)?,
+    let res = stmt
+        .query_row([id], |r| {
+            Ok(ToolCallRow {
+                id: r.get(0)?,
+                session_id: r.get(1)?,
+                message_id: r.get(2)?,
+                tool: r.get(3)?,
+                params: r.get(4)?,
+                result: r.get(5)?,
+                status: r.get(6)?,
+                risk_level: r.get(7)?,
+                cwd: r.get(8)?,
+                exit_code: r.get(9)?,
+                stdout: r.get(10)?,
+                stderr: r.get(11)?,
+                started_at: r.get(12)?,
+                completed_at: r.get(13)?,
+                approval_policy_snapshot: r.get(14)?,
+                created_at: r.get(15)?,
+            })
         })
-    }).optional()?;
+        .optional()?;
 
     Ok(res)
 }

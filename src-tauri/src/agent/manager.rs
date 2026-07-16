@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::agent::protocol::Envelope;
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
-use crate::agent::protocol::Envelope;
 
 /// Agent 运行时：拥有 Python sidecar 子进程与 WS Server 端口/token。
 struct AgentRuntime {
@@ -90,7 +90,10 @@ impl AgentManager {
         let token_for_ws = token.clone();
         let manager_clone = self.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = crate::agent::ws_server::run(listener, token_for_ws, db, app_handle, manager_clone).await {
+            if let Err(e) =
+                crate::agent::ws_server::run(listener, token_for_ws, db, app_handle, manager_clone)
+                    .await
+            {
                 eprintln!("[agent][ws] 运行错误：{e}");
             }
         });
@@ -117,7 +120,8 @@ impl AgentManager {
     pub fn send_to_agent(&self, env: Envelope) -> AppResult<()> {
         let sender_opt = self.active_sender.lock().unwrap();
         if let Some(ref tx) = *sender_opt {
-            tx.send(env).map_err(|_| AppError::Ws("WS 连接通道已断开".into()))?;
+            tx.send(env)
+                .map_err(|_| AppError::Ws("WS 连接通道已断开".into()))?;
             Ok(())
         } else {
             Err(AppError::Ws("Python sidecar 未连接或连接已断开".into()))
@@ -126,7 +130,10 @@ impl AgentManager {
 
     /// 注册一个等待审批的工具调用。
     pub fn register_approval(&self, tool_call_id: String, tx: oneshot::Sender<bool>) {
-        self.pending_approvals.lock().unwrap().insert(tool_call_id, tx);
+        self.pending_approvals
+            .lock()
+            .unwrap()
+            .insert(tool_call_id, tx);
     }
 
     /// 批准或拒绝一个挂起的工具调用。如果找到并处理则返回 true。
@@ -198,10 +205,7 @@ impl AgentManager {
 
     /// 移除并返回某会话当前活跃运行的 run_id。RUN_FINISHED/RUN_ERROR/cancel 时调用。
     pub fn remove_session_run(&self, session_id: &str) -> Option<String> {
-        self.active_session_runs
-            .lock()
-            .unwrap()
-            .remove(session_id)
+        self.active_session_runs.lock().unwrap().remove(session_id)
     }
 
     /// 记录某 run 当前挂起审批的 tool_call_id（cancel 时据此解除审批阻塞）。
@@ -219,10 +223,7 @@ impl AgentManager {
 
     /// 注册某 run 审批等待的取消信号（ws_server 在 approval await 时 select 它）。
     pub fn set_run_cancel_signal(&self, run_id: String, tx: oneshot::Sender<()>) {
-        self.run_cancel_signals
-            .lock()
-            .unwrap()
-            .insert(run_id, tx);
+        self.run_cancel_signals.lock().unwrap().insert(run_id, tx);
     }
 
     /// 取走并触发某 run 的取消信号（cancel_run 调用）。
@@ -234,7 +235,9 @@ impl AgentManager {
 fn generate_token() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
-    (0..32).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
+    (0..32)
+        .map(|_| format!("{:02x}", rng.gen::<u8>()))
+        .collect()
 }
 
 fn resolve_agent_dir() -> std::path::PathBuf {

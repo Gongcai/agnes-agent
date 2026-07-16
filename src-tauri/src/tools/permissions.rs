@@ -96,7 +96,8 @@ pub fn approval_decision(mode: PermissionMode, tool: &str, risk: Risk) -> Approv
             );
             ApprovalDecision {
                 needs_approval: !accepts_without_prompt,
-                reason: "接受编辑会自动处理文件和记忆读写，但 Shell、Git 和未知工具仍需要你的批准。",
+                reason:
+                    "接受编辑会自动处理文件和记忆读写，但 Shell、Git 和未知工具仍需要你的批准。",
                 is_secondary_confirmation: false,
             }
         }

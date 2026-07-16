@@ -27,10 +27,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 1) 初始化 SQLite（阻塞直到建表完成）
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("无法获取 app data 目录");
+            let data_dir = app.path().app_data_dir().expect("无法获取 app data 目录");
             std::fs::create_dir_all(&data_dir).ok();
             let db = db::spawn_db_actor(data_dir.join("agnes.db"));
 
@@ -110,6 +107,11 @@ fn main() {
             commands::create_memory,
             commands::update_memory,
             commands::delete_memory,
+            commands::list_knowledge_collections,
+            commands::create_knowledge_collection,
+            commands::list_knowledge_documents,
+            commands::import_local_knowledge_document,
+            commands::search_knowledge,
             commands::list_audit_logs,
             commands::list_providers,
             commands::upsert_provider,

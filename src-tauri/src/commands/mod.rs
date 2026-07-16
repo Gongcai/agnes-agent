@@ -1,20 +1,19 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
-use crate::error::{AppError, AppResult};
-use crate::state::AppState;
 use crate::agent::protocol::{msg_type, Envelope};
-use crate::db::repo::messages::{NewMessage, NewMessagePart};
 use crate::db::repo::agents::{AgentRow, AgentUpdate, NewAgent};
+use crate::db::repo::messages::{NewMessage, NewMessagePart};
 use crate::db::repo::sessions::NewSession;
+use crate::error::{AppError, AppResult};
 use crate::model_registry::{
     descriptor_from_api, load_model_roles, normalize_model_catalog, parse_model_catalog,
     save_model_roles, ModelDescriptor, ModelRoleAssignments,
 };
-use crate::secrets::{
-    provider_api_key_secret_id, SecretStore, SYNC_CREDENTIAL_SECRET_ID,
-};
+use crate::secrets::{provider_api_key_secret_id, SecretStore, SYNC_CREDENTIAL_SECRET_ID};
+use crate::state::AppState;
 use crate::sync::auth::SyncCredential;
 
 #[derive(Serialize)]
@@ -213,10 +212,7 @@ pub async fn upsert_agent(
 
 /// Soft-delete an agent; dependent rows remain until sync-safe compaction.
 #[tauri::command]
-pub async fn delete_agent(
-    state: tauri::State<'_, AppState>,
-    agent_id: String,
-) -> AppResult<()> {
+pub async fn delete_agent(state: tauri::State<'_, AppState>, agent_id: String) -> AppResult<()> {
     state.db.delete_agent(agent_id).await?;
     state.sync.schedule();
     Ok(())
@@ -248,9 +244,21 @@ pub async fn create_session(
         recency_window: None,
         reserved_output_tokens: None,
         summarizer_model: None,
-        model: if default_model.is_empty() { None } else { Some(default_model) },
-        thinking_mode: if default_thinking_mode.is_empty() { None } else { Some(default_thinking_mode) },
-        thinking_budget: if default_thinking_budget == 0 { None } else { Some(default_thinking_budget) },
+        model: if default_model.is_empty() {
+            None
+        } else {
+            Some(default_model)
+        },
+        thinking_mode: if default_thinking_mode.is_empty() {
+            None
+        } else {
+            Some(default_thinking_mode)
+        },
+        thinking_budget: if default_thinking_budget == 0 {
+            None
+        } else {
+            Some(default_thinking_budget)
+        },
         permission_mode: "auto".to_string(),
         workspace_id,
         origin_device_id: None,
@@ -315,12 +323,15 @@ pub async fn create_workspace(
     folder_path: String,
 ) -> AppResult<String> {
     let id = uuid::Uuid::new_v4().to_string();
-    state.db.insert_workspace(crate::db::repo::workspaces::NewWorkspace {
-        id: id.clone(),
-        agent_id,
-        name,
-        folder_path,
-    }).await?;
+    state
+        .db
+        .insert_workspace(crate::db::repo::workspaces::NewWorkspace {
+            id: id.clone(),
+            agent_id,
+            name,
+            folder_path,
+        })
+        .await?;
     state.sync.schedule();
     Ok(id)
 }
@@ -477,10 +488,7 @@ pub async fn set_sync_credential(
     let previous = state.secrets.get(SYNC_CREDENTIAL_SECRET_ID).await?;
     let replacement = credential.map(SyncCredential::into_secret).transpose()?;
     let write_result = match replacement.as_deref() {
-        Some(secret) => state
-            .secrets
-            .set(SYNC_CREDENTIAL_SECRET_ID, secret)
-            .await,
+        Some(secret) => state.secrets.set(SYNC_CREDENTIAL_SECRET_ID, secret).await,
         None => state.secrets.delete(SYNC_CREDENTIAL_SECRET_ID).await,
     };
     if let Err(write_error) = write_result {
@@ -593,10 +601,7 @@ pub async fn join_sync_pairing(
     mut pairing_code: String,
     device_name: String,
 ) -> AppResult<crate::sync::engine::PairingJoinStarted> {
-    let result = state
-        .sync
-        .join_pairing(&pairing_code, &device_name)
-        .await;
+    let result = state.sync.join_pairing(&pairing_code, &device_name).await;
     pairing_code.zeroize();
     result
 }
@@ -627,7 +632,10 @@ pub async fn get_debug_prompt(
         Some(sid) => state.db.get_session(sid.clone()).await?,
         None => None,
     };
-    let session_model = session_opt.as_ref().and_then(|s| s.model.clone()).unwrap_or_default();
+    let session_model = session_opt
+        .as_ref()
+        .and_then(|s| s.model.clone())
+        .unwrap_or_default();
     let model_roles = load_model_roles(&state.db).await?;
     let effective_model = if session_model.is_empty() {
         if agent.model.is_empty() {
@@ -642,13 +650,19 @@ pub async fn get_debug_prompt(
         session_model
     };
     let effective_thinking_mode = {
-        let m = session_opt.as_ref()
+        let m = session_opt
+            .as_ref()
             .and_then(|s| s.thinking_mode.clone())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| agent.thinking_mode.clone());
-        if m.is_empty() { "off".to_string() } else { m }
+        if m.is_empty() {
+            "off".to_string()
+        } else {
+            m
+        }
     };
-    let effective_thinking_budget = session_opt.as_ref()
+    let effective_thinking_budget = session_opt
+        .as_ref()
         .and_then(|s| s.thinking_budget)
         .or(Some(agent.thinking_budget))
         .unwrap_or(0);
@@ -774,7 +788,9 @@ pub async fn get_debug_prompt(
 
     if let Err(e) = state.agent.send_to_agent(env) {
         // 清理已注册的等待项，避免泄漏
-        state.agent.resolve_debug(&debug_id, serde_json::json!({ "error": e.to_string() }));
+        state
+            .agent
+            .resolve_debug(&debug_id, serde_json::json!({ "error": e.to_string() }));
         return Err(e);
     }
 
@@ -786,7 +802,9 @@ pub async fn get_debug_prompt(
             state
                 .agent
                 .resolve_debug(&debug_id, serde_json::json!({ "error": "timeout" }));
-            return Err(AppError::Other("调试提示词拼装超时（Python sidecar 未响应）".into()));
+            return Err(AppError::Other(
+                "调试提示词拼装超时（Python sidecar 未响应）".into(),
+            ));
         }
     };
 
@@ -898,21 +916,44 @@ pub async fn switch_version(
     message_id: String,
     direction: String, // "prev" | "next"
 ) -> AppResult<()> {
-    let msg = state.db.get_message(message_id.clone()).await?
+    let msg = state
+        .db
+        .get_message(message_id.clone())
+        .await?
         .ok_or_else(|| AppError::Other("消息不存在".into()))?;
-    let parent_id = msg.parent_id.clone()
+    let parent_id = msg
+        .parent_id
+        .clone()
         .ok_or_else(|| AppError::Other("根消息无同级版本".into()))?;
-    let all = state.db.list_messages_with_parts(msg.session_id.clone()).await?;
+    let all = state
+        .db
+        .list_messages_with_parts(msg.session_id.clone())
+        .await?;
     // 同级：parent_id 相同，按 seq 升序（list 已排序）
-    let siblings: Vec<String> = all.iter()
+    let siblings: Vec<String> = all
+        .iter()
         .filter(|(m, _)| m.parent_id.as_deref() == Some(parent_id.as_str()))
         .map(|(m, _)| m.id.clone())
         .collect();
-    let idx = siblings.iter().position(|id| id == &message_id)
+    let idx = siblings
+        .iter()
+        .position(|id| id == &message_id)
         .ok_or_else(|| AppError::Other("找不到当前消息".into()))?;
     let new_idx = match direction.as_str() {
-        "prev" => if idx == 0 { return Ok(()); } else { idx - 1 },
-        "next" => if idx + 1 >= siblings.len() { return Ok(()); } else { idx + 1 },
+        "prev" => {
+            if idx == 0 {
+                return Ok(());
+            } else {
+                idx - 1
+            }
+        }
+        "next" => {
+            if idx + 1 >= siblings.len() {
+                return Ok(());
+            } else {
+                idx + 1
+            }
+        }
         _ => return Ok(()),
     };
     let new_id = siblings[new_idx].clone();
@@ -924,10 +965,7 @@ pub async fn switch_version(
 /// 创建分支：把该消息设为活动叶子（selected_child_id=NULL），其后代保留为
 /// 可切回的同级；下次发消息即从该点长新枝。
 #[tauri::command]
-pub async fn create_branch(
-    state: tauri::State<'_, AppState>,
-    message_id: String,
-) -> AppResult<()> {
+pub async fn create_branch(state: tauri::State<'_, AppState>, message_id: String) -> AppResult<()> {
     state.db.set_selected_child(message_id, None).await?;
     state.sync.schedule();
     Ok(())
@@ -940,7 +978,10 @@ pub async fn delete_message(
     state: tauri::State<'_, AppState>,
     message_id: String,
 ) -> AppResult<()> {
-    let msg = state.db.get_message(message_id.clone()).await?
+    let msg = state
+        .db
+        .get_message(message_id.clone())
+        .await?
         .ok_or_else(|| AppError::Other("消息不存在".into()))?;
     if msg.status == "pending" || msg.status == "streaming" {
         return Err(AppError::Other("消息正在生成，无法删除".into()));
@@ -962,15 +1003,24 @@ pub async fn edit_and_resend(
     message_id: String,
     text: String,
 ) -> AppResult<()> {
-    let msg = state.db.get_message(message_id.clone()).await?
+    let msg = state
+        .db
+        .get_message(message_id.clone())
+        .await?
         .ok_or_else(|| AppError::Other("消息不存在".into()))?;
     if msg.role != "user" {
         return Err(AppError::Other("仅可编辑用户消息".into()));
     }
     let cfg = resolve_llm(&state, &msg.session_id).await?;
     let parent_id = msg.parent_id.clone();
-    let (_user_id, assistant_msg_id) = state.db
-        .append_user_and_assistant(msg.session_id.clone(), parent_id, text, cfg.model_name.clone())
+    let (_user_id, assistant_msg_id) = state
+        .db
+        .append_user_and_assistant(
+            msg.session_id.clone(),
+            parent_id,
+            text,
+            cfg.model_name.clone(),
+        )
         .await?;
     state.sync.schedule();
     start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id).await
@@ -983,16 +1033,26 @@ pub async fn regenerate_message(
     state: tauri::State<'_, AppState>,
     message_id: String,
 ) -> AppResult<()> {
-    let msg = state.db.get_message(message_id.clone()).await?
+    let msg = state
+        .db
+        .get_message(message_id.clone())
+        .await?
         .ok_or_else(|| AppError::Other("消息不存在".into()))?;
     if msg.role != "assistant" {
         return Err(AppError::Other("仅可重新生成 AI 消息".into()));
     }
-    let parent_user_id = msg.parent_id.clone()
+    let parent_user_id = msg
+        .parent_id
+        .clone()
         .ok_or_else(|| AppError::Other("AI 消息无父用户消息".into()))?;
     let cfg = resolve_llm(&state, &msg.session_id).await?;
-    let assistant_msg_id = state.db
-        .append_assistant_sibling(msg.session_id.clone(), parent_user_id, cfg.model_name.clone())
+    let assistant_msg_id = state
+        .db
+        .append_assistant_sibling(
+            msg.session_id.clone(),
+            parent_user_id,
+            cfg.model_name.clone(),
+        )
         .await?;
     state.sync.schedule();
     start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id).await
@@ -1014,7 +1074,10 @@ pub async fn replace_message_parts(
     message_id: String,
     parts: Vec<PartInput>,
 ) -> AppResult<()> {
-    let msg = state.db.get_message(message_id.clone()).await?
+    let msg = state
+        .db
+        .get_message(message_id.clone())
+        .await?
         .ok_or_else(|| AppError::Other("消息不存在".into()))?;
     if msg.role != "assistant" {
         return Err(AppError::Other("仅可修改 AI 消息".into()));
@@ -1022,17 +1085,23 @@ pub async fn replace_message_parts(
     if msg.status != "complete" {
         return Err(AppError::Other("仅可修改已完成的 AI 消息".into()));
     }
-    let new_parts: Vec<NewMessagePart> = parts.into_iter().map(|p| NewMessagePart {
-        id: uuid::Uuid::new_v4().to_string(),
-        message_id: message_id.clone(),
-        kind: p.kind,
-        ordinal: 0, // actor handler 会按顺序重排
-        mime_type: None,
-        tool_call_id: p.tool_call_id,
-        content: p.content,
-        metadata: p.metadata,
-    }).collect();
-    state.db.replace_message_parts(message_id, new_parts).await?;
+    let new_parts: Vec<NewMessagePart> = parts
+        .into_iter()
+        .map(|p| NewMessagePart {
+            id: uuid::Uuid::new_v4().to_string(),
+            message_id: message_id.clone(),
+            kind: p.kind,
+            ordinal: 0, // actor handler 会按顺序重排
+            mime_type: None,
+            tool_call_id: p.tool_call_id,
+            content: p.content,
+            metadata: p.metadata,
+        })
+        .collect();
+    state
+        .db
+        .replace_message_parts(message_id, new_parts)
+        .await?;
     state.sync.schedule();
     Ok(())
 }
@@ -1041,10 +1110,7 @@ pub async fn replace_message_parts(
 /// 同时触发挂起审批的取消信号，解除 ws_server 在 approval oneshot 上的阻塞
 /// （否则 ws 循环卡死，RUN_ERROR 与后续消息都无法处理）。Python 收到后取消对应任务。
 #[tauri::command]
-pub async fn cancel_run(
-    state: tauri::State<'_, AppState>,
-    session_id: String,
-) -> AppResult<()> {
+pub async fn cancel_run(state: tauri::State<'_, AppState>, session_id: String) -> AppResult<()> {
     if let Some(run_id) = state.agent.remove_session_run(&session_id) {
         // 先触发审批取消信号，解除 ws_server 的 approval await 阻塞
         // （用 select! 分支，handler 不会发 TOOL_RESULT，避免 Python 任务被工具结果唤醒继续）
@@ -1141,10 +1207,15 @@ async fn resolve_task_llm_configs(
 
 /// 解析会话当前生效的 LLM 配置（模型/思考/provider/密钥）。
 async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLlm> {
-    let session = state.db.get_session(session_id.to_string()).await?
+    let session = state
+        .db
+        .get_session(session_id.to_string())
+        .await?
         .ok_or_else(|| AppError::Other(format!("会话 `{session_id}` 不存在")))?;
     let agents = state.db.list_agents().await?;
-    let agent = agents.iter().find(|a| a.id == session.agent_id)
+    let agent = agents
+        .iter()
+        .find(|a| a.id == session.agent_id)
         .ok_or_else(|| AppError::Other(format!("关联的智能体 `{}` 不存在", session.agent_id)))?
         .clone();
 
@@ -1163,7 +1234,10 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         session_model
     };
     let (provider_id_opt, model_name) = if let Some(idx) = effective_model.find('/') {
-        (Some(effective_model[..idx].to_string()), effective_model[idx + 1..].to_string())
+        (
+            Some(effective_model[..idx].to_string()),
+            effective_model[idx + 1..].to_string(),
+        )
     } else {
         (None, effective_model.clone())
     };
@@ -1191,11 +1265,21 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         _ => model_name.clone(),
     };
     let thinking_mode = {
-        let m = session.thinking_mode.clone().filter(|s| !s.is_empty())
+        let m = session
+            .thinking_mode
+            .clone()
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| agent.thinking_mode.clone());
-        if m.is_empty() { "off".to_string() } else { m }
+        if m.is_empty() {
+            "off".to_string()
+        } else {
+            m
+        }
     };
-    let thinking_budget = session.thinking_budget.or(Some(agent.thinking_budget)).unwrap_or(0);
+    let thinking_budget = session
+        .thinking_budget
+        .or(Some(agent.thinking_budget))
+        .unwrap_or(0);
 
     let task_llm_configs = resolve_task_llm_configs(state, &model_roles).await?;
     Ok(ResolvedLlm {
@@ -1216,7 +1300,12 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
 
 /// 用已解析配置启动一次 agent 运行：构建活动路径历史（跳过 pending assistant）→
 /// 编译 snapshot（input="" 避免与 recentMessages 重复）→ 注册 run_id → 发 RUN_REQUEST。
-async fn start_agent_run(state: &AppState, cfg: &ResolvedLlm, session_id: &str, assistant_msg_id: &str) -> AppResult<()> {
+async fn start_agent_run(
+    state: &AppState,
+    cfg: &ResolvedLlm,
+    session_id: &str,
+    assistant_msg_id: &str,
+) -> AppResult<()> {
     if let Some(config) = cfg.task_llm_configs.get("embedding") {
         if let Err(error) = crate::embeddings::ensure_agent_memory_index(
             &state.db,
@@ -1231,9 +1320,13 @@ async fn start_agent_run(state: &AppState, cfg: &ResolvedLlm, session_id: &str, 
             );
         }
     }
-    let (user_md, memory_md) = crate::memory::load_explicit_memories(&state.db, &cfg.agent.id).await?;
+    let (user_md, memory_md) =
+        crate::memory::load_explicit_memories(&state.db, &cfg.agent.id).await?;
 
-    let path = state.db.list_active_with_parts(session_id.to_string()).await?;
+    let path = state
+        .db
+        .list_active_with_parts(session_id.to_string())
+        .await?;
     let mut history_json = Vec::new();
     for am in path.messages {
         // 跳过 pending assistant 占位消息，只把完整历史发给 Python
@@ -1303,9 +1396,13 @@ async fn start_agent_run(state: &AppState, cfg: &ResolvedLlm, session_id: &str, 
     });
 
     // 显式注册 run_id → assistant_msg_id，供 ws_server 精确定位 pending 消息
-    state.agent.register_run(run_id.clone(), assistant_msg_id.to_string());
+    state
+        .agent
+        .register_run(run_id.clone(), assistant_msg_id.to_string());
     // 记录 session_id → run_id，供 cancel_run 按会话取消
-    state.agent.set_session_run(session_id.to_string(), run_id.clone());
+    state
+        .agent
+        .set_session_run(session_id.to_string(), run_id.clone());
 
     let run_req = Envelope {
         protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
@@ -1334,7 +1431,8 @@ pub async fn send_message(
     let leaf_id = path.messages.last().map(|am| am.message.id.clone());
 
     // 原子插入 user + pending assistant 并链接版本树
-    let (_user_id, assistant_msg_id) = state.db
+    let (_user_id, assistant_msg_id) = state
+        .db
         .append_user_and_assistant(session_id.clone(), leaf_id, text, cfg.model_name.clone())
         .await?;
     state.sync.schedule();
@@ -1353,7 +1451,9 @@ pub async fn approve_tool(
     if resolved {
         Ok(())
     } else {
-        Err(AppError::Other(format!("审批 ID `{tool_call_id}` 未找到或已失效")))
+        Err(AppError::Other(format!(
+            "审批 ID `{tool_call_id}` 未找到或已失效"
+        )))
     }
 }
 
@@ -1425,19 +1525,11 @@ pub async fn vectorize_memories(
     let config = resolve_routed_llm_config(&state, Some(model_ref))
         .await?
         .ok_or_else(|| AppError::Other("嵌入模型配置不可用".into()))?;
-    let indexed_now = crate::embeddings::ensure_agent_memory_index(
-        &state.db,
-        &state.agent,
-        &agent_id,
-        &config,
-    )
-    .await?;
-    let status = crate::embeddings::agent_memory_index_status(
-        &state.db,
-        &agent_id,
-        Some(model_ref),
-    )
-    .await?;
+    let indexed_now =
+        crate::embeddings::ensure_agent_memory_index(&state.db, &state.agent, &agent_id, &config)
+            .await?;
+    let status =
+        crate::embeddings::agent_memory_index_status(&state.db, &agent_id, Some(model_ref)).await?;
     Ok(MemoryVectorizationResult {
         indexed_now,
         status,
@@ -1453,19 +1545,22 @@ pub async fn create_memory(
     content: String,
 ) -> AppResult<String> {
     let id = uuid::Uuid::new_v4().to_string();
-    let inserted = state.db.insert_memory(crate::db::repo::memory::NewMemory {
-        id: id.clone(),
-        agent_id,
-        name,
-        keywords,
-        content,
-        creator: "user".into(),
-        memory_type: "Note".into(),
-        scope: "agent".into(),
-        source: "memory_manager".into(),
-        confidence: 1.0,
-        embedding_id: None,
-    }).await?;
+    let inserted = state
+        .db
+        .insert_memory(crate::db::repo::memory::NewMemory {
+            id: id.clone(),
+            agent_id,
+            name,
+            keywords,
+            content,
+            creator: "user".into(),
+            memory_type: "Note".into(),
+            scope: "agent".into(),
+            source: "memory_manager".into(),
+            confidence: 1.0,
+            embedding_id: None,
+        })
+        .await?;
     if !inserted {
         return Err(AppError::Other("已存在名称和内容完全相同的记忆".into()));
     }
@@ -1482,11 +1577,18 @@ pub async fn update_memory(
     keywords: Vec<String>,
     content: String,
 ) -> AppResult<()> {
-    state.db.update_memory(
-        memory_id,
-        agent_id,
-        crate::db::repo::memory::MemoryUpdate { name, keywords, content },
-    ).await?;
+    state
+        .db
+        .update_memory(
+            memory_id,
+            agent_id,
+            crate::db::repo::memory::MemoryUpdate {
+                name,
+                keywords,
+                content,
+            },
+        )
+        .await?;
     state.sync.schedule();
     Ok(())
 }
@@ -1500,6 +1602,233 @@ pub async fn delete_memory(
     state.db.delete_memory(memory_id, agent_id).await?;
     state.sync.schedule();
     Ok(())
+}
+
+const MAX_LOCAL_KNOWLEDGE_DOCUMENT_BYTES: u64 = 10 * 1024 * 1024;
+const KNOWLEDGE_CHUNK_SIZE: usize = 1200;
+const KNOWLEDGE_CHUNK_OVERLAP: usize = 200;
+
+fn text_media_type(path: &std::path::Path) -> AppResult<&'static str> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("md" | "markdown") => Ok("text/markdown"),
+        Some("txt" | "rst" | "log") => Ok("text/plain"),
+        Some("csv") => Ok("text/csv"),
+        Some("json") => Ok("application/json"),
+        _ => Err(AppError::Other(
+            "当前仅支持 UTF-8 的 Markdown、文本、CSV 和 JSON 文件".into(),
+        )),
+    }
+}
+
+fn trim_to_char_boundary(value: &str, max_chars: usize) -> &str {
+    match value.char_indices().nth(max_chars) {
+        Some((index, _)) => &value[..index],
+        None => value,
+    }
+}
+
+fn trailing_chars(value: &str, max_chars: usize) -> String {
+    let start = value
+        .char_indices()
+        .rev()
+        .nth(max_chars)
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    value[start..].to_string()
+}
+
+fn chunk_local_text(content: &str) -> Vec<crate::db::repo::knowledge::NewDocumentChunk> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut section_path: Option<String> = None;
+
+    for paragraph in content.split("\n\n") {
+        let paragraph = paragraph.trim();
+        if paragraph.is_empty() {
+            continue;
+        }
+        if let Some(heading) = paragraph
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix('#'))
+            .map(str::trim)
+            .filter(|heading| !heading.is_empty())
+        {
+            section_path = Some(heading.to_string());
+        }
+
+        let next_len =
+            current.chars().count() + usize::from(!current.is_empty()) + paragraph.chars().count();
+        if !current.is_empty() && next_len > KNOWLEDGE_CHUNK_SIZE {
+            let content = std::mem::take(&mut current);
+            chunks.push(crate::db::repo::knowledge::NewDocumentChunk {
+                token_count: content.split_whitespace().count().max(1) as i64,
+                content: content.clone(),
+                section_path: section_path.clone(),
+            });
+            current = trailing_chars(&content, KNOWLEDGE_CHUNK_OVERLAP);
+        }
+
+        let mut remainder = paragraph;
+        while remainder.chars().count() > KNOWLEDGE_CHUNK_SIZE {
+            let head = trim_to_char_boundary(remainder, KNOWLEDGE_CHUNK_SIZE);
+            if !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(head);
+            let content = std::mem::take(&mut current);
+            chunks.push(crate::db::repo::knowledge::NewDocumentChunk {
+                token_count: content.split_whitespace().count().max(1) as i64,
+                content: content.clone(),
+                section_path: section_path.clone(),
+            });
+            let overlap = trailing_chars(head, KNOWLEDGE_CHUNK_OVERLAP);
+            remainder = &remainder[head.len()..];
+            current = overlap;
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(remainder);
+    }
+
+    let content = current.trim().to_string();
+    if !content.is_empty() {
+        chunks.push(crate::db::repo::knowledge::NewDocumentChunk {
+            token_count: content.split_whitespace().count().max(1) as i64,
+            content,
+            section_path,
+        });
+    }
+    chunks
+}
+
+fn read_local_knowledge_document(
+    path: String,
+) -> AppResult<(
+    String,
+    String,
+    String,
+    i64,
+    Vec<crate::db::repo::knowledge::NewDocumentChunk>,
+)> {
+    let path = std::path::PathBuf::from(path);
+    let metadata = std::fs::metadata(&path)?;
+    if !metadata.is_file() {
+        return Err(AppError::Other("知识库导入路径必须是普通文件".into()));
+    }
+    if metadata.len() > MAX_LOCAL_KNOWLEDGE_DOCUMENT_BYTES {
+        return Err(AppError::Other(format!(
+            "文件超过 {} MiB 的本地导入上限",
+            MAX_LOCAL_KNOWLEDGE_DOCUMENT_BYTES / 1024 / 1024
+        )));
+    }
+    let media_type = text_media_type(&path)?.to_string();
+    let bytes = std::fs::read(&path)?;
+    let content = std::str::from_utf8(&bytes)
+        .map_err(|_| AppError::Other("仅支持 UTF-8 编码的文本文件".into()))?
+        .trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n");
+    if content.contains('\0') {
+        return Err(AppError::Other("文本文件包含 NUL 字符，已拒绝导入".into()));
+    }
+    let chunks = chunk_local_text(&content);
+    if chunks.is_empty() {
+        return Err(AppError::Other("文件没有可索引的文本内容".into()));
+    }
+    let title = path
+        .file_stem()
+        .map(|name| name.to_string_lossy().trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "未命名文档".into());
+    let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+    Ok((title, media_type, hash, bytes.len() as i64, chunks))
+}
+
+#[tauri::command]
+pub async fn list_knowledge_collections(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> AppResult<Vec<crate::db::repo::knowledge::KnowledgeCollectionRow>> {
+    state.db.list_knowledge_collections(agent_id).await
+}
+
+#[tauri::command]
+pub async fn create_knowledge_collection(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    name: String,
+    scope: String,
+) -> AppResult<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    state
+        .db
+        .create_knowledge_collection(crate::db::repo::knowledge::NewKnowledgeCollection {
+            id: id.clone(),
+            name,
+            scope,
+            agent_id,
+        })
+        .await?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn list_knowledge_documents(
+    state: tauri::State<'_, AppState>,
+    collection_id: String,
+    agent_id: String,
+) -> AppResult<Vec<crate::db::repo::knowledge::KnowledgeDocumentRow>> {
+    state
+        .db
+        .list_knowledge_documents(collection_id, agent_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn import_local_knowledge_document(
+    state: tauri::State<'_, AppState>,
+    collection_id: String,
+    agent_id: String,
+    path: String,
+) -> AppResult<crate::db::repo::knowledge::ImportDocumentResult> {
+    let path_for_read = path.clone();
+    let (title, media_type, plaintext_hash, size, chunks) =
+        tokio::task::spawn_blocking(move || read_local_knowledge_document(path_for_read))
+            .await
+            .map_err(|error| AppError::Other(format!("知识库导入任务异常中止：{error}")))??;
+    state
+        .db
+        .import_local_knowledge_document(crate::db::repo::knowledge::NewLocalDocument {
+            collection_id,
+            agent_id,
+            title,
+            media_type,
+            local_path: path,
+            plaintext_hash,
+            size,
+            chunks,
+        })
+        .await
+}
+
+#[tauri::command]
+pub async fn search_knowledge(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    query: String,
+    collection_id: Option<String>,
+    limit: Option<usize>,
+) -> AppResult<Vec<crate::db::repo::knowledge::KnowledgeSearchResult>> {
+    state
+        .db
+        .search_knowledge(agent_id, query, collection_id, limit.unwrap_or(10))
+        .await
 }
 
 #[derive(serde::Serialize)]
@@ -1518,14 +1847,17 @@ pub async fn list_audit_logs(
     session_id: String,
 ) -> AppResult<Vec<AuditLogDto>> {
     let rows = state.db.list_tool_calls(session_id).await?;
-    Ok(rows.into_iter().map(|r| AuditLogDto {
-        id: r.id,
-        time: r.created_at,
-        tool: r.tool,
-        params: r.params.unwrap_or_default(),
-        status: r.status,
-        risk: r.risk_level.unwrap_or_else(|| "Low".to_string()),
-    }).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| AuditLogDto {
+            id: r.id,
+            time: r.created_at,
+            tool: r.tool,
+            params: r.params.unwrap_or_default(),
+            status: r.status,
+            risk: r.risk_level.unwrap_or_else(|| "Low".to_string()),
+        })
+        .collect())
 }
 
 // ── Model Provider DTOs & Commands ──────────────────────────────────────────
@@ -1573,10 +1905,7 @@ async fn restore_secret(
 }
 
 fn normalized_api_base(value: Option<&str>) -> &str {
-    value
-        .unwrap_or_default()
-        .trim()
-        .trim_end_matches('/')
+    value.unwrap_or_default().trim().trim_end_matches('/')
 }
 
 fn saved_provider_endpoint_matches(
@@ -1591,9 +1920,7 @@ fn saved_provider_endpoint_matches(
 
 /// 列出所有已配置的模型提供商。
 #[tauri::command]
-pub async fn list_providers(
-    state: tauri::State<'_, AppState>,
-) -> AppResult<Vec<ModelProviderDto>> {
+pub async fn list_providers(state: tauri::State<'_, AppState>) -> AppResult<Vec<ModelProviderDto>> {
     let rows = state.db.list_model_providers().await?;
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
@@ -1625,7 +1952,9 @@ pub async fn upsert_provider(
     state: tauri::State<'_, AppState>,
     provider: UpsertProviderInput,
 ) -> AppResult<String> {
-    let id = provider.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let id = provider
+        .id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let secret_id = provider_api_key_secret_id(&id);
     let replacement_key = provider.api_key.filter(|key| !key.is_empty());
     let previous_key = if replacement_key.is_some() {
@@ -1635,13 +1964,10 @@ pub async fn upsert_provider(
     };
     if let Some(ref key) = replacement_key {
         if let Err(write_error) = state.secrets.set(&secret_id, key).await {
-            let rollback_error = restore_secret(
-                state.secrets.as_ref(),
-                &secret_id,
-                previous_key.as_deref(),
-            )
-            .await
-            .err();
+            let rollback_error =
+                restore_secret(state.secrets.as_ref(), &secret_id, previous_key.as_deref())
+                    .await
+                    .err();
             return Err(AppError::SecretStore(format!(
                 "credential write failed: {write_error}{}",
                 rollback_error
@@ -1655,13 +1981,10 @@ pub async fn upsert_provider(
             Err(error) => Some(error.to_string()),
         };
         if let Some(verification_error) = verification_error {
-            let rollback_error = restore_secret(
-                state.secrets.as_ref(),
-                &secret_id,
-                previous_key.as_deref(),
-            )
-            .await
-            .err();
+            let rollback_error =
+                restore_secret(state.secrets.as_ref(), &secret_id, previous_key.as_deref())
+                    .await
+                    .err();
             return Err(AppError::SecretStore(format!(
                 "credential verification failed: {verification_error}{}",
                 rollback_error
@@ -1671,7 +1994,8 @@ pub async fn upsert_provider(
         }
     }
 
-    let normalized_models = normalize_model_catalog(provider.models.unwrap_or_default(), &provider.kind);
+    let normalized_models =
+        normalize_model_catalog(provider.models.unwrap_or_default(), &provider.kind);
     let models_json = Some(serde_json::to_string(&normalized_models)?);
 
     let set_default = provider.is_default.unwrap_or(false);
@@ -1688,12 +2012,8 @@ pub async fn upsert_provider(
 
     if let Err(db_error) = state.db.upsert_model_provider(new_row, set_default).await {
         if replacement_key.is_some() {
-            if let Err(rollback_error) = restore_secret(
-                state.secrets.as_ref(),
-                &secret_id,
-                previous_key.as_deref(),
-            )
-            .await
+            if let Err(rollback_error) =
+                restore_secret(state.secrets.as_ref(), &secret_id, previous_key.as_deref()).await
             {
                 return Err(AppError::SecretStore(format!(
                     "provider save failed: {db_error}; credential rollback failed: {rollback_error}"
@@ -1718,12 +2038,8 @@ pub async fn delete_provider(
     let previous_key = state.secrets.get(&secret_id).await?;
     state.secrets.delete(&secret_id).await?;
     if let Err(db_error) = state.db.delete_model_provider(provider_id.clone()).await {
-        if let Err(rollback_error) = restore_secret(
-            state.secrets.as_ref(),
-            &secret_id,
-            previous_key.as_deref(),
-        )
-        .await
+        if let Err(rollback_error) =
+            restore_secret(state.secrets.as_ref(), &secret_id, previous_key.as_deref()).await
         {
             return Err(AppError::SecretStore(format!(
                 "provider delete failed: {db_error}; credential rollback failed: {rollback_error}"
@@ -1739,9 +2055,7 @@ pub async fn delete_provider(
 
 /// Return the global model role assignments.
 #[tauri::command]
-pub async fn get_model_roles(
-    state: tauri::State<'_, AppState>,
-) -> AppResult<ModelRoleAssignments> {
+pub async fn get_model_roles(state: tauri::State<'_, AppState>) -> AppResult<ModelRoleAssignments> {
     load_model_roles(&state.db).await
 }
 
@@ -1887,7 +2201,7 @@ pub async fn fetch_provider_models(
             url.push_str("/v1");
         }
         url.push_str("/models");
-        
+
         let mut req = client.get(&url);
         if let Some(key) = api_key {
             if !key.is_empty() {
@@ -1895,9 +2209,15 @@ pub async fn fetch_provider_models(
             }
         }
 
-        let resp = req.send().await.map_err(|e| AppError::Other(format!("请求失败: {}", e)))?;
-        let json: serde_json::Value = resp.json().await.map_err(|e| AppError::Other(format!("解析JSON失败: {}", e)))?;
-        
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| AppError::Other(format!("请求失败: {}", e)))?;
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Other(format!("解析JSON失败: {}", e)))?;
+
         if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
             for item in data {
                 if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
@@ -1910,10 +2230,17 @@ pub async fn fetch_provider_models(
     } else if kind == "ollama" {
         let base = api_base.unwrap_or_else(|| "http://localhost:11434".to_string());
         let url = format!("{}/api/tags", base.trim_end_matches('/'));
-        
-        let resp = client.get(&url).send().await.map_err(|e| AppError::Other(format!("请求失败: {}", e)))?;
-        let json: serde_json::Value = resp.json().await.map_err(|e| AppError::Other(format!("解析JSON失败: {}", e)))?;
-        
+
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| AppError::Other(format!("请求失败: {}", e)))?;
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Other(format!("解析JSON失败: {}", e)))?;
+
         if let Some(models_arr) = json.get("models").and_then(|m| m.as_array()) {
             for item in models_arr {
                 if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
@@ -1923,7 +2250,10 @@ pub async fn fetch_provider_models(
                         .send()
                         .await
                     {
-                        Ok(response) => response.json::<serde_json::Value>().await.unwrap_or_else(|_| item.clone()),
+                        Ok(response) => response
+                            .json::<serde_json::Value>()
+                            .await
+                            .unwrap_or_else(|_| item.clone()),
                         Err(_) => item.clone(),
                     };
                     models.push(descriptor_from_api(&kind, name, &metadata));
@@ -1933,7 +2263,10 @@ pub async fn fetch_provider_models(
             return Err(AppError::Other("未在响应中找到模型数据".into()));
         }
     } else {
-        return Err(AppError::Other(format!("暂不支持自动获取 {} 的模型列表，请手动输入", kind)));
+        return Err(AppError::Other(format!(
+            "暂不支持自动获取 {} 的模型列表，请手动输入",
+            kind
+        )));
     }
 
     Ok(normalize_model_catalog(models, &kind))

@@ -93,12 +93,8 @@ pub async fn load_explicit_memories(
     let user_md = normalize_memory_text(db_user.clone().unwrap_or(view_user));
     let memory_md = normalize_memory_text(db_memory.clone().unwrap_or(view_memory));
     if user_row.is_none() || memory_row.is_none() {
-        db.save_explicit_memories(
-            agent_id.to_string(),
-            user_md.clone(),
-            memory_md.clone(),
-        )
-        .await?;
+        db.save_explicit_memories(agent_id.to_string(), user_md.clone(), memory_md.clone())
+            .await?;
     }
     save_memory_views(agent_id, &user_md, &memory_md)?;
     Ok((user_md, memory_md))
