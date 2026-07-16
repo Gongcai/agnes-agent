@@ -8,13 +8,18 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
-use crate::db::repo::sync::{AcceptedChange, ConflictChange, RemoteEntityInput, SyncDbStatus};
+use crate::db::repo::sync::{
+    AcceptedChange, ConflictChange, RemoteEntityInput, SealedOutboxChange, SyncDbStatus,
+};
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::secrets::{SecretStore, SYNC_CREDENTIAL_SECRET_ID, SYNC_E2EE_KEYSET_SECRET_ID};
 use crate::sync::auth::SyncCredential;
 use crate::sync::client::{FailureKind, HttpSyncTransport, SyncTransport, TransportFailure};
-use crate::sync::crypto::{RecoveryMaterial, SyncKeyset};
+use crate::sync::crypto::{
+    open_json, seal_json, PayloadMetadata, RecoveryMaterial, SyncKeyset, EMPTY_PAYLOAD_HASH,
+    PAYLOAD_ENCODING, TOMBSTONE_ENCODING,
+};
 use crate::sync::protocol::{
     AckRequest, DeviceListResponse, PushRequest, PushResponse, RemoteChange, RemoteEntity,
     RevokeDeviceResponse, SyncDevice, DEFAULT_PAGE_LIMIT, PROTOCOL_VERSION,
@@ -24,7 +29,7 @@ pub const SYNC_GATEWAY_URL: &str = "https://agnes-sync-api.caiwengong136.workers
 const MAX_BATCHES_PER_RUN: usize = 5;
 const MAX_PUSH_CHANGES: usize = 20;
 const MAX_REMOTE_PAGES_PER_RUN: usize = 5;
-const E2EE_TRANSPORT_READY: bool = false;
+const E2EE_TRANSPORT_READY: bool = true;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,10 +124,14 @@ impl SyncService {
         if !status.e2ee.confirmed || !status.e2ee.transport_ready {
             return Ok(status);
         }
+        let keyset = self
+            .load_keyset()
+            .await?
+            .ok_or_else(|| AppError::Other("Sync encryption keys are not configured".into()))?;
         let Some(transport) = self.http_transport().await? else {
             return Ok(status);
         };
-        self.run_with_transport(&transport).await
+        self.run_with_encrypted_transport(&transport, &keyset).await
     }
 
     pub async fn begin_e2ee_setup(&self) -> AppResult<RecoveryMaterial> {
@@ -355,21 +364,42 @@ impl SyncService {
         });
     }
 
+    #[cfg(test)]
     pub(crate) async fn run_with_transport(
         &self,
         transport: &dyn SyncTransport,
+    ) -> AppResult<SyncStatus> {
+        self.run_with_optional_keyset(transport, None).await
+    }
+
+    async fn run_with_encrypted_transport(
+        &self,
+        transport: &dyn SyncTransport,
+        keyset: &SyncKeyset,
+    ) -> AppResult<SyncStatus> {
+        self.run_with_optional_keyset(transport, Some(keyset)).await
+    }
+
+    async fn run_with_optional_keyset(
+        &self,
+        transport: &dyn SyncTransport,
+        keyset: Option<&SyncKeyset>,
     ) -> AppResult<SyncStatus> {
         let Ok(_guard) = self.run_gate.try_lock() else {
             return self.status().await;
         };
         self.syncing.store(true, Ordering::SeqCst);
-        let result = self.run_locked(transport).await;
+        let result = self.run_locked(transport, keyset).await;
         self.syncing.store(false, Ordering::SeqCst);
         result?;
         self.status().await
     }
 
-    async fn run_locked(&self, transport: &dyn SyncTransport) -> AppResult<()> {
+    async fn run_locked(
+        &self,
+        transport: &dyn SyncTransport,
+        keyset: Option<&SyncKeyset>,
+    ) -> AppResult<()> {
         let initial_status = self.db.get_sync_status().await?;
         if initial_status
             .backoff_until
@@ -377,17 +407,21 @@ impl SyncService {
         {
             return Ok(());
         }
-        if !self.run_bootstrap(transport).await? {
+        if !self.run_bootstrap(transport, keyset).await? {
             return Ok(());
         }
-        if !self.push_pending(transport).await? {
+        if !self.push_pending(transport, keyset).await? {
             return Ok(());
         }
-        self.pull_remote(transport).await?;
+        self.pull_remote(transport, keyset).await?;
         Ok(())
     }
 
-    async fn run_bootstrap(&self, transport: &dyn SyncTransport) -> AppResult<bool> {
+    async fn run_bootstrap(
+        &self,
+        transport: &dyn SyncTransport,
+        keyset: Option<&SyncKeyset>,
+    ) -> AppResult<bool> {
         for _ in 0..MAX_REMOTE_PAGES_PER_RUN {
             let status = self.db.get_sync_status().await?;
             if status.bootstrap_state == "complete" {
@@ -437,7 +471,7 @@ impl SyncService {
             let entities = response
                 .entities
                 .into_iter()
-                .map(remote_entity_from_bootstrap)
+                .map(|entity| remote_entity_from_bootstrap(entity, keyset))
                 .collect::<AppResult<Vec<_>>>()?;
             self.db
                 .apply_sync_bootstrap_page(
@@ -456,13 +490,35 @@ impl SyncService {
         Ok(false)
     }
 
-    async fn push_pending(&self, transport: &dyn SyncTransport) -> AppResult<bool> {
+    async fn push_pending(
+        &self,
+        transport: &dyn SyncTransport,
+        keyset: Option<&SyncKeyset>,
+    ) -> AppResult<bool> {
         for _ in 0..MAX_BATCHES_PER_RUN {
             let now_ms = unix_millis();
             let batch = self.db.claim_sync_outbox(MAX_PUSH_CHANGES, now_ms).await?;
             if batch.is_empty() {
                 break;
             }
+            let change_ids = batch.iter().map(|row| row.change_id.clone()).collect();
+            let batch = match keyset {
+                Some(keyset) => self.prepare_encrypted_batch(batch, keyset).await,
+                None => Ok(batch),
+            };
+            let batch = match batch {
+                Ok(batch) => batch,
+                Err(error) => {
+                    self.db
+                        .mark_sync_dead_letter(
+                            change_ids,
+                            "INVALID_LOCAL_PAYLOAD".into(),
+                            error.to_string(),
+                        )
+                        .await?;
+                    continue;
+                }
+            };
             let request = match PushRequest::from_outbox(&batch) {
                 Ok(request) => request,
                 Err(error) => {
@@ -487,7 +543,107 @@ impl SyncService {
         Ok(true)
     }
 
-    async fn pull_remote(&self, transport: &dyn SyncTransport) -> AppResult<()> {
+    async fn prepare_encrypted_batch(
+        &self,
+        batch: Vec<crate::db::repo::sync::OutboxRow>,
+        keyset: &SyncKeyset,
+    ) -> AppResult<Vec<crate::db::repo::sync::OutboxRow>> {
+        let mut sealed = Vec::new();
+        for row in &batch {
+            if row.payload_encoding != "json" {
+                validate_encrypted_outbox_row(row, keyset)?;
+                continue;
+            }
+            let change = if row.operation == "delete" {
+                if row.source_payload.is_some()
+                    || row.payload.is_some()
+                    || row.key_version.is_some()
+                {
+                    return Err(AppError::Other(format!(
+                        "invalid local tombstone `{}`",
+                        row.change_id
+                    )));
+                }
+                SealedOutboxChange {
+                    change_id: row.change_id.clone(),
+                    payload_encoding: TOMBSTONE_ENCODING.into(),
+                    payload: None,
+                    payload_hash: EMPTY_PAYLOAD_HASH.into(),
+                    key_version: None,
+                }
+            } else if row.operation == "upsert" {
+                if row.key_version.is_some() {
+                    return Err(AppError::Other(format!(
+                        "unsealed outbox change `{}` already has a key version",
+                        row.change_id
+                    )));
+                }
+                let source = row.source_payload.as_deref().ok_or_else(|| {
+                    AppError::Other(format!("local payload `{}` is missing", row.change_id))
+                })?;
+                let source = serde_json::from_str(source)?;
+                let key_version = keyset.active_key_version();
+                let revision = row
+                    .base_revision
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or_else(|| AppError::Other("Sync revision is exhausted".into()))?;
+                let metadata = PayloadMetadata {
+                    protocol_version: PROTOCOL_VERSION,
+                    entity_type: &row.entity_type,
+                    entity_id: &row.entity_id,
+                    revision,
+                    hlc: &row.hlc,
+                    payload_schema_version: row.payload_schema_version,
+                    origin_device_id: &row.device_id,
+                    key_version,
+                };
+                let encrypted = seal_json(keyset.active_key(), &metadata, &source)?;
+                SealedOutboxChange {
+                    change_id: row.change_id.clone(),
+                    payload_encoding: PAYLOAD_ENCODING.into(),
+                    payload: Some(serde_json::to_string(&encrypted.payload)?),
+                    payload_hash: encrypted.payload_hash,
+                    key_version: Some(key_version),
+                }
+            } else {
+                return Err(AppError::Other(format!(
+                    "unsupported local operation `{}`",
+                    row.operation
+                )));
+            };
+            sealed.push(change);
+        }
+        if sealed.is_empty() {
+            return Ok(batch);
+        }
+        let persisted = self.db.persist_sealed_sync_outbox(sealed).await?;
+        let mut persisted = persisted
+            .into_iter()
+            .map(|row| (row.change_id.clone(), row))
+            .collect::<std::collections::HashMap<_, _>>();
+        batch
+            .into_iter()
+            .map(|row| {
+                if row.payload_encoding == "json" {
+                    persisted.remove(&row.change_id).ok_or_else(|| {
+                        AppError::Other(format!(
+                            "sealed outbox change `{}` was not returned",
+                            row.change_id
+                        ))
+                    })
+                } else {
+                    Ok(row)
+                }
+            })
+            .collect()
+    }
+
+    async fn pull_remote(
+        &self,
+        transport: &dyn SyncTransport,
+        keyset: Option<&SyncKeyset>,
+    ) -> AppResult<()> {
         for _ in 0..MAX_REMOTE_PAGES_PER_RUN {
             let after = self.db.get_sync_status().await?.last_pull_cursor;
             let response = match transport.pull(after, DEFAULT_PAGE_LIMIT).await {
@@ -502,7 +658,7 @@ impl SyncService {
             let entities = response
                 .changes
                 .into_iter()
-                .map(remote_entity_from_change)
+                .map(|change| remote_entity_from_change(change, keyset))
                 .collect::<AppResult<Vec<_>>>()?;
             self.db
                 .apply_sync_pull_page(after, entities, next_cursor, has_more, unix_millis())
@@ -644,6 +800,71 @@ impl SyncService {
     }
 }
 
+fn validate_encrypted_outbox_row(
+    row: &crate::db::repo::sync::OutboxRow,
+    keyset: &SyncKeyset,
+) -> AppResult<()> {
+    if row.operation == "delete" {
+        if row.payload_encoding == TOMBSTONE_ENCODING
+            && row.payload.is_none()
+            && row.source_payload.is_none()
+            && row.payload_hash == EMPTY_PAYLOAD_HASH
+            && row.key_version.is_none()
+        {
+            return Ok(());
+        }
+    } else if row.operation == "upsert" && row.payload_encoding == PAYLOAD_ENCODING {
+        let key_version = row.key_version.filter(|version| *version > 0).ok_or_else(|| {
+            AppError::Other(format!(
+                "encrypted outbox key version is missing for `{}`",
+                row.change_id
+            ))
+        })?;
+        let key = keyset.key(key_version).ok_or_else(|| {
+            AppError::Other(format!(
+                "Sync encryption key version {key_version} is not available"
+            ))
+        })?;
+        let payload: serde_json::Value = row
+            .payload
+            .as_deref()
+            .ok_or_else(|| AppError::Other(format!("encrypted payload `{}` is missing", row.change_id)))
+            .and_then(|payload| serde_json::from_str(payload).map_err(Into::into))?;
+        let source: serde_json::Value = row
+            .source_payload
+            .as_deref()
+            .ok_or_else(|| AppError::Other(format!("local payload `{}` is missing", row.change_id)))
+            .and_then(|payload| serde_json::from_str(payload).map_err(Into::into))?;
+        let revision = row
+            .base_revision
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| AppError::Other("Sync revision is exhausted".into()))?;
+        let opened = open_json(
+            key,
+            &PayloadMetadata {
+                protocol_version: PROTOCOL_VERSION,
+                entity_type: &row.entity_type,
+                entity_id: &row.entity_id,
+                revision,
+                hlc: &row.hlc,
+                payload_schema_version: row.payload_schema_version,
+                origin_device_id: &row.device_id,
+                key_version,
+            },
+            &payload,
+            &row.payload_hash,
+        )?;
+        if opened == source {
+            return Ok(());
+        }
+    }
+    Err(AppError::Other(format!(
+        "invalid encrypted outbox change `{}`",
+        row.change_id
+    )))
+}
+
 fn validate_device_list(
     response: DeviceListResponse,
     current_device_id: &str,
@@ -721,7 +942,10 @@ fn admin_transport_error(error: TransportFailure) -> AppError {
     AppError::Other(format!("{}: {}", error.code, error.message))
 }
 
-fn remote_entity_from_change(change: RemoteChange) -> AppResult<RemoteEntityInput> {
+fn remote_entity_from_change(
+    change: RemoteChange,
+    keyset: Option<&SyncKeyset>,
+) -> AppResult<RemoteEntityInput> {
     if change.protocol_version != PROTOCOL_VERSION
         || uuid::Uuid::parse_str(&change.change_id).is_err()
         || change.created_at < 0
@@ -747,47 +971,121 @@ fn remote_entity_from_change(change: RemoteChange) -> AppResult<RemoteEntityInpu
             )));
         }
     };
-    Ok(RemoteEntityInput {
-        protocol_version: change.protocol_version.into(),
-        entity_type: change.entity_type,
-        entity_id: change.entity_id,
-        revision: change.resulting_revision,
-        hlc: change.hlc,
-        deleted,
-        payload_schema_version: change.payload_schema_version,
-        payload_encoding: change.payload_encoding,
-        payload: change.payload,
-        payload_hash: change.payload_hash,
-        key_version: change.key_version,
-        origin_device_id: change.device_id,
-        server_seq: change.server_seq,
-        updated_at: change.accepted_at,
-    })
+    decode_remote_entity(
+        RemoteEntityInput {
+            protocol_version: change.protocol_version.into(),
+            entity_type: change.entity_type,
+            entity_id: change.entity_id,
+            revision: change.resulting_revision,
+            hlc: change.hlc,
+            deleted,
+            payload_schema_version: change.payload_schema_version,
+            payload_encoding: change.payload_encoding,
+            payload: change.payload,
+            payload_hash: change.payload_hash,
+            key_version: change.key_version,
+            origin_device_id: change.device_id,
+            server_seq: change.server_seq,
+            updated_at: change.accepted_at,
+        },
+        keyset,
+    )
 }
 
-fn remote_entity_from_bootstrap(entity: RemoteEntity) -> AppResult<RemoteEntityInput> {
+fn remote_entity_from_bootstrap(
+    entity: RemoteEntity,
+    keyset: Option<&SyncKeyset>,
+) -> AppResult<RemoteEntityInput> {
     if entity.latest_server_seq <= 0 || entity.updated_at < 0 {
         return Err(AppError::Other(format!(
             "invalid bootstrap entity {} `{}`",
             entity.entity_type, entity.entity_id
         )));
     }
-    Ok(RemoteEntityInput {
-        protocol_version: PROTOCOL_VERSION.into(),
-        entity_type: entity.entity_type,
-        entity_id: entity.entity_id,
-        revision: entity.revision,
-        hlc: entity.hlc,
-        deleted: entity.deleted,
-        payload_schema_version: entity.payload_schema_version,
-        payload_encoding: entity.payload_encoding,
-        payload: entity.payload,
-        payload_hash: entity.payload_hash,
-        key_version: entity.key_version,
-        origin_device_id: entity.changed_by_device_id,
-        server_seq: entity.latest_server_seq,
-        updated_at: entity.updated_at,
-    })
+    decode_remote_entity(
+        RemoteEntityInput {
+            protocol_version: PROTOCOL_VERSION.into(),
+            entity_type: entity.entity_type,
+            entity_id: entity.entity_id,
+            revision: entity.revision,
+            hlc: entity.hlc,
+            deleted: entity.deleted,
+            payload_schema_version: entity.payload_schema_version,
+            payload_encoding: entity.payload_encoding,
+            payload: entity.payload,
+            payload_hash: entity.payload_hash,
+            key_version: entity.key_version,
+            origin_device_id: entity.changed_by_device_id,
+            server_seq: entity.latest_server_seq,
+            updated_at: entity.updated_at,
+        },
+        keyset,
+    )
+}
+
+fn decode_remote_entity(
+    mut entity: RemoteEntityInput,
+    keyset: Option<&SyncKeyset>,
+) -> AppResult<RemoteEntityInput> {
+    let Some(keyset) = keyset else {
+        return Ok(entity);
+    };
+    if entity.deleted {
+        if entity.payload_encoding != TOMBSTONE_ENCODING
+            || entity.payload.is_some()
+            || entity.key_version.is_some()
+            || entity.payload_hash != EMPTY_PAYLOAD_HASH
+        {
+            return Err(AppError::Other(format!(
+                "invalid encrypted tombstone for {} `{}`",
+                entity.entity_type, entity.entity_id
+            )));
+        }
+    } else {
+        let key_version = entity
+            .key_version
+            .filter(|version| *version > 0)
+            .ok_or_else(|| {
+                AppError::Other(format!(
+                    "encrypted payload key version is missing for {} `{}`",
+                    entity.entity_type, entity.entity_id
+                ))
+            })?;
+        if entity.payload_encoding != PAYLOAD_ENCODING || entity.payload.is_none() {
+            return Err(AppError::Other(format!(
+                "invalid encrypted payload envelope for {} `{}`",
+                entity.entity_type, entity.entity_id
+            )));
+        }
+        let key = keyset.key(key_version).ok_or_else(|| {
+            AppError::Other(format!(
+                "Sync encryption key version {key_version} is not available"
+            ))
+        })?;
+        let metadata = PayloadMetadata {
+            protocol_version: u8::try_from(entity.protocol_version)
+                .map_err(|_| AppError::Other("Invalid sync protocol version".into()))?,
+            entity_type: &entity.entity_type,
+            entity_id: &entity.entity_id,
+            revision: entity.revision,
+            hlc: &entity.hlc,
+            payload_schema_version: entity.payload_schema_version,
+            origin_device_id: &entity.origin_device_id,
+            key_version,
+        };
+        entity.payload = Some(open_json(
+            key,
+            &metadata,
+            entity
+                .payload
+                .as_ref()
+                .expect("validated encrypted payload"),
+            &entity.payload_hash,
+        )?);
+    }
+    entity.payload_encoding = "json".into();
+    entity.key_version = None;
+    Ok(entity)
 }
 
 fn retry_delay_ms(attempt: i64) -> i64 {
@@ -980,6 +1278,112 @@ mod tests {
         }
     }
 
+    struct EncryptedRetryTransport {
+        requests: std::sync::Mutex<Vec<PushRequest>>,
+    }
+
+    #[async_trait]
+    impl SyncTransport for EncryptedRetryTransport {
+        async fn push(&self, request: &PushRequest) -> Result<PushResponse, TransportFailure> {
+            let call = {
+                let mut requests = self.requests.lock().unwrap();
+                requests.push(request.clone());
+                requests.len()
+            };
+            if call == 1 {
+                return Err(TransportFailure {
+                    kind: FailureKind::Retryable,
+                    code: "SYNC_TEMPORARILY_UNAVAILABLE".into(),
+                    message: "temporary outage".into(),
+                    retry_after_ms: Some(30_000),
+                });
+            }
+            Ok(PushResponse {
+                accepted: request
+                    .changes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, change)| ProtocolAccepted {
+                        change_id: change.change_id.clone(),
+                        server_seq: index as i64 + 1,
+                        revision: change.base_revision.unwrap_or(0) + 1,
+                        idempotent: false,
+                    })
+                    .collect(),
+                conflicts: Vec::new(),
+                server_time: 1,
+            })
+        }
+
+        async fn pull(&self, after: i64, _limit: usize) -> Result<PullResponse, TransportFailure> {
+            Ok(PullResponse {
+                changes: Vec::new(),
+                next_cursor: after,
+                has_more: false,
+                server_time: 1,
+            })
+        }
+
+        async fn bootstrap(
+            &self,
+            _cursor: Option<&str>,
+            _limit: usize,
+        ) -> Result<BootstrapResponse, TransportFailure> {
+            Ok(BootstrapResponse {
+                entities: Vec::new(),
+                snapshot_cursor: 0,
+                next_cursor: None,
+                has_more: false,
+                server_time: 1,
+            })
+        }
+
+        async fn ack(&self, request: &AckRequest) -> Result<AckResponse, TransportFailure> {
+            Ok(AckResponse {
+                acknowledged_cursor: request.cursor,
+                server_time: 1,
+            })
+        }
+    }
+
+    struct EncryptedPullTransport {
+        change: RemoteChange,
+        acknowledgements: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl SyncTransport for EncryptedPullTransport {
+        async fn push(&self, _request: &PushRequest) -> Result<PushResponse, TransportFailure> {
+            panic!("pull-only test must not push")
+        }
+
+        async fn pull(&self, after: i64, _limit: usize) -> Result<PullResponse, TransportFailure> {
+            assert_eq!(after, 0);
+            Ok(PullResponse {
+                changes: vec![self.change.clone()],
+                next_cursor: 1,
+                has_more: false,
+                server_time: 1,
+            })
+        }
+
+        async fn bootstrap(
+            &self,
+            _cursor: Option<&str>,
+            _limit: usize,
+        ) -> Result<BootstrapResponse, TransportFailure> {
+            panic!("pull-only test must already be bootstrapped")
+        }
+
+        async fn ack(&self, request: &AckRequest) -> Result<AckResponse, TransportFailure> {
+            self.acknowledgements.fetch_add(1, Ordering::SeqCst);
+            Ok(AckResponse {
+                acknowledged_cursor: request.cursor,
+                server_time: 1,
+            })
+        }
+    }
+
     struct BootstrapCommitTransport {
         path: PathBuf,
         acknowledgements: AtomicUsize,
@@ -1085,6 +1489,64 @@ mod tests {
         }
     }
 
+    fn encrypted_remote_agent(keyset: &SyncKeyset) -> RemoteChange {
+        let payload = json!({
+            "id": "remote-encrypted-agent",
+            "name": "Remote encrypted agent",
+            "persona": "",
+            "scenario": "",
+            "system_prompt": "",
+            "greeting": "",
+            "example_dialogue": "",
+            "model": "",
+            "tool_policy": "{}",
+            "tags": "",
+            "thinking_mode": "off",
+            "thinking_budget": 0,
+            "created_at": "1",
+            "updated_at": "1",
+            "version": 1,
+            "deleted_at": null,
+            "origin_device_id": DEVICE_B
+        });
+        let key_version = keyset.active_key_version();
+        let hlc = "1000-0001-remote02";
+        let encrypted = seal_json(
+            keyset.active_key(),
+            &PayloadMetadata {
+                protocol_version: PROTOCOL_VERSION,
+                entity_type: "agent",
+                entity_id: "remote-encrypted-agent",
+                revision: 1,
+                hlc,
+                payload_schema_version: 1,
+                origin_device_id: DEVICE_B,
+                key_version,
+            },
+            &payload,
+        )
+        .unwrap();
+        RemoteChange {
+            protocol_version: PROTOCOL_VERSION,
+            server_seq: 1,
+            change_id: "10000000-0000-4000-8000-000000000099".into(),
+            device_id: DEVICE_B.into(),
+            entity_type: "agent".into(),
+            entity_id: "remote-encrypted-agent".into(),
+            operation: "upsert".into(),
+            base_revision: None,
+            resulting_revision: 1,
+            hlc: hlc.into(),
+            payload_schema_version: 1,
+            payload_encoding: PAYLOAD_ENCODING.into(),
+            payload: Some(encrypted.payload),
+            payload_hash: encrypted.payload_hash,
+            key_version: Some(key_version),
+            created_at: 1_000,
+            accepted_at: 1_001,
+        }
+    }
+
     fn test_service(label: &str) -> (std::path::PathBuf, Arc<SyncService>) {
         let path = std::env::temp_dir().join(format!(
             "agnes-sync-engine-{label}-{}.db",
@@ -1097,7 +1559,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn encrypted_only_gate_blocks_plaintext_sync_before_and_after_confirmation() {
+    async fn encrypted_only_gate_blocks_sync_until_key_confirmation() {
         let (path, service) = test_service("encrypted-only-gate");
         service
             .secrets
@@ -1129,11 +1591,11 @@ mod tests {
         assert!(!awaiting_confirmation.e2ee.confirmed);
 
         let confirmed = service.confirm_e2ee_setup().await.unwrap();
-        assert_eq!(confirmed.state, "e2ee_pending");
+        assert_eq!(confirmed.state, "pending");
         assert!(confirmed.e2ee.confirmed);
         assert_eq!(confirmed.e2ee.active_key_version, Some(1));
-        assert!(!confirmed.e2ee.transport_ready);
-        assert_eq!(service.run_once().await.unwrap().database.pending_count, 1);
+        assert!(confirmed.e2ee.transport_ready);
+        assert_eq!(confirmed.database.pending_count, 1);
 
         drop(service);
         let _ = std::fs::remove_file(path);
@@ -1188,6 +1650,172 @@ mod tests {
         let _ = std::fs::remove_file(source_path);
         let _ = std::fs::remove_file(target_path);
         let _ = std::fs::remove_file(other_path);
+    }
+
+    #[tokio::test]
+    async fn encrypted_push_persists_and_reuses_identical_ciphertext_after_retry() {
+        let (path, service) = test_service("encrypted-retry");
+        service
+            .db
+            .insert_agent(new_agent("encrypted-retry-agent"))
+            .await
+            .unwrap();
+        let keyset = SyncKeyset::generate_initial();
+        let transport = EncryptedRetryTransport {
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
+
+        service
+            .run_with_encrypted_transport(&transport, &keyset)
+            .await
+            .unwrap();
+        let first_request = transport.requests.lock().unwrap()[0].clone();
+        let first_change = &first_request.changes[0];
+        assert_eq!(first_change.payload_encoding, PAYLOAD_ENCODING);
+        assert!(first_change
+            .payload
+            .as_ref()
+            .is_some_and(serde_json::Value::is_string));
+        assert_eq!(first_change.key_version, Some(1));
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let persisted: (String, String, String, String, i64, String) = conn
+            .query_row(
+                "SELECT payload_encoding, payload, source_payload, payload_hash, key_version, status \
+                 FROM sync_outbox WHERE entity_id = 'encrypted-retry-agent'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(persisted.0, PAYLOAD_ENCODING);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&persisted.1).unwrap(),
+            first_change.payload.clone().unwrap()
+        );
+        assert_ne!(persisted.1, persisted.2);
+        assert_eq!(persisted.3, first_change.payload_hash);
+        assert_eq!(persisted.4, 1);
+        assert_eq!(persisted.5, "pending");
+        conn.execute(
+            "UPDATE sync_outbox SET next_retry_at = 0 WHERE status = 'pending'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE sync_runtime_state SET backoff_until = NULL WHERE singleton = 1",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        service
+            .run_with_encrypted_transport(&transport, &keyset)
+            .await
+            .unwrap();
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let retried = &requests[1].changes[0];
+        assert_eq!(retried.payload, first_change.payload);
+        assert_eq!(retried.payload_hash, first_change.payload_hash);
+        assert_eq!(retried.key_version, first_change.key_version);
+        drop(requests);
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let state: (String, String) = conn
+            .query_row(
+                "SELECT o.status, e.base_payload FROM sync_outbox o \
+                 JOIN sync_entity_state e ON e.entity_type = o.entity_type AND e.entity_id = o.entity_id \
+                 WHERE o.entity_id = 'encrypted-retry-agent'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state.0, "synced");
+        assert_eq!(state.1, persisted.2);
+        drop(conn);
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn encrypted_pull_decrypts_before_commit_and_rejects_a_tampered_page_atomically() {
+        let keyset = SyncKeyset::generate_initial();
+        let (valid_path, valid_service) = test_service("encrypted-pull-valid");
+        valid_service.db.get_sync_status().await.unwrap();
+        let conn = rusqlite::Connection::open(&valid_path).unwrap();
+        conn.execute(
+            "UPDATE sync_runtime_state SET bootstrap_state = 'complete' WHERE singleton = 1",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let valid_transport = EncryptedPullTransport {
+            change: encrypted_remote_agent(&keyset),
+            acknowledgements: AtomicUsize::new(0),
+        };
+        valid_service
+            .run_with_encrypted_transport(&valid_transport, &keyset)
+            .await
+            .unwrap();
+        assert_eq!(valid_transport.acknowledgements.load(Ordering::SeqCst), 1);
+        let conn = rusqlite::Connection::open(&valid_path).unwrap();
+        let applied: (String, i64) = conn
+            .query_row(
+                "SELECT a.name, r.last_pull_cursor FROM agents a \
+                 JOIN sync_runtime_state r ON r.singleton = 1 \
+                 WHERE a.id = 'remote-encrypted-agent'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(applied, ("Remote encrypted agent".into(), 1));
+        drop(conn);
+
+        let (invalid_path, invalid_service) = test_service("encrypted-pull-invalid");
+        invalid_service.db.get_sync_status().await.unwrap();
+        let conn = rusqlite::Connection::open(&invalid_path).unwrap();
+        conn.execute(
+            "UPDATE sync_runtime_state SET bootstrap_state = 'complete' WHERE singleton = 1",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let mut tampered = encrypted_remote_agent(&keyset);
+        tampered.payload_hash = "f".repeat(64);
+        let invalid_transport = EncryptedPullTransport {
+            change: tampered,
+            acknowledgements: AtomicUsize::new(0),
+        };
+        assert!(invalid_service
+            .run_with_encrypted_transport(&invalid_transport, &keyset)
+            .await
+            .is_err());
+        assert_eq!(invalid_transport.acknowledgements.load(Ordering::SeqCst), 0);
+        let conn = rusqlite::Connection::open(&invalid_path).unwrap();
+        let unchanged: (i64, i64) = conn
+            .query_row(
+                "SELECT last_pull_cursor, \
+                        (SELECT COUNT(*) FROM agents WHERE id = 'remote-encrypted-agent') \
+                 FROM sync_runtime_state WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(unchanged, (0, 0));
+        drop(conn);
+
+        drop(valid_service);
+        drop(invalid_service);
+        let _ = std::fs::remove_file(valid_path);
+        let _ = std::fs::remove_file(invalid_path);
     }
 
     #[tokio::test]
@@ -1312,8 +1940,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "plaintext remote POC is disabled until encrypted transport is implemented"]
-    async fn remote_bearer_push_accepts_a_fake_agent() {
+    #[ignore = "requires explicit remote credentials and writes disposable encrypted test data"]
+    async fn remote_bearer_push_accepts_an_encrypted_fake_agent() {
         let token = std::env::var("AGNES_SYNC_E2E_TOKEN")
             .expect("AGNES_SYNC_E2E_TOKEN must contain the temporary bearer token");
         let device_id = std::env::var("AGNES_SYNC_E2E_DEVICE_ID")
@@ -1343,6 +1971,8 @@ mod tests {
             .await
             .unwrap();
         let service = Arc::new(SyncService::new(db, secrets).unwrap());
+        service.begin_e2ee_setup().await.unwrap();
+        service.confirm_e2ee_setup().await.unwrap();
         let agent_id = format!("e2e-{}", uuid::Uuid::new_v4());
         service.db.insert_agent(new_agent(&agent_id)).await.unwrap();
 

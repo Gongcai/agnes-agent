@@ -285,6 +285,10 @@ pub enum DbCommand {
         now_ms: i64,
         resp: oneshot::Sender<AppResult<Vec<repo::sync::OutboxRow>>>,
     },
+    PersistSealedSyncOutbox {
+        changes: Vec<repo::sync::SealedOutboxChange>,
+        resp: oneshot::Sender<AppResult<Vec<repo::sync::OutboxRow>>>,
+    },
     ApplySyncPushResult {
         accepted: Vec<repo::sync::AcceptedChange>,
         conflicts: Vec<repo::sync::ConflictChange>,
@@ -880,6 +884,16 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn persist_sealed_sync_outbox(
+        &self,
+        changes: Vec<repo::sync::SealedOutboxChange>,
+    ) -> AppResult<Vec<repo::sync::OutboxRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::PersistSealedSyncOutbox { changes, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn apply_sync_push_result(
         &self,
         accepted: Vec<repo::sync::AcceptedChange>,
@@ -1405,6 +1419,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     resp,
                 } => {
                     let _ = resp.send(repo::sync::claim_pending(&mut conn, limit, now_ms));
+                }
+                DbCommand::PersistSealedSyncOutbox { changes, resp } => {
+                    let _ = resp.send(repo::sync::persist_sealed_outbox(&mut conn, &changes));
                 }
                 DbCommand::ApplySyncPushResult {
                     accepted,

@@ -203,6 +203,7 @@ CREATE TABLE IF NOT EXISTS sync_outbox (
   payload_schema_version INTEGER NOT NULL DEFAULT 1,
   payload_encoding TEXT NOT NULL DEFAULT 'json',
   payload TEXT,
+  source_payload TEXT,
   payload_hash TEXT NOT NULL,
   key_version INTEGER,
   status TEXT NOT NULL DEFAULT 'pending'

@@ -18,6 +18,9 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 use crate::error::{AppError, AppResult};
 
 pub const PAYLOAD_ENCODING: &str = "xchacha20poly1305-v1";
+pub const TOMBSTONE_ENCODING: &str = "tombstone-v1";
+pub const EMPTY_PAYLOAD_HASH: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 pub const KEYSET_FORMAT_VERSION: u8 = 1;
 const MASTER_KEY_BYTES: usize = 32;
 const NONCE_BYTES: usize = 24;

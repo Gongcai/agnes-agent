@@ -23,6 +23,26 @@ export const entityTypeSchema = z.enum([
 ]);
 
 export const operationSchema = z.enum(["upsert", "delete"]);
+export const PAYLOAD_ENCODING = "xchacha20poly1305-v1";
+export const TOMBSTONE_ENCODING = "tombstone-v1";
+export const EMPTY_PAYLOAD_HASH =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const encryptedPayloadSchema = z
+  .string()
+  .min(54)
+  .max(MAX_REQUEST_BYTES)
+  .regex(/^[A-Za-z0-9+/]+$/)
+  .refine((value) => {
+    if (value.length % 4 === 1) {
+      return false;
+    }
+    try {
+      const padded = value.padEnd(Math.ceil(value.length / 4) * 4, "=");
+      return btoa(atob(padded)).replace(/=+$/, "") === value;
+    } catch {
+      return false;
+    }
+  }, "payload must be canonical unpadded Base64");
 
 export const syncChangeSchema = z
   .object({
@@ -35,27 +55,28 @@ export const syncChangeSchema = z
     baseRevision: z.int().positive().nullable(),
     hlc: z.string().min(1).max(160),
     payloadSchemaVersion: z.int().positive(),
-    payloadEncoding: z.string().min(1).max(64),
-    payload: z.json(),
+    payloadEncoding: z.enum([PAYLOAD_ENCODING, TOMBSTONE_ENCODING]),
+    payload: encryptedPayloadSchema.nullable(),
     payloadHash: z.string().regex(/^[a-f0-9]{64}$/),
-    keyVersion: z.int().nonnegative().nullable(),
+    keyVersion: z.int().positive().nullable(),
     createdAt: z.int().nonnegative(),
   })
   .strict()
   .superRefine((change, context) => {
-    if (change.operation === "upsert" && change.payload === null) {
-      context.addIssue({
-        code: "custom",
-        path: ["payload"],
-        message: "payload is required for upsert",
-      });
+    if (
+      change.operation === "upsert" &&
+      (change.payloadEncoding !== PAYLOAD_ENCODING || change.payload === null || change.keyVersion === null)
+    ) {
+      context.addIssue({ code: "custom", message: "upsert requires an encrypted payload" });
     }
-    if (change.operation === "delete" && change.payload !== null) {
-      context.addIssue({
-        code: "custom",
-        path: ["payload"],
-        message: "payload must be null for delete",
-      });
+    if (
+      change.operation === "delete" &&
+      (change.payloadEncoding !== TOMBSTONE_ENCODING ||
+        change.payload !== null ||
+        change.keyVersion !== null ||
+        change.payloadHash !== EMPTY_PAYLOAD_HASH)
+    ) {
+      context.addIssue({ code: "custom", message: "delete requires a canonical tombstone" });
     }
   });
 

@@ -46,6 +46,14 @@ fn ensure_sync_metadata(conn: &Connection) -> AppResult<()> {
 }
 
 fn ensure_sync_runtime_state(conn: &Connection) -> AppResult<()> {
+    let added_source_payload = !has_column(conn, "sync_outbox", "source_payload");
+    ensure_column(conn, "sync_outbox", "source_payload", "TEXT")?;
+    if added_source_payload {
+        conn.execute(
+            "UPDATE sync_outbox SET source_payload = payload WHERE operation = 'upsert'",
+            [],
+        )?;
+    }
     conn.execute(
         "INSERT OR IGNORE INTO sync_runtime_state (singleton, device_id) VALUES (1, ?1)",
         [uuid::Uuid::new_v4().to_string()],
@@ -587,5 +595,36 @@ mod tests {
             .unwrap();
         assert_eq!(second_device, first_device);
         assert_eq!(status, "pending");
+    }
+
+    #[test]
+    fn adds_and_backfills_source_payload_for_legacy_outbox_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sync_outbox ( \
+               change_id TEXT PRIMARY KEY, operation TEXT NOT NULL, payload TEXT, status TEXT); \
+             CREATE TABLE sync_runtime_state (singleton INTEGER PRIMARY KEY, device_id TEXT); \
+             INSERT INTO sync_outbox (change_id, operation, payload, status) \
+             VALUES ('upsert-1', 'upsert', '{\"name\":\"legacy\"}', 'in_flight'), \
+                    ('delete-1', 'delete', NULL, 'pending');",
+        )
+        .unwrap();
+
+        ensure_sync_runtime_state(&conn).unwrap();
+
+        assert!(has_column(&conn, "sync_outbox", "source_payload"));
+        let rows: (Option<String>, Option<String>, String) = conn
+            .query_row(
+                "SELECT \
+                   (SELECT source_payload FROM sync_outbox WHERE change_id = 'upsert-1'), \
+                   (SELECT source_payload FROM sync_outbox WHERE change_id = 'delete-1'), \
+                   (SELECT status FROM sync_outbox WHERE change_id = 'upsert-1')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(rows.0.as_deref(), Some("{\"name\":\"legacy\"}"));
+        assert_eq!(rows.1, None);
+        assert_eq!(rows.2, "pending");
     }
 }

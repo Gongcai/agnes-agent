@@ -22,10 +22,20 @@ pub struct OutboxRow {
     pub payload_schema_version: i64,
     pub payload_encoding: String,
     pub payload: Option<String>,
+    pub source_payload: Option<String>,
     pub payload_hash: String,
     pub key_version: Option<i64>,
     pub attempt_count: i64,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SealedOutboxChange {
+    pub change_id: String,
+    pub payload_encoding: String,
+    pub payload: Option<String>,
+    pub payload_hash: String,
+    pub key_version: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -279,8 +289,8 @@ pub fn enqueue_projection(
     conn.execute(
         "INSERT INTO sync_outbox (change_id, device_id, entity_type, entity_id, operation, \
          base_revision, local_version, hlc, payload_schema_version, payload_encoding, payload, \
-         payload_hash, key_version, status, attempt_count, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 'json', ?9, ?10, NULL, 'pending', 0, ?11)",
+         source_payload, payload_hash, key_version, status, attempt_count, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 'json', ?9, ?9, ?10, NULL, 'pending', 0, ?11)",
         params![
             change_id,
             device_id,
@@ -367,7 +377,7 @@ pub fn claim_pending(
         let mut statement = tx.prepare(
             "SELECT o.change_id, o.device_id, o.entity_type, o.entity_id, o.operation, \
                     o.base_revision, o.local_version, o.hlc, o.payload_schema_version, \
-                    o.payload_encoding, o.payload, o.payload_hash, o.key_version, \
+                    o.payload_encoding, o.payload, o.source_payload, o.payload_hash, o.key_version, \
                     o.attempt_count, o.created_at \
              FROM sync_outbox o \
              WHERE o.status = 'pending' AND COALESCE(o.next_retry_at, 0) <= ?1 \
@@ -394,6 +404,85 @@ pub fn claim_pending(
     }
     tx.commit()?;
     Ok(rows)
+}
+
+pub fn persist_sealed_outbox(
+    conn: &mut Connection,
+    changes: &[SealedOutboxChange],
+) -> AppResult<Vec<OutboxRow>> {
+    if changes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let mut seen = HashSet::new();
+    for change in changes {
+        if !seen.insert(change.change_id.as_str()) {
+            return Err(AppError::Other(format!(
+                "sealed outbox batch repeats change `{}`",
+                change.change_id
+            )));
+        }
+        validate_sealed_outbox_change(change)?;
+        let changed = tx.execute(
+            "UPDATE sync_outbox SET payload_encoding = ?1, payload = ?2, payload_hash = ?3, \
+             key_version = ?4 WHERE change_id = ?5 AND status = 'in_flight' \
+             AND payload_encoding = 'json' AND ( \
+               (?1 = 'xchacha20poly1305-v1' AND operation = 'upsert' AND source_payload IS NOT NULL) OR \
+               (?1 = 'tombstone-v1' AND operation = 'delete' AND source_payload IS NULL) \
+             )",
+            params![
+                change.payload_encoding,
+                change.payload,
+                change.payload_hash,
+                change.key_version,
+                change.change_id,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(AppError::Other(format!(
+                "outbox change `{}` is not eligible for encryption",
+                change.change_id
+            )));
+        }
+    }
+    let rows = changes
+        .iter()
+        .map(|change| {
+            get_outbox(&tx, &change.change_id)?.ok_or_else(|| {
+                AppError::Other(format!(
+                    "sealed outbox change `{}` disappeared",
+                    change.change_id
+                ))
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    tx.commit()?;
+    Ok(rows)
+}
+
+fn validate_sealed_outbox_change(change: &SealedOutboxChange) -> AppResult<()> {
+    let valid_hash = change.payload_hash.len() == 64
+        && change
+            .payload_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    let valid_encrypted = change.payload_encoding == "xchacha20poly1305-v1"
+        && change.key_version.is_some_and(|version| version > 0)
+        && change.payload.as_deref().is_some_and(|payload| {
+            serde_json::from_str::<String>(payload).is_ok_and(|encoded| !encoded.is_empty())
+        });
+    let valid_tombstone = change.payload_encoding == "tombstone-v1"
+        && change.payload.is_none()
+        && change.key_version.is_none()
+        && change.payload_hash
+            == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    if !valid_hash || (!valid_encrypted && !valid_tombstone) {
+        return Err(AppError::Other(format!(
+            "invalid sealed outbox change `{}`",
+            change.change_id
+        )));
+    }
+    Ok(())
 }
 
 pub fn apply_push_result(
@@ -449,7 +538,7 @@ pub fn apply_push_result(
                     result.server_seq,
                     row.payload_hash,
                     row.hlc,
-                    row.payload,
+                    row.source_payload,
                     now_ms,
                 ],
             )?;
@@ -1393,7 +1482,7 @@ fn upsert_local_conflict(
              updated_at = ?6 WHERE id = ?7",
             params![
                 remote_revision,
-                local.payload,
+                local.source_payload,
                 local.operation == "delete",
                 local.local_version,
                 local.hlc,
@@ -1416,7 +1505,7 @@ fn upsert_local_conflict(
             base_revision,
             remote_revision,
             base_payload,
-            local.payload,
+            local.source_payload,
             local.operation == "delete",
             local.local_version,
             local.hlc,
@@ -1434,7 +1523,7 @@ fn latest_unsynced_outbox(
     conn.query_row(
         "SELECT change_id, device_id, entity_type, entity_id, operation, base_revision, \
                 local_version, hlc, payload_schema_version, payload_encoding, payload, \
-                payload_hash, key_version, attempt_count, created_at FROM sync_outbox \
+                source_payload, payload_hash, key_version, attempt_count, created_at FROM sync_outbox \
          WHERE entity_type = ?1 AND entity_id = ?2 \
            AND status IN ('pending', 'in_flight', 'conflict', 'dead_letter') \
          ORDER BY created_at DESC, rowid DESC LIMIT 1",
@@ -1901,7 +1990,7 @@ fn get_outbox(conn: &Connection, change_id: &str) -> AppResult<Option<OutboxRow>
     conn.query_row(
         "SELECT change_id, device_id, entity_type, entity_id, operation, base_revision, \
                 local_version, hlc, payload_schema_version, payload_encoding, payload, \
-                payload_hash, key_version, attempt_count, created_at \
+                source_payload, payload_hash, key_version, attempt_count, created_at \
          FROM sync_outbox WHERE change_id = ?1",
         [change_id],
         map_outbox_row,
@@ -1923,10 +2012,11 @@ fn map_outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
         payload_schema_version: row.get(8)?,
         payload_encoding: row.get(9)?,
         payload: row.get(10)?,
-        payload_hash: row.get(11)?,
-        key_version: row.get(12)?,
-        attempt_count: row.get(13)?,
-        created_at: row.get(14)?,
+        source_payload: row.get(11)?,
+        payload_hash: row.get(12)?,
+        key_version: row.get(13)?,
+        attempt_count: row.get(14)?,
+        created_at: row.get(15)?,
     })
 }
 
@@ -2326,6 +2416,53 @@ mod tests {
         assert_eq!(name, "Local");
         assert_eq!(outbox_status, "conflict");
         assert_eq!(status(&conn).unwrap().last_pull_cursor, 1);
+    }
+
+    #[test]
+    fn sealed_outbox_is_atomic_and_preserves_the_local_source_payload() {
+        let mut conn = setup();
+        crate::db::repo::agents::insert(
+            &mut conn,
+            &NewAgent {
+                id: "agent-1".into(),
+                name: "Local".into(),
+                persona: String::new(),
+                scenario: String::new(),
+                system_prompt: String::new(),
+                greeting: String::new(),
+                example_dialogue: String::new(),
+                model: String::new(),
+                tool_policy: "{}".into(),
+                avatar: String::new(),
+                tags: String::new(),
+                thinking_mode: "off".into(),
+                thinking_budget: 0,
+            },
+        )
+        .unwrap();
+        let claimed = claim_pending(&mut conn, 20, i64::MAX).unwrap();
+        let original = claimed[0].source_payload.clone();
+        let sealed = SealedOutboxChange {
+            change_id: claimed[0].change_id.clone(),
+            payload_encoding: "xchacha20poly1305-v1".into(),
+            payload: Some(serde_json::to_string("YWJj").unwrap()),
+            payload_hash: "b".repeat(64),
+            key_version: Some(1),
+        };
+        let invalid = SealedOutboxChange {
+            change_id: "missing-change".into(),
+            ..sealed.clone()
+        };
+        assert!(persist_sealed_outbox(&mut conn, &[sealed.clone(), invalid]).is_err());
+        let unchanged = get_outbox(&conn, &sealed.change_id).unwrap().unwrap();
+        assert_eq!(unchanged.payload_encoding, "json");
+        assert_eq!(unchanged.payload, original);
+
+        let persisted = persist_sealed_outbox(&mut conn, &[sealed]).unwrap();
+        assert_eq!(persisted[0].payload_encoding, "xchacha20poly1305-v1");
+        assert_eq!(persisted[0].payload.as_deref(), Some("\"YWJj\""));
+        assert_eq!(persisted[0].source_payload, original);
+        assert_eq!(persisted[0].key_version, Some(1));
     }
 
     #[test]

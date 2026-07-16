@@ -7,6 +7,8 @@ const OTHER_OWNER_DEVICE = "00000000-0000-4000-8000-000000000003";
 const TOKEN_A = "test-token-owner-a-device-a";
 const TOKEN_B = "test-token-owner-a-device-b";
 const OTHER_OWNER_TOKEN = "test-token-owner-b-device-a";
+const EMPTY_PAYLOAD_HASH =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 beforeEach(async () => {
   await env.SYNC_DB.batch([
@@ -30,6 +32,7 @@ interface TestChangeOptions {
 }
 
 function makeChange(options: TestChangeOptions = {}) {
+  const payload = encryptedPayload(options.payload ?? { name: "Test agent" });
   return {
     changeId: options.changeId ?? "10000000-0000-4000-8000-000000000001",
     deviceId: options.deviceId ?? DEVICE_A,
@@ -39,12 +42,17 @@ function makeChange(options: TestChangeOptions = {}) {
     baseRevision: options.baseRevision ?? null,
     hlc: "1784188800123-0001-device-a",
     payloadSchemaVersion: 1,
-    payloadEncoding: "json",
-    payload: options.payload ?? { name: "Test agent" },
+    payloadEncoding: "xchacha20poly1305-v1",
+    payload,
     payloadHash: options.payloadHash ?? "a".repeat(64),
-    keyVersion: null,
+    keyVersion: 1,
     createdAt: options.createdAt ?? 1784188800123,
   };
+}
+
+function encryptedPayload(value: unknown): string {
+  const encoded = btoa(JSON.stringify(value)).replace(/=+$/, "");
+  return `${encoded}${"A".repeat(Math.max(0, 64 - encoded.length))}`;
 }
 
 function request(path: string, token?: string, init: RequestInit = {}): Promise<Response> {
@@ -212,6 +220,37 @@ describe("push and pull", () => {
     expect(counts).toEqual({ entities: 1, changes: 1 });
   });
 
+  it("rejects plaintext JSON and accepts only the canonical encrypted tombstone", async () => {
+    const plaintext = {
+      ...makeChange(),
+      payloadEncoding: "json",
+      payload: { name: "Plaintext must not reach D1" },
+      keyVersion: null,
+    };
+    const rejected = await push(TOKEN_A, DEVICE_A, [plaintext]);
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({ error: { code: "INVALID_REQUEST" } });
+
+    const malformedBase64 = { ...makeChange(), payload: "A".repeat(57) };
+    const malformed = await push(TOKEN_A, DEVICE_A, [malformedBase64]);
+    expect(malformed.status).toBe(400);
+
+    const tombstone = {
+      ...makeChange({ changeId: "10000000-0000-4000-8000-000000000020" }),
+      operation: "delete",
+      payloadEncoding: "tombstone-v1",
+      payload: null,
+      payloadHash: EMPTY_PAYLOAD_HASH,
+      keyVersion: null,
+    };
+    const accepted = await push(TOKEN_A, DEVICE_A, [tombstone]);
+    expect(accepted.status).toBe(200);
+    const pulled = await request("/v1/sync/pull?after=0", TOKEN_B);
+    expect(await pulled.json()).toMatchObject({
+      changes: [{ operation: "delete", payloadEncoding: "tombstone-v1", payload: null }],
+    });
+  });
+
   it("applies mutable CAS changes and reports stale revisions", async () => {
     const created = makeChange();
     await push(TOKEN_A, DEVICE_A, [created]);
@@ -252,7 +291,7 @@ describe("push and pull", () => {
       hasMore: boolean;
     };
     expect(firstPage.changes).toHaveLength(1);
-    expect(firstPage.changes[0]?.payload).toEqual({ name: "Test agent" });
+    expect(firstPage.changes[0]?.payload).toBe(created.payload);
     expect(firstPage.hasMore).toBe(true);
 
     const secondPage = await request(
@@ -264,7 +303,7 @@ describe("push and pull", () => {
       hasMore: boolean;
     };
     expect(secondBody.changes).toEqual([
-      expect.objectContaining({ resultingRevision: 2, payload: { name: "Updated agent" } }),
+      expect.objectContaining({ resultingRevision: 2, payload: update.payload }),
     ]);
     expect(secondBody.hasMore).toBe(false);
   });
