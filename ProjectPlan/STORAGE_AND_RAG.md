@@ -556,7 +556,8 @@ tasks
 - [x] 完成本地 Calendar/TODO 领域表与索引，覆盖时区、全天事件、RRULE、例外、子任务、优先级与完成状态；
 - [x] 完成 Local Provider 的本地 CRUD 与 Tauri IPC：日历/事件、任务列表/任务、任务完成状态；
 - [x] 完成日历与待办桌面 CRUD 页面：本地容器、事件、任务、任务完成状态可操作；
-- [ ] 完成受 policy 约束的 Agent 读写工具；
+- [x] 完成受 policy 约束的 Agent 基础工具：`calendar_list`、`calendar_create`、`task_list`、`task_create`、`task_complete`；所有写工具为 High 风险并要求审批（Full Access 例外）；
+- [ ] 增加 `calendar_update`、`task_update` 与重复事件例外编辑工具；
 - [ ] 接入 D1 E2EE 同步；
 - 再接 Google Calendar / Google Tasks / CalDAV；
 

@@ -93,6 +93,8 @@ pub fn approval_decision(mode: PermissionMode, tool: &str, risk: Risk) -> Approv
                     | "memory_update"
                     | "memory_md_view"
                     | "memory_md_edit"
+                    | "calendar_list"
+                    | "task_list"
             );
             ApprovalDecision {
                 needs_approval: !accepts_without_prompt,
@@ -173,6 +175,15 @@ mod tests {
             approval_decision(PermissionMode::AcceptEdits, "shell", Risk::Medium).needs_approval
         );
         assert!(approval_decision(PermissionMode::AcceptEdits, "git", Risk::Low).needs_approval);
+    }
+
+    #[test]
+    fn planner_writes_require_approval_outside_full_access() {
+        for tool in ["calendar_create", "task_create", "task_complete"] {
+            assert!(approval_decision(PermissionMode::Auto, tool, Risk::High).needs_approval);
+            assert!(approval_decision(PermissionMode::AcceptEdits, tool, Risk::High).needs_approval);
+            assert!(!approval_decision(PermissionMode::FullAccess, tool, Risk::High).needs_approval);
+        }
     }
 
     #[test]

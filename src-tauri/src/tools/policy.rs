@@ -333,6 +333,8 @@ impl ToolPolicy {
             "git" => self.git.approval,
             "memory_search" | "memory_md_view" => ApprovalTier::Never,
             "memory_create" | "memory_update" | "memory_md_edit" => self.memory.approval,
+            "calendar_list" | "task_list" => ApprovalTier::Never,
+            "calendar_create" | "task_create" | "task_complete" => ApprovalTier::Always,
             _ => ApprovalTier::Always,
         }
     }
