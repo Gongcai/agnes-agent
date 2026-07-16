@@ -233,6 +233,39 @@ CREATE TABLE IF NOT EXISTS sync_entity_state (
   PRIMARY KEY(entity_type, entity_id)
 );
 
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+  id TEXT PRIMARY KEY,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  base_revision INTEGER,
+  remote_revision INTEGER,
+  base_payload TEXT,
+  local_payload TEXT,
+  remote_payload TEXT,
+  local_deleted INTEGER NOT NULL DEFAULT 0 CHECK(local_deleted IN (0, 1)),
+  remote_deleted INTEGER NOT NULL DEFAULT 0 CHECK(remote_deleted IN (0, 1)),
+  remote_ready INTEGER NOT NULL DEFAULT 0 CHECK(remote_ready IN (0, 1)),
+  local_version INTEGER NOT NULL,
+  local_hlc TEXT NOT NULL,
+  remote_hlc TEXT,
+  remote_payload_hash TEXT,
+  remote_origin_device_id TEXT,
+  remote_server_seq INTEGER,
+  remote_updated_at INTEGER,
+  conflicting_fields TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'resolved')),
+  resolution TEXT CHECK(resolution IN ('auto_merge', 'keep_local', 'keep_remote')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  resolved_at INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_conflicts_pending_entity
+  ON sync_conflicts(entity_type, entity_id) WHERE status = 'pending';
+
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_status
+  ON sync_conflicts(status, updated_at DESC, id);
+
 CREATE TABLE IF NOT EXISTS sync_runtime_state (
   singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
   device_id TEXT NOT NULL UNIQUE,

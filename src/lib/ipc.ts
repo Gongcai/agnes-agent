@@ -40,6 +40,34 @@ export async function syncNow(): Promise<SyncStatus> {
   return invoke<SyncStatus>("sync_now");
 }
 
+export interface SyncConflict {
+  id: string;
+  entityType: string;
+  entityId: string;
+  baseRevision: number | null;
+  remoteRevision: number | null;
+  basePayload: Record<string, unknown> | null;
+  localPayload: Record<string, unknown> | null;
+  remotePayload: Record<string, unknown> | null;
+  localDeleted: boolean;
+  remoteDeleted: boolean;
+  remoteReady: boolean;
+  conflictingFields: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export async function listSyncConflicts(): Promise<SyncConflict[]> {
+  return invoke<SyncConflict[]>("list_sync_conflicts");
+}
+
+export async function resolveSyncConflict(
+  conflictId: string,
+  resolution: "keep_local" | "keep_remote",
+): Promise<void> {
+  return invoke("resolve_sync_conflict", { conflictId, resolution });
+}
+
 export type SyncCredentialInput =
   | { kind: "bearer"; token: string }
   | { kind: "cloudflare_access"; client_id: string; client_secret: string };

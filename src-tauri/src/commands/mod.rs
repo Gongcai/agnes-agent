@@ -426,6 +426,27 @@ pub async fn get_sync_status(
 }
 
 #[tauri::command]
+pub async fn list_sync_conflicts(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<crate::db::repo::sync::SyncConflictRow>> {
+    state.db.list_sync_conflicts().await
+}
+
+#[tauri::command]
+pub async fn resolve_sync_conflict(
+    state: tauri::State<'_, AppState>,
+    conflict_id: String,
+    resolution: String,
+) -> AppResult<()> {
+    state
+        .db
+        .resolve_sync_conflict(conflict_id, resolution)
+        .await?;
+    state.sync.schedule();
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn sync_now(
     state: tauri::State<'_, AppState>,
 ) -> AppResult<crate::sync::engine::SyncStatus> {

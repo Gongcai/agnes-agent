@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -54,6 +54,45 @@ pub struct SyncDbStatus {
     pub last_success_at: Option<i64>,
     pub last_error_code: Option<String>,
     pub backoff_until: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncConflictRow {
+    pub id: String,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub base_revision: Option<i64>,
+    pub remote_revision: Option<i64>,
+    pub base_payload: Option<Value>,
+    pub local_payload: Option<Value>,
+    pub remote_payload: Option<Value>,
+    pub local_deleted: bool,
+    pub remote_deleted: bool,
+    pub remote_ready: bool,
+    pub conflicting_fields: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug)]
+struct ConflictRecord {
+    entity_type: String,
+    entity_id: String,
+    remote_revision: Option<i64>,
+    base_payload: Option<Value>,
+    local_payload: Option<Value>,
+    remote_payload: Option<Value>,
+    local_deleted: bool,
+    remote_deleted: bool,
+    remote_ready: bool,
+    local_version: i64,
+    local_hlc: String,
+    remote_hlc: Option<String>,
+    remote_payload_hash: Option<String>,
+    remote_origin_device_id: Option<String>,
+    remote_server_seq: Option<i64>,
+    remote_updated_at: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -267,7 +306,7 @@ pub fn status(conn: &Connection) -> AppResult<SyncDbStatus> {
         "SELECT r.device_id, \
            (SELECT COUNT(*) FROM sync_outbox WHERE status = 'pending'), \
            (SELECT COUNT(*) FROM sync_outbox WHERE status = 'in_flight'), \
-           (SELECT COUNT(*) FROM sync_outbox WHERE status = 'conflict'), \
+           (SELECT COUNT(*) FROM sync_conflicts WHERE status = 'pending'), \
            (SELECT COUNT(*) FROM sync_outbox WHERE status = 'dead_letter'), \
            r.last_pull_cursor, r.bootstrap_state, r.last_success_at, r.last_error_code, \
            r.backoff_until FROM sync_runtime_state r WHERE r.singleton = 1",
@@ -403,15 +442,6 @@ pub fn apply_push_result(
         )?;
     }
     for conflict in conflicts {
-        if let Some(remote_revision) = conflict.current_revision {
-            tx.execute(
-                "INSERT INTO sync_entity_state (entity_type, entity_id, remote_revision, updated_at) \
-                 SELECT entity_type, entity_id, ?1, ?2 FROM sync_outbox WHERE change_id = ?3 \
-                 ON CONFLICT(entity_type, entity_id) DO UPDATE SET \
-                   remote_revision = excluded.remote_revision, updated_at = excluded.updated_at",
-                params![remote_revision, now_ms, conflict.change_id],
-            )?;
-        }
         tx.execute(
             "UPDATE sync_outbox SET status = 'conflict', next_retry_at = NULL, \
              last_error_code = 'REVISION_CONFLICT', last_error_message = ?1 \
@@ -421,6 +451,7 @@ pub fn apply_push_result(
                 conflict.change_id,
             ],
         )?;
+        record_push_conflict(&tx, &conflict.change_id, conflict.current_revision, now_ms)?;
     }
     tx.execute(
         "UPDATE sync_runtime_state SET last_success_at = ?1, last_error_code = NULL, \
@@ -701,10 +732,13 @@ fn apply_remote_entity(
                 entity.entity_id,
             ],
         )?;
+        let conflict_id = record_remote_conflict(tx, entity, now_ms)?;
+        upsert_remote_state(tx, entity, now_ms)?;
+        try_auto_resolve_conflict(tx, &conflict_id, now_ms)?;
     } else {
         apply_remote_business_row(tx, entity)?;
+        upsert_remote_state(tx, entity, now_ms)?;
     }
-    upsert_remote_state(tx, entity, now_ms)?;
     Ok(())
 }
 
@@ -1238,6 +1272,540 @@ fn update_remote_server_seq(
         ],
     )?;
     Ok(())
+}
+
+fn record_push_conflict(
+    tx: &Transaction<'_>,
+    change_id: &str,
+    remote_revision: Option<i64>,
+    now_ms: i64,
+) -> AppResult<String> {
+    let row = get_outbox(tx, change_id)?.ok_or_else(|| {
+        AppError::Other(format!(
+            "conflicting outbox change `{change_id}` does not exist"
+        ))
+    })?;
+    upsert_local_conflict(
+        tx,
+        &row.entity_type,
+        &row.entity_id,
+        remote_revision,
+        now_ms,
+    )
+}
+
+fn record_remote_conflict(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    now_ms: i64,
+) -> AppResult<String> {
+    let conflict_id = upsert_local_conflict(
+        tx,
+        &entity.entity_type,
+        &entity.entity_id,
+        Some(entity.revision),
+        now_ms,
+    )?;
+    let remote_payload = entity
+        .payload
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    tx.execute(
+        "UPDATE sync_conflicts SET remote_revision = ?1, remote_payload = ?2, \
+         remote_deleted = ?3, remote_ready = 1, remote_hlc = ?4, remote_payload_hash = ?5, \
+         remote_origin_device_id = ?6, remote_server_seq = ?7, remote_updated_at = ?8, \
+         updated_at = ?9 WHERE id = ?10 AND status = 'pending'",
+        params![
+            entity.revision,
+            remote_payload,
+            entity.deleted,
+            entity.hlc,
+            entity.payload_hash,
+            entity.origin_device_id,
+            entity.server_seq,
+            entity.updated_at,
+            now_ms,
+            conflict_id,
+        ],
+    )?;
+    update_conflicting_fields(tx, &conflict_id)?;
+    Ok(conflict_id)
+}
+
+fn upsert_local_conflict(
+    tx: &Transaction<'_>,
+    entity_type: &str,
+    entity_id: &str,
+    remote_revision: Option<i64>,
+    now_ms: i64,
+) -> AppResult<String> {
+    let local = latest_unsynced_outbox(tx, entity_type, entity_id)?.ok_or_else(|| {
+        AppError::Other(format!(
+            "conflicting local change for {entity_type} `{entity_id}` does not exist"
+        ))
+    })?;
+    let base = tx
+        .query_row(
+            "SELECT remote_revision, base_payload FROM sync_entity_state \
+             WHERE entity_type = ?1 AND entity_id = ?2",
+            params![entity_type, entity_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (base_revision, base_payload) = base.unwrap_or((None, None));
+    let existing = tx
+        .query_row(
+            "SELECT id FROM sync_conflicts WHERE entity_type = ?1 AND entity_id = ?2 \
+             AND status = 'pending'",
+            params![entity_type, entity_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if let Some(id) = existing {
+        tx.execute(
+            "UPDATE sync_conflicts SET remote_revision = COALESCE(?1, remote_revision), \
+             local_payload = ?2, local_deleted = ?3, local_version = ?4, local_hlc = ?5, \
+             updated_at = ?6 WHERE id = ?7",
+            params![
+                remote_revision,
+                local.payload,
+                local.operation == "delete",
+                local.local_version,
+                local.hlc,
+                now_ms,
+                id,
+            ],
+        )?;
+        return Ok(id);
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO sync_conflicts (id, entity_type, entity_id, base_revision, remote_revision, \
+         base_payload, local_payload, local_deleted, local_version, local_hlc, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+        params![
+            id,
+            entity_type,
+            entity_id,
+            base_revision,
+            remote_revision,
+            base_payload,
+            local.payload,
+            local.operation == "delete",
+            local.local_version,
+            local.hlc,
+            now_ms,
+        ],
+    )?;
+    Ok(id)
+}
+
+fn latest_unsynced_outbox(
+    conn: &Connection,
+    entity_type: &str,
+    entity_id: &str,
+) -> AppResult<Option<OutboxRow>> {
+    conn.query_row(
+        "SELECT change_id, device_id, entity_type, entity_id, operation, base_revision, \
+                local_version, hlc, payload_schema_version, payload_encoding, payload, \
+                payload_hash, key_version, attempt_count, created_at FROM sync_outbox \
+         WHERE entity_type = ?1 AND entity_id = ?2 \
+           AND status IN ('pending', 'in_flight', 'conflict', 'dead_letter') \
+         ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        params![entity_type, entity_id],
+        map_outbox_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn update_conflicting_fields(tx: &Transaction<'_>, conflict_id: &str) -> AppResult<()> {
+    let conflict = get_conflict(tx, conflict_id)?;
+    let fields = if conflict.local_deleted || conflict.remote_deleted {
+        vec!["deleted_at".to_string()]
+    } else if let (Some(local), Some(remote)) = (
+        conflict.local_payload.as_ref(),
+        conflict.remote_payload.as_ref(),
+    ) {
+        match crate::sync::merge::three_way_merge(conflict.base_payload.as_ref(), local, remote)? {
+            crate::sync::merge::MergeOutcome::Merged(_) => Vec::new(),
+            crate::sync::merge::MergeOutcome::Conflict(fields) => fields,
+        }
+    } else {
+        Vec::new()
+    };
+    tx.execute(
+        "UPDATE sync_conflicts SET conflicting_fields = ?1 WHERE id = ?2",
+        params![serde_json::to_string(&fields)?, conflict_id],
+    )?;
+    Ok(())
+}
+
+fn try_auto_resolve_conflict(
+    tx: &Transaction<'_>,
+    conflict_id: &str,
+    now_ms: i64,
+) -> AppResult<bool> {
+    let conflict = get_conflict(tx, conflict_id)?;
+    if !conflict.remote_ready
+        || conflict.local_deleted
+        || conflict.remote_deleted
+        || !matches!(
+            conflict.entity_type.as_str(),
+            "agent" | "session" | "workspace" | "message"
+        )
+    {
+        return Ok(false);
+    }
+    let (Some(local), Some(remote)) = (
+        conflict.local_payload.as_ref(),
+        conflict.remote_payload.as_ref(),
+    ) else {
+        return Ok(false);
+    };
+    let crate::sync::merge::MergeOutcome::Merged(merged) =
+        crate::sync::merge::three_way_merge(conflict.base_payload.as_ref(), local, remote)?
+    else {
+        return Ok(false);
+    };
+
+    supersede_conflicting_outbox(tx, &conflict, "CONFLICT_AUTO_MERGED", now_ms)?;
+    apply_local_resolution(tx, &conflict, merged, now_ms)?;
+    mark_conflict_resolved(tx, conflict_id, "auto_merge", now_ms)?;
+    Ok(true)
+}
+
+pub fn list_conflicts(conn: &Connection) -> AppResult<Vec<SyncConflictRow>> {
+    let mut statement = conn.prepare(
+        "SELECT id, entity_type, entity_id, base_revision, remote_revision, base_payload, \
+         local_payload, remote_payload, local_deleted, remote_deleted, remote_ready, \
+         conflicting_fields, created_at, updated_at FROM sync_conflicts \
+         WHERE status = 'pending' ORDER BY updated_at DESC, id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, bool>(8)?,
+            row.get::<_, bool>(9)?,
+            row.get::<_, bool>(10)?,
+            row.get::<_, String>(11)?,
+            row.get::<_, i64>(12)?,
+            row.get::<_, i64>(13)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let row = row?;
+        Ok(SyncConflictRow {
+            id: row.0,
+            entity_type: row.1,
+            entity_id: row.2,
+            base_revision: row.3,
+            remote_revision: row.4,
+            base_payload: parse_optional_json(row.5)?,
+            local_payload: parse_optional_json(row.6)?,
+            remote_payload: parse_optional_json(row.7)?,
+            local_deleted: row.8,
+            remote_deleted: row.9,
+            remote_ready: row.10,
+            conflicting_fields: serde_json::from_str(&row.11)?,
+            created_at: row.12,
+            updated_at: row.13,
+        })
+    })
+    .collect()
+}
+
+pub fn resolve_conflict(
+    conn: &mut Connection,
+    conflict_id: &str,
+    resolution: &str,
+    now_ms: i64,
+) -> AppResult<()> {
+    if !matches!(resolution, "keep_local" | "keep_remote") {
+        return Err(AppError::Other(format!(
+            "unsupported conflict resolution `{resolution}`"
+        )));
+    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let conflict = get_conflict(&tx, conflict_id)?;
+    if !conflict.remote_ready {
+        return Err(AppError::Other(
+            "Remote conflict payload has not been downloaded yet".into(),
+        ));
+    }
+    supersede_conflicting_outbox(&tx, &conflict, "CONFLICT_RESOLVED", now_ms)?;
+    match resolution {
+        "keep_local" if conflict.local_deleted => {
+            apply_local_delete_resolution(&tx, &conflict, now_ms)?;
+        }
+        "keep_local" => {
+            let payload = conflict
+                .local_payload
+                .clone()
+                .ok_or_else(|| AppError::Other("Local conflict payload is missing".into()))?;
+            apply_local_resolution(&tx, &conflict, payload, now_ms)?;
+        }
+        "keep_remote" => apply_remote_resolution(&tx, &conflict)?,
+        _ => unreachable!(),
+    }
+    mark_conflict_resolved(&tx, conflict_id, resolution, now_ms)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn apply_local_resolution(
+    tx: &Transaction<'_>,
+    conflict: &ConflictRecord,
+    payload: Value,
+    now_ms: i64,
+) -> AppResult<()> {
+    let (payload, local_version) = normalize_resolution_payload(tx, conflict, payload, now_ms)?;
+    let remote_revision = conflict
+        .remote_revision
+        .ok_or_else(|| AppError::Other("Remote conflict revision is missing".into()))?;
+    let entity = RemoteEntityInput {
+        protocol_version: 1,
+        entity_type: conflict.entity_type.clone(),
+        entity_id: conflict.entity_id.clone(),
+        revision: remote_revision,
+        hlc: conflict.local_hlc.clone(),
+        deleted: false,
+        payload_schema_version: 1,
+        payload_encoding: "json".into(),
+        payload: Some(payload.clone()),
+        payload_hash: sha256_hex(serde_json::to_string(&payload)?.as_bytes()),
+        key_version: None,
+        origin_device_id: device_id(tx)?,
+        server_seq: conflict.remote_server_seq.unwrap_or(1),
+        updated_at: now_ms,
+    };
+    apply_remote_business_row(tx, &entity)?;
+    enqueue_projection(
+        tx,
+        parse_sync_entity_type(&conflict.entity_type)?,
+        &conflict.entity_id,
+        local_version,
+        false,
+        &payload,
+    )?;
+    Ok(())
+}
+
+fn apply_local_delete_resolution(
+    tx: &Transaction<'_>,
+    conflict: &ConflictRecord,
+    now_ms: i64,
+) -> AppResult<()> {
+    let remote_revision = conflict
+        .remote_revision
+        .ok_or_else(|| AppError::Other("Remote conflict revision is missing".into()))?;
+    let local_version = conflict
+        .local_version
+        .max(remote_revision)
+        .saturating_add(1);
+    let entity = RemoteEntityInput {
+        protocol_version: 1,
+        entity_type: conflict.entity_type.clone(),
+        entity_id: conflict.entity_id.clone(),
+        revision: local_version,
+        hlc: conflict.local_hlc.clone(),
+        deleted: true,
+        payload_schema_version: 1,
+        payload_encoding: "json".into(),
+        payload: None,
+        payload_hash: sha256_hex(&[]),
+        key_version: None,
+        origin_device_id: device_id(tx)?,
+        server_seq: conflict.remote_server_seq.unwrap_or(1),
+        updated_at: now_ms,
+    };
+    apply_remote_delete(tx, &entity)?;
+    enqueue_projection(
+        tx,
+        parse_sync_entity_type(&conflict.entity_type)?,
+        &conflict.entity_id,
+        local_version,
+        true,
+        &Value::Object(Default::default()),
+    )?;
+    Ok(())
+}
+
+fn apply_remote_resolution(tx: &Transaction<'_>, conflict: &ConflictRecord) -> AppResult<()> {
+    let entity = RemoteEntityInput {
+        protocol_version: 1,
+        entity_type: conflict.entity_type.clone(),
+        entity_id: conflict.entity_id.clone(),
+        revision: conflict
+            .remote_revision
+            .ok_or_else(|| AppError::Other("Remote conflict revision is missing".into()))?,
+        hlc: conflict
+            .remote_hlc
+            .clone()
+            .ok_or_else(|| AppError::Other("Remote conflict HLC is missing".into()))?,
+        deleted: conflict.remote_deleted,
+        payload_schema_version: 1,
+        payload_encoding: "json".into(),
+        payload: conflict.remote_payload.clone(),
+        payload_hash: conflict
+            .remote_payload_hash
+            .clone()
+            .ok_or_else(|| AppError::Other("Remote conflict payload hash is missing".into()))?,
+        key_version: None,
+        origin_device_id: conflict
+            .remote_origin_device_id
+            .clone()
+            .ok_or_else(|| AppError::Other("Remote conflict device is missing".into()))?,
+        server_seq: conflict
+            .remote_server_seq
+            .ok_or_else(|| AppError::Other("Remote conflict server sequence is missing".into()))?,
+        updated_at: conflict
+            .remote_updated_at
+            .ok_or_else(|| AppError::Other("Remote conflict timestamp is missing".into()))?,
+    };
+    apply_remote_business_row(tx, &entity)
+}
+
+fn normalize_resolution_payload(
+    tx: &Transaction<'_>,
+    conflict: &ConflictRecord,
+    mut payload: Value,
+    now_ms: i64,
+) -> AppResult<(Value, i64)> {
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| AppError::Other("Resolved payload is not an object".into()))?;
+    let remote_version = conflict
+        .remote_payload
+        .as_ref()
+        .and_then(|value| value.get("version"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let local_version = conflict.local_version.max(remote_version).saturating_add(1);
+    object.insert("version".into(), local_version.into());
+    object.insert("updated_at".into(), (now_ms / 1_000).to_string().into());
+    object.insert("origin_device_id".into(), device_id(tx)?.into());
+    object.insert("deleted_at".into(), Value::Null);
+    Ok((payload, local_version))
+}
+
+fn supersede_conflicting_outbox(
+    tx: &Transaction<'_>,
+    conflict: &ConflictRecord,
+    code: &str,
+    now_ms: i64,
+) -> AppResult<()> {
+    tx.execute(
+        "UPDATE sync_outbox SET status = 'synced', synced_at = ?1, next_retry_at = NULL, \
+         last_error_code = ?2, last_error_message = 'superseded by conflict resolution' \
+         WHERE entity_type = ?3 AND entity_id = ?4 \
+           AND status IN ('pending', 'in_flight', 'conflict', 'dead_letter')",
+        params![now_ms, code, conflict.entity_type, conflict.entity_id],
+    )?;
+    Ok(())
+}
+
+fn mark_conflict_resolved(
+    tx: &Transaction<'_>,
+    conflict_id: &str,
+    resolution: &str,
+    now_ms: i64,
+) -> AppResult<()> {
+    tx.execute(
+        "UPDATE sync_conflicts SET status = 'resolved', resolution = ?1, \
+         resolved_at = ?2, updated_at = ?2 WHERE id = ?3 AND status = 'pending'",
+        params![resolution, now_ms, conflict_id],
+    )?;
+    Ok(())
+}
+
+fn get_conflict(conn: &Connection, conflict_id: &str) -> AppResult<ConflictRecord> {
+    let row = conn
+        .query_row(
+        "SELECT id, entity_type, entity_id, remote_revision, base_payload, local_payload, \
+         remote_payload, local_deleted, remote_deleted, remote_ready, local_version, local_hlc, \
+         remote_hlc, remote_payload_hash, remote_origin_device_id, remote_server_seq, remote_updated_at \
+         FROM sync_conflicts WHERE id = ?1 AND status = 'pending'",
+        [conflict_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, bool>(7)?,
+                row.get::<_, bool>(8)?,
+                row.get::<_, bool>(9)?,
+                row.get::<_, i64>(10)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<i64>>(15)?,
+                row.get::<_, Option<i64>>(16)?,
+            ))
+        },
+    )
+        .optional()?
+        .ok_or_else(|| {
+            AppError::Other(format!(
+                "Pending sync conflict `{conflict_id}` was not found"
+            ))
+        })?;
+    Ok(ConflictRecord {
+        entity_type: row.1,
+        entity_id: row.2,
+        remote_revision: row.3,
+        base_payload: parse_optional_json(row.4)?,
+        local_payload: parse_optional_json(row.5)?,
+        remote_payload: parse_optional_json(row.6)?,
+        local_deleted: row.7,
+        remote_deleted: row.8,
+        remote_ready: row.9,
+        local_version: row.10,
+        local_hlc: row.11,
+        remote_hlc: row.12,
+        remote_payload_hash: row.13,
+        remote_origin_device_id: row.14,
+        remote_server_seq: row.15,
+        remote_updated_at: row.16,
+    })
+}
+
+fn parse_optional_json(raw: Option<String>) -> AppResult<Option<Value>> {
+    raw.map(|value| serde_json::from_str(&value).map_err(Into::into))
+        .transpose()
+}
+
+fn parse_sync_entity_type(value: &str) -> AppResult<SyncEntityType> {
+    match value {
+        "agent" => Ok(SyncEntityType::Agent),
+        "workspace" => Ok(SyncEntityType::Workspace),
+        "session" => Ok(SyncEntityType::Session),
+        "message" => Ok(SyncEntityType::Message),
+        "explicit_memory" => Ok(SyncEntityType::ExplicitMemory),
+        "memory" => Ok(SyncEntityType::Memory),
+        _ => Err(AppError::Other(format!(
+            "unsupported conflict entity type `{value}`"
+        ))),
+    }
 }
 
 pub fn schedule_retry(
@@ -1892,5 +2460,220 @@ mod tests {
         assert_eq!(explicit_content, "# Updated remote memory");
         assert_eq!(status(&conn).unwrap().last_pull_cursor, 8);
         assert_eq!(status(&conn).unwrap().pending_count, 0);
+    }
+
+    fn synced_agent_with_local_model_change() -> (Connection, OutboxRow) {
+        let mut conn = setup();
+        crate::db::repo::agents::insert(
+            &mut conn,
+            &NewAgent {
+                id: "agent-1".into(),
+                name: "Base".into(),
+                persona: "persona".into(),
+                scenario: "scenario".into(),
+                system_prompt: "prompt".into(),
+                greeting: "hello".into(),
+                example_dialogue: "example".into(),
+                model: "provider/model".into(),
+                tool_policy: "{}".into(),
+                avatar: String::new(),
+                tags: "test".into(),
+                thinking_mode: "off".into(),
+                thinking_budget: 0,
+            },
+        )
+        .unwrap();
+        let initial = claim_pending(&mut conn, 20, i64::MAX).unwrap();
+        apply_push_result(
+            &mut conn,
+            &[AcceptedChange {
+                change_id: initial[0].change_id.clone(),
+                server_seq: 1,
+                revision: 1,
+            }],
+            &[],
+            1_000,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE sync_runtime_state SET bootstrap_state = 'complete' WHERE singleton = 1",
+            [],
+        )
+        .unwrap();
+        crate::db::repo::agents::update_model(&mut conn, "agent-1", "local/model").unwrap();
+        let local = claim_pending(&mut conn, 20, i64::MAX).unwrap();
+        (conn, local[0].clone())
+    }
+
+    #[test]
+    fn push_conflict_waits_for_pull_then_preserves_all_three_payloads() {
+        let (mut conn, local) = synced_agent_with_local_model_change();
+        apply_push_result(
+            &mut conn,
+            &[],
+            &[ConflictChange {
+                change_id: local.change_id,
+                current_revision: Some(2),
+            }],
+            2_000,
+        )
+        .unwrap();
+
+        let state_revision: i64 = conn
+            .query_row(
+                "SELECT remote_revision FROM sync_entity_state \
+                 WHERE entity_type = 'agent' AND entity_id = 'agent-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state_revision, 1);
+        let waiting = list_conflicts(&conn).unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert!(!waiting[0].remote_ready);
+
+        let mut remote_payload = agent_payload("agent-1", "Base", 2);
+        remote_payload["model"] = json!("remote/model");
+        apply_pull_page(
+            &mut conn,
+            0,
+            &[remote("agent", "agent-1", 2, 2, remote_payload)],
+            2,
+            false,
+            3_000,
+        )
+        .unwrap();
+
+        let conflicts = list_conflicts(&conn).unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert!(conflicts[0].remote_ready);
+        assert_eq!(
+            conflicts[0].base_payload.as_ref().unwrap()["model"],
+            "provider/model"
+        );
+        assert_eq!(
+            conflicts[0].local_payload.as_ref().unwrap()["model"],
+            "local/model"
+        );
+        assert_eq!(
+            conflicts[0].remote_payload.as_ref().unwrap()["model"],
+            "remote/model"
+        );
+        assert_eq!(conflicts[0].conflicting_fields, vec!["model"]);
+
+        resolve_conflict(&mut conn, &conflicts[0].id, "keep_local", 4_000).unwrap();
+        assert!(list_conflicts(&conn).unwrap().is_empty());
+        let model: String = conn
+            .query_row("SELECT model FROM agents WHERE id = 'agent-1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(model, "local/model");
+        let next: (String, Option<i64>) = conn
+            .query_row(
+                "SELECT status, base_revision FROM sync_outbox \
+                 WHERE entity_type = 'agent' AND entity_id = 'agent-1' \
+                 ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(next, ("pending".into(), Some(2)));
+    }
+
+    #[test]
+    fn non_overlapping_agent_fields_auto_merge_against_remote_revision() {
+        let (mut conn, local) = synced_agent_with_local_model_change();
+        apply_push_result(
+            &mut conn,
+            &[],
+            &[ConflictChange {
+                change_id: local.change_id,
+                current_revision: Some(2),
+            }],
+            2_000,
+        )
+        .unwrap();
+        apply_pull_page(
+            &mut conn,
+            0,
+            &[remote(
+                "agent",
+                "agent-1",
+                2,
+                2,
+                agent_payload("agent-1", "Remote name", 2),
+            )],
+            2,
+            false,
+            3_000,
+        )
+        .unwrap();
+
+        assert!(list_conflicts(&conn).unwrap().is_empty());
+        let merged: (String, String, i64) = conn
+            .query_row(
+                "SELECT name, model, version FROM agents WHERE id = 'agent-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(merged, ("Remote name".into(), "local/model".into(), 3));
+        let pending_base: i64 = conn
+            .query_row(
+                "SELECT base_revision FROM sync_outbox WHERE status = 'pending' \
+                 ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending_base, 2);
+    }
+
+    #[test]
+    fn accepting_remote_conflict_replaces_local_row_without_sync_echo() {
+        let (mut conn, local) = synced_agent_with_local_model_change();
+        apply_push_result(
+            &mut conn,
+            &[],
+            &[ConflictChange {
+                change_id: local.change_id,
+                current_revision: Some(2),
+            }],
+            2_000,
+        )
+        .unwrap();
+        let mut remote_payload = agent_payload("agent-1", "Remote", 2);
+        remote_payload["model"] = json!("remote/model");
+        apply_pull_page(
+            &mut conn,
+            0,
+            &[remote("agent", "agent-1", 2, 2, remote_payload)],
+            2,
+            false,
+            3_000,
+        )
+        .unwrap();
+        let conflict_id = list_conflicts(&conn).unwrap()[0].id.clone();
+
+        resolve_conflict(&mut conn, &conflict_id, "keep_remote", 4_000).unwrap();
+
+        let row: (String, String, i64) = conn
+            .query_row(
+                "SELECT name, model, version FROM agents WHERE id = 'agent-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("Remote".into(), "remote/model".into(), 2));
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_outbox WHERE status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 0);
+        assert!(list_conflicts(&conn).unwrap().is_empty());
     }
 }

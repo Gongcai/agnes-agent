@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -18,7 +18,15 @@ import {
   memoryMatchesQuery,
   parseMemoryKeywords,
 } from "../lib/memory";
-import { getSyncStatus, setSyncCredential, syncNow, type SyncStatus } from "../lib/ipc";
+import {
+  getSyncStatus,
+  listSyncConflicts,
+  resolveSyncConflict,
+  setSyncCredential,
+  syncNow,
+  type SyncConflict,
+  type SyncStatus,
+} from "../lib/ipc";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -69,6 +77,30 @@ const EMPTY_MEMORY_FORM: MemoryFormValues = {
   keywords: "",
   content: "",
 };
+
+const SYNC_ENTITY_LABELS: Record<string, string> = {
+  agent: "角色卡",
+  workspace: "工作区",
+  session: "会话",
+  message: "消息",
+  explicit_memory: "必注入记忆",
+  memory: "结构化记忆",
+};
+
+function conflictPayloadPreview(
+  payload: Record<string, unknown> | null,
+  fields: string[],
+  deleted: boolean,
+): string {
+  if (deleted) return "已删除";
+  if (!payload) return "等待同步";
+  const selected = Object.fromEntries(
+    (fields.length > 0 ? fields : ["name", "title", "content"])
+      .filter((field) => field in payload)
+      .map((field) => [field, payload[field]]),
+  );
+  return JSON.stringify(Object.keys(selected).length > 0 ? selected : payload, null, 2);
+}
 
 type ProviderKind = "openai" | "anthropic" | "ollama" | "openai_compatible" | "google";
 
@@ -382,6 +414,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [syncToken, setSyncToken] = useState("");
   const [showSyncToken, setShowSyncToken] = useState(false);
   const [isSavingSyncCredential, setIsSavingSyncCredential] = useState(false);
+  const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
+  const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
 
   // Debug prompt panel state
   const [debugPrompt, setDebugPrompt] = useState<DebugPromptPreview | null>(null);
@@ -694,12 +728,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   useEffect(() => {
     if (!isOpen || activeTab !== "llm") return;
-    void getSyncStatus()
-      .then((status) => {
-        setSyncStatus(status);
-        setSyncStatusError(null);
-      })
-      .catch((error) => setSyncStatusError(String(error)));
+    let active = true;
+    const refresh = () => {
+      void Promise.all([getSyncStatus(), listSyncConflicts()])
+        .then(([status, conflicts]) => {
+          if (!active) return;
+          setSyncStatus(status);
+          setSyncConflicts(conflicts);
+          setSyncStatusError(null);
+        })
+        .catch((error) => {
+          if (active) setSyncStatusError(String(error));
+        });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 5_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, [activeTab, isOpen]);
 
   const handleSyncNow = async () => {
@@ -707,10 +754,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setSyncStatusError(null);
     try {
       setSyncStatus(await syncNow());
+      setSyncConflicts(await listSyncConflicts());
     } catch (error) {
       setSyncStatusError(String(error));
     } finally {
       setIsSyncingNow(false);
+    }
+  };
+
+  const handleResolveSyncConflict = async (
+    conflict: SyncConflict,
+    resolution: "keep_local" | "keep_remote",
+  ) => {
+    const target = resolution === "keep_local" ? "本机版本" : "云端版本";
+    if (!window.confirm(`确定采用${target}解决此同步冲突吗？`)) return;
+    setResolvingConflictId(conflict.id);
+    setSyncStatusError(null);
+    try {
+      await resolveSyncConflict(conflict.id, resolution);
+      const [status, conflicts] = await Promise.all([getSyncStatus(), listSyncConflicts()]);
+      setSyncStatus(status);
+      setSyncConflicts(conflicts);
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setResolvingConflictId(null);
     }
   };
 
@@ -2429,6 +2497,99 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           </span>
                         </div>
                       </div>
+                    )}
+
+                    {syncConflicts.length > 0 && (
+                      <section className="border-y border-rose-200 bg-rose-50/40">
+                        <div className="flex h-9 items-center justify-between border-b border-rose-200 px-3">
+                          <span className="flex items-center gap-2 text-xs font-semibold text-rose-800">
+                            <GitCompareArrows className="h-3.5 w-3.5" />
+                            同步冲突
+                          </span>
+                          <span className="text-[11px] tabular-nums text-rose-600">{syncConflicts.length}</span>
+                        </div>
+                        <div className="divide-y divide-rose-200">
+                          {syncConflicts.map((conflict) => {
+                            const resolving = resolvingConflictId === conflict.id;
+                            const localPreview = conflictPayloadPreview(
+                              conflict.localPayload,
+                              conflict.conflictingFields,
+                              conflict.localDeleted,
+                            );
+                            const remotePreview = conflictPayloadPreview(
+                              conflict.remotePayload,
+                              conflict.conflictingFields,
+                              conflict.remoteDeleted,
+                            );
+                            return (
+                              <article key={conflict.id} className="space-y-3 px-3 py-3">
+                                <div className="flex min-w-0 items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="text-xs font-semibold text-stone-800">
+                                        {SYNC_ENTITY_LABELS[conflict.entityType] || conflict.entityType}
+                                      </span>
+                                      <span className="font-mono text-[10px] text-stone-400">
+                                        r{conflict.baseRevision ?? 0} → r{conflict.remoteRevision ?? "?"}
+                                      </span>
+                                    </div>
+                                    <p className="mt-0.5 truncate font-mono text-[10px] text-stone-500" title={conflict.entityId}>
+                                      {conflict.entityId}
+                                    </p>
+                                  </div>
+                                  <div className="flex flex-wrap justify-end gap-1">
+                                    {conflict.conflictingFields.map((field) => (
+                                      <span key={field} className="rounded-sm border border-rose-200 bg-white px-1.5 py-0.5 font-mono text-[9px] text-rose-700">
+                                        {field}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div className="min-w-0 border-r border-rose-200 pr-2">
+                                    <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold text-stone-600">
+                                      <Laptop className="h-3 w-3" />本机
+                                    </div>
+                                    <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-all text-[10px] leading-relaxed text-stone-600">
+                                      {localPreview}
+                                    </pre>
+                                  </div>
+                                  <div className="min-w-0 pl-1">
+                                    <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold text-stone-600">
+                                      <Cloud className="h-3 w-3" />云端
+                                    </div>
+                                    <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-all text-[10px] leading-relaxed text-stone-600">
+                                      {remotePreview}
+                                    </pre>
+                                  </div>
+                                </div>
+
+                                <div className="flex justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleResolveSyncConflict(conflict, "keep_remote")}
+                                    disabled={!conflict.remoteReady || resolving}
+                                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-medium text-stone-700 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <Cloud className="h-3.5 w-3.5" />
+                                    接受云端
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleResolveSyncConflict(conflict, "keep_local")}
+                                    disabled={!conflict.remoteReady || resolving}
+                                    className="inline-flex h-8 items-center gap-1.5 rounded-md bg-stone-800 px-2.5 text-[11px] font-medium text-white hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <Laptop className="h-3.5 w-3.5" />
+                                    保留本机
+                                  </button>
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      </section>
                     )}
 
                     {syncStatus && !syncStatus.credentialConfigured && (

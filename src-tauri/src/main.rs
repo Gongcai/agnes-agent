@@ -122,6 +122,8 @@ fn main() {
             commands::get_setting,
             commands::set_setting,
             commands::get_sync_status,
+            commands::list_sync_conflicts,
+            commands::resolve_sync_conflict,
             commands::sync_now,
             commands::set_sync_credential
         ])

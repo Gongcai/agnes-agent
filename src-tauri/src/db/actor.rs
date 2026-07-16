@@ -267,6 +267,15 @@ pub enum DbCommand {
     GetSyncStatus {
         resp: oneshot::Sender<AppResult<repo::sync::SyncDbStatus>>,
     },
+    ListSyncConflicts {
+        resp: oneshot::Sender<AppResult<Vec<repo::sync::SyncConflictRow>>>,
+    },
+    ResolveSyncConflict {
+        conflict_id: String,
+        resolution: String,
+        now_ms: i64,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ClaimSyncOutbox {
         limit: usize,
         now_ms: i64,
@@ -818,6 +827,33 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn list_sync_conflicts(&self) -> AppResult<Vec<repo::sync::SyncConflictRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListSyncConflicts { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn resolve_sync_conflict(
+        &self,
+        conflict_id: String,
+        resolution: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+            .unwrap_or(0);
+        self.send(DbCommand::ResolveSyncConflict {
+            conflict_id,
+            resolution,
+            now_ms,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn claim_sync_outbox(
         &self,
         limit: usize,
@@ -1332,6 +1368,22 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::GetSyncStatus { resp } => {
                     let _ = resp.send(repo::sync::status(&conn));
+                }
+                DbCommand::ListSyncConflicts { resp } => {
+                    let _ = resp.send(repo::sync::list_conflicts(&conn));
+                }
+                DbCommand::ResolveSyncConflict {
+                    conflict_id,
+                    resolution,
+                    now_ms,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::sync::resolve_conflict(
+                        &mut conn,
+                        &conflict_id,
+                        &resolution,
+                        now_ms,
+                    ));
                 }
                 DbCommand::ClaimSyncOutbox {
                     limit,
