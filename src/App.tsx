@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { ChatWorkspace } from "./components/ChatWorkspace";
+import { KnowledgeWorkspace } from "./components/KnowledgeWorkspace";
 import { SettingsModal } from "./components/SettingsModal";
 import type { AppFeatureId } from "./lib/features";
 import { useAgentStore, setupTauriEventListeners } from "./store/useAgentStore";
@@ -45,6 +46,12 @@ export default function App() {
           isSidebarOpen={isSidebarOpen}
           onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
           onOpenSettings={handleOpenSettings}
+        />
+      )}
+      {activeFeature === "knowledge" && (
+        <KnowledgeWorkspace
+          isSidebarOpen={isSidebarOpen}
+          onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
         />
       )}
 
