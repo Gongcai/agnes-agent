@@ -4,13 +4,13 @@ import { ApiError } from "../errors";
 import {
   ackRequestSchema,
   DEFAULT_PAGE_LIMIT,
+  entityIdSchema,
+  entityTypeSchema,
   MAX_PAGE_LIMIT,
   MAX_RESPONSE_BYTES,
   PROTOCOL_VERSION,
   pushRequestSchema,
-  entityTypeSchema,
   type SyncChange,
-  uuidSchema,
 } from "../protocol";
 import { parsePageNumber, readJsonBody } from "../request";
 import type { AppEnv, AuthIdentity } from "../types";
@@ -496,7 +496,7 @@ function decodeBootstrapCursor(value: string): BootstrapCursor {
       !(
         (parsed.entityType === "" && parsed.entityId === "") ||
         (entityTypeSchema.safeParse(parsed.entityType).success &&
-          uuidSchema.safeParse(parsed.entityId).success)
+          entityIdSchema.safeParse(parsed.entityId).success)
       )
     ) {
       throw new Error("invalid cursor");

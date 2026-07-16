@@ -134,7 +134,9 @@ pub async fn update_agent_model(
     agent_id: String,
     model: String,
 ) -> AppResult<()> {
-    state.db.update_agent_model(agent_id, model).await
+    state.db.update_agent_model(agent_id, model).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 /// 角色卡可编辑字段（前端提交的载荷）。
@@ -178,6 +180,7 @@ pub async fn upsert_agent(
                 thinking_budget: payload.thinking_budget,
             };
             state.db.update_agent(id.clone(), changes).await?;
+            state.sync.schedule();
             Ok(id)
         }
         _ => {
@@ -197,7 +200,9 @@ pub async fn upsert_agent(
                 thinking_mode: payload.thinking_mode,
                 thinking_budget: payload.thinking_budget,
             };
-            state.db.insert_agent(row).await
+            let id = state.db.insert_agent(row).await?;
+            state.sync.schedule();
+            Ok(id)
         }
     }
 }
@@ -208,7 +213,9 @@ pub async fn delete_agent(
     state: tauri::State<'_, AppState>,
     agent_id: String,
 ) -> AppResult<()> {
-    state.db.delete_agent(agent_id).await
+    state.db.delete_agent(agent_id).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 /// 创建新会话。
@@ -245,6 +252,7 @@ pub async fn create_session(
         origin_device_id: None,
     };
     state.db.insert_session(new_sess).await?;
+    state.sync.schedule();
     Ok(session_id)
 }
 
@@ -343,7 +351,9 @@ pub async fn set_session_llm(
     state
         .db
         .update_session_llm(session_id, model, thinking_mode, thinking_budget)
-        .await
+        .await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 /// Set the session-level tool permission mode.
@@ -368,7 +378,9 @@ pub async fn delete_session(
     state: tauri::State<'_, AppState>,
     session_id: String,
 ) -> AppResult<()> {
-    state.db.delete_session(session_id).await
+    state.db.delete_session(session_id).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 /// 置顶或取消置顶某个会话。
@@ -378,7 +390,9 @@ pub async fn set_session_pin(
     session_id: String,
     pinned: bool,
 ) -> AppResult<()> {
-    state.db.set_session_pin(session_id, pinned).await
+    state.db.set_session_pin(session_id, pinned).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 /// 重命名某个会话。
@@ -388,7 +402,26 @@ pub async fn rename_session(
     session_id: String,
     title: String,
 ) -> AppResult<()> {
-    state.db.update_session_title(session_id, title.trim().to_string()).await
+    state
+        .db
+        .update_session_title(session_id, title.trim().to_string())
+        .await?;
+    state.sync.schedule();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_sync_status(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::sync::engine::SyncStatus> {
+    state.sync.status().await
+}
+
+#[tauri::command]
+pub async fn sync_now(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::sync::engine::SyncStatus> {
+    state.sync.run_once().await
 }
 
 /// 调试面板：调用 Python 框架拼装当前智能体（含可选会话历史）将要发送给 LLM 的完整提示词。

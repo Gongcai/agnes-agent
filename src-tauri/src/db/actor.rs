@@ -264,6 +264,33 @@ pub enum DbCommand {
     GetDefaultModelProvider {
         resp: oneshot::Sender<AppResult<Option<repo::model_providers::ModelProviderRow>>>,
     },
+    GetSyncStatus {
+        resp: oneshot::Sender<AppResult<repo::sync::SyncDbStatus>>,
+    },
+    ClaimSyncOutbox {
+        limit: usize,
+        now_ms: i64,
+        resp: oneshot::Sender<AppResult<Vec<repo::sync::OutboxRow>>>,
+    },
+    ApplySyncPushResult {
+        accepted: Vec<repo::sync::AcceptedChange>,
+        conflicts: Vec<repo::sync::ConflictChange>,
+        now_ms: i64,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    ScheduleSyncRetry {
+        change_ids: Vec<String>,
+        error_code: String,
+        error_message: String,
+        retry_at: i64,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    MarkSyncDeadLetter {
+        change_ids: Vec<String>,
+        error_code: String,
+        error_message: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
 }
 
 /// 对外句柄：命令通过 mpsc 发给 DB 线程，结果经 oneshot 回传。
@@ -757,6 +784,81 @@ impl DbActorHandle {
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
+
+    pub async fn get_sync_status(&self) -> AppResult<repo::sync::SyncDbStatus> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetSyncStatus { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn claim_sync_outbox(
+        &self,
+        limit: usize,
+        now_ms: i64,
+    ) -> AppResult<Vec<repo::sync::OutboxRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ClaimSyncOutbox {
+            limit,
+            now_ms,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn apply_sync_push_result(
+        &self,
+        accepted: Vec<repo::sync::AcceptedChange>,
+        conflicts: Vec<repo::sync::ConflictChange>,
+        now_ms: i64,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ApplySyncPushResult {
+            accepted,
+            conflicts,
+            now_ms,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn schedule_sync_retry(
+        &self,
+        change_ids: Vec<String>,
+        error_code: String,
+        error_message: String,
+        retry_at: i64,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ScheduleSyncRetry {
+            change_ids,
+            error_code,
+            error_message,
+            retry_at,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn mark_sync_dead_letter(
+        &self,
+        change_ids: Vec<String>,
+        error_code: String,
+        error_message: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::MarkSyncDeadLetter {
+            change_ids,
+            error_code,
+            error_message,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
 }
 
 /// 在独立 OS 线程跑 rusqlite 单连接；该线程用 `blocking_recv` 消费命令。
@@ -793,16 +895,16 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     let _ = resp.send(repo::agents::list(&conn));
                 }
                 DbCommand::InsertAgent { row, resp } => {
-                    let _ = resp.send(repo::agents::insert(&conn, &row));
+                    let _ = resp.send(repo::agents::insert(&mut conn, &row));
                 }
                 DbCommand::UpdateAgentModel { agent_id, model, resp } => {
-                    let _ = resp.send(repo::agents::update_model(&conn, &agent_id, &model));
+                    let _ = resp.send(repo::agents::update_model(&mut conn, &agent_id, &model));
                 }
                 DbCommand::UpdateAgent { id, changes, resp } => {
-                    let _ = resp.send(repo::agents::update(&conn, &id, &changes));
+                    let _ = resp.send(repo::agents::update(&mut conn, &id, &changes));
                 }
                 DbCommand::DeleteAgent { id, resp } => {
-                    let _ = resp.send(repo::agents::delete(&conn, &id));
+                    let _ = resp.send(repo::agents::delete(&mut conn, &id));
                 }
                 DbCommand::InsertMemory { row, resp } => {
                     let _ = resp.send(repo::memory::insert(&conn, &row));
@@ -890,23 +992,23 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     let _ = resp.send(repo::sessions::get(&conn, &id));
                 }
                 DbCommand::InsertSession { row, resp } => {
-                    let _ = resp.send(repo::sessions::insert(&conn, &row));
+                    let _ = resp.send(repo::sessions::insert(&mut conn, &row));
                 }
                 DbCommand::UpdateSessionTitle { id, title, resp } => {
-                    let _ = resp.send(repo::sessions::update_title(&conn, &id, &title));
+                    let _ = resp.send(repo::sessions::update_title(&mut conn, &id, &title));
                 }
                 DbCommand::UpdateSessionSummary { id, summary, resp } => {
-                    let _ = resp.send(repo::sessions::update_summary(&conn, &id, &summary));
+                    let _ = resp.send(repo::sessions::update_summary(&mut conn, &id, &summary));
                 }
                 DbCommand::DeleteSession { id, resp } => {
-                    let _ = resp.send(repo::sessions::delete(&conn, &id));
+                    let _ = resp.send(repo::sessions::delete(&mut conn, &id));
                 }
                 DbCommand::SetSessionPin { id, pinned, resp } => {
-                    let _ = resp.send(repo::sessions::set_pin(&conn, &id, pinned));
+                    let _ = resp.send(repo::sessions::set_pin(&mut conn, &id, pinned));
                 }
                 DbCommand::UpdateSessionLlm { id, model, thinking_mode, thinking_budget, resp } => {
                     let _ = resp.send(repo::sessions::update_llm(
-                        &conn,
+                        &mut conn,
                         &id,
                         &model,
                         &thinking_mode,
@@ -1122,6 +1224,57 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::GetDefaultModelProvider { resp } => {
                     let _ = resp.send(repo::model_providers::get_default(&conn));
+                }
+                DbCommand::GetSyncStatus { resp } => {
+                    let _ = resp.send(repo::sync::status(&conn));
+                }
+                DbCommand::ClaimSyncOutbox {
+                    limit,
+                    now_ms,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::sync::claim_pending(&mut conn, limit, now_ms));
+                }
+                DbCommand::ApplySyncPushResult {
+                    accepted,
+                    conflicts,
+                    now_ms,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::sync::apply_push_result(
+                        &mut conn,
+                        &accepted,
+                        &conflicts,
+                        now_ms,
+                    ));
+                }
+                DbCommand::ScheduleSyncRetry {
+                    change_ids,
+                    error_code,
+                    error_message,
+                    retry_at,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::sync::schedule_retry(
+                        &mut conn,
+                        &change_ids,
+                        &error_code,
+                        &error_message,
+                        retry_at,
+                    ));
+                }
+                DbCommand::MarkSyncDeadLetter {
+                    change_ids,
+                    error_code,
+                    error_message,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::sync::mark_dead_letter(
+                        &mut conn,
+                        &change_ids,
+                        &error_code,
+                        &error_message,
+                    ));
                 }
             }
         }

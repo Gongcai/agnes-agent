@@ -45,6 +45,18 @@ fn ensure_sync_metadata(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
+fn ensure_sync_runtime_state(conn: &Connection) -> AppResult<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO sync_runtime_state (singleton, device_id) VALUES (1, ?1)",
+        [uuid::Uuid::new_v4().to_string()],
+    )?;
+    conn.execute(
+        "UPDATE sync_outbox SET status = 'pending' WHERE status = 'in_flight'",
+        [],
+    )?;
+    Ok(())
+}
+
 fn migrate_workspace_bindings(conn: &Connection) -> AppResult<()> {
     if !has_column(conn, "workspaces", "folder_path") {
         return Ok(());
@@ -319,6 +331,7 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
     )?;
 
     ensure_sync_metadata(conn)?;
+    ensure_sync_runtime_state(conn)?;
     migrate_workspace_bindings(conn)?;
     migrate_explicit_memories(conn)?;
 
@@ -534,5 +547,45 @@ mod tests {
                 .unwrap();
             assert_eq!(version, 1);
         }
+    }
+
+    #[test]
+    fn sync_runtime_device_is_stable_and_recovers_in_flight_changes() {
+        unsafe {
+            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn).unwrap();
+        let first_device: String = conn
+            .query_row(
+                "SELECT device_id FROM sync_runtime_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(uuid::Uuid::parse_str(&first_device).is_ok());
+        conn.execute(
+            "INSERT INTO sync_outbox (change_id, device_id, entity_type, entity_id, operation, \
+             local_version, hlc, payload_hash, status, created_at) \
+             VALUES ('change-1', ?1, 'agent', 'agent-1', 'upsert', 1, \
+                     '1-0000-device01', ?2, 'in_flight', 1)",
+            params![first_device, "a".repeat(64)],
+        )
+        .unwrap();
+
+        apply(&mut conn).unwrap();
+
+        let (second_device, status): (String, String) = conn
+            .query_row(
+                "SELECT r.device_id, o.status FROM sync_runtime_state r \
+                 JOIN sync_outbox o ON o.change_id = 'change-1' WHERE r.singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(second_device, first_device);
+        assert_eq!(status, "pending");
     }
 }

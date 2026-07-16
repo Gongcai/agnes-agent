@@ -52,6 +52,11 @@ fn main() {
                     Some(error.to_string())
                 }
             };
+            let sync = Arc::new(
+                sync::engine::SyncService::new(db.clone(), secrets.clone())
+                    .expect("无法初始化同步服务"),
+            );
+            sync.clone().start_background();
 
             // 2) 启动 AgentManager：Rust 起 WS Server + 拉起 Python sidecar。
             //    非致命：失败仅日志，不阻断 UI 启动。
@@ -64,6 +69,7 @@ fn main() {
                 db,
                 agent,
                 secrets,
+                sync,
                 secret_store_startup_error,
             });
             Ok(())
@@ -114,7 +120,9 @@ fn main() {
             commands::test_provider,
             commands::fetch_provider_models,
             commands::get_setting,
-            commands::set_setting
+            commands::set_setting,
+            commands::get_sync_status,
+            commands::sync_now
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

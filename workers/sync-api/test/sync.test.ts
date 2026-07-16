@@ -103,7 +103,7 @@ describe("authentication and health", () => {
 
 describe("push and pull", () => {
   it("replays a change idempotently without duplicating rows", async () => {
-    const change = makeChange();
+    const change = makeChange({ entityId: "agnes" });
     const first = await push(TOKEN_A, DEVICE_A, [change]);
     expect(first.status).toBe(200);
     expect(await first.json()).toMatchObject({

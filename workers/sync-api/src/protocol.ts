@@ -7,6 +7,11 @@ export const DEFAULT_PAGE_LIMIT = 100;
 export const MAX_PAGE_LIMIT = 500;
 export const MAX_RESPONSE_BYTES = 256 * 1024;
 export const uuidSchema = z.uuid();
+export const entityIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 
 export const entityTypeSchema = z.enum([
   "agent",
@@ -25,7 +30,7 @@ export const syncChangeSchema = z
     changeId: uuidSchema,
     deviceId: uuidSchema,
     entityType: entityTypeSchema,
-    entityId: uuidSchema,
+    entityId: entityIdSchema,
     operation: operationSchema,
     baseRevision: z.int().positive().nullable(),
     hlc: z.string().min(1).max(160),

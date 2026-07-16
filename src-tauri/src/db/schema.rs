@@ -191,6 +191,60 @@ CREATE TABLE IF NOT EXISTS sync_log (
   synced_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS sync_outbox (
+  change_id TEXT PRIMARY KEY,
+  device_id TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  operation TEXT NOT NULL CHECK(operation IN ('upsert', 'delete')),
+  base_revision INTEGER,
+  local_version INTEGER NOT NULL,
+  hlc TEXT NOT NULL,
+  payload_schema_version INTEGER NOT NULL DEFAULT 1,
+  payload_encoding TEXT NOT NULL DEFAULT 'json',
+  payload TEXT,
+  payload_hash TEXT NOT NULL,
+  key_version INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK(status IN ('pending', 'in_flight', 'synced', 'conflict', 'dead_letter')),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_retry_at INTEGER,
+  last_error_code TEXT,
+  last_error_message TEXT,
+  created_at INTEGER NOT NULL,
+  synced_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_outbox_ready
+  ON sync_outbox(status, next_retry_at, created_at, change_id);
+
+CREATE INDEX IF NOT EXISTS idx_sync_outbox_entity
+  ON sync_outbox(entity_type, entity_id, status, created_at, change_id);
+
+CREATE TABLE IF NOT EXISTS sync_entity_state (
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  remote_revision INTEGER,
+  last_server_seq INTEGER,
+  last_payload_hash TEXT,
+  last_synced_hlc TEXT,
+  base_payload TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(entity_type, entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS sync_runtime_state (
+  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+  device_id TEXT NOT NULL UNIQUE,
+  last_hlc TEXT,
+  last_pull_cursor INTEGER NOT NULL DEFAULT 0,
+  bootstrap_state TEXT NOT NULL DEFAULT 'required',
+  last_success_at INTEGER,
+  last_error_code TEXT,
+  backoff_until INTEGER,
+  e2ee_key_version INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT

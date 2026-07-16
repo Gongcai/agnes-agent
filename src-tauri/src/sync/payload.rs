@@ -12,6 +12,19 @@ pub enum SyncEntityType {
     Workspace,
 }
 
+impl SyncEntityType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Session => "session",
+            Self::Message => "message",
+            Self::ExplicitMemory => "explicit_memory",
+            Self::Memory => "memory",
+            Self::Workspace => "workspace",
+        }
+    }
+}
+
 pub fn project(entity_type: SyncEntityType, source: &Value) -> AppResult<Value> {
     let object = source
         .as_object()

@@ -12,6 +12,7 @@ use crate::error::{AppError, AppResult};
 
 const KEYRING_SERVICE: &str = "com.agnes.agent";
 const HEALTHCHECK_SECRET_ID: &str = "internal:keyring-healthcheck";
+pub const SYNC_CREDENTIAL_SECRET_ID: &str = "sync:credentials";
 
 pub fn provider_api_key_secret_id(provider_id: &str) -> String {
     format!("provider:{provider_id}:api_key")

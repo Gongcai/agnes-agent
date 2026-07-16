@@ -3,6 +3,7 @@ pub mod explicit_memories;
 pub mod memory;
 pub mod messages;
 pub mod sessions;
+pub mod sync;
 pub mod tools;
 pub mod settings;
 pub mod model_providers;
