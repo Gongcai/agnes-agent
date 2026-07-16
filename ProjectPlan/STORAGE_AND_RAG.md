@@ -516,7 +516,7 @@ tasks
 
 - [x] 将占位 `documents/document_chunks` 迁移为 collection/document/version/source 模型，并保留旧本地数据、分块和路径绑定；
 - [x] 落地 embedding/parser/chunker profile 与本地 FTS5 的数据表；
-- [ ] 为向量表增加 namespace type/id；
+- [x] 为知识库建立独立的 `rag_vec_embeddings_{dims}` 分区，以 collection + embedding profile 隔离；不影响既有记忆向量表；
 - [x] 实现本地 UTF-8 文本文档导入、版本去重、确定性分块与 FTS5 检索；导入限制为 Markdown、文本、CSV、JSON，单文件最大 10 MiB；
 - [ ] 接入 sqlite-vec 分区、嵌入批处理与 RRF 混合检索；
 - 先用中小数据集做质量和性能基准。

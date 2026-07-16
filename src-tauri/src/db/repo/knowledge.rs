@@ -8,6 +8,7 @@ use crate::error::{AppError, AppResult};
 
 const DEFAULT_PARSER_PROFILE_ID: &str = "builtin-utf8-text-v1";
 const DEFAULT_CHUNKER_PROFILE_ID: &str = "builtin-paragraph-1200-200-v1";
+const MAX_EMBEDDING_DIMS: usize = 8_192;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct KnowledgeCollectionRow {
@@ -40,6 +41,20 @@ pub struct KnowledgeSearchResult {
     pub ordinal: i64,
     pub section_path: Option<String>,
     pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct KnowledgeChunkForEmbedding {
+    pub id: String,
+    pub collection_id: String,
+    pub content: String,
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct KnowledgeQueryEmbedding {
+    pub model: String,
+    pub vector: Vec<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +102,51 @@ fn now() -> String {
 fn hash_text(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
     format!("{digest:x}")
+}
+
+fn embedding_profile_id(model: &str, dims: usize) -> String {
+    let material = format!("local-rag-v1:{model}:{dims}:normalized");
+    format!("local-rag-{}", &hash_text(&material)[..24])
+}
+
+fn valid_vector(vector: &[f32]) -> bool {
+    !vector.is_empty()
+        && vector.len() <= MAX_EMBEDDING_DIMS
+        && vector.iter().all(|value| value.is_finite())
+}
+
+fn rag_vector_table_name(dims: usize) -> AppResult<String> {
+    if dims == 0 || dims > MAX_EMBEDDING_DIMS {
+        return Err(AppError::Other(format!(
+            "Unsupported embedding dimension: {dims}; expected 1 to {MAX_EMBEDDING_DIMS}"
+        )));
+    }
+    Ok(format!("rag_vec_embeddings_{dims}"))
+}
+
+fn table_exists(conn: &Connection, table: &str) -> AppResult<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn ensure_rag_vector_table(conn: &Connection, dims: usize) -> AppResult<()> {
+    let table = rag_vector_table_name(dims)?;
+    conn.execute_batch(&format!(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING vec0(\
+         embedding_id TEXT PRIMARY KEY, collection_id TEXT PARTITION KEY, \
+         embedding_profile_id TEXT PARTITION KEY, vector float[{dims}] distance_metric=cosine)"
+    ))?;
+    Ok(())
+}
+
+fn f32_to_bytes(values: &[f32]) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(values.as_ptr() as *const u8, std::mem::size_of_val(values))
+    }
 }
 
 fn normalize_name(value: &str, field: &str) -> AppResult<String> {
@@ -377,6 +437,192 @@ pub fn import_local_document(
     })
 }
 
+pub fn chunks_needing_embeddings(
+    conn: &Connection,
+    model: &str,
+    collection_id: Option<&str>,
+) -> AppResult<Vec<KnowledgeChunkForEmbedding>> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(AppError::Other("Embedding model cannot be empty".into()));
+    }
+    let sql = match collection_id {
+        Some(_) => {
+            r#"SELECT ch.id, d.collection_id, ch.content, ch.content_hash
+                      FROM document_chunks ch
+                      JOIN document_versions v ON v.id = ch.document_version_id
+                      JOIN documents d ON d.id = v.document_id AND d.current_version_id = v.id
+                      WHERE d.status = 'active' AND d.deleted_at IS NULL AND d.collection_id = ?1
+                        AND NOT EXISTS (
+                          SELECT 1 FROM embedding_items e
+                          WHERE e.ref_type = 'document_chunk' AND e.ref_id = ch.id
+                            AND e.model = ?2 AND e.content_hash = ch.content_hash
+                        )
+                      ORDER BY d.collection_id, v.id, ch.ordinal"#
+        }
+        None => {
+            r#"SELECT ch.id, d.collection_id, ch.content, ch.content_hash
+                   FROM document_chunks ch
+                   JOIN document_versions v ON v.id = ch.document_version_id
+                   JOIN documents d ON d.id = v.document_id AND d.current_version_id = v.id
+                   WHERE d.status = 'active' AND d.deleted_at IS NULL
+                     AND NOT EXISTS (
+                       SELECT 1 FROM embedding_items e
+                       WHERE e.ref_type = 'document_chunk' AND e.ref_id = ch.id
+                         AND e.model = ?1 AND e.content_hash = ch.content_hash
+                     )
+                   ORDER BY d.collection_id, v.id, ch.ordinal"#
+        }
+    };
+    let mut statement = conn.prepare(sql)?;
+    let rows = match collection_id {
+        Some(collection_id) => {
+            statement.query_map(params![collection_id, model], chunk_for_embedding_from_row)?
+        }
+        None => statement.query_map([model], chunk_for_embedding_from_row)?,
+    };
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn chunk_for_embedding_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<KnowledgeChunkForEmbedding> {
+    Ok(KnowledgeChunkForEmbedding {
+        id: row.get(0)?,
+        collection_id: row.get(1)?,
+        content: row.get(2)?,
+        content_hash: row.get(3)?,
+    })
+}
+
+pub fn upsert_chunk_embedding(
+    conn: &mut Connection,
+    embedding_id: &str,
+    chunk_id: &str,
+    collection_id: &str,
+    model: &str,
+    content_hash: &str,
+    vector: &[f32],
+) -> AppResult<bool> {
+    let model = model.trim();
+    if model.is_empty() || !valid_vector(vector) {
+        return Err(AppError::Other("Invalid knowledge embedding".into()));
+    }
+    let dims = vector.len();
+    let profile_id = embedding_profile_id(model, dims);
+    let tx = conn.transaction()?;
+    let current: Option<(String, String, String)> = tx
+        .query_row(
+            r#"SELECT ch.content_hash, d.collection_id, ch.id
+               FROM document_chunks ch
+               JOIN document_versions v ON v.id = ch.document_version_id
+               JOIN documents d ON d.id = v.document_id AND d.current_version_id = v.id
+               WHERE ch.id = ?1 AND d.status = 'active' AND d.deleted_at IS NULL"#,
+            [chunk_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((current_hash, current_collection_id, _)) = current else {
+        return Ok(false);
+    };
+    if current_hash != content_hash || current_collection_id != collection_id {
+        return Ok(false);
+    }
+
+    let old_embeddings = {
+        let mut old_statement = tx.prepare(
+            "SELECT id, dims FROM embedding_items WHERE ref_type = 'document_chunk' AND ref_id = ?1",
+        )?;
+        let rows = old_statement.query_map([chunk_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (old_id, old_dims) in old_embeddings {
+        if old_dims > 0 {
+            let table = rag_vector_table_name(old_dims as usize)?;
+            if table_exists(&tx, &table)? {
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE embedding_id = ?1"),
+                    [old_id],
+                )?;
+            }
+        }
+    }
+    tx.execute(
+        "DELETE FROM embedding_items WHERE ref_type = 'document_chunk' AND ref_id = ?1",
+        [chunk_id],
+    )?;
+    ensure_rag_vector_table(&tx, dims)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO embedding_profiles \
+         (id, model_ref, dims, normalized, instruction_hash, created_at) \
+         VALUES (?1, ?2, ?3, 1, 'local-rag-v1', ?4)",
+        params![profile_id, model, dims as i64, now()],
+    )?;
+    tx.execute(
+        "INSERT INTO embedding_items \
+         (id, ref_type, ref_id, collection_id, embedding_profile_id, model, dims, content_hash, created_at) \
+         VALUES (?1, 'document_chunk', ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![embedding_id, chunk_id, collection_id, profile_id, model, dims as i64, content_hash, now()],
+    )?;
+    let table = rag_vector_table_name(dims)?;
+    tx.execute(
+        &format!(
+            "INSERT INTO {table} (embedding_id, collection_id, embedding_profile_id, vector) \
+             VALUES (?1, ?2, ?3, ?4)"
+        ),
+        params![
+            embedding_id,
+            collection_id,
+            profile_id,
+            f32_to_bytes(vector)
+        ],
+    )?;
+    tx.commit()?;
+    Ok(true)
+}
+
+pub fn search_vector(
+    conn: &Connection,
+    collection_id: &str,
+    query: &KnowledgeQueryEmbedding,
+    limit: usize,
+) -> AppResult<Vec<KnowledgeSearchResult>> {
+    if query.model.trim().is_empty() || !valid_vector(&query.vector) {
+        return Ok(Vec::new());
+    }
+    let dims = query.vector.len();
+    let table = rag_vector_table_name(dims)?;
+    if !table_exists(conn, &table)? {
+        return Ok(Vec::new());
+    }
+    let profile_id = embedding_profile_id(query.model.trim(), dims);
+    let sql = format!(
+        r#"SELECT d.id, v.id, ch.id, d.title, ch.ordinal, ch.section_path, ch.content
+            FROM (SELECT embedding_id, distance FROM {table}
+                  WHERE vector MATCH ?1 AND k = ?2 AND collection_id = ?3 AND embedding_profile_id = ?4
+                  ORDER BY distance) nearest
+            JOIN embedding_items e ON e.id = nearest.embedding_id
+            JOIN document_chunks ch ON ch.id = e.ref_id
+            JOIN document_versions v ON v.id = ch.document_version_id
+            JOIN documents d ON d.id = v.document_id AND d.current_version_id = v.id
+            WHERE e.ref_type = 'document_chunk' AND d.status = 'active' AND d.deleted_at IS NULL
+            ORDER BY nearest.distance, d.id, ch.ordinal LIMIT ?2"#,
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(
+        params![
+            f32_to_bytes(&query.vector),
+            limit.clamp(1, 50) as i64,
+            collection_id,
+            profile_id
+        ],
+        search_result_from_row,
+    )?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 fn fts_prefix_query(query: &str) -> String {
     query
         .split(|character: char| !character.is_alphanumeric())
@@ -510,5 +756,106 @@ mod tests {
             list_documents(&conn, "collection-1", "agnes").unwrap()[0].chunk_count,
             1
         );
+    }
+
+    #[test]
+    fn indexes_and_searches_chunk_vectors_by_collection_and_profile() {
+        unsafe {
+            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::apply(&mut conn).unwrap();
+        create_collection(
+            &mut conn,
+            &NewKnowledgeCollection {
+                id: "collection-a".into(),
+                name: "A".into(),
+                scope: "agent_private".into(),
+                agent_id: "agnes".into(),
+            },
+        )
+        .unwrap();
+        create_collection(
+            &mut conn,
+            &NewKnowledgeCollection {
+                id: "collection-b".into(),
+                name: "B".into(),
+                scope: "agent_private".into(),
+                agent_id: "agnes".into(),
+            },
+        )
+        .unwrap();
+        for (collection_id, path, content) in [
+            (
+                "collection-a",
+                "/tmp/a.md",
+                "Rhubarb grows in cool gardens.",
+            ),
+            ("collection-b", "/tmp/b.md", "Unrelated warm weather notes."),
+        ] {
+            import_local_document(
+                &mut conn,
+                &NewLocalDocument {
+                    collection_id: collection_id.into(),
+                    agent_id: "agnes".into(),
+                    title: collection_id.into(),
+                    media_type: "text/markdown".into(),
+                    local_path: path.into(),
+                    plaintext_hash: hash_text(content),
+                    size: content.len() as i64,
+                    chunks: vec![NewDocumentChunk {
+                        content: content.into(),
+                        section_path: None,
+                        token_count: 5,
+                    }],
+                },
+            )
+            .unwrap();
+        }
+        for chunk in chunks_needing_embeddings(&conn, "test/embed", None).unwrap() {
+            let vector = if chunk.collection_id == "collection-a" {
+                vec![1.0, 0.0, 0.0]
+            } else {
+                vec![0.0, 1.0, 0.0]
+            };
+            assert!(upsert_chunk_embedding(
+                &mut conn,
+                &format!("embedding-{}", chunk.id),
+                &chunk.id,
+                &chunk.collection_id,
+                "test/embed",
+                &chunk.content_hash,
+                &vector,
+            )
+            .unwrap());
+        }
+        assert!(chunks_needing_embeddings(&conn, "test/embed", None)
+            .unwrap()
+            .is_empty());
+        let results = search_vector(
+            &conn,
+            "collection-a",
+            &KnowledgeQueryEmbedding {
+                model: "test/embed".into(),
+                vector: vec![0.99, 0.01, 0.0],
+            },
+            5,
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "collection-a");
+        assert!(search_vector(
+            &conn,
+            "collection-a",
+            &KnowledgeQueryEmbedding {
+                model: "different/model".into(),
+                vector: vec![0.99, 0.01, 0.0],
+            },
+            5,
+        )
+        .unwrap()
+        .is_empty());
     }
 }
