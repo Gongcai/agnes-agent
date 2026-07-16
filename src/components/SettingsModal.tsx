@@ -183,6 +183,19 @@ interface AgentFormValues {
   };
 }
 
+interface DebugPromptMessage extends Record<string, unknown> {
+  role?: string;
+  content?: unknown;
+  tool_calls?: unknown;
+}
+
+interface DebugPromptPreview {
+  system_prompt: string;
+  messages: DebugPromptMessage[];
+  tools: Array<Record<string, unknown>>;
+  discarded_count: number;
+}
+
 /// 思考模式/强度选项：off=关闭，auto=自动，low/medium/high=思考强度等级。
 const THINKING_MODE_OPTIONS: { value: string; label: string; desc: string }[] = [
   { value: "off", label: "关闭", desc: "不启用思考" },
@@ -336,11 +349,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [modelRoleMessage, setModelRoleMessage] = useState<{ success: boolean; text: string } | null>(null);
 
   // Debug prompt panel state
-  const [debugPrompt, setDebugPrompt] = useState<{
-    system_prompt: string;
-    messages: any[];
-    discarded_count: number;
-  } | null>(null);
+  const [debugPrompt, setDebugPrompt] = useState<DebugPromptPreview | null>(null);
   const [debugLoading, setDebugLoading] = useState(false);
   const [debugError, setDebugError] = useState<string | null>(null);
 
@@ -578,7 +587,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (!activeAgentId) return;
     setDebugLoading(true);
     setDebugError(null);
-    invoke<any>("get_debug_prompt", {
+    invoke<DebugPromptPreview>("get_debug_prompt", {
       agentId: activeAgentId,
       sessionId: activeSessionId ?? null,
     })
@@ -2244,8 +2253,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div>
                     <h3 className="text-sm font-semibold text-stone-850">提示词调试面板</h3>
                     <p className="text-[11px] text-stone-400">
-                      显示当前智能体（{activeAgent?.name}）框架拼装后、发送给 AI 前的完整提示词。
-                      {activeSessionId ? "已包含当前会话历史。" : "未选择会话，仅显示系统提示词。"}
+                      显示当前智能体（{activeAgent?.name}）发送给 AI 的 System Prompt、工具定义和消息。
+                      {activeSessionId ? "已包含当前会话历史。" : "未选择会话，不包含会话历史。"}
                     </p>
                   </div>
                   <button
@@ -2266,7 +2275,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                 {!debugPrompt && !debugError && !debugLoading && (
                   <div className="text-center py-10 text-xs text-stone-400">
-                    点击右上角「生成提示词预览」以查看当前智能体将要发送给 AI 的提示词。
+                    点击右上角「生成提示词预览」以查看当前智能体将要发送给 AI 的完整请求上下文。
                   </div>
                 )}
 
@@ -2283,6 +2292,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </div>
                       <pre className="bg-stone-900 text-stone-100 text-[11px] p-3 rounded-lg border border-stone-800 overflow-x-auto whitespace-pre-wrap max-h-72 overflow-y-auto font-mono leading-relaxed">
                         {debugPrompt.system_prompt}
+                      </pre>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[11px] font-bold text-stone-500 uppercase tracking-wide">
+                          Tools ({debugPrompt.tools.length})
+                        </span>
+                        <span className="text-[10px] text-stone-400">模型请求的 tools 参数</span>
+                      </div>
+                      <pre className="bg-stone-900 text-stone-100 text-[11px] p-3 rounded-lg border border-stone-800 overflow-x-auto whitespace-pre-wrap max-h-80 overflow-y-auto font-mono leading-relaxed">
+                        {JSON.stringify(debugPrompt.tools, null, 2)}
                       </pre>
                     </div>
 
@@ -2329,9 +2350,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 >
                                   {role}
                                 </span>
-                                {m.tool_calls && (
+                                {Array.isArray(m.tool_calls) && m.tool_calls.length > 0 && (
                                   <span className="text-[10px] text-amber-600">
-                                    含 {Array.isArray(m.tool_calls) ? m.tool_calls.length : 0} 个工具调用
+                                    含 {m.tool_calls.length} 个工具调用
                                   </span>
                                 )}
                               </div>

@@ -122,7 +122,7 @@ created_at / updated_at
   用户可见字段固定为 `name / keywords? / created_at / content / creator(user|ai)`；另有 `id / agent_id / status / version / embedding_id` 等内部字段。`agent_id` 保证记忆库按 Agent 隔离，详细约束见 `MEMORY_SYSTEM.md`。
 - 检索（混合）：AI 按需调 `memory_search(q)`。当前先匹配名称、关键词和内容；嵌入维度可配置后，再融合 sqlite-vec 语义候选，返回 top-k 作为工具结果进入上下文。
 - 写入：后台 memory extractor 从对话抽取，或 AI 调用 `memory_create` / `memory_update` 写入当前 Agent 的结构化记忆；Rust 强制 AI 创建入口标记 `creator=ai`，用户从记忆管理界面创建时强制标记 `creator=user`。创建时间和创建人均由系统生成，不接受调用方伪造，更新时保持不变。
-- AI 工具边界：`memory_search` 返回稳定 `id` 供 `memory_update` 使用，但不返回 `agent_id`；`memory_create` 和 `memory_update` 都从当前 session 解析 Agent，不能跨 Agent 写入。后续通过提示词要求 AI 写入前先检索相关记忆，再判断新增或更新；当前基础工具层不强制该调用顺序。
+- AI 工具边界：`memory_search` 返回稳定 `id` 供 `memory_update` 使用，但不返回 `agent_id`；`memory_create` 和 `memory_update` 都从当前 session 解析 Agent，不能跨 Agent 写入。提示词已要求 AI 写入前先检索相关记忆，再判断新增或更新；基础工具层不强制该调用顺序。
 - `MEMORY.md`：AI 使用 `memory_md_view` 再次查看，使用 `memory_md_edit` 进行追加或唯一精确替换；工具只能操作当前 Agent 的 `MEMORY.md`，不能修改 `USER.md` 或任意文件。
 
 ## Prompt 拼装顺序
@@ -131,6 +131,7 @@ created_at / updated_at
 System Prompt
 ↓ Agent 角色卡（人设 / system_prompt / tool_policy）   ← 决定"这个 Agent 是谁、能做什么"
 ↓ 安全规则（基于 Agent 的 tool_policy）
+↓ 记忆决策规则（先检索再新增/更新，区分 MEMORY.md 与结构化记忆库）
 ↓ USER.md                （per-Agent，每次必注入，仅用户可改）
 ↓ MEMORY.md              （per-Agent，每次必注入，ai+用户可改）
 ↓ 当前项目上下文
@@ -139,6 +140,9 @@ System Prompt
 ↓ [按需] AI 调 memory_search（限定 agent_id）→ 检索结果作工具返回拼入
 ↓ 用户本轮输入
 ```
+
+提示词调试面板按实际模型请求结构分别展示 `system prompt`、`tools` schema 和 `messages`；
+工具定义通过模型 API 的 `tools` 参数发送，不重复拼进 system prompt。
 
 ## 同步影响（沿用"向量不跨端同步"规则）
 
@@ -150,7 +154,7 @@ System Prompt
 | 版本 | 范围 | 当前状态（2026-07-16） |
 |---|---|---|
 | V0.1 | Tauri 2 + React 聊天 UI + SQLite + Python LangGraph sidecar + LiteLLM | 主链路已完成；发布态 sidecar 打包待收口 |
-| V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 基础阶段已完成：摘要、抽取、结构化字段、字符串检索、AI 创建/更新和 `MEMORY.md` 专用工具已接通；动态维度向量检索与记忆提示词工程待实现 |
+| V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 基础阶段已完成：摘要、抽取、结构化字段、字符串检索、AI 创建/更新、记忆决策提示词和 `MEMORY.md` 专用工具已接通；动态维度向量检索待实现 |
 | V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 已完成详细设计，尚未实现；先执行 `CLOUDFLARE_SYNC.md` Phase 0 |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 未开始 |
 | V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；MCP 等能力待后续补齐 |

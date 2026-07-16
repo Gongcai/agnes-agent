@@ -60,6 +60,7 @@ pub struct WorkspaceDto {
 pub struct DebugPromptDto {
     pub system_prompt: String,
     pub messages: Vec<serde_json::Value>,
+    pub tools: Vec<serde_json::Value>,
     pub discarded_count: usize,
 }
 
@@ -584,6 +585,11 @@ pub async fn get_debug_prompt(
         .and_then(|x| x.as_array())
         .cloned()
         .unwrap_or_default();
+    let tools = payload
+        .get("tools")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
     let discarded = payload
         .get("discarded_messages")
         .and_then(|x| x.as_array())
@@ -593,6 +599,7 @@ pub async fn get_debug_prompt(
     Ok(DebugPromptDto {
         system_prompt,
         messages,
+        tools,
         discarded_count: discarded.len(),
     })
 }

@@ -5,7 +5,7 @@ import pytest
 from app.prompt import assemble_prompt, group_protocol_messages, translate_messages, count_tokens
 from app.graph import build_graph, get_available_tools
 from app.memory_extract import extract_memories
-from app.main import resolve_task_llm
+from app.main import build_debug_prompt_payload, resolve_task_llm
 from app.models import LlmConfig
 
 def test_count_tokens():
@@ -164,11 +164,67 @@ def test_assemble_prompt_and_budgeting():
     assert "Agnes persona text" in system_prompt
     assert "User likes Python" in system_prompt
     assert "Remember that database is SQLite" in system_prompt
+    assert "Before calling `memory_create` or `memory_update`, always call `memory_search`" in system_prompt
+    assert "Never attempt to modify `USER.md`" in system_prompt
     
     # Budget check
     assert len(messages) > 0
     assert messages[-1]["role"] == "user"
     assert messages[-1]["content"] == "Latest user question"
+
+
+def test_memory_instructions_follow_memory_capability():
+    enabled_snapshot = {
+        "context": {
+            "agent": {"model": "gpt-4o", "toolPolicy": {}},
+            "settings": {},
+        }
+    }
+    disabled_snapshot = {
+        "context": {
+            "agent": {
+                "model": "gpt-4o",
+                "toolPolicy": {"memory": {"enabled": False}},
+            },
+            "settings": {},
+        }
+    }
+
+    enabled_prompt, _, _ = assemble_prompt(enabled_snapshot)
+    disabled_prompt, _, _ = assemble_prompt(disabled_snapshot)
+
+    assert "# Memory Management" in enabled_prompt
+    assert "# Memory Management" not in disabled_prompt
+
+
+def test_debug_prompt_payload_includes_effective_tool_schemas():
+    snapshot = {
+        "context": {
+            "agent": {
+                "model": "gpt-4o",
+                "toolPolicy": {
+                    "shell": {"enabled": False},
+                    "file": {"enabled": False},
+                    "git": {"enabled": False},
+                    "memory": {"enabled": True},
+                },
+            },
+            "settings": {},
+        }
+    }
+
+    preview = build_debug_prompt_payload(snapshot)
+    tool_names = [tool["function"]["name"] for tool in preview["tools"]]
+
+    assert tool_names == [
+        "memory_search",
+        "memory_create",
+        "memory_update",
+        "memory_md_view",
+        "memory_md_edit",
+    ]
+    assert preview["tools"][0]["function"]["description"]
+    assert "# Memory Management" in preview["system_prompt"]
 
 def test_graph_compiles():
     graph = build_graph()

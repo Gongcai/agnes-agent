@@ -9,6 +9,15 @@ import tiktoken
 
 from .models import get_max_context_tokens, completion
 
+
+MEMORY_MANAGEMENT_INSTRUCTIONS = """# Memory Management
+Use the two memory stores deliberately:
+
+- `MEMORY.md` is the small, always-loaded set of high-confidence facts that must be known in every future conversation. Use `memory_md_view` when you need its latest complete contents, use `memory_md_edit` for controlled changes, and verify with `memory_md_view` when the exact final document matters. Never attempt to modify `USER.md`.
+- The structured memory store is for durable facts, preferences, decisions, and project context that can be retrieved on demand. Do not store transient tasks, raw tool output, secrets, or internal reasoning.
+
+Before calling `memory_create` or `memory_update`, always call `memory_search` with a concise query for the relevant subject. If a suitable memory already exists, update it by its stable `id`; create a new memory only when no existing entry represents the same fact. If results are ambiguous or conflicting, refine the search or ask the user instead of overwriting uncertain information. Avoid duplicate memories."""
+
 def count_tokens(text: str, model: str = "gpt-4") -> int:
     """Accurately count tokens in a string using tiktoken."""
     try:
@@ -240,7 +249,11 @@ def assemble_prompt(
             f"Always explain your rationale briefly before calling tools."
         )
         
-    # 3. Explicit Memory files (USER.md / MEMORY.md)
+    # 3. Memory behavior and explicit files (USER.md / MEMORY.md)
+    memory_enabled = (tool_policy or {}).get("memory", {}).get("enabled", True)
+    if memory_enabled:
+        system_parts.append(MEMORY_MANAGEMENT_INSTRUCTIONS)
+
     explicit_mem = context.get("explicitMemories", {})
     user_md = explicit_mem.get("user_md")
     memory_md = explicit_mem.get("memory_md")

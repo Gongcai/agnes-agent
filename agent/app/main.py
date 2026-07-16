@@ -12,7 +12,7 @@ import websockets
 
 from .protocol import MsgType, make
 from .prompt import assemble_prompt, summarize_history
-from .graph import build_graph
+from .graph import build_graph, get_available_tools
 from .models import LlmConfig
 from .memory_extract import extract_memories
 
@@ -29,6 +29,18 @@ def resolve_task_llm(
         return fallback_model, fallback_config
     model = raw.get("litellmModel") or raw.get("model") or fallback_model
     return model, LlmConfig.from_dict(raw)
+
+
+def build_debug_prompt_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the same prompt components and tool schemas used by an LLM call."""
+    system_prompt, messages, discarded = assemble_prompt(payload)
+    tool_policy = payload.get("context", {}).get("agent", {}).get("toolPolicy") or {}
+    return {
+        "system_prompt": system_prompt,
+        "messages": messages,
+        "tools": get_available_tools(tool_policy),
+        "discarded_messages": discarded,
+    }
 
 
 async def run_agent_graph(
@@ -266,16 +278,14 @@ async def main() -> None:
                     # 仅拼装提示词并返回，不调用 LLM，用于前端调试面板
                     print(f"[sidecar][debug] Assembling prompt for debug panel (id: {msg.get('id')})", flush=True)
                     try:
-                        system_prompt, messages, discarded = assemble_prompt(payload)
+                        debug_payload = build_debug_prompt_payload(payload)
                         result = make(
                             MsgType.DEBUG_PROMPT_RESULT,
                             session_id=session_id,
                             run_id=run_id,
                             payload={
                                 "id": msg.get("id"),
-                                "system_prompt": system_prompt,
-                                "messages": messages,
-                                "discarded_messages": discarded,
+                                **debug_payload,
                             },
                         )
                         await ws.send(result.model_dump_json())
