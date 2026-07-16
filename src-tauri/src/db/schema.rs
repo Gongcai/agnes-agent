@@ -82,7 +82,10 @@ CREATE TABLE IF NOT EXISTS message_parts (
 CREATE TABLE IF NOT EXISTS memory_store (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL REFERENCES agents(id),
+  name TEXT NOT NULL DEFAULT '',
+  keywords TEXT,
   content TEXT,
+  creator TEXT NOT NULL DEFAULT 'ai', -- user|ai, assigned by the trusted entry point
   type TEXT,
   scope TEXT,
   source TEXT,

@@ -32,6 +32,21 @@ pub enum DbCommand {
     },
     InsertMemory {
         row: repo::memory::NewMemory,
+        resp: oneshot::Sender<AppResult<bool>>,
+    },
+    ListMemories {
+        agent_id: String,
+        resp: oneshot::Sender<AppResult<Vec<repo::memory::MemoryRow>>>,
+    },
+    UpdateMemory {
+        id: String,
+        agent_id: String,
+        changes: repo::memory::MemoryUpdate,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    DeleteMemory {
+        id: String,
+        agent_id: String,
         resp: oneshot::Sender<AppResult<()>>,
     },
     GetSetting {
@@ -55,9 +70,9 @@ pub enum DbCommand {
     },
     SearchMemories {
         query_text: String,
-        query_vector: Option<Vec<f32>>,
         agent_id: String,
-        resp: oneshot::Sender<AppResult<Vec<String>>>,
+        limit: usize,
+        resp: oneshot::Sender<AppResult<Vec<repo::memory::MemoryRow>>>,
     },
     ListSessions {
         agent_id: String,
@@ -279,9 +294,35 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn insert_memory(&self, row: repo::memory::NewMemory) -> AppResult<()> {
+    pub async fn insert_memory(&self, row: repo::memory::NewMemory) -> AppResult<bool> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::InsertMemory { row, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_memories(&self, agent_id: String) -> AppResult<Vec<repo::memory::MemoryRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListMemories { agent_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn update_memory(
+        &self,
+        id: String,
+        agent_id: String,
+        changes: repo::memory::MemoryUpdate,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateMemory { id, agent_id, changes, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn delete_memory(&self, id: String, agent_id: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::DeleteMemory { id, agent_id, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -328,14 +369,14 @@ impl DbActorHandle {
     pub async fn search_memories(
         &self,
         query_text: String,
-        query_vector: Option<Vec<f32>>,
         agent_id: String,
-    ) -> AppResult<Vec<String>> {
+        limit: usize,
+    ) -> AppResult<Vec<repo::memory::MemoryRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::SearchMemories {
             query_text,
-            query_vector,
             agent_id,
+            limit,
             resp,
         })?;
         rx.await
@@ -687,6 +728,15 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::InsertMemory { row, resp } => {
                     let _ = resp.send(repo::memory::insert(&conn, &row));
                 }
+                DbCommand::ListMemories { agent_id, resp } => {
+                    let _ = resp.send(repo::memory::list(&conn, &agent_id));
+                }
+                DbCommand::UpdateMemory { id, agent_id, changes, resp } => {
+                    let _ = resp.send(repo::memory::update(&conn, &id, &agent_id, &changes));
+                }
+                DbCommand::DeleteMemory { id, agent_id, resp } => {
+                    let _ = resp.send(repo::memory::delete(&conn, &id, &agent_id));
+                }
                 DbCommand::GetSetting { key, resp } => {
                     let _ = resp.send(repo::settings::get(&conn, &key));
                 }
@@ -716,12 +766,11 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::SearchMemories {
                     query_text,
-                    query_vector,
                     agent_id,
+                    limit,
                     resp,
                 } => {
-                    let vec_ref = query_vector.as_deref();
-                    let _ = resp.send(repo::memory::search(&conn, &query_text, vec_ref, &agent_id));
+                    let _ = resp.send(repo::memory::search(&conn, &query_text, &agent_id, limit));
                 }
                 DbCommand::ListSessions { agent_id, resp } => {
                     let _ = resp.send(repo::sessions::list(&conn, &agent_id));

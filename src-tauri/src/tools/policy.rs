@@ -12,6 +12,8 @@ pub struct ToolPolicy {
     #[serde(default)]
     pub git: GitPolicy,
     #[serde(default)]
+    pub memory: MemoryPolicy,
+    #[serde(default)]
     pub sandbox: SandboxPolicy,
     #[serde(default)]
     pub network: NetworkPolicy,
@@ -105,6 +107,22 @@ pub struct FilePolicy {
     pub enabled: bool,
     pub approval: ApprovalTier,
     pub allowed_roots: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct MemoryPolicy {
+    pub enabled: bool,
+    pub approval: ApprovalTier,
+}
+
+impl Default for MemoryPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            approval: ApprovalTier::OnWrite,
+        }
+    }
 }
 
 impl Default for FilePolicy {
@@ -313,6 +331,8 @@ impl ToolPolicy {
             "file_read" | "list_files" | "grep" => ApprovalTier::Never,
             "file_write" | "file_edit" | "apply_patch" => self.file.approval,
             "git" => self.git.approval,
+            "memory_search" | "memory_md_view" => ApprovalTier::Never,
+            "memory_md_edit" => self.memory.approval,
             _ => ApprovalTier::Always,
         }
     }
@@ -353,6 +373,7 @@ mod tests {
         assert_eq!(value["shell"]["approval"], "on_risk");
         assert_eq!(value["file"]["approval"], "on_write");
         assert_eq!(value["git"]["approval"], "on_risk");
+        assert_eq!(value["memory"]["approval"], "on_write");
         assert_eq!(value["git"]["timeout_sec"], 30);
         assert_eq!(value["network"]["allow"], true);
         assert_eq!(value["sandbox"]["bwrap"], "auto");

@@ -16,6 +16,9 @@ pub mod file_write;
 pub mod git;
 pub mod grep;
 pub mod list_files;
+pub mod memory_md_edit;
+pub mod memory_md_view;
+pub mod memory_search;
 pub mod shell;
 
 /// 工具执行上下文：包含审计所需的 DB 句柄、参数、policy 与 workspace cwd。
@@ -89,6 +92,9 @@ pub fn builtin_tools() -> Vec<Box<dyn BuiltinTool>> {
         Box::new(grep::GrepTool),
         Box::new(apply_patch::ApplyPatchTool),
         Box::new(git::GitTool),
+        Box::new(memory_search::MemorySearchTool),
+        Box::new(memory_md_view::MemoryMdViewTool),
+        Box::new(memory_md_edit::MemoryMdEditTool),
     ]
 }
 
@@ -157,8 +163,8 @@ pub fn compute_risk(tool: &str, args: &Value) -> Risk {
 /// 判断操作是否为写操作（用于 OnWrite tier）。
 pub fn is_write_op(tool: &str, args: &Value) -> bool {
     match tool {
-        "file_write" | "file_edit" | "apply_patch" => true,
-        "file_read" | "list_files" | "grep" => false,
+        "file_write" | "file_edit" | "apply_patch" | "memory_md_edit" => true,
+        "file_read" | "list_files" | "grep" | "memory_search" | "memory_md_view" => false,
         "shell" => {
             let cmd = args.get("command").and_then(|x| x.as_str()).unwrap_or("");
             shell::command_is_write(cmd)
@@ -287,7 +293,10 @@ mod tests {
                 "list_files",
                 "grep",
                 "apply_patch",
-                "git"
+                "git",
+                "memory_search",
+                "memory_md_view",
+                "memory_md_edit"
             ]
         );
         assert!(builtin_tools()

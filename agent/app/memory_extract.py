@@ -18,6 +18,8 @@ def extract_memories(
     Returns:
         A list of dicts, each representing an extracted memory:
         {
+            "name": "...",
+            "keywords": ["..."],
             "content": "...",
             "type": "Preference" | "Fact" | "Context" | "Codebase",
             "confidence": 0.9,
@@ -35,6 +37,8 @@ def extract_memories(
         "Do not extract temporary greeting, chat filler, or generic code snippets. "
         "Provide your output strictly as a JSON object with a single 'memories' key containing a list of objects. "
         "Each memory object must have:\n"
+        "- 'name': A concise, specific title for the memory.\n"
+        "- 'keywords': An optional list of short search terms; use an empty list when none help.\n"
         "- 'content': The detailed factual statement to remember (e.g., 'User prefers standard CSS instead of TailwindCSS').\n"
         "- 'type': One of: 'Preference', 'Fact', 'Context', 'Codebase'.\n"
         "- 'confidence': A float between 0.0 and 1.0 representing your certainty.\n"
@@ -81,9 +85,23 @@ def extract_memories(
                 m_type = mem.get("type", "Fact")
                 if m_type not in ("Preference", "Fact", "Context", "Codebase"):
                     m_type = "Fact"
-                    
+
+                content = str(mem["content"]).strip()
+                if not content:
+                    continue
+                name = str(mem.get("name", "")).strip() or content[:60]
+                raw_keywords = mem.get("keywords", [])
+                keywords = []
+                if isinstance(raw_keywords, list):
+                    for keyword in raw_keywords:
+                        normalized = str(keyword).strip()
+                        if normalized and normalized not in keywords:
+                            keywords.append(normalized)
+
                 valid_memories.append({
-                    "content": str(mem["content"]),
+                    "name": name,
+                    "keywords": keywords,
+                    "content": content,
                     "type": m_type,
                     "confidence": float(mem.get("confidence", 0.8)),
                     "source": str(mem.get("source", ""))

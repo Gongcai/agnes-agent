@@ -82,7 +82,15 @@ pub fn approval_decision(mode: PermissionMode, tool: &str, risk: Risk) -> Approv
         PermissionMode::AcceptEdits => {
             let accepts_without_prompt = matches!(
                 tool,
-                "file_read" | "list_files" | "grep" | "file_write" | "file_edit" | "apply_patch"
+                "file_read"
+                    | "list_files"
+                    | "grep"
+                    | "file_write"
+                    | "file_edit"
+                    | "apply_patch"
+                    | "memory_search"
+                    | "memory_md_view"
+                    | "memory_md_edit"
             );
             ApprovalDecision {
                 needs_approval: !accepts_without_prompt,
@@ -148,6 +156,9 @@ mod tests {
             "file_write",
             "file_edit",
             "apply_patch",
+            "memory_search",
+            "memory_md_view",
+            "memory_md_edit",
         ] {
             assert!(
                 !approval_decision(PermissionMode::AcceptEdits, tool, Risk::High).needs_approval

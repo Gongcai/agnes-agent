@@ -163,6 +163,48 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         }
     }
 
+    // Add structured memory fields to existing databases.
+    let has_memory_name: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('memory_store') WHERE name = 'name'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_memory_name {
+        conn.execute(
+            "ALTER TABLE memory_store ADD COLUMN name TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    let has_memory_keywords: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('memory_store') WHERE name = 'keywords'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_memory_keywords {
+        conn.execute("ALTER TABLE memory_store ADD COLUMN keywords TEXT", [])?;
+    }
+    let has_memory_creator: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('memory_store') WHERE name = 'creator'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_memory_creator {
+        conn.execute(
+            "ALTER TABLE memory_store ADD COLUMN creator TEXT NOT NULL DEFAULT 'ai'",
+            [],
+        )?;
+    }
+    conn.execute(
+        "UPDATE memory_store SET name = substr(trim(content), 1, 60) WHERE trim(name) = ''",
+        [],
+    )?;
+
     Ok(())
 }
 
@@ -214,5 +256,49 @@ mod tests {
             )
             .unwrap();
         assert_eq!(mode, "auto");
+    }
+
+    #[test]
+    fn adds_structured_memory_fields_to_existing_databases() {
+        unsafe {
+            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        let legacy_schema = crate::db::schema::SCHEMA
+            .lines()
+            .filter(|line| {
+                !line.contains("name TEXT NOT NULL DEFAULT ''")
+                    && !line.contains("keywords TEXT")
+                    && !line.contains("creator TEXT NOT NULL DEFAULT 'ai'")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        conn.execute_batch(&legacy_schema).unwrap();
+        conn.execute(
+            "INSERT INTO agents (id, name) VALUES ('agnes', 'Agnes')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory_store (id, agent_id, content) VALUES ('memory-1', 'agnes', 'Legacy memory content')",
+            [],
+        )
+        .unwrap();
+
+        apply(&mut conn).unwrap();
+
+        let (name, keywords, creator): (String, Option<String>, String) = conn
+            .query_row(
+                "SELECT name, keywords, creator FROM memory_store WHERE id = 'memory-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "Legacy memory content");
+        assert!(keywords.is_none());
+        assert_eq!(creator, "ai");
     }
 }

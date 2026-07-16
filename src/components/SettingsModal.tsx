@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -11,6 +11,7 @@ import type {
   ModelRoleAssignments,
 } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
+import { formatMemoryTime, memoryMatchesQuery, parseMemoryKeywords } from "../lib/memory";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -26,6 +27,29 @@ interface AuditLog {
   status: string;
   risk: string;
 }
+
+interface StructuredMemory {
+  id: string;
+  agent_id: string;
+  name: string;
+  keywords: string[];
+  content: string;
+  creator: "user" | "ai";
+  created_at: string;
+  updated_at: string;
+}
+
+interface MemoryFormValues {
+  name: string;
+  keywords: string;
+  content: string;
+}
+
+const EMPTY_MEMORY_FORM: MemoryFormValues = {
+  name: "",
+  keywords: "",
+  content: "",
+};
 
 type ProviderKind = "openai" | "anthropic" | "ollama" | "openai_compatible" | "google";
 
@@ -147,6 +171,7 @@ interface AgentFormValues {
     shell: AgentToolToggle;
     file: AgentToolToggle;
     git: AgentToolToggle;
+    memory: AgentToolToggle;
     network: { allow: boolean; [key: string]: unknown };
     sandbox: {
       landlock: boolean;
@@ -171,6 +196,7 @@ const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
   shell: { enabled: true, approval: "on_risk" },
   file: { enabled: true, approval: "on_write" },
   git: { enabled: true, approval: "on_risk" },
+  memory: { enabled: true, approval: "on_write" },
   network: { allow: true },
   sandbox: { landlock: true, bwrap: "auto", rlimits: true },
 };
@@ -214,18 +240,19 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
   try {
     const obj = JSON.parse(json);
     if (obj && typeof obj === "object") {
-      const knownKeys = new Set(["shell", "file", "git", "network", "sandbox"]);
+      const knownKeys = new Set(["shell", "file", "git", "memory", "network", "sandbox"]);
       Object.entries(obj).forEach(([key, value]) => {
         if (!knownKeys.has(key)) base[key] = value;
       });
     }
-    (["shell", "file", "git"] as const).forEach((k) => {
+    (["shell", "file", "git", "memory"] as const).forEach((k) => {
       const t = obj?.[k];
       if (t && typeof t === "object") {
         const legacyDefaults: Record<typeof k, ApprovalTier> = {
           shell: "on_risk",
           file: "on_write",
           git: "on_risk",
+          memory: "on_write",
         };
         const rawApproval = t.approval;
         let approval = legacyDefaults[k];
@@ -286,6 +313,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [memoryMdText, setMemoryMdText] = useState("");
   const [isEditingUserMd, setIsEditingUserMd] = useState(false);
   const [isEditingMemoryMd, setIsEditingMemoryMd] = useState(false);
+  const [structuredMemories, setStructuredMemories] = useState<StructuredMemory[]>([]);
+  const [memorySearch, setMemorySearch] = useState("");
+  const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
+  const [memoryForm, setMemoryForm] = useState<MemoryFormValues>(EMPTY_MEMORY_FORM);
+  const [isSavingMemory, setIsSavingMemory] = useState(false);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
 
   // Audit state
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -385,7 +418,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   // Render capability and approval controls for one tool group.
-  const renderToolToggle = (key: "shell" | "file" | "git", label: string) => (
+  const renderToolToggle = (key: "shell" | "file" | "git" | "memory", label: string) => (
     <div className="flex items-center justify-between py-1.5 border-b border-stone-100 last:border-0">
       <span className="text-xs text-stone-700">{label}</span>
       <div className="flex items-center gap-2">
@@ -565,14 +598,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Sync memory text when activeAgentId changes
   useEffect(() => {
     if (activeAgentId && activeTab === "memory") {
-      invoke<{ user_md: string; memory_md: string }>("get_explicit_memories", {
-        agentId: activeAgentId,
-      })
-        .then((res) => {
-          setUserMdText(res.user_md);
-          setMemoryMdText(res.memory_md);
+      Promise.all([
+        invoke<{ user_md: string; memory_md: string }>("get_explicit_memories", {
+          agentId: activeAgentId,
+        }),
+        invoke<StructuredMemory[]>("list_memories", { agentId: activeAgentId }),
+      ])
+        .then(([explicit, memories]) => {
+          setUserMdText(explicit.user_md);
+          setMemoryMdText(explicit.memory_md);
+          setStructuredMemories(memories);
           setIsEditingUserMd(false);
           setIsEditingMemoryMd(false);
+          setEditingMemoryId(null);
+          setMemoryError(null);
         })
         .catch(console.error);
     }
@@ -624,6 +663,89 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       .then(() => setIsEditingMemoryMd(false))
       .catch(console.error);
   };
+
+  const refreshStructuredMemories = async () => {
+    if (!activeAgentId) return;
+    const memories = await invoke<StructuredMemory[]>("list_memories", {
+      agentId: activeAgentId,
+    });
+    setStructuredMemories(memories);
+  };
+
+  const openNewMemory = () => {
+    setEditingMemoryId("new");
+    setMemoryForm(EMPTY_MEMORY_FORM);
+    setMemoryError(null);
+  };
+
+  const openMemoryEditor = (memory: StructuredMemory) => {
+    setEditingMemoryId(memory.id);
+    setMemoryForm({
+      name: memory.name,
+      keywords: memory.keywords.join(", "),
+      content: memory.content,
+    });
+    setMemoryError(null);
+  };
+
+  const closeMemoryEditor = () => {
+    setEditingMemoryId(null);
+    setMemoryForm(EMPTY_MEMORY_FORM);
+    setMemoryError(null);
+  };
+
+  const saveStructuredMemory = async () => {
+    if (!activeAgentId || !editingMemoryId) return;
+    if (!memoryForm.name.trim() || !memoryForm.content.trim()) {
+      setMemoryError("名称和记忆内容不能为空");
+      return;
+    }
+    const keywords = parseMemoryKeywords(memoryForm.keywords);
+    setIsSavingMemory(true);
+    setMemoryError(null);
+    try {
+      if (editingMemoryId === "new") {
+        await invoke("create_memory", {
+          agentId: activeAgentId,
+          name: memoryForm.name,
+          keywords,
+          content: memoryForm.content,
+        });
+      } else {
+        await invoke("update_memory", {
+          memoryId: editingMemoryId,
+          agentId: activeAgentId,
+          name: memoryForm.name,
+          keywords,
+          content: memoryForm.content,
+        });
+      }
+      await refreshStructuredMemories();
+      closeMemoryEditor();
+    } catch (error) {
+      setMemoryError(String(error));
+    } finally {
+      setIsSavingMemory(false);
+    }
+  };
+
+  const removeStructuredMemory = async (memory: StructuredMemory) => {
+    if (!activeAgentId || !window.confirm(`确定删除记忆“${memory.name}”吗？`)) return;
+    try {
+      await invoke("delete_memory", {
+        memoryId: memory.id,
+        agentId: activeAgentId,
+      });
+      await refreshStructuredMemories();
+      if (editingMemoryId === memory.id) closeMemoryEditor();
+    } catch (error) {
+      setMemoryError(String(error));
+    }
+  };
+
+  const visibleMemories = structuredMemories.filter((memory) =>
+    memoryMatchesQuery(memory, memorySearch),
+  );
 
   // --- Provider editor helpers ---
   const openAddProvider = () => {
@@ -1220,6 +1342,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {renderToolToggle("shell", "Shell 命令执行")}
                           {renderToolToggle("file", "文件读写")}
                           {renderToolToggle("git", "Git 操作")}
+                          {renderToolToggle("memory", "长期记忆")}
                           <div className="flex items-center justify-between py-1.5 border-b border-stone-100">
                             <span className="text-xs text-stone-700">网络访问</span>
                             <button
@@ -1336,7 +1459,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </p>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                   {/* USER.md */}
                   <div className="space-y-2 flex flex-col">
                     <div className="flex justify-between items-center text-xs">
@@ -1418,6 +1541,131 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </pre>
                     )}
                   </div>
+                </div>
+
+                <div className="border-t border-stone-200 pt-5 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold text-stone-850">结构化记忆库</h3>
+                    <button
+                      type="button"
+                      onClick={openNewMemory}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-[#6C806A] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#596C58]"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      新建记忆
+                    </button>
+                  </div>
+
+                  <div className="relative max-w-sm">
+                    <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-stone-400" />
+                    <input
+                      value={memorySearch}
+                      onChange={(event) => setMemorySearch(event.target.value)}
+                      placeholder="搜索名称、关键词或内容"
+                      className="h-9 w-full rounded-md border border-stone-200 bg-white pl-8 pr-3 text-xs text-stone-700 focus:border-stone-400 focus:outline-none"
+                    />
+                  </div>
+
+                  {editingMemoryId && (
+                    <div className="border-y border-stone-200 bg-stone-50/70 py-4">
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                        <label className="space-y-1 text-[11px] font-medium text-stone-500">
+                          <span>名称</span>
+                          <input
+                            value={memoryForm.name}
+                            onChange={(event) => setMemoryForm((form) => ({ ...form, name: event.target.value }))}
+                            className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-xs text-stone-800 focus:border-stone-400 focus:outline-none"
+                          />
+                        </label>
+                        <label className="space-y-1 text-[11px] font-medium text-stone-500">
+                          <span>关键词</span>
+                          <input
+                            value={memoryForm.keywords}
+                            onChange={(event) => setMemoryForm((form) => ({ ...form, keywords: event.target.value }))}
+                            placeholder="多个关键词用逗号分隔"
+                            className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-xs text-stone-800 focus:border-stone-400 focus:outline-none"
+                          />
+                        </label>
+                      </div>
+                      <label className="mt-3 block space-y-1 text-[11px] font-medium text-stone-500">
+                        <span>记忆内容</span>
+                        <textarea
+                          value={memoryForm.content}
+                          onChange={(event) => setMemoryForm((form) => ({ ...form, content: event.target.value }))}
+                          className="min-h-28 w-full resize-y rounded-md border border-stone-200 bg-white p-3 text-xs leading-relaxed text-stone-800 focus:border-stone-400 focus:outline-none"
+                        />
+                      </label>
+                      {memoryError && <p className="mt-2 text-xs text-red-600">{memoryError}</p>}
+                      <div className="mt-3 flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={closeMemoryEditor}
+                          className="rounded-md px-3 py-1.5 text-xs font-medium text-stone-500 hover:bg-stone-200"
+                        >
+                          取消
+                        </button>
+                        <button
+                          type="button"
+                          onClick={saveStructuredMemory}
+                          disabled={isSavingMemory}
+                          className="rounded-md bg-[#6C806A] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#596C58] disabled:opacity-50"
+                        >
+                          {isSavingMemory ? "保存中..." : "保存"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="divide-y divide-stone-200 border-y border-stone-200">
+                    {visibleMemories.length === 0 ? (
+                      <p className="py-10 text-center text-xs text-stone-400">暂无结构化记忆</p>
+                    ) : (
+                      visibleMemories.map((memory) => (
+                        <article key={memory.id} className="py-4">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h4 className="break-words text-sm font-semibold text-stone-800">{memory.name}</h4>
+                                <span className="rounded-sm border border-stone-200 bg-stone-50 px-1.5 py-0.5 text-[10px] font-medium text-stone-500">
+                                  {memory.creator === "ai" ? "AI 创建" : "用户创建"}
+                                </span>
+                                <time className="text-[10px] text-stone-400">{formatMemoryTime(memory.created_at)}</time>
+                              </div>
+                              {memory.keywords.length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {memory.keywords.map((keyword) => (
+                                    <span key={keyword} className="rounded-sm bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">
+                                      {keyword}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-stone-600">{memory.content}</p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => openMemoryEditor(memory)}
+                                title="编辑记忆"
+                                className="rounded p-1.5 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => removeStructuredMemory(memory)}
+                                title="删除记忆"
+                                className="rounded p-1.5 text-stone-400 hover:bg-red-50 hover:text-red-600"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </article>
+                      ))
+                    )}
+                  </div>
+                  {!editingMemoryId && memoryError && <p className="text-xs text-red-600">{memoryError}</p>}
                 </div>
               </div>
             )}

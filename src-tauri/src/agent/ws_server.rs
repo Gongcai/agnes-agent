@@ -553,48 +553,53 @@ async fn handle_conn<R: tauri::Runtime>(
                     agent_id = sess.agent_id;
                 }
 
-                // 2. 插入新提取的长期记忆条目（包含关联向量写入 sqlite-vec）
+                // 2. Insert extracted structured memories. Vector indexing remains
+                // disabled until embedding dimensions are configurable.
                 if let Some(mems) = memories_val {
                     for m in mems {
                         let content = m.get("content").and_then(|x| x.as_str()).unwrap_or("");
+                        let name = m
+                            .get("name")
+                            .and_then(|value| value.as_str())
+                            .filter(|value| !value.trim().is_empty())
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| content.chars().take(60).collect());
+                        let keywords = m
+                            .get("keywords")
+                            .and_then(|value| value.as_array())
+                            .map(|values| {
+                                values
+                                    .iter()
+                                    .filter_map(|value| value.as_str().map(ToString::to_string))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
                         let m_type = m.get("type").and_then(|x| x.as_str()).unwrap_or("Fact");
                         let confidence = m.get("confidence").and_then(|x| x.as_f64()).unwrap_or(0.8);
                         let source = m.get("source").and_then(|x| x.as_str()).unwrap_or("");
 
                         if !content.is_empty() && !agent_id.is_empty() {
                             let mem_id = uuid::Uuid::new_v4().to_string();
-                            let mut embedding_id = None;
-
-                            if let Some(arr) = m.get("vector").and_then(|x| x.as_array()) {
-                                let vector: Vec<f32> = arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect();
-                                if !vector.is_empty() {
-                                    let embed_id = uuid::Uuid::new_v4().to_string();
-                                    let content_hash = format!("{}", content.len());
-
-                                    let _ = db.insert_embedding(
-                                        embed_id.clone(),
-                                        "memory_store".to_string(),
-                                        mem_id.clone(),
-                                        "text-embedding-3-small".to_string(),
-                                        vector.len() as i32,
-                                        content_hash,
-                                        vector,
-                                    ).await;
-                                    embedding_id = Some(embed_id);
-                                }
-                            }
 
                             let new_mem = NewMemory {
                                 id: mem_id,
                                 agent_id: agent_id.clone(),
+                                name,
+                                keywords,
                                 content: content.to_string(),
+                                creator: "ai".to_string(),
                                 memory_type: m_type.to_string(),
                                 scope: "agent".to_string(),
                                 source: source.to_string(),
                                 confidence,
-                                embedding_id,
+                                embedding_id: None,
                             };
-                            let _ = db.insert_memory(new_mem).await;
+                            match db.insert_memory(new_mem).await {
+                                Ok(true) | Ok(false) => {}
+                                Err(error) => {
+                                    eprintln!("[memory] Failed to persist extracted memory: {error}")
+                                }
+                            }
                         }
                     }
                 }

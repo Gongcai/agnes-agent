@@ -2,6 +2,8 @@
 
 项目规划与设计文档：技术栈、架构、数据模型、AGENTS 角色卡、记忆系统、版本路线图与关键决策。开发规范（语言、命令、代码质量）见 `CODEBUDDY.md`。
 
+记忆系统的实体字段、检索行为与 AI 工具契约详见 `ProjectPlan/MEMORY_SYSTEM.md`。
+
 模型能力标签与任务分工详见 `ProjectPlan/MODEL_ROUTING.md`。
 
 # 项目定位
@@ -111,15 +113,16 @@ created_at / updated_at
 - 存储：`USER.md`（用户基础信息，**仅用户可改，AI 只读**）+ `MEMORY.md`（需每次都记住的事实，**AI 和用户都能改**）。纯文本 Markdown，人类可读、可 git、用户能直接手改。
 - 作用域：按 Agent 隔离，路径 `~/.agnes/agents/{agent_id}/memory/USER.md` + `MEMORY.md`。可选：全局用户画像 `~/.agnes/memory/USER.md` 作为跨 Agent 共享基底，注入时与 per-Agent 的合并（若冲突以 per-Agent 为准）。
 - 注入：session 启动读取，直接拼进 system prompt 每轮都在，作为稳定基底。
-- 修改：用户手改或说"记住…" → AI 调 `memory_write` append 到 MEMORY.md（仅 append / 按区块编辑，不整体覆盖）。AI 改 USER.md 被工具层写保护禁止；需更新时提示用户。
+- 修改：用户手改或说"记住…" → AI 调 `memory_md_edit` 追加或精确替换，并可用 `memory_md_view` 再次查看。AI 改 USER.md 被工具层写保护禁止；需更新时提示用户。
 - 原"Explicit Memory"即收敛为此处的 MEMORY.md：显式、高置信、每次必注入，无独立表。
 
 ## ④ 按需记忆库（SQLite + 向量 + 字符串，工具检索）
 
 - 存储：`memory_store` 表（区别于 MEMORY.md 文件）：
-  `id, agent_id, content, type(fact/project/preference/note/source), scope(global/agent), source, confidence, created_at, updated_at, embedding_id`；向量存 `embeddings`（sqlite-vec）。`agent_id` 保证记忆库按 Agent 隔离；`memory_search` 默认只在当前 Agent 范围内检索（可选并入 global 基底）。
-- 检索（混合）：AI 按需调 `memory_search(q)` —— `A = sqlite-vec cosine top-k`（语义）+ `B = FTS5/LIKE 子串匹配 top-k`（精确 token）→ `fuse(A,B)`（RRF 或加权）返回 top-k，作为工具结果进上下文。
-- 写入：后台 memory extractor 从对话抽事实入库 + 算 embedding；或用户"存进记忆库" → `memory_store_write`。推断项带 `confidence` + `source`，**可编辑、可删除、可解释来源**（量大且 AI 生成，是防记错的主战场）。
+  用户可见字段固定为 `name / keywords? / created_at / content / creator(user|ai)`；另有 `id / agent_id / status / version / embedding_id` 等内部字段。`agent_id` 保证记忆库按 Agent 隔离，详细约束见 `MEMORY_SYSTEM.md`。
+- 检索（混合）：AI 按需调 `memory_search(q)`。当前先匹配名称、关键词和内容；嵌入维度可配置后，再融合 sqlite-vec 语义候选，返回 top-k 作为工具结果进入上下文。
+- 写入：后台 memory extractor 从对话抽取，Rust 强制标记 `creator=ai`；用户从记忆管理界面创建时强制标记 `creator=user`。创建时间和创建人均由系统生成，不接受调用方伪造。
+- `MEMORY.md`：AI 使用 `memory_md_view` 再次查看，使用 `memory_md_edit` 进行追加或唯一精确替换；工具只能操作当前 Agent 的 `MEMORY.md`，不能修改 `USER.md` 或任意文件。
 
 ## Prompt 拼装顺序
 
@@ -141,13 +144,15 @@ System Prompt
 - USER.md / MEMORY.md：纯文本，随其他文本全量同步上云（D1）。
 - memory_store 文本同步；embedding 各端本地重算，不跨端传向量（避免模型版本漂移）。
 
-# 版本路线图
+# 版本路线图与当前进度
 
-- **V0.1 先跑起来**：Tauri 2 桌面端 + SvelteKit 聊天 UI + 本地 SQLite + Python FastAPI Agent sidecar + LiteLLM + shell/file/git 三工具
-- **V0.2 记忆与 RAG**：message summary + memory extractor + sqlite-vec + embedding provider 抽象 + prompt assembler
-- **V0.3 Cloudflare 同步**：Workers + Hono + D1 schema + device_id + sync_log 增量 push/pull（端到端加密可选）
-- **V0.4 Android**：Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent
-- **V0.5 Agent 增强**：MCP + human approval + diff review + workspace sandbox + tool audit log + 多模型 fallback
+| 版本 | 范围 | 当前状态（2026-07-16） |
+|---|---|---|
+| V0.1 | Tauri 2 + React 聊天 UI + SQLite + Python LangGraph sidecar + LiteLLM | 主链路已完成；发布态 sidecar 打包待收口 |
+| V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 第一阶段已完成：摘要、抽取、结构化字段、字符串检索和 `MEMORY.md` 专用工具已接通；动态维度向量检索待实现 |
+| V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 已完成详细设计，尚未实现；先执行 `CLOUDFLARE_SYNC.md` Phase 0 |
+| V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 未开始 |
+| V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；MCP 等能力待后续补齐 |
 
 # 关键决策约束
 

@@ -6,7 +6,6 @@ import json
 import os
 import sys
 import traceback
-import litellm
 from typing import Any, Dict, Optional
 
 import websockets
@@ -158,7 +157,8 @@ async def run_agent_graph(
                 llm_config=summary_llm_config,
             )
             
-        # 6. Extract memories from the latest turns (asynchronously) and compute vectors
+        # 6. Extract structured memories. Vector indexing remains disabled until
+        # embedding providers and dimensions are configurable.
         extracted_memories = []
         try:
             latest_messages = output_state.get("messages", [])
@@ -169,20 +169,6 @@ async def run_agent_graph(
             )
             if extracted_memories:
                 print(f"[sidecar][memory] Extracted {len(extracted_memories)} new memories: {extracted_memories}", flush=True)
-                # Compute embedding vectors using LiteLLM
-                for mem in extracted_memories:
-                    try:
-                        content = mem.get("content", "")
-                        # Fallback to standard text-embedding-3-small
-                        embed_res = litellm.embedding(
-                            model="text-embedding-3-small",
-                            input=[content]
-                        )
-                        vector = embed_res.data[0]["embedding"]
-                        mem["vector"] = vector
-                        print(f"[sidecar][memory] Computed vector of length {len(vector)} for extracted memory", flush=True)
-                    except Exception as embed_ex:
-                        print(f"[sidecar][memory] Failed to compute embedding: {embed_ex}", flush=True)
         except Exception as mem_ex:
             print(f"[sidecar][memory] Failed to extract memories: {mem_ex}", flush=True)
 

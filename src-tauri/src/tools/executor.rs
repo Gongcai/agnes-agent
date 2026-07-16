@@ -213,6 +213,7 @@ mod tests {
                 approval: ApprovalTier::Never,
                 timeout_sec: 5,
             },
+            memory: Default::default(),
             sandbox: Default::default(),
             network: Default::default(),
         };
@@ -445,6 +446,39 @@ mod tests {
             )
             .await
             .is_err());
+
+        db.insert_memory(crate::db::repo::memory::NewMemory {
+            id: "memory-1".into(),
+            agent_id: "test-agent".into(),
+            name: "Package manager".into(),
+            keywords: vec!["pnpm".into(), "frontend".into()],
+            content: "Use pnpm for frontend dependencies.".into(),
+            creator: "user".into(),
+            memory_type: "Preference".into(),
+            scope: "agent".into(),
+            source: "test".into(),
+            confidence: 1.0,
+            embedding_id: None,
+        })
+        .await
+        .unwrap();
+        let memory_result = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-memory-search-1",
+                "memory_search",
+                &json!({"query": "pnpm"}),
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(memory_result["memories"][0]["name"], "Package manager");
+        assert_eq!(
+            memory_result["memories"][0]["content"],
+            "Use pnpm for frontend dependencies."
+        );
+        assert!(memory_result["memories"][0].get("agent_id").is_none());
 
         let _ = fs::remove_dir_all(&temp_project);
         let _ = fs::remove_file(&db_path);

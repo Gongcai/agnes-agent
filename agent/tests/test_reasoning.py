@@ -195,6 +195,9 @@ def test_get_available_tools():
     assert "grep" not in tool_names
     assert "apply_patch" not in tool_names
     assert "git" in tool_names
+    assert "memory_search" in tool_names
+    assert "memory_md_view" in tool_names
+    assert "memory_md_edit" in tool_names
 
     all_tool_names = [
         tool["function"]["name"] for tool in get_available_tools({})
@@ -208,7 +211,18 @@ def test_get_available_tools():
         "grep",
         "apply_patch",
         "git",
+        "memory_search",
+        "memory_md_view",
+        "memory_md_edit",
     ]
+
+    memory_disabled_names = [
+        tool["function"]["name"]
+        for tool in get_available_tools({"memory": {"enabled": False}})
+    ]
+    assert "memory_search" not in memory_disabled_names
+    assert "memory_md_view" not in memory_disabled_names
+    assert "memory_md_edit" not in memory_disabled_names
 
 
 def test_task_model_routing_and_fallback():
@@ -232,3 +246,40 @@ def test_task_model_routing_and_fallback():
     assert model == "openai/cheap-summary"
     assert config is not None
     assert config.model == "cheap-summary"
+
+
+def test_memory_extractor_normalizes_new_fields(monkeypatch):
+    class Message:
+        content = json.dumps({
+            "memories": [
+                {
+                    "name": " Preferred package manager ",
+                    "keywords": ["pnpm", " pnpm ", "frontend", ""],
+                    "content": " User uses pnpm for frontend dependencies. ",
+                    "type": "Preference",
+                    "confidence": 0.95,
+                    "source": "Use pnpm",
+                }
+            ]
+        })
+
+    class Choice:
+        message = Message()
+
+    class Response:
+        choices = [Choice()]
+
+    monkeypatch.setattr("app.memory_extract.completion", lambda **_: Response())
+    memories = extract_memories([
+        {"role": "user", "content": "Use pnpm"},
+        {"role": "assistant", "content": "Understood"},
+    ])
+
+    assert memories == [{
+        "name": "Preferred package manager",
+        "keywords": ["pnpm", "frontend"],
+        "content": "User uses pnpm for frontend dependencies.",
+        "type": "Preference",
+        "confidence": 0.95,
+        "source": "Use pnpm",
+    }]

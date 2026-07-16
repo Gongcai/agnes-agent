@@ -468,7 +468,7 @@ pub async fn get_debug_prompt(
     };
 
     // 读取 USER.md / MEMORY.md（SQLite canonical 真相源）
-    let (user_md, memory_md) = load_explicit_memories_db_backed(&state.db, &agent.id).await?;
+    let (user_md, memory_md) = crate::memory::load_explicit_memories(&state.db, &agent.id).await?;
 
     // 读取会话历史与摘要（如有）
     let mut history_json = Vec::new();
@@ -837,48 +837,6 @@ pub async fn cancel_run(
 }
 
 /// 将占位提示文本视为空，避免被当作真实记忆发送给 AI（占位仅由前端展示）。
-fn normalize_memory_text(text: String) -> String {
-    let t = text.trim();
-    if t.is_empty()
-        || t == "# USER.md"
-        || t == "# MEMORY.md"
-        || t.contains("在此输入您的基础个人画像")
-        || t.contains("在此记录助手每次对话沉淀的事实")
-    {
-        return String::new();
-    }
-    text
-}
-
-/// 从 DB 中加载 explicit memories（如果不存在则从磁盘加载并写入 DB 作为 canonical 真相源）。
-async fn load_explicit_memories_db_backed(
-    db: &crate::db::DbActorHandle,
-    agent_id: &str,
-) -> AppResult<(String, String)> {
-    let user_key = format!("agent:{}:user_md", agent_id);
-    let memory_key = format!("agent:{}:memory_md", agent_id);
-
-    let db_user = db.get_setting(user_key.clone()).await?;
-    let db_memory = db.get_setting(memory_key.clone()).await?;
-
-    if let (Some(u), Some(m)) = (db_user, db_memory) {
-        // 自动同步写回磁盘 materialized view md 文件以防手改丢失；
-        // 占位提示视为空，避免被当作记忆发送给 AI
-        let u_norm = normalize_memory_text(u);
-        let m_norm = normalize_memory_text(m);
-        let _ = crate::memory::save_explicit_memories(agent_id, &u_norm, &m_norm);
-        Ok((u_norm, m_norm))
-    } else {
-        // 磁盘作为 fallback 并生成默认值
-        let (user_md, memory_md) = crate::memory::load_explicit_memories(agent_id)?;
-        let user_md = normalize_memory_text(user_md);
-        let memory_md = normalize_memory_text(memory_md);
-        let _ = db.set_setting(user_key, user_md.clone()).await;
-        let _ = db.set_setting(memory_key, memory_md.clone()).await;
-        Ok((user_md, memory_md))
-    }
-}
-
 /// 解析出的 LLM 运行配置（会话级优先，回退角色卡默认）。
 struct ResolvedLlm {
     agent: AgentRow,
@@ -1028,7 +986,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
 /// 用已解析配置启动一次 agent 运行：构建活动路径历史（跳过 pending assistant）→
 /// 编译 snapshot（input="" 避免与 recentMessages 重复）→ 注册 run_id → 发 RUN_REQUEST。
 async fn start_agent_run(state: &AppState, cfg: &ResolvedLlm, session_id: &str, assistant_msg_id: &str) -> AppResult<()> {
-    let (user_md, memory_md) = load_explicit_memories_db_backed(&state.db, &cfg.agent.id).await?;
+    let (user_md, memory_md) = crate::memory::load_explicit_memories(&state.db, &cfg.agent.id).await?;
 
     let path = state.db.list_active_with_parts(session_id.to_string()).await?;
     let mut history_json = Vec::new();
@@ -1164,7 +1122,7 @@ pub async fn get_explicit_memories(
     state: tauri::State<'_, AppState>,
     agent_id: String,
 ) -> AppResult<ExplicitMemoriesDto> {
-    let (user_md, memory_md) = load_explicit_memories_db_backed(&state.db, &agent_id).await?;
+    let (user_md, memory_md) = crate::memory::load_explicit_memories(&state.db, &agent_id).await?;
     Ok(ExplicitMemoriesDto { user_md, memory_md })
 }
 
@@ -1175,15 +1133,68 @@ pub async fn save_explicit_memories(
     user_md: String,
     memory_md: String,
 ) -> AppResult<()> {
-    let user_key = format!("agent:{}:user_md", agent_id);
-    let memory_key = format!("agent:{}:memory_md", agent_id);
+    crate::memory::save_explicit_memories(&state.db, &agent_id, &user_md, &memory_md).await
+}
 
-    // 1. 写入 SQLite canonical 真相源
-    state.db.set_setting(user_key, user_md.clone()).await?;
-    state.db.set_setting(memory_key, memory_md.clone()).await?;
+#[tauri::command]
+pub async fn list_memories(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> AppResult<Vec<crate::db::repo::memory::MemoryRow>> {
+    state.db.list_memories(agent_id).await
+}
 
-    // 2. 更新本地磁盘 materialized view md 视图
-    crate::memory::save_explicit_memories(&agent_id, &user_md, &memory_md)
+#[tauri::command]
+pub async fn create_memory(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    name: String,
+    keywords: Vec<String>,
+    content: String,
+) -> AppResult<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let inserted = state.db.insert_memory(crate::db::repo::memory::NewMemory {
+        id: id.clone(),
+        agent_id,
+        name,
+        keywords,
+        content,
+        creator: "user".into(),
+        memory_type: "Note".into(),
+        scope: "agent".into(),
+        source: "memory_manager".into(),
+        confidence: 1.0,
+        embedding_id: None,
+    }).await?;
+    if !inserted {
+        return Err(AppError::Other("已存在名称和内容完全相同的记忆".into()));
+    }
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn update_memory(
+    state: tauri::State<'_, AppState>,
+    memory_id: String,
+    agent_id: String,
+    name: String,
+    keywords: Vec<String>,
+    content: String,
+) -> AppResult<()> {
+    state.db.update_memory(
+        memory_id,
+        agent_id,
+        crate::db::repo::memory::MemoryUpdate { name, keywords, content },
+    ).await
+}
+
+#[tauri::command]
+pub async fn delete_memory(
+    state: tauri::State<'_, AppState>,
+    memory_id: String,
+    agent_id: String,
+) -> AppResult<()> {
+    state.db.delete_memory(memory_id, agent_id).await
 }
 
 #[derive(serde::Serialize)]

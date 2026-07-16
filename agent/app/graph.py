@@ -162,7 +162,58 @@ def get_available_tools(tool_policy: Dict[str, Any]) -> List[Dict[str, Any]]:
                 }
             }
         })
-        
+
+    # 4. Agent-scoped memory tools
+    memory_enabled = tool_policy.get("memory", {}).get("enabled", True)
+    if memory_enabled:
+        tools.extend([
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_search",
+                    "description": "Search this agent's structured long-term memories by name, keywords, and content.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                        },
+                        "required": ["query"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_md_view",
+                    "description": "Read the complete MEMORY.md for this agent. Use after editing to verify final content.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_md_edit",
+                    "description": "Append to MEMORY.md or replace one uniquely matching exact block. This cannot modify USER.md or arbitrary files.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["append", "replace"]},
+                            "content": {"type": "string"},
+                            "old_text": {"type": "string"},
+                            "new_text": {"type": "string"},
+                        },
+                        "required": ["action"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        ])
+
     return tools
 
 async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, Any]:
