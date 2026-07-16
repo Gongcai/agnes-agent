@@ -514,10 +514,10 @@ tasks
 
 ### Phase A：数据模型与本地 RAG
 
-- 将占位 `documents/document_chunks` 迁移为 collection/document/version/source 模型；
-- 抽象 embedding/parser/chunker profile 和 build fingerprint；
-- 为向量表增加 namespace type/id；
-- 实现本地文档导入、分块、FTS5 + sqlite-vec + RRF；
+- [x] 将占位 `documents/document_chunks` 迁移为 collection/document/version/source 模型，并保留旧本地数据、分块和路径绑定；
+- [x] 落地 embedding/parser/chunker profile 与本地 FTS5 的数据表；
+- [ ] 为向量表增加 namespace type/id；
+- [ ] 实现本地文档导入、分块、FTS5 + sqlite-vec + RRF；
 - 先用中小数据集做质量和性能基准。
 
 ### Phase B：加密制品与 D1 清单

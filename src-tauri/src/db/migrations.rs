@@ -1,24 +1,29 @@
+use std::collections::HashMap;
+
 use rusqlite::{params, Connection};
+use sha2::{Digest, Sha256};
 
 use crate::error::AppResult;
 
 fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
     conn.query_row(
-        &format!(
-            "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"
-        ),
+        &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
         [column],
         |row| row.get(0),
     )
     .unwrap_or(false)
 }
 
-fn ensure_column(
-    conn: &Connection,
-    table: &str,
-    column: &str,
-    definition: &str,
-) -> AppResult<()> {
+fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get(0),
+    )
+    .unwrap_or(false)
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> AppResult<()> {
     if !has_column(conn, table, column) {
         conn.execute(
             &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
@@ -36,11 +41,20 @@ fn now() -> String {
 }
 
 fn ensure_sync_metadata(conn: &Connection) -> AppResult<()> {
-    for table in ["agents", "sessions", "messages", "memory_store", "workspaces"] {
+    for table in [
+        "agents",
+        "sessions",
+        "messages",
+        "memory_store",
+        "workspaces",
+    ] {
         ensure_column(conn, table, "version", "INTEGER NOT NULL DEFAULT 1")?;
         ensure_column(conn, table, "deleted_at", "TEXT")?;
         ensure_column(conn, table, "origin_device_id", "TEXT")?;
-        conn.execute(&format!("UPDATE {table} SET version = 1 WHERE version IS NULL"), [])?;
+        conn.execute(
+            &format!("UPDATE {table} SET version = 1 WHERE version IS NULL"),
+            [],
+        )?;
     }
     Ok(())
 }
@@ -96,9 +110,8 @@ fn legacy_explicit_memory_key(key: &str) -> Option<(&str, &str)> {
 
 fn migrate_explicit_memories(conn: &mut Connection) -> AppResult<()> {
     let legacy_rows: Vec<(String, String)> = {
-        let mut stmt = conn.prepare(
-            "SELECT key, value FROM settings WHERE key LIKE 'agent:%' ORDER BY key",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'agent:%' ORDER BY key")?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<Result<Vec<_>, _>>()?
     };
@@ -135,10 +148,211 @@ fn migrate_explicit_memories(conn: &mut Connection) -> AppResult<()> {
     Ok(())
 }
 
+fn ensure_knowledge_embedding_metadata(conn: &Connection) -> AppResult<()> {
+    ensure_column(conn, "embedding_items", "collection_id", "TEXT")?;
+    ensure_column(conn, "embedding_items", "embedding_profile_id", "TEXT")?;
+    Ok(())
+}
+
+fn rename_legacy_document_tables(conn: &Connection) -> AppResult<()> {
+    if !table_exists(conn, "documents") || has_column(conn, "documents", "collection_id") {
+        return Ok(());
+    }
+    if table_exists(conn, "legacy_documents") {
+        return Err(crate::error::AppError::Other(
+            "A previous knowledge-base migration did not finish".into(),
+        ));
+    }
+
+    if table_exists(conn, "document_chunks") {
+        conn.execute(
+            "ALTER TABLE document_chunks RENAME TO legacy_document_chunks",
+            [],
+        )?;
+    }
+    conn.execute("ALTER TABLE documents RENAME TO legacy_documents", [])?;
+    Ok(())
+}
+
+#[derive(Debug)]
+struct LegacyDocument {
+    id: String,
+    agent_id: String,
+    title: Option<String>,
+    path: Option<String>,
+    created_at: Option<String>,
+}
+
+#[derive(Debug)]
+struct LegacyDocumentChunk {
+    id: String,
+    document_id: String,
+    content: String,
+}
+
+fn hash_text(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    format!("{digest:x}")
+}
+
+fn migrate_legacy_documents(conn: &mut Connection) -> AppResult<()> {
+    if !table_exists(conn, "legacy_documents") {
+        return Ok(());
+    }
+
+    let documents: Vec<LegacyDocument> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, title, path, created_at FROM legacy_documents ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(LegacyDocument {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                title: row.get(2)?,
+                path: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let has_legacy_chunks = table_exists(conn, "legacy_document_chunks");
+    let chunks: Vec<LegacyDocumentChunk> = if has_legacy_chunks {
+        let mut stmt = conn.prepare(
+            "SELECT id, document_id, COALESCE(content, '') \
+             FROM legacy_document_chunks ORDER BY document_id, rowid",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(LegacyDocumentChunk {
+                id: row.get(0)?,
+                document_id: row.get(1)?,
+                content: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+
+    let mut chunks_by_document: HashMap<&str, Vec<&LegacyDocumentChunk>> = HashMap::new();
+    for chunk in &chunks {
+        chunks_by_document
+            .entry(chunk.document_id.as_str())
+            .or_default()
+            .push(chunk);
+    }
+
+    let timestamp = now();
+    let tx = conn.transaction()?;
+    for document in documents {
+        let collection_id = format!("legacy-collection:{}", document.agent_id);
+        let version_id = format!("legacy-version:{}:1", document.id);
+        let source_id = format!("legacy-source:{}", document.id);
+        let title = document
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .unwrap_or("未命名文档");
+        let created_at = document.created_at.as_deref().unwrap_or(&timestamp);
+        let document_chunks = chunks_by_document
+            .get(document.id.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let text = document_chunks
+            .iter()
+            .map(|chunk| chunk.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        tx.execute(
+            "INSERT OR IGNORE INTO knowledge_collections \
+             (id, name, scope, created_at, updated_at) VALUES (?1, ?2, 'agent_private', ?3, ?3)",
+            params![
+                collection_id,
+                format!("{} 的已导入文档", document.agent_id),
+                created_at
+            ],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO collection_agents \
+             (collection_id, agent_id, permission, created_at, updated_at) \
+             SELECT ?1, ?2, 'manage', ?3, ?3 WHERE EXISTS(SELECT 1 FROM agents WHERE id = ?2)",
+            params![collection_id, document.agent_id, created_at],
+        )?;
+        tx.execute(
+            "INSERT INTO documents \
+             (id, collection_id, title, media_type, current_version_id, status, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, 'text/plain', ?4, 'active', ?5, ?5)",
+            params![document.id, collection_id, title, version_id, created_at],
+        )?;
+        tx.execute(
+            "INSERT INTO document_sources \
+             (id, document_id, source_kind, observed_at, local_binding_id) \
+             VALUES (?1, ?2, 'local_file', ?3, ?1)",
+            params![source_id, document.id, created_at],
+        )?;
+        if let Some(path) = document
+            .path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+        {
+            tx.execute(
+                "INSERT INTO document_local_bindings (source_id, local_path, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?3)",
+                params![source_id, path, created_at],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO document_versions \
+             (id, document_id, logical_version, plaintext_hash, size, media_type, created_at) \
+             VALUES (?1, ?2, 1, ?3, ?4, 'text/plain', ?5)",
+            params![
+                version_id,
+                document.id,
+                hash_text(&text),
+                text.len() as i64,
+                created_at
+            ],
+        )?;
+        for (ordinal, chunk) in document_chunks.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO document_chunks \
+                 (id, document_version_id, ordinal, content, content_hash, token_count) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    chunk.id,
+                    version_id,
+                    ordinal as i64,
+                    chunk.content,
+                    hash_text(&chunk.content),
+                    chunk.content.split_whitespace().count() as i64,
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO document_chunks_fts \
+                 (chunk_id, document_id, document_version_id, title, content) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![chunk.id, document.id, version_id, title, chunk.content],
+            )?;
+        }
+    }
+
+    if has_legacy_chunks {
+        tx.execute("DROP TABLE legacy_document_chunks", [])?;
+    }
+    tx.execute("DROP TABLE legacy_documents", [])?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// 应用 DB 建表与预置数据。
 pub fn apply(conn: &mut Connection) -> AppResult<()> {
     conn.execute_batch(crate::db::schema::SCHEMA)?;
-    
+    rename_legacy_document_tables(conn)?;
+    ensure_knowledge_embedding_metadata(conn)?;
+    conn.execute_batch(crate::db::schema::KNOWLEDGE_SCHEMA)?;
+    migrate_legacy_documents(conn)?;
+
     // 检查是否已有 agent，如果没有则预置默认角色
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))?;
     if count == 0 {
@@ -180,7 +394,8 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
     }
 
     // 检查是否已有 model_providers，如果没有则预置默认 OpenAI 提供商 (无假模型)
-    let provider_count: i64 = conn.query_row("SELECT COUNT(*) FROM model_providers", [], |r| r.get(0))?;
+    let provider_count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM model_providers", [], |r| r.get(0))?;
     if provider_count == 0 {
         conn.execute(
             "INSERT INTO model_providers (id, name, kind, api_base, is_default, models_json, extra_config, created_at, updated_at) \
@@ -198,7 +413,10 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         )
         .unwrap_or(false);
     if !has_pinned {
-        conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0", [])?;
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0",
+            [],
+        )?;
     }
 
     // 为已存在的 agents 表补充思考配置列（幂等，兼容老库）
@@ -210,8 +428,14 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         )
         .unwrap_or(false);
     if !has_thinking_mode {
-        conn.execute("ALTER TABLE agents ADD COLUMN thinking_mode TEXT DEFAULT 'off'", [])?;
-        conn.execute("ALTER TABLE agents ADD COLUMN thinking_budget INTEGER DEFAULT 0", [])?;
+        conn.execute(
+            "ALTER TABLE agents ADD COLUMN thinking_mode TEXT DEFAULT 'off'",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE agents ADD COLUMN thinking_budget INTEGER DEFAULT 0",
+            [],
+        )?;
     }
 
     // 为已存在的 sessions 表补充会话级模型/思考配置列（幂等，兼容老库）
@@ -224,8 +448,14 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         .unwrap_or(false);
     if !has_session_model {
         conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT DEFAULT ''", [])?;
-        conn.execute("ALTER TABLE sessions ADD COLUMN thinking_mode TEXT DEFAULT ''", [])?;
-        conn.execute("ALTER TABLE sessions ADD COLUMN thinking_budget INTEGER DEFAULT 0", [])?;
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN thinking_mode TEXT DEFAULT ''",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN thinking_budget INTEGER DEFAULT 0",
+            [],
+        )?;
     }
 
     // Add the session-level tool permission mode for existing databases.
@@ -272,22 +502,33 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
             let mut stmt = conn.prepare("SELECT DISTINCT session_id FROM messages")?;
             let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
             let mut v = Vec::new();
-            for r in rows { v.push(r?); }
+            for r in rows {
+                v.push(r?);
+            }
             v
         };
         for sid in session_ids {
             let msg_ids: Vec<String> = {
-                let mut stmt = conn.prepare(
-                    "SELECT id FROM messages WHERE session_id = ?1 ORDER BY seq ASC",
-                )?;
+                let mut stmt =
+                    conn.prepare("SELECT id FROM messages WHERE session_id = ?1 ORDER BY seq ASC")?;
                 let rows = stmt.query_map([&sid], |r| r.get::<_, String>(0))?;
                 let mut v = Vec::new();
-                for r in rows { v.push(r?); }
+                for r in rows {
+                    v.push(r?);
+                }
                 v
             };
             for i in 0..msg_ids.len() {
-                let parent_id = if i == 0 { None } else { Some(msg_ids[i - 1].clone()) };
-                let sel_child = if i + 1 < msg_ids.len() { Some(msg_ids[i + 1].clone()) } else { None };
+                let parent_id = if i == 0 {
+                    None
+                } else {
+                    Some(msg_ids[i - 1].clone())
+                };
+                let sel_child = if i + 1 < msg_ids.len() {
+                    Some(msg_ids[i + 1].clone())
+                } else {
+                    None
+                };
                 conn.execute(
                     "UPDATE messages SET parent_id = ?1, selected_child_id = ?2 WHERE id = ?3",
                     params![parent_id, sel_child, msg_ids[i]],
@@ -441,6 +682,61 @@ mod tests {
     }
 
     #[test]
+    fn migrates_placeholder_documents_into_versioned_collections() {
+        unsafe {
+            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE documents (\
+               id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, title TEXT, path TEXT, created_at TEXT);\
+             CREATE TABLE document_chunks (\
+               id TEXT PRIMARY KEY, document_id TEXT NOT NULL, content TEXT, embedding_id TEXT);\
+             INSERT INTO documents (id, agent_id, title, path, created_at)\
+               VALUES ('document-1', 'agnes', 'Legacy note', '/tmp/legacy.txt', '123');\
+             INSERT INTO document_chunks (id, document_id, content)\
+               VALUES ('chunk-1', 'document-1', 'A preserved legacy paragraph.');",
+        )
+        .unwrap();
+
+        apply(&mut conn).unwrap();
+
+        let row: (String, String, String, String, i64) = conn
+            .query_row(
+                "SELECT d.collection_id, d.current_version_id, v.plaintext_hash, b.local_path, c.token_count \
+                 FROM documents d \
+                 JOIN document_versions v ON v.id = d.current_version_id \
+                 JOIN document_sources s ON s.document_id = d.id \
+                 JOIN document_local_bindings b ON b.source_id = s.id \
+                 JOIN document_chunks c ON c.document_version_id = v.id \
+                 WHERE d.id = 'document-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "legacy-collection:agnes");
+        assert_eq!(row.1, "legacy-version:document-1:1");
+        assert_eq!(row.2.len(), 64);
+        assert_eq!(row.3, "/tmp/legacy.txt");
+        assert!(row.4 > 0);
+
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM document_chunks_fts WHERE chunk_id = 'chunk-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 1);
+        assert!(has_column(&conn, "embedding_items", "collection_id"));
+        assert!(!table_exists(&conn, "legacy_documents"));
+        assert!(!table_exists(&conn, "legacy_document_chunks"));
+    }
+
+    #[test]
     fn migrates_legacy_explicit_memory_settings_to_entities() {
         unsafe {
             let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
@@ -546,12 +842,20 @@ mod tests {
 
         ensure_sync_metadata(&conn).unwrap();
 
-        for table in ["agents", "sessions", "messages", "memory_store", "workspaces"] {
+        for table in [
+            "agents",
+            "sessions",
+            "messages",
+            "memory_store",
+            "workspaces",
+        ] {
             assert!(has_column(&conn, table, "version"));
             assert!(has_column(&conn, table, "deleted_at"));
             assert!(has_column(&conn, table, "origin_device_id"));
             let version: i64 = conn
-                .query_row(&format!("SELECT version FROM {table}"), [], |row| row.get(0))
+                .query_row(&format!("SELECT version FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .unwrap();
             assert_eq!(version, 1);
         }

@@ -1,5 +1,6 @@
-//! 建表 DDL（rusqlite / SQLite）。
-//! 注意：向量与元数据分离 —— `embedding_items` 存元数据，`vec_embeddings_{dims}` 为按维度延迟创建的 sqlite-vec 虚拟表。
+//! Database DDL for rusqlite / SQLite.
+//! Embedding metadata is separated from sqlite-vec virtual tables, which are
+//! created lazily for each embedding dimension.
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS agents (
@@ -136,27 +137,14 @@ CREATE TABLE IF NOT EXISTS embedding_items (
   id TEXT PRIMARY KEY,
   ref_type TEXT,
   ref_id TEXT,
+  collection_id TEXT,
+  embedding_profile_id TEXT,
   model TEXT,
   dims INTEGER,
   content_hash TEXT,
   created_at TEXT
 );
 -- vec_embeddings_{dims} tables are created lazily for each embedding dimension.
-
-CREATE TABLE IF NOT EXISTS documents (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL REFERENCES agents(id),
-  title TEXT,
-  path TEXT,
-  created_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS document_chunks (
-  id TEXT PRIMARY KEY,
-  document_id TEXT NOT NULL REFERENCES documents(id),
-  content TEXT,
-  embedding_id TEXT
-);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
   id TEXT PRIMARY KEY,
@@ -295,4 +283,138 @@ CREATE TABLE IF NOT EXISTS model_providers (
   created_at TEXT,
   updated_at TEXT
 );
+"#;
+
+/// Knowledge base tables are kept separate so legacy placeholder document
+/// tables can be renamed before this schema is installed.
+pub const KNOWLEDGE_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS knowledge_collections (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK(scope IN ('user_global', 'workspace', 'agent_private', 'custom')),
+  workspace_id TEXT REFERENCES workspaces(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS collection_agents (
+  collection_id TEXT NOT NULL REFERENCES knowledge_collections(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  permission TEXT NOT NULL CHECK(permission IN ('read', 'write', 'manage')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(collection_id, agent_id)
+);
+
+CREATE TABLE IF NOT EXISTS documents (
+  id TEXT PRIMARY KEY,
+  collection_id TEXT NOT NULL REFERENCES knowledge_collections(id),
+  title TEXT NOT NULL,
+  media_type TEXT NOT NULL,
+  current_version_id TEXT,
+  status TEXT NOT NULL CHECK(status IN ('active', 'missing', 'error', 'deleted')) DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS document_sources (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  provider_account_id TEXT,
+  source_kind TEXT NOT NULL,
+  encrypted_locator TEXT,
+  provider_revision TEXT,
+  observed_at TEXT NOT NULL,
+  local_binding_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS document_local_bindings (
+  source_id TEXT PRIMARY KEY REFERENCES document_sources(id) ON DELETE CASCADE,
+  local_path TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS document_versions (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  logical_version INTEGER NOT NULL,
+  plaintext_hash TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  media_type TEXT NOT NULL,
+  parser_profile_id TEXT,
+  created_at TEXT NOT NULL,
+  origin_device_id TEXT,
+  UNIQUE(document_id, logical_version)
+);
+
+CREATE TABLE IF NOT EXISTS document_chunks (
+  id TEXT PRIMARY KEY,
+  document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  page INTEGER,
+  section_path TEXT,
+  token_count INTEGER NOT NULL,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(document_version_id, ordinal)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5(
+  chunk_id UNINDEXED,
+  document_id UNINDEXED,
+  document_version_id UNINDEXED,
+  title,
+  content,
+  tokenize='unicode61'
+);
+
+CREATE TABLE IF NOT EXISTS embedding_profiles (
+  id TEXT PRIMARY KEY,
+  model_ref TEXT NOT NULL,
+  model_revision TEXT,
+  dims INTEGER NOT NULL,
+  normalized INTEGER NOT NULL DEFAULT 1,
+  instruction_hash TEXT NOT NULL,
+  tokenizer_ref TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS parser_profiles (
+  id TEXT PRIMARY KEY,
+  parser_name TEXT NOT NULL,
+  parser_version TEXT NOT NULL,
+  options_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chunker_profiles (
+  id TEXT PRIMARY KEY,
+  chunker_name TEXT NOT NULL,
+  chunker_version TEXT NOT NULL,
+  chunk_size INTEGER NOT NULL,
+  overlap INTEGER NOT NULL,
+  options_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_collection_agents_agent
+  ON collection_agents(agent_id, collection_id);
+CREATE INDEX IF NOT EXISTS idx_documents_collection
+  ON documents(collection_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_document_sources_document
+  ON document_sources(document_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_document_versions_document
+  ON document_versions(document_id, logical_version DESC);
+CREATE INDEX IF NOT EXISTS idx_document_chunks_version
+  ON document_chunks(document_version_id, ordinal);
+CREATE INDEX IF NOT EXISTS idx_embedding_items_collection_profile
+  ON embedding_items(collection_id, embedding_profile_id, ref_type, ref_id);
 "#;
