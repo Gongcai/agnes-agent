@@ -126,7 +126,7 @@ const MODEL_ROLE_OPTIONS: {
   { key: "memory_model", label: "记忆更新模型", desc: "抽取需要长期保存的事实和偏好" },
   { key: "speech_model", label: "语音理解模型", desc: "预留语音转文本调用入口" },
   { key: "quick_model", label: "快速模型", desc: "预留划线翻译、搜索和名词解释" },
-  { key: "embedding_model", label: "嵌入模型", desc: "预留记忆与 RAG 的向量生成入口" },
+  { key: "embedding_model", label: "嵌入模型", desc: "生成本地记忆向量，维度由模型响应自动确定" },
 ];
 
 function modelSupportsRole(model: ModelDescriptor, role: ModelRoleField): boolean {
@@ -1688,7 +1688,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <div>
                       <h3 className="text-sm font-semibold text-stone-850">模型分工</h3>
                       <p className="text-[11px] text-stone-400 mt-0.5">
-                        按能力和成本为不同任务指定模型。留空时回退到主模型或当前会话模型。
+                        按能力和成本为不同任务指定模型。文本任务留空时回退主模型；嵌入模型留空时关闭向量检索。
                       </p>
                     </div>
                     <button
@@ -1720,7 +1720,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           }
                           className="w-full bg-white border border-stone-200 rounded-lg px-2.5 py-2 text-[11px] text-stone-700 font-mono focus:outline-none focus:ring-1 focus:ring-[#8CA38A]/40"
                         >
-                          <option value="">未指定（自动回退）</option>
+                          <option value="">
+                            {role.key === "embedding_model" ? "未指定（关闭向量检索）" : "未指定（自动回退）"}
+                          </option>
                           {providers.map((provider) => {
                             const models = provider.models.filter((model) => modelSupportsRole(model, role.key));
                             if (models.length === 0) return null;
@@ -1740,7 +1742,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
 
                   <p className="text-[10px] text-stone-400 border-t border-stone-200/60 pt-3">
-                    语音输入能力标签将在语音管线实现时补充；当前语音模型仅校验文本输出能力。嵌入模型先完成选型基础，向量维度迁移后再接入执行。
+                    语音输入能力标签将在语音管线实现时补充；当前语音模型仅校验文本输出能力。嵌入模型用于本地记忆索引，切换模型后会在下次对话前自动回填。
                   </p>
                   {modelRoleMessage && (
                     <div className={`text-[11px] rounded-lg border px-3 py-2 ${

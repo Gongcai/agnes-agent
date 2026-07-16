@@ -3,7 +3,9 @@ use serde_json::{json, Map, Value};
 
 use crate::db::repo::memory::NewMemory;
 use crate::error::{AppError, AppResult};
-use crate::tools::builtin::memory_entry::{object_with_allowed_fields, visible_memory};
+use crate::tools::builtin::memory_entry::{
+    object_with_allowed_fields, persist_trusted_embedding, visible_memory,
+};
 use crate::tools::builtin::{BuiltinTool, ToolCtx};
 use crate::tools::policy::Risk;
 
@@ -103,6 +105,7 @@ impl BuiltinTool for MemoryCreateTool {
             Ok(None) => return fail(ctx, "Created memory could not be read back").await,
             Err(error) => return fail(ctx, &error.to_string()).await,
         };
+        persist_trusted_embedding(ctx, &memory.id, &memory.content).await;
         ctx.update_complete(
             "done",
             Some("success"),

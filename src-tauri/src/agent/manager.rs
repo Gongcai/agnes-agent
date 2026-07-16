@@ -25,6 +25,9 @@ pub struct AgentManager {
     pending_approvals: Mutex<std::collections::HashMap<String, oneshot::Sender<bool>>>,
     // 等待调试提示词拼装结果：请求 id -> oneshot 返回 payload 发送端
     pending_debug: Mutex<std::collections::HashMap<String, oneshot::Sender<serde_json::Value>>>,
+    // Pending embedding batches: request id -> result payload sender.
+    pending_embeddings:
+        Mutex<std::collections::HashMap<String, oneshot::Sender<serde_json::Value>>>,
     // 显式注册的运行：run_id -> assistant_message_id，供 ws_server 精确定位 pending 消息
     pending_runs: Mutex<std::collections::HashMap<String, String>>,
     // 当前活跃运行：session_id -> run_id，供 cancel_run 按会话取消
@@ -43,6 +46,7 @@ impl AgentManager {
             active_sender: Mutex::new(None),
             pending_approvals: Mutex::new(std::collections::HashMap::new()),
             pending_debug: Mutex::new(std::collections::HashMap::new()),
+            pending_embeddings: Mutex::new(std::collections::HashMap::new()),
             pending_runs: Mutex::new(std::collections::HashMap::new()),
             active_session_runs: Mutex::new(std::collections::HashMap::new()),
             run_approval_tc: Mutex::new(std::collections::HashMap::new()),
@@ -144,6 +148,20 @@ impl AgentManager {
     /// 解析一个调试提示词结果。如果找到并处理则返回 true。
     pub fn resolve_debug(&self, id: &str, payload: serde_json::Value) -> bool {
         let mut map = self.pending_debug.lock().unwrap();
+        if let Some(tx) = map.remove(id) {
+            let _ = tx.send(payload);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn register_embedding(&self, id: String, tx: oneshot::Sender<serde_json::Value>) {
+        self.pending_embeddings.lock().unwrap().insert(id, tx);
+    }
+
+    pub fn resolve_embedding(&self, id: &str, payload: serde_json::Value) -> bool {
+        let mut map = self.pending_embeddings.lock().unwrap();
         if let Some(tx) = map.remove(id) {
             let _ = tx.send(payload);
             true

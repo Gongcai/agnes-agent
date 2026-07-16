@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::error::{AppError, AppResult};
-use crate::tools::builtin::memory_entry::visible_memory;
+use crate::tools::builtin::memory_entry::{trusted_embedding, visible_memory};
 use crate::tools::builtin::{BuiltinTool, ToolCtx};
 use crate::tools::policy::Risk;
 
@@ -58,7 +58,12 @@ impl BuiltinTool for MemorySearchTool {
             .await?;
         let memories = match ctx
             .db
-            .search_memories(query.to_string(), agent_id, limit)
+            .search_memories(
+                query.to_string(),
+                agent_id,
+                limit,
+                trusted_embedding(ctx.args),
+            )
             .await
         {
             Ok(memories) => memories,

@@ -164,7 +164,7 @@ D1 的云端 schema 不复用 `src-tauri/src/db/schema.rs`。本地库包含 `sq
 | tool call/result part | 默认仅同步脱敏摘要 | `message` 可选字段 | 原始参数和结果可能含文件、路径、令牌和命令输出 |
 | USER.md / MEMORY.md | 是 | `explicit_memory` | 从通用 settings 中独立为明确实体 |
 | memory_store 文本 | 是 | `memory` | 不包含 embedding_id 的设备本地含义 |
-| embedding_items / vec_embeddings | 否 | — | 每台设备本地重算 |
+| embedding_items / vec_embeddings_{dims} | 否 | — | 每台设备本地重算 |
 | model_providers | 首版否 | — | Ollama/API Base 等通常是设备配置 |
 | provider API Key | 绝不 | — | 必须迁移至 OS Keyring |
 | UI 最近选中的 Agent/Session | 否 | — | 设备本地体验状态 |
@@ -1063,4 +1063,3 @@ V0.3 被视为完成，至少满足：
 - [Cloudflare Access Service Tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)
 - [Workers KV Consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/)
 - [R2 Pricing](https://developers.cloudflare.com/r2/pricing/)
-

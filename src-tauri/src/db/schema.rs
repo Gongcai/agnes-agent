@@ -1,5 +1,5 @@
 //! 建表 DDL（rusqlite / SQLite）。
-//! 注意：向量与元数据分离 —— `embedding_items` 存元数据，`vec_embeddings` 为 sqlite-vec 虚拟表（V0.2 建）。
+//! 注意：向量与元数据分离 —— `embedding_items` 存元数据，`vec_embeddings_{dims}` 为按维度延迟创建的 sqlite-vec 虚拟表。
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS agents (
@@ -112,10 +112,7 @@ CREATE TABLE IF NOT EXISTS embedding_items (
   content_hash TEXT,
   created_at TEXT
 );
-CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(
-  embedding_id TEXT PRIMARY KEY,
-  vector float[1536]
-);
+-- vec_embeddings_{dims} tables are created lazily for each embedding dimension.
 
 CREATE TABLE IF NOT EXISTS documents (
   id TEXT PRIMARY KEY,

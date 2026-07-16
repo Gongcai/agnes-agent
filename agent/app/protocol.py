@@ -27,6 +27,8 @@ class MsgType(str, Enum):
     USER_MESSAGE = "user_message"
     DEBUG_PROMPT = "debug_prompt"
     DEBUG_PROMPT_RESULT = "debug_prompt_result"
+    EMBEDDING_REQUEST = "embedding_request"
+    EMBEDDING_RESULT = "embedding_result"
 
 
 class Envelope(BaseModel):

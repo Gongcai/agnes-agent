@@ -29,6 +29,7 @@ landlock = "0.4.5"
 nix = { version = "0.31", features = ["resource"] }
 regex = "1"
 walkdir = "2"
+sha2 = "0.10"
 
 [profile.release]
 panic = "abort"

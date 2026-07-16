@@ -178,7 +178,7 @@ Python 本轮内只做：prompt 拼装 / 模型调用 / 工具决策 / 记忆抽
     BundledBinLauncher → 发布态加载 externalBin（agentd 二进制）
   ```
 - `tools/`：`ToolExecutor` + 每工具模块（shell/file/git/ssh/memory_search/browser），统一 trait；MCP 外部工具 V0.5 以同类 trait 接入。
-- `memory/`：实现 `memory_search`（sqlite-vec 向量 + FTS5 字符串混合，RRF 融合）；负责 `USER.md`/`MEMORY.md` 读写（DB 为真相源，见 §8）。
+- `memory/`：实现 `memory_search`（sqlite-vec cosine 向量 + 字符串包含匹配，RRF 融合）；负责 `USER.md`/`MEMORY.md` 读写（DB 为真相源，见 §8）。
 - `state.rs`：Tauri `State` 托管 `DbActor` 句柄 / `AgentManager` / `Config`。
 
 ---
@@ -251,7 +251,8 @@ embedding_items(                     -- 元数据表（与向量索引分离）
   id TEXT PK, ref_type TEXT, ref_id TEXT,
   model TEXT, dims INTEGER, content_hash TEXT, created_at TEXT
 )
--- 向量虚拟表（sqlite-vec）：vec_embeddings(embedding_id, vector)；按 embedding_id 关联 embedding_items
+-- 向量虚拟表（sqlite-vec）：vec_embeddings_{dims}(embedding_id, vector)
+-- 按实际维度延迟创建，cosine 距离，按 embedding_id 关联 embedding_items
 documents(id PK, agent_id FK, title, path, created_at)
 document_chunks(id PK, document_id FK, content, embedding_id FK)
 tool_calls(
@@ -270,7 +271,7 @@ sync_log(
 settings(key PK, value TEXT)
 ```
 
-**embeddings 拆分原因**：sqlite-vec 需要专门的向量虚拟表/索引表，不与普通 metadata 混在一张表。`embedding_items` 保留 `model/dims/content_hash` 以便换 embedding 模型时重算、去重、失效判定。
+**embeddings 拆分原因**：sqlite-vec 需要专门的向量虚拟表/索引表，不与普通 metadata 混在一张表。`embedding_items` 保留 `model/dims/content_hash` 以便换 embedding 模型时重算、去重、失效判定。当前仅嵌入记忆正文 `content`，允许 1 到 8192 维；不同维度可同时存在，查询按 Agent 和模型引用隔离。
 
 **可同步实体的版本/墓碑**：`agents/sessions/messages/memory_store/settings` 均需 `updated_at`、`deleted_at`、`version`、`origin_device_id`，配合 `sync_log`（hlc 混合逻辑时钟 + `entity_version` + `synced_at`）支撑离线同步与冲突解决。聊天消息可 append-only，记忆/设置/Agent 配置必须有版本。
 
@@ -285,7 +286,13 @@ settings(key PK, value TEXT)
 | ① Recent Context | Python `prompt.py`（用 ContextSnapshot.recentMessages） | SQLite `messages` |
 | ② Conversation Summary | Python `prompt.py`（滚动压缩）→ Rust 写 `sessions.summary` | SQLite `sessions.summary` |
 | ③ USER.md / MEMORY.md | Rust `memory/` 读写 | **DB 为真相源**；md 为导出给人看的 materialized view |
-| ④ memory_store | Rust `memory_search` 检索；Python `memory_extract` 建议写 | SQLite `memory_store` + `embedding_items`/`vec_embeddings` |
+| ④ memory_store | Rust `memory_search` 混合检索；Python `memory_extract` 建议写与 LiteLLM embedding | SQLite `memory_store` + `embedding_items`/`vec_embeddings_{dims}` |
+
+**本地索引维护规则**：每次 Agent 运行前，Rust 按 `embedding_id`、模型引用和正文 SHA-256
+批量找出缺失或失效记录，再通过 Agent Protocol 请求 Python/LiteLLM 生成向量。写入使用动态
+维度 sqlite-vec 表与 cosine 距离，Agent 和模型引用作为 partition key 在 KNN 前过滤；
+字符串和向量候选以 RRF 融合。模型未配置或嵌入失败时
+降级为字符串检索，不阻断 Agent 运行。向量及可信内部工具参数不会进入同步、审计或消息历史。
 
 **USER.md / MEMORY.md 真相源规则**：SQLite（`settings` / `memory_store` / agent 记忆）是 canonical；`USER.md`/`MEMORY.md` 是其可读写视图。用户编辑 md → Rust 解析并**回写 DB**。这样同步与冲突解决才有单一归口，不被文件路径/mtime 干扰。
 

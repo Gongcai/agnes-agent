@@ -17,7 +17,7 @@ pub mod git;
 pub mod grep;
 pub mod list_files;
 pub mod memory_create;
-mod memory_entry;
+pub(crate) mod memory_entry;
 pub mod memory_md_edit;
 pub mod memory_md_view;
 pub mod memory_search;

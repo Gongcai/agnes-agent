@@ -1,9 +1,13 @@
 """LiteLLM integration and Model Registry."""
 from __future__ import annotations
 import os
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 import litellm
+
+
+MAX_EMBEDDING_DIMS = 8192
 
 # Model Registry mapping model names to their maximum context limits (in tokens)
 MODEL_CONTEXT_LIMITS: Dict[str, int] = {
@@ -31,6 +35,7 @@ class LlmConfig:
     api_key: Optional[str] = None      # API key (injected by Rust, never persisted in Python)
     model: str = "gpt-4o"              # Raw model name
     litellm_model: str = "gpt-4o"      # Pre-formatted model string for LiteLLM
+    model_ref: Optional[str] = None     # Stable provider/model reference used by local indexes
     thinking_mode: str = "off"         # off | auto | low | medium | high
     thinking_budget: int = 0           # 思考预算(token)：Claude 的 budget_tokens，0 = 按强度预设
 
@@ -46,6 +51,7 @@ class LlmConfig:
             api_key=d.get("apiKey"),
             model=d.get("model", "gpt-4o"),
             litellm_model=d.get("litellmModel", d.get("model", "gpt-4o")),
+            model_ref=d.get("modelRef"),
             thinking_mode=thinking.get("mode", d.get("thinkingMode", "off")) or "off",
             thinking_budget=int(thinking.get("budget", d.get("thinkingBudget", 0)) or 0),
         )
@@ -139,3 +145,58 @@ def completion(
         **extra_kwargs,
         **kwargs,
     )
+
+
+def embed_texts(
+    model: str,
+    inputs: List[str],
+    llm_config: Optional[LlmConfig] = None,
+) -> List[List[float]]:
+    """Generate finite, consistently sized embeddings through LiteLLM."""
+    if not inputs or any(not isinstance(value, str) or not value.strip() for value in inputs):
+        raise ValueError("Embedding inputs must contain non-empty strings")
+
+    call_model = model
+    extra_kwargs: Dict[str, Any] = {}
+    if llm_config:
+        call_model = llm_config.litellm_model or model
+        if llm_config.api_base:
+            extra_kwargs["api_base"] = llm_config.api_base
+        if llm_config.api_key:
+            extra_kwargs["api_key"] = llm_config.api_key
+
+    response = litellm.embedding(model=call_model, input=inputs, **extra_kwargs)
+    data = getattr(response, "data", None)
+    if data is None and isinstance(response, dict):
+        data = response.get("data")
+    if not isinstance(data, list):
+        raise ValueError("Embedding provider returned no data array")
+
+    ordered = sorted(
+        data,
+        key=lambda item: (
+            item.get("index", 0) if isinstance(item, dict) else getattr(item, "index", 0)
+        ),
+    )
+    vectors: List[List[float]] = []
+    expected_dims: Optional[int] = None
+    for item in ordered:
+        raw_vector = item.get("embedding") if isinstance(item, dict) else getattr(item, "embedding", None)
+        if not isinstance(raw_vector, list) or not raw_vector:
+            raise ValueError("Embedding provider returned an empty vector")
+        vector = [float(value) for value in raw_vector]
+        if len(vector) > MAX_EMBEDDING_DIMS:
+            raise ValueError(
+                f"Embedding provider returned more than {MAX_EMBEDDING_DIMS} dimensions"
+            )
+        if any(not math.isfinite(value) for value in vector):
+            raise ValueError("Embedding provider returned a non-finite vector")
+        if expected_dims is None:
+            expected_dims = len(vector)
+        elif len(vector) != expected_dims:
+            raise ValueError("Embedding provider returned inconsistent dimensions")
+        vectors.append(vector)
+
+    if len(vectors) != len(inputs):
+        raise ValueError("Embedding provider returned an unexpected vector count")
+    return vectors

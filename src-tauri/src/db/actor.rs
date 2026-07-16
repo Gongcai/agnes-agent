@@ -63,20 +63,19 @@ pub enum DbCommand {
         value: String,
         resp: oneshot::Sender<AppResult<()>>,
     },
-    InsertEmbedding {
+    UpsertMemoryEmbedding {
         embedding_id: String,
-        ref_type: String,
-        ref_id: String,
+        memory_id: String,
         model: String,
-        dims: i32,
-        content_hash: String,
+        content: String,
         vector: Vec<f32>,
-        resp: oneshot::Sender<AppResult<()>>,
+        resp: oneshot::Sender<AppResult<bool>>,
     },
     SearchMemories {
         query_text: String,
         agent_id: String,
         limit: usize,
+        query_embedding: Option<repo::memory::QueryEmbedding>,
         resp: oneshot::Sender<AppResult<Vec<repo::memory::MemoryRow>>>,
     },
     ListSessions {
@@ -357,24 +356,20 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn insert_embedding(
+    pub async fn upsert_memory_embedding(
         &self,
         embedding_id: String,
-        ref_type: String,
-        ref_id: String,
+        memory_id: String,
         model: String,
-        dims: i32,
-        content_hash: String,
+        content: String,
         vector: Vec<f32>,
-    ) -> AppResult<()> {
+    ) -> AppResult<bool> {
         let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::InsertEmbedding {
+        self.send(DbCommand::UpsertMemoryEmbedding {
             embedding_id,
-            ref_type,
-            ref_id,
+            memory_id,
             model,
-            dims,
-            content_hash,
+            content,
             vector,
             resp,
         })?;
@@ -387,12 +382,14 @@ impl DbActorHandle {
         query_text: String,
         agent_id: String,
         limit: usize,
+        query_embedding: Option<repo::memory::QueryEmbedding>,
     ) -> AppResult<Vec<repo::memory::MemoryRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::SearchMemories {
             query_text,
             agent_id,
             limit,
+            query_embedding,
             resp,
         })?;
         rx.await
@@ -762,24 +759,20 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::SetSetting { key, value, resp } => {
                     let _ = resp.send(repo::settings::set(&conn, &key, &value));
                 }
-                DbCommand::InsertEmbedding {
+                DbCommand::UpsertMemoryEmbedding {
                     embedding_id,
-                    ref_type,
-                    ref_id,
+                    memory_id,
                     model,
-                    dims,
-                    content_hash,
+                    content,
                     vector,
                     resp,
                 } => {
-                    let _ = resp.send(repo::memory::insert_embedding(
-                        &conn,
+                    let _ = resp.send(repo::memory::upsert_memory_embedding(
+                        &mut conn,
                         &embedding_id,
-                        &ref_type,
-                        &ref_id,
+                        &memory_id,
                         &model,
-                        dims,
-                        &content_hash,
+                        &content,
                         &vector,
                     ));
                 }
@@ -787,9 +780,16 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     query_text,
                     agent_id,
                     limit,
+                    query_embedding,
                     resp,
                 } => {
-                    let _ = resp.send(repo::memory::search(&conn, &query_text, &agent_id, limit));
+                    let _ = resp.send(repo::memory::search_hybrid(
+                        &conn,
+                        &query_text,
+                        &agent_id,
+                        limit,
+                        query_embedding.as_ref(),
+                    ));
                 }
                 DbCommand::ListSessions { agent_id, resp } => {
                     let _ = resp.send(repo::sessions::list(&conn, &agent_id));

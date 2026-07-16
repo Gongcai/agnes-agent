@@ -885,6 +885,7 @@ async fn resolve_routed_llm_config(
         _ => model_name.to_string(),
     };
     Ok(Some(json!({
+        "modelRef": model_ref,
         "provider": provider.kind,
         "apiBase": provider.api_base,
         "apiKey": api_key,
@@ -993,6 +994,20 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
 /// 用已解析配置启动一次 agent 运行：构建活动路径历史（跳过 pending assistant）→
 /// 编译 snapshot（input="" 避免与 recentMessages 重复）→ 注册 run_id → 发 RUN_REQUEST。
 async fn start_agent_run(state: &AppState, cfg: &ResolvedLlm, session_id: &str, assistant_msg_id: &str) -> AppResult<()> {
+    if let Some(config) = cfg.task_llm_configs.get("embedding") {
+        if let Err(error) = crate::embeddings::ensure_agent_memory_index(
+            &state.db,
+            &state.agent,
+            &cfg.agent.id,
+            config,
+        )
+        .await
+        {
+            eprintln!(
+                "[memory] Failed to backfill memory embeddings; continuing with text search: {error}"
+            );
+        }
+    }
     let (user_md, memory_md) = crate::memory::load_explicit_memories(&state.db, &cfg.agent.id).await?;
 
     let path = state.db.list_active_with_parts(session_id.to_string()).await?;

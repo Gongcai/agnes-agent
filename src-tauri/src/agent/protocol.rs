@@ -49,6 +49,8 @@ pub mod msg_type {
     pub const MEMORY_QUERY_REQUEST: &str = "memory_query_request";
     pub const DEBUG_PROMPT: &str = "debug_prompt";
     pub const DEBUG_PROMPT_RESULT: &str = "debug_prompt_result";
+    pub const EMBEDDING_REQUEST: &str = "embedding_request";
+    pub const EMBEDDING_RESULT: &str = "embedding_result";
     pub const PING: &str = "ping";
     pub const PONG: &str = "pong";
 }

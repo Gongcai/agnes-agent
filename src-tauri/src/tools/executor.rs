@@ -60,13 +60,14 @@ impl ToolExecutor {
         policy: &ToolPolicy,
         permission_mode: PermissionMode,
     ) -> AppResult<serde_json::Value> {
+        let public_arguments = crate::tools::builtin::memory_entry::public_arguments(arguments);
         // A. 审计初志
         let new_tc = NewToolCall {
             id: tool_call_id.to_string(),
             session_id: session_id.to_string(),
             message_id: message_id.map(|x| x.to_string()),
             tool: tool.to_string(),
-            params: Some(arguments.to_string()),
+            params: Some(public_arguments.to_string()),
             status: "running".to_string(),
             risk_level: Some(
                 crate::tools::builtin::compute_risk(tool, arguments)
@@ -514,7 +515,11 @@ mod tests {
                 &json!({
                     "name": "Rust test command",
                     "keywords": ["cargo", " rust ", "cargo"],
-                    "content": "Use cargo test for the Rust core."
+                    "content": "Use cargo test for the Rust core.",
+                    "__agnes_embedding": {
+                        "model": "test/embed-3",
+                        "vector": [1.0, 0.0, 0.0]
+                    }
                 }),
                 &policy,
             )
@@ -526,6 +531,23 @@ mod tests {
         assert_eq!(created["creator"], "ai");
         assert_eq!(created["keywords"], json!(["cargo", "rust"]));
         assert!(created.get("agent_id").is_none());
+        assert_eq!(
+            db.get_memory(created_id.clone(), "test-agent".into())
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding_model
+                .as_deref(),
+            Some("test/embed-3")
+        );
+        assert!(!db
+            .get_tool_call("tc-memory-create-1".into())
+            .await
+            .unwrap()
+            .unwrap()
+            .params
+            .unwrap()
+            .contains("__agnes_embedding"));
 
         let created_search = executor
             .execute(
@@ -549,7 +571,11 @@ mod tests {
                 &json!({
                     "memory_id": created_id,
                     "keywords": ["tests"],
-                    "content": "Run cargo test --no-fail-fast for the Rust core."
+                    "content": "Run cargo test --no-fail-fast for the Rust core.",
+                    "__agnes_embedding": {
+                        "model": "test/embed-3",
+                        "vector": [0.0, 1.0, 0.0]
+                    }
                 }),
                 &policy,
             )
@@ -560,6 +586,33 @@ mod tests {
         assert_eq!(updated["creator"], "ai");
         assert_eq!(updated["created_at"], created_at);
         assert_eq!(updated["keywords"], json!(["tests"]));
+
+        let semantic_search = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-memory-search-semantic",
+                "memory_search",
+                &json!({
+                    "query": "no literal words match this query",
+                    "__agnes_embedding": {
+                        "model": "test/embed-3",
+                        "vector": [0.0, 0.99, 0.01]
+                    }
+                }),
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(semantic_search["memories"][0]["id"], updated["id"]);
+        assert!(!db
+            .get_tool_call("tc-memory-search-semantic".into())
+            .await
+            .unwrap()
+            .unwrap()
+            .params
+            .unwrap()
+            .contains("__agnes_embedding"));
 
         let updated_search = executor
             .execute(

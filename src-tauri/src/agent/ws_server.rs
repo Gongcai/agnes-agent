@@ -1,20 +1,20 @@
+use std::collections::HashMap;
 use std::net::TcpListener;
 use std::sync::Arc;
-use std::collections::HashMap;
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpListener as TokioListener;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::accept_async;
 use serde_json::json;
 use tauri::Emitter;
+use tokio::net::TcpListener as TokioListener;
+use tokio_tungstenite::accept_async;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::agent::protocol::{msg_type, Envelope};
 use crate::agent::AgentManager;
-use crate::db::DbActorHandle;
-use crate::db::repo::messages::NewMessagePart;
 use crate::db::repo::memory::NewMemory;
+use crate::db::repo::messages::NewMessagePart;
 use crate::db::repo::tools::NewToolCall;
+use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::tools::{PermissionMode, ToolExecutor, ToolPolicy};
 
@@ -102,8 +102,8 @@ pub async fn run<R: tauri::Runtime>(
     std_listener
         .set_nonblocking(true)
         .map_err(|e| AppError::Ws(format!("set_nonblocking 失败：{e}")))?;
-    let listener = TokioListener::from_std(std_listener)
-        .map_err(|e| AppError::Ws(e.to_string()))?;
+    let listener =
+        TokioListener::from_std(std_listener).map_err(|e| AppError::Ws(e.to_string()))?;
     println!(
         "[agent][ws] listening on 127.0.0.1:{}",
         listener.local_addr().map(|a| a.port()).unwrap_or(0)
@@ -121,7 +121,7 @@ pub async fn run<R: tauri::Runtime>(
         let app_handle = app_handle.clone();
         let manager = manager.clone();
         let active_runs = active_runs.clone();
-        
+
         tokio::spawn(async move {
             if let Err(e) = handle_conn(stream, token, db, app_handle, manager, active_runs).await {
                 eprintln!("[agent][ws] conn error: {e}");
@@ -181,35 +181,63 @@ async fn handle_conn<R: tauri::Runtime>(
 
         match env.msg_type.as_str() {
             msg_type::HELLO => {
-                let ok = env.payload.get("token").and_then(|x| x.as_str()) == Some(expected_token.as_str());
+                let ok = env.payload.get("token").and_then(|x| x.as_str())
+                    == Some(expected_token.as_str());
                 let reply = if ok {
                     Envelope::reply(msg_type::READY, serde_json::json!({}))
                 } else {
-                    Envelope::reply(msg_type::RUN_ERROR, serde_json::json!({ "message": "bad token" }))
+                    Envelope::reply(
+                        msg_type::RUN_ERROR,
+                        serde_json::json!({ "message": "bad token" }),
+                    )
                 };
                 let _ = manager.send_to_agent(reply);
             }
 
             msg_type::PING => {
-                let _ = manager.send_to_agent(Envelope::reply(msg_type::PONG, serde_json::json!({})));
+                let _ =
+                    manager.send_to_agent(Envelope::reply(msg_type::PONG, serde_json::json!({})));
             }
 
             msg_type::DEBUG_PROMPT_RESULT => {
-                let req_id = env.payload.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let req_id = env
+                    .payload
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if !req_id.is_empty() {
                     let _ = manager.resolve_debug(&req_id, env.payload.clone());
                 }
             }
 
+            msg_type::EMBEDDING_RESULT => {
+                let req_id = env
+                    .payload
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                if !req_id.is_empty() {
+                    let _ = manager.resolve_embedding(req_id, env.payload.clone());
+                }
+            }
+
             msg_type::ASSISTANT_DELTA => {
-                let content = env.payload.get("content").and_then(|x| x.as_str()).unwrap_or("");
-                
+                let content = env
+                    .payload
+                    .get("content")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+
                 // 1. 推送给前端 React
-                let _ = app_handle.emit("agent://assistant_delta", json!({
-                    "session_id": session_id,
-                    "run_id": run_id,
-                    "content": content
-                }));
+                let _ = app_handle.emit(
+                    "agent://assistant_delta",
+                    json!({
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "content": content
+                    }),
+                );
 
                 // 2. 缓存并累加消息内容
                 let mut runs = active_runs.lock().await;
@@ -225,21 +253,25 @@ async fn handle_conn<R: tauri::Runtime>(
                                 .await
                                 .ok()
                                 .and_then(|msgs| {
-                                    msgs.iter().rev()
+                                    msgs.iter()
+                                        .rev()
                                         .find(|(m, _)| m.status == "pending")
                                         .map(|(m, _)| m.id.clone())
                                 })
                         }
                     };
                     if let Some(id) = pending_id {
-                        runs.insert(run_id.clone(), ActiveRun {
-                            assistant_message_id: id,
-                            session_id: session_id.clone(),
-                            accumulated_text: String::new(),
-                            accumulated_thought: String::new(),
-                            current_ordinal: 0,
-                            in_thought: false,
-                        });
+                        runs.insert(
+                            run_id.clone(),
+                            ActiveRun {
+                                assistant_message_id: id,
+                                session_id: session_id.clone(),
+                                accumulated_text: String::new(),
+                                accumulated_thought: String::new(),
+                                current_ordinal: 0,
+                                in_thought: false,
+                            },
+                        );
                     }
                 }
 
@@ -272,9 +304,24 @@ async fn handle_conn<R: tauri::Runtime>(
             }
 
             msg_type::TOOL_CALL_REQUEST => {
-                let tc_id = env.payload.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                let tool_name = env.payload.get("tool").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                let args = env.payload.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
+                let tc_id = env
+                    .payload
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tool_name = env
+                    .payload
+                    .get("tool")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let args = env
+                    .payload
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let public_args = crate::tools::builtin::memory_entry::public_arguments(&args);
 
                 // 确保 ActiveRun 已创建（AI 首个输出可能是工具调用，此前无 ASSISTANT_DELTA）。
                 // 否则取消时无 ActiveRun 可 drain、状态不更新，消息会消失。
@@ -283,14 +330,17 @@ async fn handle_conn<R: tauri::Runtime>(
                     if !runs.contains_key(&run_id) {
                         let pending_id = manager.peek_run(&run_id);
                         if let Some(id) = pending_id {
-                            runs.insert(run_id.clone(), ActiveRun {
-                                assistant_message_id: id,
-                                session_id: session_id.clone(),
-                                accumulated_text: String::new(),
-                                accumulated_thought: String::new(),
-                                current_ordinal: 0,
-                                in_thought: false,
-                            });
+                            runs.insert(
+                                run_id.clone(),
+                                ActiveRun {
+                                    assistant_message_id: id,
+                                    session_id: session_id.clone(),
+                                    accumulated_text: String::new(),
+                                    accumulated_thought: String::new(),
+                                    current_ordinal: 0,
+                                    in_thought: false,
+                                },
+                            );
                         }
                     }
                 }
@@ -302,7 +352,9 @@ async fn handle_conn<R: tauri::Runtime>(
                     permission_mode = sess.permission_mode.parse().unwrap_or_default();
                     if let Ok(agents) = db.list_agents().await {
                         if let Some(agent) = agents.iter().find(|a| a.id == sess.agent_id) {
-                            if let Ok(parsed) = serde_json::from_str::<ToolPolicy>(&agent.tool_policy) {
+                            if let Ok(parsed) =
+                                serde_json::from_str::<ToolPolicy>(&agent.tool_policy)
+                            {
                                 policy = parsed;
                             }
                         }
@@ -314,12 +366,10 @@ async fn handle_conn<R: tauri::Runtime>(
                 let risk = crate::tools::builtin::compute_risk(&tool_name, &args);
                 let role_policy_requires_approval =
                     crate::tools::builtin::needs_approval(&tool_name, &args, &policy);
-                let approval_decision = crate::tools::permissions::approval_decision(
-                    permission_mode,
-                    &tool_name,
-                    risk,
-                );
-                let workspace_cwd = crate::tools::workspace::resolve_workspace_cwd(&db, &session_id).await;
+                let approval_decision =
+                    crate::tools::permissions::approval_decision(permission_mode, &tool_name, risk);
+                let workspace_cwd =
+                    crate::tools::workspace::resolve_workspace_cwd(&db, &session_id).await;
                 let effective_cwd = args
                     .get("cwd")
                     .and_then(|value| value.as_str())
@@ -340,7 +390,7 @@ async fn handle_conn<R: tauri::Runtime>(
                     "run_id": run_id.clone(),
                     "tool_call_id": tc_id.clone(),
                     "tool": tool_name.clone(),
-                    "arguments": args.clone(),
+                    "arguments": public_args.clone(),
                     "risk": risk.as_str(),
                     "cwd": effective_cwd,
                     "network_allowed": policy.network.allow,
@@ -387,42 +437,52 @@ async fn handle_conn<R: tauri::Runtime>(
                         session_id: session_id.clone(),
                         message_id: None,
                         tool: tool_name.clone(),
-                        params: Some(args.to_string()),
+                        params: Some(public_args.to_string()),
                         status: "rejected".to_string(),
                         risk_level: Some(risk.as_str().to_string()),
-                        approval_policy_snapshot: Some(
-                            crate::tools::permissions::audit_snapshot(permission_mode, &policy)
-                        ),
+                        approval_policy_snapshot: Some(crate::tools::permissions::audit_snapshot(
+                            permission_mode,
+                            &policy,
+                        )),
                     };
                     let _ = db.insert_tool_call(tc_log).await;
-                    let _ = app_handle.emit("agent://tool_result", json!({
-                        "session_id": session_id.clone(),
-                        "run_id": run_id.clone(),
-                        "tool_call_id": tc_id.clone(),
-                        "tool": tool_name.clone(),
-                        "status": "denied",
-                        "output": "User rejected tool execution"
-                    }));
-                    
-                    let reply = Envelope::reply(msg_type::TOOL_RESULT, json!({
-                        "id": tc_id,
-                        "exit_code": -2,
-                        "stdout": "",
-                        "stderr": "User rejected tool execution",
-                    }));
+                    let _ = app_handle.emit(
+                        "agent://tool_result",
+                        json!({
+                            "session_id": session_id.clone(),
+                            "run_id": run_id.clone(),
+                            "tool_call_id": tc_id.clone(),
+                            "tool": tool_name.clone(),
+                            "status": "denied",
+                            "output": "User rejected tool execution"
+                        }),
+                    );
+
+                    let reply = Envelope::reply(
+                        msg_type::TOOL_RESULT,
+                        json!({
+                            "id": tc_id,
+                            "exit_code": -2,
+                            "stdout": "",
+                            "stderr": "User rejected tool execution",
+                        }),
+                    );
                     let _ = manager.send_to_agent(reply);
                     continue;
                 }
 
                 // 前端展示正在执行
-                let _ = app_handle.emit("agent://tool_result", json!({
-                    "session_id": session_id.clone(),
-                    "run_id": run_id.clone(),
-                    "tool_call_id": tc_id.clone(),
-                    "tool": tool_name.clone(),
-                    "status": "running",
-                    "output": "Executing..."
-                }));
+                let _ = app_handle.emit(
+                    "agent://tool_result",
+                    json!({
+                        "session_id": session_id.clone(),
+                        "run_id": run_id.clone(),
+                        "tool_call_id": tc_id.clone(),
+                        "tool": tool_name.clone(),
+                        "status": "running",
+                        "output": "Executing..."
+                    }),
+                );
 
                 // 获取当前 ActiveRun 的 assistant_message_id，作为外键绑定到 tool_calls 审计表
                 let mut assistant_msg_id = None;
@@ -433,15 +493,17 @@ async fn handle_conn<R: tauri::Runtime>(
                 drop(runs);
 
                 // 执行物理调用
-                let exec_res = tool_executor.execute_with_permission_mode(
-                    &session_id,
-                    assistant_msg_id.as_deref(),
-                    &tc_id,
-                    &tool_name,
-                    &args,
-                    &policy,
-                    permission_mode,
-                ).await;
+                let exec_res = tool_executor
+                    .execute_with_permission_mode(
+                        &session_id,
+                        assistant_msg_id.as_deref(),
+                        &tc_id,
+                        &tool_name,
+                        &args,
+                        &policy,
+                        permission_mode,
+                    )
+                    .await;
 
                 // 准备回传 Python 的结果
                 let reply_payload = match exec_res {
@@ -452,17 +514,21 @@ async fn handle_conn<R: tauri::Runtime>(
                             .or_else(|| val.get("content").and_then(|x| x.as_str()))
                             .map(ToString::to_string)
                             .unwrap_or_else(|| {
-                                serde_json::to_string(&val).unwrap_or_else(|_| "Success".to_string())
+                                serde_json::to_string(&val)
+                                    .unwrap_or_else(|_| "Success".to_string())
                             });
                         // 向前端发送执行结果以渲染 terminal log
-                        let _ = app_handle.emit("agent://tool_result", json!({
-                            "session_id": session_id.clone(),
-                            "run_id": run_id.clone(),
-                            "tool_call_id": tc_id.clone(),
-                            "tool": tool_name.clone(),
-                            "status": "succeeded",
-                            "output": stdout.clone()
-                        }));
+                        let _ = app_handle.emit(
+                            "agent://tool_result",
+                            json!({
+                                "session_id": session_id.clone(),
+                                "run_id": run_id.clone(),
+                                "tool_call_id": tc_id.clone(),
+                                "tool": tool_name.clone(),
+                                "status": "succeeded",
+                                "output": stdout.clone()
+                            }),
+                        );
 
                         json!({
                             "id": tc_id,
@@ -473,14 +539,17 @@ async fn handle_conn<R: tauri::Runtime>(
                     }
                     Err(e) => {
                         let err_str = e.to_string();
-                        let _ = app_handle.emit("agent://tool_result", json!({
-                            "session_id": session_id.clone(),
-                            "run_id": run_id.clone(),
-                            "tool_call_id": tc_id.clone(),
-                            "tool": tool_name.clone(),
-                            "status": "failed",
-                            "output": format!("Error: {err_str}")
-                        }));
+                        let _ = app_handle.emit(
+                            "agent://tool_result",
+                            json!({
+                                "session_id": session_id.clone(),
+                                "run_id": run_id.clone(),
+                                "tool_call_id": tc_id.clone(),
+                                "tool": tool_name.clone(),
+                                "status": "failed",
+                                "output": format!("Error: {err_str}")
+                            }),
+                        );
 
                         json!({
                             "id": tc_id,
@@ -509,14 +578,22 @@ async fn handle_conn<R: tauri::Runtime>(
                         ordinal: run.current_ordinal,
                         mime_type: None,
                         tool_call_id: Some(tc_id.clone()),
-                        content: format!("Calling {tool_name} with params: {}", args.to_string()),
+                        content: format!("Calling {tool_name} with params: {public_args}"),
                         metadata: None,
                     });
                     run.current_ordinal += 1;
 
                     // tool_result part
-                    let stdout_clean = reply_payload.get("stdout").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let stderr_clean = reply_payload.get("stderr").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let stdout_clean = reply_payload
+                        .get("stdout")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let stderr_clean = reply_payload
+                        .get("stderr")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     parts.push(NewMessagePart {
                         id: uuid::Uuid::new_v4().to_string(),
                         message_id: run.assistant_message_id.clone(),
@@ -524,7 +601,11 @@ async fn handle_conn<R: tauri::Runtime>(
                         ordinal: run.current_ordinal,
                         mime_type: None,
                         tool_call_id: Some(tc_id.clone()),
-                        content: if stderr_clean.is_empty() { stdout_clean } else { stderr_clean },
+                        content: if stderr_clean.is_empty() {
+                            stdout_clean
+                        } else {
+                            stderr_clean
+                        },
                         metadata: None,
                     });
                     run.current_ordinal += 1;
@@ -539,12 +620,18 @@ async fn handle_conn<R: tauri::Runtime>(
             }
 
             msg_type::RUN_FINISHED => {
-                let summary = env.payload.get("summary").and_then(|x| x.as_str()).unwrap_or("");
+                let summary = env
+                    .payload
+                    .get("summary")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
                 let memories_val = env.payload.get("memories").and_then(|x| x.as_array());
 
                 // 1. 更新会话摘要
                 if !summary.is_empty() {
-                    let _ = db.update_session_summary(session_id.clone(), summary.to_string()).await;
+                    let _ = db
+                        .update_session_summary(session_id.clone(), summary.to_string())
+                        .await;
                 }
 
                 // 获取 Agent ID
@@ -553,8 +640,7 @@ async fn handle_conn<R: tauri::Runtime>(
                     agent_id = sess.agent_id;
                 }
 
-                // 2. Insert extracted structured memories. Vector indexing remains
-                // disabled until embedding dimensions are configurable.
+                // 2. Insert extracted structured memories and their optional local vectors.
                 if let Some(mems) = memories_val {
                     for m in mems {
                         let content = m.get("content").and_then(|x| x.as_str()).unwrap_or("");
@@ -575,14 +661,15 @@ async fn handle_conn<R: tauri::Runtime>(
                             })
                             .unwrap_or_default();
                         let m_type = m.get("type").and_then(|x| x.as_str()).unwrap_or("Fact");
-                        let confidence = m.get("confidence").and_then(|x| x.as_f64()).unwrap_or(0.8);
+                        let confidence =
+                            m.get("confidence").and_then(|x| x.as_f64()).unwrap_or(0.8);
                         let source = m.get("source").and_then(|x| x.as_str()).unwrap_or("");
 
                         if !content.is_empty() && !agent_id.is_empty() {
                             let mem_id = uuid::Uuid::new_v4().to_string();
 
                             let new_mem = NewMemory {
-                                id: mem_id,
+                                id: mem_id.clone(),
                                 agent_id: agent_id.clone(),
                                 name,
                                 keywords,
@@ -595,9 +682,29 @@ async fn handle_conn<R: tauri::Runtime>(
                                 embedding_id: None,
                             };
                             match db.insert_memory(new_mem).await {
-                                Ok(true) | Ok(false) => {}
+                                Ok(true) => {
+                                    if let Some(embedding) = m.get("embedding").and_then(
+                                        crate::tools::builtin::memory_entry::parse_embedding_value,
+                                    ) {
+                                        if let Err(error) = db
+                                            .upsert_memory_embedding(
+                                                uuid::Uuid::new_v4().to_string(),
+                                                mem_id,
+                                                embedding.model,
+                                                content.to_string(),
+                                                embedding.vector,
+                                            )
+                                            .await
+                                        {
+                                            eprintln!("[memory] Failed to index extracted memory: {error}");
+                                        }
+                                    }
+                                }
+                                Ok(false) => {}
                                 Err(error) => {
-                                    eprintln!("[memory] Failed to persist extracted memory: {error}")
+                                    eprintln!(
+                                        "[memory] Failed to persist extracted memory: {error}"
+                                    )
                                 }
                             }
                         }
@@ -617,7 +724,9 @@ async fn handle_conn<R: tauri::Runtime>(
                         let _ = db.insert_message_parts(parts_to_insert).await;
                     }
 
-                    let _ = db.update_message_status(run.assistant_message_id, "complete".to_string()).await;
+                    let _ = db
+                        .update_message_status(run.assistant_message_id, "complete".to_string())
+                        .await;
                 }
                 drop(runs);
 
@@ -626,26 +735,34 @@ async fn handle_conn<R: tauri::Runtime>(
                 let _ = manager.remove_session_run(&session_id);
 
                 // 通知前端渲染完成
-                let _ = app_handle.emit("agent://run_finished", json!({
-                    "session_id": session_id,
-                    "run_id": run_id
-                }));
+                let _ = app_handle.emit(
+                    "agent://run_finished",
+                    json!({
+                        "session_id": session_id,
+                        "run_id": run_id
+                    }),
+                );
             }
 
             msg_type::RUN_ERROR => {
-                let err_msg = env.payload.get("message").and_then(|x| x.as_str()).unwrap_or("Unknown runtime error");
+                let err_msg = env
+                    .payload
+                    .get("message")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("Unknown runtime error");
                 let is_cancelled = err_msg == "已取消";
 
                 // 取 ActiveRun（若有）；否则用 peek_run 兜底定位 assistant_msg_id
                 // （AI 首个输出即工具调用且取消时，可能从未产生 ASSISTANT_DELTA，ActiveRun 不存在）
                 let mut runs = active_runs.lock().await;
-                let (assistant_msg_id, mut parts_to_insert) = if let Some(mut run) = runs.remove(&run_id) {
-                    let mut parts = Vec::new();
-                    drain_accumulated(&mut run, &mut parts);
-                    (Some(run.assistant_message_id.clone()), parts)
-                } else {
-                    (manager.peek_run(&run_id), Vec::new())
-                };
+                let (assistant_msg_id, mut parts_to_insert) =
+                    if let Some(mut run) = runs.remove(&run_id) {
+                        let mut parts = Vec::new();
+                        drain_accumulated(&mut run, &mut parts);
+                        (Some(run.assistant_message_id.clone()), parts)
+                    } else {
+                        (manager.peek_run(&run_id), Vec::new())
+                    };
                 drop(runs);
 
                 if let Some(id) = assistant_msg_id.clone() {
@@ -656,25 +773,38 @@ async fn handle_conn<R: tauri::Runtime>(
                         ordinal: 0,
                         mime_type: None,
                         tool_call_id: None,
-                        content: if is_cancelled { "（已取消）".to_string() } else { format!("Error: {err_msg}") },
+                        content: if is_cancelled {
+                            "（已取消）".to_string()
+                        } else {
+                            format!("Error: {err_msg}")
+                        },
                         metadata: None,
                     });
                     let _ = db.insert_message_parts(parts_to_insert).await;
-                    let _ = db.update_message_status(
-                        id,
-                        if is_cancelled { "cancelled".to_string() } else { "failed".to_string() },
-                    ).await;
+                    let _ = db
+                        .update_message_status(
+                            id,
+                            if is_cancelled {
+                                "cancelled".to_string()
+                            } else {
+                                "failed".to_string()
+                            },
+                        )
+                        .await;
                 }
 
                 // 清除 run 与 session 映射（运行已结束）
                 let _ = manager.remove_run(&run_id);
                 let _ = manager.remove_session_run(&session_id);
 
-                let _ = app_handle.emit("agent://run_error", json!({
-                    "session_id": session_id,
-                    "run_id": run_id,
-                    "message": err_msg
-                }));
+                let _ = app_handle.emit(
+                    "agent://run_error",
+                    json!({
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "message": err_msg
+                    }),
+                );
             }
 
             _ => {}
@@ -751,8 +881,39 @@ mod tests {
                 break;
             }
         }
+        let mut embedding_roundtrip = false;
+        if ok {
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            manager.register_embedding(request_id.clone(), tx);
+            manager
+                .send_to_agent(Envelope {
+                    protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
+                    id: request_id,
+                    run_id: String::new(),
+                    session_id: String::new(),
+                    msg_type: msg_type::EMBEDDING_REQUEST.to_string(),
+                    created_at: String::new(),
+                    payload: json!({
+                        "config": {"model": "unused", "litellmModel": "unused"},
+                        "inputs": []
+                    }),
+                })
+                .unwrap();
+            embedding_roundtrip = tokio::time::timeout(Duration::from_secs(10), rx)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .and_then(|payload| payload.get("error").cloned())
+                .and_then(|error| error.as_str().map(ToString::to_string))
+                .is_some_and(|error| error.contains("non-empty strings"));
+        }
         let _ = child.start_kill();
         let _ = std::fs::remove_file(&db_path);
         assert!(ok, "Python sidecar 未报告握手成功");
+        assert!(
+            embedding_roundtrip,
+            "Python sidecar 未返回 embedding_result"
+        );
     }
 }

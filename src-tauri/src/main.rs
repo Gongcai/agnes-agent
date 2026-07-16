@@ -3,6 +3,7 @@
 mod agent;
 mod commands;
 mod db;
+mod embeddings;
 mod error;
 mod memory;
 mod model_registry;

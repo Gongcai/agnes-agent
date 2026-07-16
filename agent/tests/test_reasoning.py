@@ -5,8 +5,14 @@ import pytest
 from app.prompt import assemble_prompt, group_protocol_messages, translate_messages, count_tokens
 from app.graph import build_graph, get_available_tools
 from app.memory_extract import extract_memories
-from app.main import build_debug_prompt_payload, resolve_task_llm
-from app.models import LlmConfig
+from app.main import (
+    INTERNAL_EMBEDDING_KEY,
+    attach_extracted_memory_embeddings,
+    build_debug_prompt_payload,
+    prepare_memory_tool_arguments,
+    resolve_task_llm,
+)
+from app.models import LlmConfig, embed_texts
 
 def test_count_tokens():
     assert count_tokens("Hello world") > 0
@@ -308,6 +314,74 @@ def test_task_model_routing_and_fallback():
     assert model == "openai/cheap-summary"
     assert config is not None
     assert config.model == "cheap-summary"
+
+
+def test_embedding_wrapper_uses_config_and_validates_dimensions(monkeypatch):
+    captured = {}
+
+    def fake_embedding(**kwargs):
+        captured.update(kwargs)
+        return {
+            "data": [
+                {"index": 1, "embedding": [0.0, 1.0, 0.0]},
+                {"index": 0, "embedding": [1.0, 0.0, 0.0]},
+            ]
+        }
+
+    monkeypatch.setattr("app.models.litellm.embedding", fake_embedding)
+    config = LlmConfig(
+        model="embed-model",
+        litellm_model="openai/embed-model",
+        api_base="https://example.test/v1",
+        api_key="secret",
+    )
+    vectors = embed_texts("fallback", ["first", "second"], config)
+
+    assert vectors == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    assert captured["model"] == "openai/embed-model"
+    assert captured["api_base"] == "https://example.test/v1"
+    assert captured["api_key"] == "secret"
+
+
+def test_embedding_wrapper_rejects_sqlite_vec_oversized_vectors(monkeypatch):
+    monkeypatch.setattr(
+        "app.models.litellm.embedding",
+        lambda **_: {"data": [{"index": 0, "embedding": [0.0] * 8193}]},
+    )
+
+    with pytest.raises(ValueError, match="more than 8192 dimensions"):
+        embed_texts("embed-model", ["content"])
+
+
+def test_memory_tool_arguments_attach_and_replace_trusted_embedding(monkeypatch):
+    monkeypatch.setattr("app.main.embed_texts", lambda *_: [[0.25, 0.75]])
+    config = LlmConfig(
+        model="embed-model",
+        litellm_model="openai/embed-model",
+        model_ref="provider/embed-model",
+    )
+    prepared = prepare_memory_tool_arguments(
+        "memory_search",
+        {"query": "database preference", INTERNAL_EMBEDDING_KEY: {"model": "forged"}},
+        "openai/embed-model",
+        config,
+    )
+
+    assert prepared[INTERNAL_EMBEDDING_KEY] == {
+        "model": "provider/embed-model",
+        "vector": [0.25, 0.75],
+    }
+
+
+def test_extracted_memories_receive_batch_embeddings(monkeypatch):
+    monkeypatch.setattr("app.main.embed_texts", lambda *_: [[1.0, 0.0], [0.0, 1.0]])
+    config = LlmConfig(model_ref="provider/embed-model")
+    memories = [{"content": "First"}, {"content": "Second"}]
+
+    indexed = attach_extracted_memory_embeddings(memories, "embed-model", config)
+
+    assert indexed[0]["embedding"]["vector"] == [1.0, 0.0]
+    assert indexed[1]["embedding"]["model"] == "provider/embed-model"
 
 
 def test_memory_extractor_normalizes_new_fields(monkeypatch):
