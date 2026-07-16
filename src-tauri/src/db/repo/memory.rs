@@ -20,6 +20,14 @@ pub struct MemoryRow {
     pub created_at: String,
     pub updated_at: String,
     #[serde(skip_serializing)]
+    pub status: String,
+    #[serde(skip_serializing)]
+    pub version: i64,
+    #[serde(skip_serializing)]
+    pub deleted_at: Option<String>,
+    #[serde(skip_serializing)]
+    pub origin_device_id: Option<String>,
+    #[serde(skip_serializing)]
     pub embedding_id: Option<String>,
     #[serde(skip_serializing)]
     pub embedding_model: Option<String>,
@@ -96,14 +104,19 @@ fn row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRow> {
         creator: row.get(5)?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
-        embedding_id: row.get(8)?,
-        embedding_model: row.get(9)?,
-        embedding_content_hash: row.get(10)?,
+        status: row.get(8)?,
+        version: row.get(9)?,
+        deleted_at: row.get(10)?,
+        origin_device_id: row.get(11)?,
+        embedding_id: row.get(12)?,
+        embedding_model: row.get(13)?,
+        embedding_content_hash: row.get(14)?,
     })
 }
 
 const MEMORY_SELECT: &str = "SELECT m.id, m.agent_id, m.name, m.keywords, m.content, m.creator, \
-     m.created_at, m.updated_at, m.embedding_id, e.model, e.content_hash \
+     m.created_at, m.updated_at, m.status, m.version, m.deleted_at, m.origin_device_id, \
+     m.embedding_id, e.model, e.content_hash \
      FROM memory_store m LEFT JOIN embedding_items e ON e.id = m.embedding_id";
 
 pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<MemoryRow>> {
@@ -390,7 +403,8 @@ fn search_vector(
     }
     let sql = format!(
         "SELECT m.id, m.agent_id, m.name, m.keywords, m.content, m.creator, \
-                m.created_at, m.updated_at, m.embedding_id, e.model, e.content_hash \
+                m.created_at, m.updated_at, m.status, m.version, m.deleted_at, \
+                m.origin_device_id, m.embedding_id, e.model, e.content_hash \
          FROM (SELECT embedding_id, distance FROM {table} \
                WHERE vector MATCH ?1 AND k = ?2 AND agent_id = ?3 AND model = ?4 \
                ORDER BY distance) nearest \

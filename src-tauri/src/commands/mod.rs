@@ -202,7 +202,7 @@ pub async fn upsert_agent(
     }
 }
 
-/// 删除角色卡（含其依赖的会话与消息）。
+/// Soft-delete an agent; dependent rows remain until sync-safe compaction.
 #[tauri::command]
 pub async fn delete_agent(
     state: tauri::State<'_, AppState>,

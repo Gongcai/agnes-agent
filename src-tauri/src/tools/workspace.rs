@@ -9,5 +9,9 @@ pub async fn resolve_workspace_cwd(db: &DbActorHandle, session_id: &str) -> Opti
     let session = db.get_session(session_id.to_string()).await.ok()??;
     let ws_id = session.workspace_id?;
     let ws = db.get_workspace(ws_id).await.ok()??;
-    Some(PathBuf::from(ws.folder_path))
+    if ws.folder_path.trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(ws.folder_path))
+    }
 }

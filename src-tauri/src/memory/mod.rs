@@ -67,19 +67,38 @@ pub async fn load_explicit_memories(
     db: &DbActorHandle,
     agent_id: &str,
 ) -> AppResult<(String, String)> {
-    let user_key = format!("agent:{agent_id}:user_md");
-    let memory_key = format!("agent:{agent_id}:memory_md");
-    let db_user = db.get_setting(user_key.clone()).await?;
-    let db_memory = db.get_setting(memory_key.clone()).await?;
+    let rows = db.list_explicit_memories(agent_id.to_string()).await?;
+    let user_row = rows
+        .iter()
+        .find(|row| row.kind == crate::db::repo::explicit_memories::USER_MD_KIND);
+    let memory_row = rows
+        .iter()
+        .find(|row| row.kind == crate::db::repo::explicit_memories::MEMORY_MD_KIND);
+    let db_user = user_row.map(|row| {
+        if row.deleted_at.is_none() {
+            row.content.clone()
+        } else {
+            String::new()
+        }
+    });
+    let db_memory = memory_row.map(|row| {
+        if row.deleted_at.is_none() {
+            row.content.clone()
+        } else {
+            String::new()
+        }
+    });
     let (view_user, view_memory) = load_memory_views(agent_id)?;
 
     let user_md = normalize_memory_text(db_user.clone().unwrap_or(view_user));
     let memory_md = normalize_memory_text(db_memory.clone().unwrap_or(view_memory));
-    if db_user.is_none() {
-        db.set_setting(user_key, user_md.clone()).await?;
-    }
-    if db_memory.is_none() {
-        db.set_setting(memory_key, memory_md.clone()).await?;
+    if user_row.is_none() || memory_row.is_none() {
+        db.save_explicit_memories(
+            agent_id.to_string(),
+            user_md.clone(),
+            memory_md.clone(),
+        )
+        .await?;
     }
     save_memory_views(agent_id, &user_md, &memory_md)?;
     Ok((user_md, memory_md))
@@ -94,9 +113,7 @@ pub async fn save_explicit_memories(
 ) -> AppResult<()> {
     let user_md = normalize_memory_text(user_md.to_string());
     let memory_md = normalize_memory_text(memory_md.to_string());
-    db.set_setting(format!("agent:{agent_id}:user_md"), user_md.clone())
-        .await?;
-    db.set_setting(format!("agent:{agent_id}:memory_md"), memory_md.clone())
+    db.save_explicit_memories(agent_id.to_string(), user_md.clone(), memory_md.clone())
         .await?;
     save_memory_views(agent_id, &user_md, &memory_md)
 }

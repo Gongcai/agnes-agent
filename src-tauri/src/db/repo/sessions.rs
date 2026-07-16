@@ -183,7 +183,7 @@ pub fn update_llm(
     let now_str = now();
     conn.execute(
         "UPDATE sessions SET model = ?1, thinking_mode = ?2, thinking_budget = ?3, \
-         updated_at = ?4, version = version + 1 WHERE id = ?5",
+         updated_at = ?4, version = version + 1 WHERE id = ?5 AND deleted_at IS NULL",
         params![model, thinking_mode, thinking_budget, now_str, id],
     )?;
     Ok(())
@@ -194,7 +194,7 @@ pub fn update_permission_mode(conn: &Connection, id: &str, permission_mode: &str
     let now_str = now();
     conn.execute(
         "UPDATE sessions SET permission_mode = ?1, updated_at = ?2, \
-         version = version + 1 WHERE id = ?3",
+         version = version + 1 WHERE id = ?3 AND deleted_at IS NULL",
         params![permission_mode, now_str, id],
     )?;
     Ok(())
@@ -206,7 +206,7 @@ pub fn update_title(conn: &Connection, id: &str, title: &str) -> AppResult<()> {
     conn.execute(
         "UPDATE sessions \
          SET title = ?1, updated_at = ?2, version = version + 1 \
-         WHERE id = ?3",
+         WHERE id = ?3 AND deleted_at IS NULL",
         params![title, now_str, id],
     )?;
     Ok(())
@@ -218,7 +218,7 @@ pub fn update_summary(conn: &Connection, id: &str, summary: &str) -> AppResult<(
     conn.execute(
         "UPDATE sessions \
          SET summary = ?1, summary_updated_at = ?2, updated_at = ?3, version = version + 1 \
-         WHERE id = ?4",
+         WHERE id = ?4 AND deleted_at IS NULL",
         params![summary, now_str, now_str, id],
     )?;
     Ok(())
@@ -230,7 +230,7 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
     conn.execute(
         "UPDATE sessions \
          SET deleted_at = ?1, updated_at = ?2, version = version + 1 \
-         WHERE id = ?3",
+         WHERE id = ?3 AND deleted_at IS NULL",
         params![now_str, now_str, id],
     )?;
     Ok(())
@@ -239,7 +239,8 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
 /// 设置或取消会话置顶。
 pub fn set_pin(conn: &Connection, id: &str, pinned: bool) -> AppResult<()> {
     conn.execute(
-        "UPDATE sessions SET pinned = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE sessions SET pinned = ?1, updated_at = ?2, version = version + 1 \
+         WHERE id = ?3 AND deleted_at IS NULL",
         params![if pinned { 1 } else { 0 }, now(), id],
     )?;
     Ok(())

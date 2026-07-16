@@ -81,7 +81,7 @@ impl ToolExecutor {
         };
         self.db.insert_tool_call(new_tc).await?;
 
-        // B. 解析 workspace cwd（session.workspace_id → workspaces.folder_path）
+        // B. Resolve the workspace cwd through the device-local binding.
         let workspace_cwd =
             crate::tools::workspace::resolve_workspace_cwd(&self.db, session_id).await;
 
@@ -174,6 +174,7 @@ mod tests {
         let temp_project = std::env::current_dir()
             .unwrap()
             .join("target/test_tool_project");
+        let _ = fs::remove_dir_all(&temp_project);
         let _ = fs::create_dir_all(&temp_project);
         db.insert_workspace(crate::db::repo::workspaces::NewWorkspace {
             id: "workspace-1".into(),

@@ -273,7 +273,7 @@ settings(key PK, value TEXT)
 
 **embeddings 拆分原因**：sqlite-vec 需要专门的向量虚拟表/索引表，不与普通 metadata 混在一张表。`embedding_items` 保留 `model/dims/content_hash` 以便换 embedding 模型时重算、去重、失效判定。当前仅嵌入记忆正文 `content`，允许 1 到 8192 维；不同维度可同时存在，查询按 Agent 和模型引用隔离。
 
-**可同步实体的版本/墓碑**：`agents/sessions/messages/memory_store/settings` 均需 `updated_at`、`deleted_at`、`version`、`origin_device_id`，配合 `sync_log`（hlc 混合逻辑时钟 + `entity_version` + `synced_at`）支撑离线同步与冲突解决。聊天消息可 append-only，记忆/设置/Agent 配置必须有版本。
+**可同步实体的版本/墓碑**：`agents/sessions/messages/explicit_memories/memory_store/workspaces` 均具备 `updated_at`、`deleted_at`、`version`、`origin_device_id`，配合后续事务性 outbox（HLC + `entity_version`）支撑离线同步与冲突解决。聊天消息正文完成后不可变；记忆、workspace 逻辑信息和 Agent 配置必须有版本。通用 settings 与 workspace 本地路径不作为同步实体。
 
 迁移用 `rusqlite` + 自维护 `migrations/`（或 refinery）。
 

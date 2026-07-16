@@ -13,11 +13,16 @@ prompt 顺序仍以 `PROJECT.md` 为准。
 
 | 类型 | 存储 | 用途 | 注入方式 |
 |---|---|---|---|
-| 稳定记忆 | `MEMORY.md`，SQLite 为 canonical、Markdown 为本地视图 | 少量、每轮都必须知道的事实 | 每轮直接注入 system prompt |
+| 稳定记忆 | SQLite `explicit_memories`，`MEMORY.md` 为本地视图 | 少量、每轮都必须知道的事实 | 每轮直接注入 system prompt |
 | 结构化记忆库 | SQLite `memory_store` | 可增长、可检索、可管理的事实集合 | AI 按需调用 `memory_search`、`memory_create`、`memory_update` |
 
 `USER.md` 仍是用户画像，只允许用户修改；AI 可以读取注入后的内容，但没有修改
 `USER.md` 的工具。
+
+`USER.md` 与 `MEMORY.md` 各对应一条 `explicit_memories` 记录，以 `(agent_id, kind)`
+唯一约束区分 `user_md / memory_md`。实体包含稳定 UUID、内容、创建/更新时间、版本、
+墓碑和来源设备字段；旧 `agent:*:{user_md|memory_md}` settings 会在启动迁移中原子搬入
+新表并删除。Markdown 文件只是本机物化视图，不再承担 canonical 存储职责。
 
 ## 2. 结构化记忆实体
 

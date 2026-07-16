@@ -13,9 +13,6 @@ pub fn classify(key: &str) -> SettingClass {
     if key.starts_with("ui:") || key == "models:role_assignments" {
         return SettingClass::DeviceLocal;
     }
-    if key.starts_with("agent:") && (key.ends_with(":user_md") || key.ends_with(":memory_md")) {
-        return SettingClass::Syncable;
-    }
     SettingClass::Unknown
 }
 
@@ -34,7 +31,7 @@ mod tests {
             classify("models:role_assignments"),
             SettingClass::DeviceLocal
         );
-        assert_eq!(classify("agent:agnes:memory_md"), SettingClass::Syncable);
+        assert_eq!(classify("agent:agnes:memory_md"), SettingClass::Unknown);
         assert_eq!(classify("provider:openai:api_key"), SettingClass::Secret);
         assert_eq!(classify("unclassified:value"), SettingClass::Unknown);
         assert!(renderer_access_allowed("ui:last_session_id"));

@@ -2,6 +2,119 @@ use rusqlite::{params, Connection};
 
 use crate::error::AppResult;
 
+fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"
+        ),
+        [column],
+        |row| row.get(0),
+    )
+    .unwrap_or(false)
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> AppResult<()> {
+    if !has_column(conn, table, column) {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn now() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
+fn ensure_sync_metadata(conn: &Connection) -> AppResult<()> {
+    for table in ["agents", "sessions", "messages", "memory_store", "workspaces"] {
+        ensure_column(conn, table, "version", "INTEGER NOT NULL DEFAULT 1")?;
+        ensure_column(conn, table, "deleted_at", "TEXT")?;
+        ensure_column(conn, table, "origin_device_id", "TEXT")?;
+        conn.execute(&format!("UPDATE {table} SET version = 1 WHERE version IS NULL"), [])?;
+    }
+    Ok(())
+}
+
+fn migrate_workspace_bindings(conn: &Connection) -> AppResult<()> {
+    if !has_column(conn, "workspaces", "folder_path") {
+        return Ok(());
+    }
+    let timestamp = now();
+    conn.execute(
+        "INSERT INTO workspace_bindings \
+         (workspace_id, folder_path, created_at, updated_at, last_validated_at) \
+         SELECT id, folder_path, COALESCE(created_at, ?1), COALESCE(updated_at, created_at, ?1), NULL \
+         FROM workspaces WHERE trim(COALESCE(folder_path, '')) <> '' \
+         ON CONFLICT(workspace_id) DO NOTHING",
+        [&timestamp],
+    )?;
+    conn.execute("ALTER TABLE workspaces DROP COLUMN folder_path", [])?;
+    Ok(())
+}
+
+fn legacy_explicit_memory_key(key: &str) -> Option<(&str, &str)> {
+    let value = key.strip_prefix("agent:")?;
+    for kind in ["user_md", "memory_md"] {
+        if let Some(agent_id) = value.strip_suffix(&format!(":{kind}")) {
+            if !agent_id.is_empty() {
+                return Some((agent_id, kind));
+            }
+        }
+    }
+    None
+}
+
+fn migrate_explicit_memories(conn: &mut Connection) -> AppResult<()> {
+    let legacy_rows: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT key, value FROM settings WHERE key LIKE 'agent:%' ORDER BY key",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let timestamp = now();
+    let tx = conn.transaction()?;
+    for (key, content) in legacy_rows {
+        let Some((agent_id, kind)) = legacy_explicit_memory_key(&key) else {
+            continue;
+        };
+        let agent_exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agents WHERE id = ?1)",
+            [agent_id],
+            |row| row.get(0),
+        )?;
+        if !agent_exists {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO explicit_memories \
+             (id, agent_id, kind, content, created_at, updated_at, version) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1) \
+             ON CONFLICT(agent_id, kind) DO NOTHING",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                agent_id,
+                kind,
+                content,
+                timestamp,
+            ],
+        )?;
+        tx.execute("DELETE FROM settings WHERE key = ?1", [&key])?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// 应用 DB 建表与预置数据。
 pub fn apply(conn: &mut Connection) -> AppResult<()> {
     conn.execute_batch(crate::db::schema::SCHEMA)?;
@@ -205,6 +318,10 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         [],
     )?;
 
+    ensure_sync_metadata(conn)?;
+    migrate_workspace_bindings(conn)?;
+    migrate_explicit_memories(conn)?;
+
     Ok(())
 }
 
@@ -300,5 +417,122 @@ mod tests {
         assert_eq!(name, "Legacy memory content");
         assert!(keywords.is_none());
         assert_eq!(creator, "ai");
+    }
+
+    #[test]
+    fn migrates_legacy_explicit_memory_settings_to_entities() {
+        unsafe {
+            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('agent:agnes:user_md', 'User profile')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('agent:agnes:memory_md', 'Stable memory')",
+            [],
+        )
+        .unwrap();
+
+        apply(&mut conn).unwrap();
+
+        let rows: Vec<(String, String, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, kind, content FROM explicit_memories \
+                     WHERE agent_id = 'agnes' ORDER BY kind",
+                )
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, "memory_md");
+        assert_eq!(rows[0].2, "Stable memory");
+        assert_eq!(rows[1].1, "user_md");
+        assert_eq!(rows[1].2, "User profile");
+        assert!(rows
+            .iter()
+            .all(|(id, _, _)| uuid::Uuid::parse_str(id).is_ok()));
+        let legacy_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE key LIKE 'agent:%:_md'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_count, 0);
+    }
+
+    #[test]
+    fn moves_legacy_workspace_paths_to_device_local_bindings() {
+        unsafe {
+            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workspaces ( \
+               id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, name TEXT, folder_path TEXT, \
+               created_at TEXT, updated_at TEXT); \
+             INSERT INTO workspaces \
+               (id, agent_id, name, folder_path, created_at, updated_at) \
+             VALUES ('workspace-1', 'agnes', 'Project', '/tmp/project', '1', '2');",
+        )
+        .unwrap();
+
+        apply(&mut conn).unwrap();
+
+        assert!(!has_column(&conn, "workspaces", "folder_path"));
+        assert!(has_column(&conn, "workspaces", "version"));
+        let binding: (String, String) = conn
+            .query_row(
+                "SELECT workspace_id, folder_path FROM workspace_bindings \
+                 WHERE workspace_id = 'workspace-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(binding, ("workspace-1".into(), "/tmp/project".into()));
+    }
+
+    #[test]
+    fn adds_sync_metadata_to_legacy_entity_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agents (id TEXT PRIMARY KEY); \
+             CREATE TABLE sessions (id TEXT PRIMARY KEY); \
+             CREATE TABLE messages (id TEXT PRIMARY KEY); \
+             CREATE TABLE memory_store (id TEXT PRIMARY KEY); \
+             CREATE TABLE workspaces (id TEXT PRIMARY KEY); \
+             INSERT INTO agents (id) VALUES ('agent-1'); \
+             INSERT INTO sessions (id) VALUES ('session-1'); \
+             INSERT INTO messages (id) VALUES ('message-1'); \
+             INSERT INTO memory_store (id) VALUES ('memory-1'); \
+             INSERT INTO workspaces (id) VALUES ('workspace-1');",
+        )
+        .unwrap();
+
+        ensure_sync_metadata(&conn).unwrap();
+
+        for table in ["agents", "sessions", "messages", "memory_store", "workspaces"] {
+            assert!(has_column(&conn, table, "version"));
+            assert!(has_column(&conn, table, "deleted_at"));
+            assert!(has_column(&conn, table, "origin_device_id"));
+            let version: i64 = conn
+                .query_row(&format!("SELECT version FROM {table}"), [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 1);
+        }
     }
 }

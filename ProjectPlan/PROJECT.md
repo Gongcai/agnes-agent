@@ -55,13 +55,13 @@
 
 # 本地数据库（SQLite 表）
 
-`agents / sessions / messages / message_parts / memory_store / memory_sources / embeddings / documents / document_chunks / tool_calls / sync_log / settings`
+`agents / sessions / messages / message_parts / explicit_memories / memory_store / workspace_bindings / embeddings / documents / document_chunks / tool_calls / sync_log / settings`
 
 - `agents`：角色卡（人设/指令/默认模型/工具权限），见"AGENTS / 角色卡"。
 - `sessions.agent_id` → `agents.id`（多对一：一个 Agent 可有多个 session，但每个 session 只属于一个 Agent）。
 - `memory_store.agent_id`：长期记忆库按 Agent 隔离。
 
-**同步策略**：云端只同步文本、设置、用户数据（agents/sessions/messages/memory_store/settings）；**向量不跨端同步，每台设备本地重新生成 embedding**（避免模型版本不一致、避免绑定 Cloudflare Vectorize）。`sync_log` 用 `device_id + lamport/vector clock` 做增量 push/pull + 冲突解决；聊天消息 append-only 很少冲突，记忆/设置才需 resolution。
+**同步策略**：云端只同步白名单内的文本与用户实体（agents/sessions/messages/explicit_memories/memory_store/workspaces）；通用 settings 保持设备本地。**向量不跨端同步，每台设备本地重新生成 embedding**（避免模型版本不一致、避免绑定 Cloudflare Vectorize）。后续事务性 outbox 使用 `device_id + HLC` 做增量 push/pull 与冲突解决；聊天消息正文完成后不可变，记忆和角色配置才需字段级冲突处理。
 
 # AGENTS / 角色卡
 
@@ -110,11 +110,11 @@ created_at / updated_at
 
 ## ③ 必注入记忆（本地文本文件，直接注入 prompt）
 
-- 存储：`USER.md`（用户基础信息，**仅用户可改，AI 只读**）+ `MEMORY.md`（需每次都记住的事实，**AI 和用户都能改**）。纯文本 Markdown，人类可读、可 git、用户能直接手改。
+- 存储：SQLite `explicit_memories` 是 canonical 真相源，每个 Agent 固定以 `user_md / memory_md` 两种 kind 保存 `USER.md`（用户基础信息，**仅用户可改，AI 只读**）和 `MEMORY.md`（需每次都记住的事实，**AI 和用户都能改**）；本地 Markdown 文件是可读、可编辑的物化视图。
 - 作用域：按 Agent 隔离，路径 `~/.agnes/agents/{agent_id}/memory/USER.md` + `MEMORY.md`。可选：全局用户画像 `~/.agnes/memory/USER.md` 作为跨 Agent 共享基底，注入时与 per-Agent 的合并（若冲突以 per-Agent 为准）。
 - 注入：session 启动读取，直接拼进 system prompt 每轮都在，作为稳定基底。
 - 修改：用户手改或说"记住…" → AI 调 `memory_md_edit` 追加或精确替换，并可用 `memory_md_view` 再次查看。AI 改 USER.md 被工具层写保护禁止；需更新时提示用户。
-- 原"Explicit Memory"即收敛为此处的 MEMORY.md：显式、高置信、每次必注入，无独立表。
+- 原"Explicit Memory"即收敛为 `explicit_memories` 中的 USER.md/MEMORY.md 文档实体：使用稳定 UUID、版本和墓碑参与同步，不再混入通用 settings。
 
 ## ④ 按需记忆库（SQLite + 向量 + 字符串，工具检索）
 
@@ -156,7 +156,7 @@ System Prompt
 |---|---|---|
 | V0.1 | Tauri 2 + React 聊天 UI + SQLite + Python LangGraph sidecar + LiteLLM | 主链路已完成；发布态 sidecar 打包待收口 |
 | V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 已完成：摘要、抽取、结构化字段、AI 创建/更新、记忆决策提示词、`MEMORY.md` 专用工具、动态维度 sqlite-vec + RRF 混合检索；已使用 Qwen3-Embedding-8B 完成真实服务端到端验证，手动向量化、覆盖率统计与检索链路均可用 |
-| V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 进行中：Phase 0A 已完成 OS Keyring 迁移、settings 分类、renderer IPC 收口和同步 payload 白名单；下一步继续完成明确同步实体、workspace folder binding 拆分及 tombstone/version 基础字段 |
+| V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 进行中：Phase 0 已完成密钥与 payload 边界、显式记忆实体、workspace 本地路径绑定拆分，以及同步实体的 version/tombstone/origin 字段；下一步进入 Phase 1 Worker/D1 骨架 |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 未开始 |
 | V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；MCP 等能力待后续补齐 |
 

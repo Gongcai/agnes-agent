@@ -54,6 +54,18 @@ pub enum DbCommand {
         agent_id: String,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    ListExplicitMemories {
+        agent_id: String,
+        resp: oneshot::Sender<AppResult<Vec<repo::explicit_memories::ExplicitMemoryRow>>>,
+    },
+    SaveExplicitMemories {
+        agent_id: String,
+        user_id: String,
+        user_md: String,
+        memory_id: String,
+        memory_md: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     GetSetting {
         key: String,
         resp: oneshot::Sender<AppResult<Option<String>>>,
@@ -346,6 +358,35 @@ impl DbActorHandle {
     pub async fn delete_memory(&self, id: String, agent_id: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::DeleteMemory { id, agent_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_explicit_memories(
+        &self,
+        agent_id: String,
+    ) -> AppResult<Vec<repo::explicit_memories::ExplicitMemoryRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListExplicitMemories { agent_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn save_explicit_memories(
+        &self,
+        agent_id: String,
+        user_md: String,
+        memory_md: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SaveExplicitMemories {
+            agent_id,
+            user_id: uuid::Uuid::new_v4().to_string(),
+            user_md,
+            memory_id: uuid::Uuid::new_v4().to_string(),
+            memory_md,
+            resp,
+        })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -778,6 +819,26 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::DeleteMemory { id, agent_id, resp } => {
                     let _ = resp.send(repo::memory::delete(&conn, &id, &agent_id));
                 }
+                DbCommand::ListExplicitMemories { agent_id, resp } => {
+                    let _ = resp.send(repo::explicit_memories::list(&conn, &agent_id));
+                }
+                DbCommand::SaveExplicitMemories {
+                    agent_id,
+                    user_id,
+                    user_md,
+                    memory_id,
+                    memory_md,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::explicit_memories::save_pair(
+                        &mut conn,
+                        &agent_id,
+                        &user_id,
+                        &user_md,
+                        &memory_id,
+                        &memory_md,
+                    ));
+                }
                 DbCommand::GetSetting { key, resp } => {
                     let _ = resp.send(repo::settings::get(&conn, &key));
                 }
@@ -870,13 +931,13 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     let _ = resp.send(repo::workspaces::get(&conn, &id));
                 }
                 DbCommand::InsertWorkspace { row, resp } => {
-                    let _ = resp.send(repo::workspaces::insert(&conn, &row));
+                    let _ = resp.send(repo::workspaces::insert(&mut conn, &row));
                 }
                 DbCommand::RenameWorkspace { id, name, resp } => {
                     let _ = resp.send(repo::workspaces::rename(&conn, &id, &name));
                 }
                 DbCommand::DeleteWorkspace { id, resp } => {
-                    let _ = resp.send(repo::workspaces::delete(&conn, &id));
+                    let _ = resp.send(repo::workspaces::delete(&mut conn, &id));
                 }
                 DbCommand::ListMessagesWithParts { session_id, resp } => {
                     let _ = resp.send(repo::messages::list_with_parts(&conn, &session_id));
@@ -918,7 +979,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     let _ = resp.send(repo::messages::set_selected_child(&conn, &parent_id, child_id.as_deref()));
                 }
                 DbCommand::DeleteMessage { id, resp } => {
-                    let _ = resp.send(repo::messages::delete_message(&conn, &id));
+                    let _ = resp.send(repo::messages::delete_message(&mut conn, &id));
                 }
                 DbCommand::ReplaceMessageParts { message_id, parts, resp } => {
                     let transaction_res = (|| -> AppResult<()> {
@@ -928,6 +989,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                             p.ordinal = i as i32;
                             repo::messages::insert_part(&tx, &p)?;
                         }
+                        repo::messages::mark_content_updated(&tx, &message_id)?;
                         tx.commit()?;
                         Ok(())
                     })();

@@ -17,6 +17,9 @@ pub struct MessageRow {
     pub selected_child_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub version: i64,
+    pub deleted_at: Option<String>,
+    pub origin_device_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,9 +90,9 @@ pub fn count(conn: &Connection, session_id: &str) -> AppResult<u64> {
 pub fn list(conn: &Connection, session_id: &str) -> AppResult<Vec<MessageRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, session_id, role, seq, status, model, token_count, metadata, \
-         parent_id, selected_child_id, created_at, updated_at \
+         parent_id, selected_child_id, created_at, updated_at, version, deleted_at, origin_device_id \
          FROM messages \
-         WHERE session_id = ?1 \
+         WHERE session_id = ?1 AND deleted_at IS NULL \
          ORDER BY seq ASC",
     )?;
 
@@ -107,6 +110,9 @@ pub fn list(conn: &Connection, session_id: &str) -> AppResult<Vec<MessageRow>> {
             selected_child_id: r.get(9)?,
             created_at: r.get(10)?,
             updated_at: r.get(11)?,
+            version: r.get(12)?,
+            deleted_at: r.get(13)?,
+            origin_device_id: r.get(14)?,
         })
     })?;
 
@@ -165,8 +171,8 @@ pub fn insert(conn: &Connection, m: &NewMessage) -> AppResult<()> {
     let now_str = now();
     conn.execute(
         "INSERT INTO messages (id, session_id, role, seq, status, model, token_count, \
-         metadata, parent_id, selected_child_id, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         metadata, parent_id, selected_child_id, created_at, updated_at, version) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1)",
         params![
             m.id,
             m.session_id,
@@ -210,8 +216,8 @@ pub fn update_status(conn: &Connection, id: &str, status: &str) -> AppResult<()>
     let now_str = now();
     conn.execute(
         "UPDATE messages \
-         SET status = ?1, updated_at = ?2 \
-         WHERE id = ?3",
+         SET status = ?1, updated_at = ?2, version = version + 1 \
+         WHERE id = ?3 AND deleted_at IS NULL",
         params![status, now_str, id],
     )?;
     Ok(())
@@ -239,8 +245,8 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<MessageRow>> {
     let res = conn
         .query_row(
             "SELECT id, session_id, role, seq, status, model, token_count, metadata, \
-             parent_id, selected_child_id, created_at, updated_at \
-             FROM messages WHERE id = ?1",
+             parent_id, selected_child_id, created_at, updated_at, version, deleted_at, origin_device_id \
+             FROM messages WHERE id = ?1 AND deleted_at IS NULL",
             [id],
             |r| {
                 Ok(MessageRow {
@@ -256,6 +262,9 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<MessageRow>> {
                     selected_child_id: r.get(9)?,
                     created_at: r.get(10)?,
                     updated_at: r.get(11)?,
+                    version: r.get(12)?,
+                    deleted_at: r.get(13)?,
+                    origin_device_id: r.get(14)?,
                 })
             },
         )
@@ -266,7 +275,7 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<MessageRow>> {
 /// 统计某条消息的子节点数（用于判断是否叶子）。
 pub fn count_children(conn: &Connection, id: &str) -> AppResult<u64> {
     let cnt: u64 = conn.query_row(
-        "SELECT COUNT(*) FROM messages WHERE parent_id = ?1",
+        "SELECT COUNT(*) FROM messages WHERE parent_id = ?1 AND deleted_at IS NULL",
         [id],
         |r| r.get(0),
     )?;
@@ -277,7 +286,8 @@ pub fn count_children(conn: &Connection, id: &str) -> AppResult<u64> {
 pub fn set_selected_child(conn: &Connection, parent_id: &str, child_id: Option<&str>) -> AppResult<()> {
     let now_str = now();
     conn.execute(
-        "UPDATE messages SET selected_child_id = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE messages SET selected_child_id = ?1, updated_at = ?2, version = version + 1 \
+         WHERE id = ?3 AND deleted_at IS NULL",
         params![child_id, now_str, parent_id],
     )?;
     Ok(())
@@ -292,10 +302,30 @@ pub fn delete_parts(conn: &Connection, message_id: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// 删除一条消息及其全部片段（调用方需先确认是叶子）。
-pub fn delete_message(conn: &Connection, id: &str) -> AppResult<()> {
-    delete_parts(conn, id)?;
-    conn.execute("DELETE FROM messages WHERE id = ?1", [id])?;
+pub fn mark_content_updated(conn: &Connection, message_id: &str) -> AppResult<()> {
+    conn.execute(
+        "UPDATE messages SET updated_at = ?1, version = version + 1 \
+         WHERE id = ?2 AND deleted_at IS NULL",
+        params![now(), message_id],
+    )?;
+    Ok(())
+}
+
+/// Soft-delete a leaf message and clear any active parent pointer to it.
+pub fn delete_message(conn: &mut Connection, id: &str) -> AppResult<()> {
+    let now_str = now();
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE messages SET selected_child_id = NULL, updated_at = ?1, version = version + 1 \
+         WHERE selected_child_id = ?2 AND deleted_at IS NULL",
+        params![now_str, id],
+    )?;
+    tx.execute(
+        "UPDATE messages SET deleted_at = ?1, updated_at = ?1, version = version + 1 \
+         WHERE id = ?2 AND deleted_at IS NULL",
+        params![now_str, id],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -352,4 +382,53 @@ pub fn list_active_with_parts(
     }
 
     Ok(ActivePathResult { messages: out })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deleting_a_message_keeps_a_versioned_tombstone() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::schema::SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO agents (id, name) VALUES ('agent-1', 'Agent')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, title) VALUES ('session-1', 'agent-1', 'Session')",
+            [],
+        )
+        .unwrap();
+        insert(
+            &conn,
+            &NewMessage {
+                id: "message-1".into(),
+                session_id: "session-1".into(),
+                role: "user".into(),
+                seq: 0,
+                status: "complete".into(),
+                model: None,
+                token_count: None,
+                metadata: None,
+                parent_id: None,
+                selected_child_id: None,
+            },
+        )
+        .unwrap();
+        delete_message(&mut conn, "message-1").unwrap();
+
+        assert!(get(&conn, "message-1").unwrap().is_none());
+        let (version, deleted_at): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT version, deleted_at FROM messages WHERE id = 'message-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(version, 2);
+        assert!(deleted_at.is_some());
+    }
 }

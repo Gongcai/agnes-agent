@@ -17,7 +17,10 @@ CREATE TABLE IF NOT EXISTS agents (
   thinking_mode TEXT,              -- 思考模式/强度: off|auto|low|medium|high
   thinking_budget INTEGER,         -- 思考预算(token)，Claude 的 budget_tokens，0 = 按强度预设
   created_at TEXT,
-  updated_at TEXT
+  updated_at TEXT,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -37,7 +40,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   summary_updated_at TEXT,
   created_at TEXT,
   updated_at TEXT,
-  version INTEGER DEFAULT 1,
+  version INTEGER NOT NULL DEFAULT 1,
   deleted_at TEXT,
   origin_device_id TEXT,
   pinned INTEGER DEFAULT 0,
@@ -48,9 +51,19 @@ CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL REFERENCES agents(id),
   name TEXT,
-  folder_path TEXT,
   created_at TEXT,
-  updated_at TEXT
+  updated_at TEXT,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS workspace_bindings (
+  workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+  folder_path TEXT NOT NULL,
+  created_at TEXT,
+  updated_at TEXT,
+  last_validated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -65,7 +78,10 @@ CREATE TABLE IF NOT EXISTS messages (
   parent_id TEXT,                  -- 父消息 id（版本树），NULL=根
   selected_child_id TEXT,          -- 当前活动路径选中的子消息 id，NULL=叶子
   created_at TEXT,
-  updated_at TEXT
+  updated_at TEXT,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS message_parts (
@@ -98,9 +114,22 @@ CREATE TABLE IF NOT EXISTS memory_store (
   created_at TEXT,
   updated_at TEXT,
   embedding_id TEXT,
-  version INTEGER DEFAULT 1,
+  version INTEGER NOT NULL DEFAULT 1,
   deleted_at TEXT,
   origin_device_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS explicit_memories (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL REFERENCES agents(id),
+  kind TEXT NOT NULL CHECK(kind IN ('user_md', 'memory_md')),
+  content TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT,
+  UNIQUE(agent_id, kind)
 );
 
 CREATE TABLE IF NOT EXISTS embedding_items (

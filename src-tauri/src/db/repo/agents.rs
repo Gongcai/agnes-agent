@@ -19,6 +19,9 @@ pub struct AgentRow {
     pub thinking_budget: i64,
     pub created_at: String,
     pub updated_at: String,
+    pub version: i64,
+    pub deleted_at: Option<String>,
+    pub origin_device_id: Option<String>,
 }
 
 pub struct NewAgent {
@@ -56,8 +59,9 @@ pub struct AgentUpdate {
 pub fn list(conn: &Connection) -> AppResult<Vec<AgentRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, persona, scenario, system_prompt, greeting, \
-         example_dialogue, model, tool_policy, avatar, tags, thinking_mode, thinking_budget, created_at, updated_at \
-         FROM agents ORDER BY created_at",
+         example_dialogue, model, tool_policy, avatar, tags, thinking_mode, thinking_budget, \
+         created_at, updated_at, version, deleted_at, origin_device_id \
+         FROM agents WHERE deleted_at IS NULL ORDER BY created_at",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok(AgentRow {
@@ -76,6 +80,9 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentRow>> {
             thinking_budget: r.get(12)?,
             created_at: r.get(13)?,
             updated_at: r.get(14)?,
+            version: r.get(15)?,
+            deleted_at: r.get(16)?,
+            origin_device_id: r.get(17)?,
         })
     })?;
     let mut out = Vec::new();
@@ -89,8 +96,9 @@ pub fn insert(conn: &Connection, a: &NewAgent) -> AppResult<String> {
     let now = now();
     conn.execute(
         "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, \
-         example_dialogue, model, tool_policy, avatar, tags, thinking_mode, thinking_budget, created_at, updated_at) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+         example_dialogue, model, tool_policy, avatar, tags, thinking_mode, thinking_budget, \
+         created_at, updated_at, version) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,1)",
         (
             &a.id,
             &a.name,
@@ -117,7 +125,8 @@ pub fn update(conn: &Connection, id: &str, c: &AgentUpdate) -> AppResult<()> {
     conn.execute(
         "UPDATE agents SET name = ?1, persona = ?2, scenario = ?3, system_prompt = ?4, \
          greeting = ?5, example_dialogue = ?6, model = ?7, tool_policy = ?8, \
-         avatar = ?9, tags = ?10, thinking_mode = ?11, thinking_budget = ?12, updated_at = ?13 WHERE id = ?14",
+         avatar = ?9, tags = ?10, thinking_mode = ?11, thinking_budget = ?12, \
+         updated_at = ?13, version = version + 1 WHERE id = ?14 AND deleted_at IS NULL",
         (
             &c.name,
             &c.persona,
@@ -141,22 +150,21 @@ pub fn update(conn: &Connection, id: &str, c: &AgentUpdate) -> AppResult<()> {
 pub fn update_model(conn: &Connection, id: &str, model: &str) -> AppResult<()> {
     let now = now();
     conn.execute(
-        "UPDATE agents SET model = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE agents SET model = ?1, updated_at = ?2, version = version + 1 \
+         WHERE id = ?3 AND deleted_at IS NULL",
         (model, &now, id),
     )?;
     Ok(())
 }
 
-/// 删除角色卡：先删其会话（及关联消息）再删角色卡本体，避免 FK 约束报错
-/// （sessions.agent_id REFERENCES agents(id) 无 ON DELETE CASCADE）。
+/// Soft-delete an agent while retaining dependent rows for sync and later compaction.
 pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
-    // 关联消息先删（messages.session_id REFERENCES sessions(id)）
+    let now = now();
     conn.execute(
-        "DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE agent_id = ?1)",
-        [id],
+        "UPDATE agents SET deleted_at = ?1, updated_at = ?1, version = version + 1 \
+         WHERE id = ?2 AND deleted_at IS NULL",
+        (&now, id),
     )?;
-    conn.execute("DELETE FROM sessions WHERE agent_id = ?1", [id])?;
-    conn.execute("DELETE FROM agents WHERE id = ?1", [id])?;
     Ok(())
 }
 
@@ -172,4 +180,47 @@ fn chrono_like_now() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!("{secs}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_agent() -> NewAgent {
+        NewAgent {
+            id: "agent-1".into(),
+            name: "Agent".into(),
+            persona: String::new(),
+            scenario: String::new(),
+            system_prompt: String::new(),
+            greeting: String::new(),
+            example_dialogue: String::new(),
+            model: String::new(),
+            tool_policy: "{}".into(),
+            avatar: String::new(),
+            tags: String::new(),
+            thinking_mode: "off".into(),
+            thinking_budget: 0,
+        }
+    }
+
+    #[test]
+    fn agent_updates_and_deletes_advance_the_tombstone_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::schema::SCHEMA).unwrap();
+        insert(&conn, &new_agent()).unwrap();
+        update_model(&conn, "agent-1", "provider/model").unwrap();
+        delete(&conn, "agent-1").unwrap();
+
+        assert!(list(&conn).unwrap().is_empty());
+        let (version, deleted_at): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT version, deleted_at FROM agents WHERE id = 'agent-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(version, 3);
+        assert!(deleted_at.is_some());
+    }
 }

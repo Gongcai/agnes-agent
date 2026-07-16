@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod explicit_memories;
 pub mod memory;
 pub mod messages;
 pub mod sessions;

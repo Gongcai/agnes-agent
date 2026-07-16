@@ -9,6 +9,7 @@ pub enum SyncEntityType {
     Message,
     ExplicitMemory,
     Memory,
+    Workspace,
 }
 
 pub fn project(entity_type: SyncEntityType, source: &Value) -> AppResult<Value> {
@@ -86,6 +87,16 @@ pub fn project(entity_type: SyncEntityType, source: &Value) -> AppResult<Value> 
             "content",
             "creator",
             "status",
+            "created_at",
+            "updated_at",
+            "version",
+            "deleted_at",
+            "origin_device_id",
+        ],
+        SyncEntityType::Workspace => &[
+            "id",
+            "agent_id",
+            "name",
             "created_at",
             "updated_at",
             "version",
@@ -189,6 +200,7 @@ mod tests {
             SyncEntityType::Message,
             SyncEntityType::ExplicitMemory,
             SyncEntityType::Memory,
+            SyncEntityType::Workspace,
         ] {
             let encoded = project(entity_type, &source).unwrap().to_string();
             assert!(!encoded.contains("secret"));
@@ -217,6 +229,28 @@ mod tests {
                 "agent_id": "agent-1",
                 "title": "Synced session",
                 "pinned": 1
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_projection_never_contains_the_local_binding() {
+        let source = json!({
+            "id": "workspace-1",
+            "agent_id": "agent-1",
+            "name": "Project",
+            "folder_path": "/home/user/private-project",
+            "last_validated_at": "123",
+            "version": 2
+        });
+
+        assert_eq!(
+            project(SyncEntityType::Workspace, &source).unwrap(),
+            json!({
+                "id": "workspace-1",
+                "agent_id": "agent-1",
+                "name": "Project",
+                "version": 2
             })
         );
     }
