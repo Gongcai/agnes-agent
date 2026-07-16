@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agnes-sync-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-16",
+  "workers_dev": true,
+  "vars": {
+    "AUTH_MODE": "disabled"
+  },
+  "d1_databases": [
+    {
+      "binding": "SYNC_DB",
+      "database_name": "agnes-sync",
+      "database_id": "local",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

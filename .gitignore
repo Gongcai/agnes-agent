@@ -20,6 +20,8 @@ src-tauri/target/*
 .env
 .env.*
 *.local
+.dev.vars
+.wrangler
 
 # os
 .DS_Store
