@@ -169,6 +169,11 @@ pub enum DbCommand {
         recurrence_rule: Option<String>,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    UpdateCalendarEvent {
+        id: String,
+        changes: repo::planner::EventUpdate,
+        resp: oneshot::Sender<AppResult<repo::planner::EventRow>>,
+    },
     ListTaskLists {
         resp: oneshot::Sender<AppResult<Vec<repo::planner::TaskListRow>>>,
     },
@@ -197,6 +202,11 @@ pub enum DbCommand {
         id: String,
         completed: bool,
         resp: oneshot::Sender<AppResult<()>>,
+    },
+    UpdateTask {
+        id: String,
+        changes: repo::planner::TaskUpdate,
+        resp: oneshot::Sender<AppResult<repo::planner::TaskRow>>,
     },
     ListSessions {
         agent_id: String,
@@ -833,6 +843,16 @@ impl DbActorHandle {
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
+    pub async fn update_calendar_event(
+        &self,
+        id: String,
+        changes: repo::planner::EventUpdate,
+    ) -> AppResult<repo::planner::EventRow> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateCalendarEvent { id, changes, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
     pub async fn list_task_lists(&self) -> AppResult<Vec<repo::planner::TaskListRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListTaskLists { resp })?;
@@ -894,6 +914,16 @@ impl DbActorHandle {
             completed,
             resp,
         })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+    pub async fn update_task(
+        &self,
+        id: String,
+        changes: repo::planner::TaskUpdate,
+    ) -> AppResult<repo::planner::TaskRow> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateTask { id, changes, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -1711,6 +1741,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         recurrence_rule,
                     ));
                 }
+                DbCommand::UpdateCalendarEvent { id, changes, resp } => {
+                    let _ = resp.send(repo::planner::update_event(&conn, &id, changes));
+                }
                 DbCommand::ListTaskLists { resp } => {
                     let _ = resp.send(repo::planner::list_task_lists(&conn));
                 }
@@ -1754,6 +1787,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     resp,
                 } => {
                     let _ = resp.send(repo::planner::complete_task(&conn, &id, completed));
+                }
+                DbCommand::UpdateTask { id, changes, resp } => {
+                    let _ = resp.send(repo::planner::update_task(&conn, &id, changes));
                 }
                 DbCommand::ListSessions { agent_id, resp } => {
                     let _ = resp.send(repo::sessions::list(&conn, &agent_id));

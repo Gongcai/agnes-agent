@@ -224,6 +224,7 @@ mod tests {
                 timeout_sec: 5,
             },
             memory: Default::default(),
+            planner: Default::default(),
             sandbox: Default::default(),
             network: Default::default(),
         };

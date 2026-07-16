@@ -256,6 +256,7 @@ interface AgentFormValues {
     file: AgentToolToggle;
     git: AgentToolToggle;
     memory: AgentToolToggle;
+    planner: AgentToolToggle;
     network: { allow: boolean; [key: string]: unknown };
     sandbox: {
       landlock: boolean;
@@ -294,6 +295,7 @@ const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
   file: { enabled: true, approval: "on_write" },
   git: { enabled: true, approval: "on_risk" },
   memory: { enabled: true, approval: "on_write" },
+  planner: { enabled: true, approval: "always" },
   network: { allow: true },
   sandbox: { landlock: true, bwrap: "auto", rlimits: true },
 };
@@ -337,12 +339,12 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
   try {
     const obj = JSON.parse(json);
     if (obj && typeof obj === "object") {
-      const knownKeys = new Set(["shell", "file", "git", "memory", "network", "sandbox"]);
+      const knownKeys = new Set(["shell", "file", "git", "memory", "planner", "network", "sandbox"]);
       Object.entries(obj).forEach(([key, value]) => {
         if (!knownKeys.has(key)) base[key] = value;
       });
     }
-    (["shell", "file", "git", "memory"] as const).forEach((k) => {
+    (["shell", "file", "git", "memory", "planner"] as const).forEach((k) => {
       const t = obj?.[k];
       if (t && typeof t === "object") {
         const legacyDefaults: Record<typeof k, ApprovalTier> = {
@@ -350,6 +352,7 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
           file: "on_write",
           git: "on_risk",
           memory: "on_write",
+          planner: "always",
         };
         const rawApproval = t.approval;
         let approval = legacyDefaults[k];
@@ -537,7 +540,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   // Render capability and approval controls for one tool group.
-  const renderToolToggle = (key: "shell" | "file" | "git" | "memory", label: string) => (
+  const renderToolToggle = (key: "shell" | "file" | "git" | "memory" | "planner", label: string) => (
     <div className="flex items-center justify-between py-1.5 border-b border-stone-100 last:border-0">
       <span className="text-xs text-stone-700">{label}</span>
       <div className="flex items-center gap-2">
@@ -1804,6 +1807,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {renderToolToggle("file", "文件读写")}
                           {renderToolToggle("git", "Git 操作")}
                           {renderToolToggle("memory", "长期记忆")}
+                          {renderToolToggle("planner", "日历与待办")}
                           <div className="flex items-center justify-between py-1.5 border-b border-stone-100">
                             <span className="text-xs text-stone-700">网络访问</span>
                             <button

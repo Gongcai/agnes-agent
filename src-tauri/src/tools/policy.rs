@@ -14,6 +14,8 @@ pub struct ToolPolicy {
     #[serde(default)]
     pub memory: MemoryPolicy,
     #[serde(default)]
+    pub planner: PlannerPolicy,
+    #[serde(default)]
     pub sandbox: SandboxPolicy,
     #[serde(default)]
     pub network: NetworkPolicy,
@@ -116,11 +118,27 @@ pub struct MemoryPolicy {
     pub approval: ApprovalTier,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct PlannerPolicy {
+    pub enabled: bool,
+    pub approval: ApprovalTier,
+}
+
 impl Default for MemoryPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
             approval: ApprovalTier::OnWrite,
+        }
+    }
+}
+
+impl Default for PlannerPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            approval: ApprovalTier::Always,
         }
     }
 }
@@ -324,6 +342,14 @@ impl ToolPolicy {
         Ok(())
     }
 
+    /// Validate whether local calendar and task tools are available to this agent.
+    pub fn check_planner(&self) -> Result<(), String> {
+        if !self.planner.enabled {
+            return Err("Calendar and task tools are disabled for this agent".into());
+        }
+        Ok(())
+    }
+
     /// Return the approval tier for a tool. Unknown tools fail closed.
     pub fn approval_for(&self, tool: &str) -> ApprovalTier {
         match tool {
@@ -334,7 +360,12 @@ impl ToolPolicy {
             "memory_search" | "memory_md_view" => ApprovalTier::Never,
             "memory_create" | "memory_update" | "memory_md_edit" => self.memory.approval,
             "calendar_list" | "task_list" => ApprovalTier::Never,
-            "calendar_create" | "task_create" | "task_complete" => ApprovalTier::Always,
+            "calendar_create"
+            | "calendar_event_create"
+            | "calendar_update"
+            | "task_create"
+            | "task_complete"
+            | "task_update" => self.planner.approval,
             _ => ApprovalTier::Always,
         }
     }
@@ -376,8 +407,17 @@ mod tests {
         assert_eq!(value["file"]["approval"], "on_write");
         assert_eq!(value["git"]["approval"], "on_risk");
         assert_eq!(value["memory"]["approval"], "on_write");
+        assert_eq!(value["planner"]["approval"], "always");
         assert_eq!(value["git"]["timeout_sec"], 30);
         assert_eq!(value["network"]["allow"], true);
         assert_eq!(value["sandbox"]["bwrap"], "auto");
+    }
+
+    #[test]
+    fn planner_capability_can_be_disabled() {
+        let mut policy = ToolPolicy::default();
+        assert!(policy.check_planner().is_ok());
+        policy.planner.enabled = false;
+        assert!(policy.check_planner().is_err());
     }
 }

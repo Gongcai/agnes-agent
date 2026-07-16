@@ -240,6 +240,7 @@ def test_debug_prompt_payload_includes_effective_tool_schemas():
                     "file": {"enabled": False},
                     "git": {"enabled": False},
                     "memory": {"enabled": True},
+                    "planner": {"enabled": False},
                 },
             },
             "settings": {},
@@ -307,6 +308,14 @@ def test_get_available_tools():
         "memory_update",
         "memory_md_view",
         "memory_md_edit",
+        "calendar_list",
+        "calendar_create",
+        "calendar_event_create",
+        "calendar_update",
+        "task_list",
+        "task_create",
+        "task_update",
+        "task_complete",
     ]
 
     memory_disabled_names = [
@@ -318,6 +327,32 @@ def test_get_available_tools():
     assert "memory_update" not in memory_disabled_names
     assert "memory_md_view" not in memory_disabled_names
     assert "memory_md_edit" not in memory_disabled_names
+
+    planner_disabled_names = [
+        tool["function"]["name"]
+        for tool in get_available_tools({"planner": {"enabled": False}})
+    ]
+    assert "calendar_list" not in planner_disabled_names
+    assert "calendar_event_create" not in planner_disabled_names
+    assert "task_update" not in planner_disabled_names
+
+
+def test_planner_tools_expose_stable_ids_and_update_fields():
+    tools = {
+        tool["function"]["name"]: tool["function"]
+        for tool in get_available_tools({"planner": {"enabled": True}})
+    }
+
+    assert tools["calendar_list"]["parameters"]["properties"]["calendar_id"]
+    assert tools["calendar_event_create"]["parameters"]["required"] == [
+        "calendar_id",
+        "title",
+        "starts_at",
+        "ends_at",
+        "timezone",
+    ]
+    assert "event_id" in tools["calendar_update"]["parameters"]["properties"]
+    assert "task_id" in tools["task_update"]["parameters"]["properties"]
 
 
 def test_task_model_routing_and_fallback():

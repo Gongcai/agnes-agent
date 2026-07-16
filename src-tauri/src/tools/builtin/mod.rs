@@ -103,9 +103,12 @@ pub fn builtin_tools() -> Vec<Box<dyn BuiltinTool>> {
         Box::new(memory_md_edit::MemoryMdEditTool),
         Box::new(planner::CalendarListTool),
         Box::new(planner::CalendarCreateTool),
+        Box::new(planner::CalendarEventCreateTool),
+        Box::new(planner::CalendarUpdateTool),
         Box::new(planner::TaskListTool),
         Box::new(planner::TaskCreateTool),
         Box::new(planner::TaskCompleteTool),
+        Box::new(planner::TaskUpdateTool),
     ]
 }
 
@@ -174,8 +177,18 @@ pub fn compute_risk(tool: &str, args: &Value) -> Risk {
 /// 判断操作是否为写操作（用于 OnWrite tier）。
 pub fn is_write_op(tool: &str, args: &Value) -> bool {
     match tool {
-        "file_write" | "file_edit" | "apply_patch" | "memory_create" | "memory_update"
-        | "memory_md_edit" | "calendar_create" | "task_create" | "task_complete" => true,
+        "file_write"
+        | "file_edit"
+        | "apply_patch"
+        | "memory_create"
+        | "memory_update"
+        | "memory_md_edit"
+        | "calendar_create"
+        | "calendar_event_create"
+        | "calendar_update"
+        | "task_create"
+        | "task_complete"
+        | "task_update" => true,
         "file_read" | "list_files" | "grep" | "memory_search" | "memory_md_view"
         | "calendar_list" | "task_list" => false,
         "shell" => {
@@ -314,9 +327,12 @@ mod tests {
                 "memory_md_edit",
                 "calendar_list",
                 "calendar_create",
+                "calendar_event_create",
+                "calendar_update",
                 "task_list",
                 "task_create",
-                "task_complete"
+                "task_complete",
+                "task_update"
             ]
         );
         assert!(builtin_tools()
@@ -326,7 +342,14 @@ mod tests {
             assert_eq!(compute_risk(tool, &json!({})), Risk::Medium);
             assert!(is_write_op(tool, &json!({})));
         }
-        for tool in ["calendar_create", "task_create", "task_complete"] {
+        for tool in [
+            "calendar_create",
+            "calendar_event_create",
+            "calendar_update",
+            "task_create",
+            "task_complete",
+            "task_update",
+        ] {
             assert_eq!(compute_risk(tool, &json!({})), Risk::High);
             assert!(is_write_op(tool, &json!({})));
         }

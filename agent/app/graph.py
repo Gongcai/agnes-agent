@@ -255,6 +255,153 @@ def get_available_tools(tool_policy: Dict[str, Any]) -> List[Dict[str, Any]]:
             },
         ])
 
+    # 5. User-level calendar and task tools
+    planner_enabled = tool_policy.get("planner", {}).get("enabled", True)
+    if planner_enabled:
+        tools.extend([
+            {
+                "type": "function",
+                "function": {
+                    "name": "calendar_list",
+                    "description": "List local calendars, or events in one calendar when calendar_id and an ISO 8601 range are provided.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "calendar_id": {"type": "string"},
+                            "range_start": {"type": "string"},
+                            "range_end": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "calendar_create",
+                    "description": "Create a local calendar. This write always requires approval outside Full Access.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "timezone": {"type": "string"},
+                            "color": {"type": ["string", "null"]},
+                        },
+                        "required": ["name", "timezone"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "calendar_event_create",
+                    "description": "Create an event in an existing local calendar. This write always requires approval outside Full Access.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "calendar_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "starts_at": {"type": "string"},
+                            "ends_at": {"type": "string"},
+                            "timezone": {"type": "string"},
+                            "all_day": {"type": "boolean"},
+                            "recurrence_rule": {"type": ["string", "null"]},
+                        },
+                        "required": ["calendar_id", "title", "starts_at", "ends_at", "timezone"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "calendar_update",
+                    "description": "Update selected fields of an existing local calendar event. This write always requires approval outside Full Access.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "event_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "starts_at": {"type": "string"},
+                            "ends_at": {"type": "string"},
+                            "timezone": {"type": "string"},
+                            "all_day": {"type": "boolean"},
+                            "recurrence_rule": {"type": ["string", "null"]},
+                        },
+                        "required": ["event_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "task_list",
+                    "description": "List local task lists, or tasks in one list when task_list_id is provided.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"task_list_id": {"type": "string"}},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "task_create",
+                    "description": "Create a local task in an existing task list. This write always requires approval outside Full Access.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_list_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "description": {"type": ["string", "null"]},
+                            "due_at": {"type": ["string", "null"]},
+                            "priority": {"type": "integer", "minimum": 0, "maximum": 4},
+                        },
+                        "required": ["task_list_id", "title"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "task_update",
+                    "description": "Update selected fields of an existing local task. This write always requires approval outside Full Access.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "description": {"type": ["string", "null"]},
+                            "priority": {"type": "integer", "minimum": 0, "maximum": 4},
+                            "due_at": {"type": ["string", "null"]},
+                        },
+                        "required": ["task_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "task_complete",
+                    "description": "Mark a local task completed or reopen it. This write always requires approval outside Full Access.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string"},
+                            "completed": {"type": "boolean"},
+                        },
+                        "required": ["task_id", "completed"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        ])
+
     return tools
 
 async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, Any]:

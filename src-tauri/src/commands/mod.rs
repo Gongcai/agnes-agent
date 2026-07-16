@@ -2104,6 +2104,31 @@ pub async fn list_calendar_events(
         .list_calendar_events(calendar_id, range_start, range_end)
         .await
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarEventUpdatePayload {
+    pub title: Option<String>,
+    pub starts_at: Option<String>,
+    pub ends_at: Option<String>,
+    pub timezone: Option<String>,
+    pub all_day: Option<bool>,
+    pub recurrence_rule: Option<Option<String>>,
+}
+
+impl From<CalendarEventUpdatePayload> for crate::db::repo::planner::EventUpdate {
+    fn from(value: CalendarEventUpdatePayload) -> Self {
+        Self {
+            title: value.title,
+            starts_at: value.starts_at,
+            ends_at: value.ends_at,
+            timezone: value.timezone,
+            all_day: value.all_day,
+            recurrence_rule: value.recurrence_rule,
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn create_calendar_event(
     state: tauri::State<'_, AppState>,
@@ -2130,6 +2155,18 @@ pub async fn create_calendar_event(
         )
         .await?;
     Ok(id)
+}
+
+#[tauri::command]
+pub async fn update_calendar_event(
+    state: tauri::State<'_, AppState>,
+    event_id: String,
+    changes: CalendarEventUpdatePayload,
+) -> AppResult<crate::db::repo::planner::EventRow> {
+    state
+        .db
+        .update_calendar_event(event_id, changes.into())
+        .await
 }
 #[tauri::command]
 pub async fn list_task_lists(
@@ -2188,6 +2225,35 @@ pub async fn complete_task(
     completed: bool,
 ) -> AppResult<()> {
     state.db.complete_task(task_id, completed).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskUpdatePayload {
+    pub title: Option<String>,
+    pub description: Option<Option<String>>,
+    pub priority: Option<i64>,
+    pub due_at: Option<Option<String>>,
+}
+
+impl From<TaskUpdatePayload> for crate::db::repo::planner::TaskUpdate {
+    fn from(value: TaskUpdatePayload) -> Self {
+        Self {
+            title: value.title,
+            description: value.description,
+            priority: value.priority,
+            due_at: value.due_at,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn update_task(
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+    changes: TaskUpdatePayload,
+) -> AppResult<crate::db::repo::planner::TaskRow> {
+    state.db.update_task(task_id, changes.into()).await
 }
 
 #[derive(serde::Serialize)]
