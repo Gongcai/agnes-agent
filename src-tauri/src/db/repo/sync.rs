@@ -54,6 +54,7 @@ pub struct SyncDbStatus {
     pub last_success_at: Option<i64>,
     pub last_error_code: Option<String>,
     pub backoff_until: Option<i64>,
+    pub e2ee_key_version: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -309,7 +310,8 @@ pub fn status(conn: &Connection) -> AppResult<SyncDbStatus> {
            (SELECT COUNT(*) FROM sync_conflicts WHERE status = 'pending'), \
            (SELECT COUNT(*) FROM sync_outbox WHERE status = 'dead_letter'), \
            r.last_pull_cursor, r.bootstrap_state, r.last_success_at, r.last_error_code, \
-           r.backoff_until FROM sync_runtime_state r WHERE r.singleton = 1",
+           r.backoff_until, r.e2ee_key_version \
+         FROM sync_runtime_state r WHERE r.singleton = 1",
         [],
         |row| {
             Ok(SyncDbStatus {
@@ -323,10 +325,27 @@ pub fn status(conn: &Connection) -> AppResult<SyncDbStatus> {
                 last_success_at: row.get(7)?,
                 last_error_code: row.get(8)?,
                 backoff_until: row.get(9)?,
+                e2ee_key_version: row.get(10)?,
             })
         },
     )
     .map_err(Into::into)
+}
+
+pub fn set_e2ee_key_version(conn: &Connection, key_version: Option<i64>) -> AppResult<()> {
+    if key_version.is_some_and(|version| version <= 0) {
+        return Err(AppError::Other(
+            "E2EE key version must be a positive integer".into(),
+        ));
+    }
+    let changed = conn.execute(
+        "UPDATE sync_runtime_state SET e2ee_key_version = ?1 WHERE singleton = 1",
+        [key_version],
+    )?;
+    if changed != 1 {
+        return Err(AppError::Other("Sync runtime state is missing".into()));
+    }
+    Ok(())
 }
 
 pub fn claim_pending(

@@ -35,6 +35,7 @@ diffy = "0.4"
 base64 = "0.22"
 chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 zeroize = { version = "1", features = ["derive"] }
+hkdf = "0.12"
 
 [profile.release]
 panic = "abort"

@@ -6,13 +6,15 @@ use std::time::Duration;
 use rand::Rng;
 use serde::Serialize;
 use tokio::sync::Mutex;
+use zeroize::Zeroizing;
 
 use crate::db::repo::sync::{AcceptedChange, ConflictChange, RemoteEntityInput, SyncDbStatus};
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
-use crate::secrets::{SecretStore, SYNC_CREDENTIAL_SECRET_ID};
+use crate::secrets::{SecretStore, SYNC_CREDENTIAL_SECRET_ID, SYNC_E2EE_KEYSET_SECRET_ID};
 use crate::sync::auth::SyncCredential;
 use crate::sync::client::{FailureKind, HttpSyncTransport, SyncTransport, TransportFailure};
+use crate::sync::crypto::{RecoveryMaterial, SyncKeyset};
 use crate::sync::protocol::{
     AckRequest, DeviceListResponse, PushRequest, PushResponse, RemoteChange, RemoteEntity,
     RevokeDeviceResponse, SyncDevice, DEFAULT_PAGE_LIMIT, PROTOCOL_VERSION,
@@ -22,6 +24,16 @@ pub const SYNC_GATEWAY_URL: &str = "https://agnes-sync-api.caiwengong136.workers
 const MAX_BATCHES_PER_RUN: usize = 5;
 const MAX_PUSH_CHANGES: usize = 20;
 const MAX_REMOTE_PAGES_PER_RUN: usize = 5;
+const E2EE_TRANSPORT_READY: bool = false;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncE2eeStatus {
+    pub keyset_configured: bool,
+    pub confirmed: bool,
+    pub active_key_version: Option<i64>,
+    pub transport_ready: bool,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +42,7 @@ pub struct SyncStatus {
     pub gateway_url: String,
     pub credential_configured: bool,
     pub syncing: bool,
+    pub e2ee: SyncE2eeStatus,
     #[serde(flatten)]
     pub database: SyncDbStatus,
 }
@@ -61,12 +74,24 @@ impl SyncService {
 
     pub async fn status(&self) -> AppResult<SyncStatus> {
         let database = self.db.get_sync_status().await?;
-        let credential_configured = self.secrets.get(SYNC_CREDENTIAL_SECRET_ID).await?.is_some();
+        let credential_configured = match self.secrets.get(SYNC_CREDENTIAL_SECRET_ID).await? {
+            Some(secret) => {
+                drop(Zeroizing::new(secret));
+                true
+            }
+            None => false,
+        };
+        let keyset = self.load_keyset().await?;
+        let e2ee = validate_e2ee_status(keyset.as_ref(), database.e2ee_key_version)?;
         let syncing = self.syncing.load(Ordering::SeqCst);
         let state = if syncing {
             "syncing"
         } else if !credential_configured {
             "auth_required"
+        } else if !e2ee.confirmed {
+            "e2ee_required"
+        } else if !e2ee.transport_ready {
+            "e2ee_pending"
         } else if database.conflict_count > 0 {
             "conflict"
         } else if database.dead_letter_count > 0 || database.last_error_code.is_some() {
@@ -84,15 +109,177 @@ impl SyncService {
             gateway_url: SYNC_GATEWAY_URL.into(),
             credential_configured,
             syncing,
+            e2ee,
             database,
         })
     }
 
     pub async fn run_once(&self) -> AppResult<SyncStatus> {
+        let status = self.status().await?;
+        if !status.e2ee.confirmed || !status.e2ee.transport_ready {
+            return Ok(status);
+        }
         let Some(transport) = self.http_transport().await? else {
-            return self.status().await;
+            return Ok(status);
         };
         self.run_with_transport(&transport).await
+    }
+
+    pub async fn begin_e2ee_setup(&self) -> AppResult<RecoveryMaterial> {
+        let _guard = self.run_gate.lock().await;
+        let keyset = match self.load_keyset().await? {
+            Some(keyset) => keyset,
+            None => {
+                let keyset = SyncKeyset::generate_initial();
+                self.persist_new_keyset(&keyset).await?;
+                keyset
+            }
+        };
+        keyset.create_recovery_material()
+    }
+
+    pub async fn confirm_e2ee_setup(&self) -> AppResult<SyncStatus> {
+        let _guard = self.run_gate.lock().await;
+        let keyset = self
+            .load_keyset()
+            .await?
+            .ok_or_else(|| AppError::Other("Sync encryption keys are not configured".into()))?;
+        self.db
+            .set_sync_e2ee_key_version(Some(keyset.active_key_version()))
+            .await?;
+        drop(_guard);
+        self.status().await
+    }
+
+    pub async fn restore_e2ee(
+        &self,
+        recovery_key: &str,
+        recovery_bundle: &str,
+    ) -> AppResult<SyncStatus> {
+        let _guard = self.run_gate.lock().await;
+        let recovered = SyncKeyset::recover(recovery_key, recovery_bundle)?;
+        let installed_new = match self.load_keyset().await? {
+            Some(existing) => {
+                let existing = Zeroizing::new(existing.serialize()?);
+                let recovered_serialized = Zeroizing::new(recovered.serialize()?);
+                if existing.as_str() != recovered_serialized.as_str() {
+                    return Err(AppError::Other(
+                        "A different sync encryption keyset is already configured".into(),
+                    ));
+                }
+                false
+            }
+            None => {
+                self.persist_new_keyset(&recovered).await?;
+                true
+            }
+        };
+        if let Err(error) = self
+            .db
+            .set_sync_e2ee_key_version(Some(recovered.active_key_version()))
+            .await
+        {
+            if installed_new {
+                let rollback = self.secrets.delete(SYNC_E2EE_KEYSET_SECRET_ID).await.err();
+                return Err(AppError::SecretStore(format!(
+                    "restore local E2EE state failed: {error}{}",
+                    rollback
+                        .map(|rollback| format!("; keyring rollback failed: {rollback}"))
+                        .unwrap_or_default()
+                )));
+            }
+            return Err(error);
+        }
+        drop(_guard);
+        self.status().await
+    }
+
+    pub async fn discard_e2ee_setup(&self) -> AppResult<SyncStatus> {
+        let _guard = self.run_gate.lock().await;
+        if self.db.get_sync_status().await?.e2ee_key_version.is_some() {
+            return Err(AppError::Other(
+                "Confirmed sync encryption keys cannot be discarded".into(),
+            ));
+        }
+        let Some(previous) = self.secrets.get(SYNC_E2EE_KEYSET_SECRET_ID).await? else {
+            drop(_guard);
+            return self.status().await;
+        };
+        let previous = Zeroizing::new(previous);
+        self.secrets.delete(SYNC_E2EE_KEYSET_SECRET_ID).await?;
+        let verification_error = match self.secrets.get(SYNC_E2EE_KEYSET_SECRET_ID).await {
+            Ok(None) => None,
+            Ok(Some(stored)) => {
+                drop(Zeroizing::new(stored));
+                Some("deleted keyset was still readable".to_string())
+            }
+            Err(error) => Some(error.to_string()),
+        };
+        if let Some(verification_error) = verification_error {
+            let rollback = self
+                .secrets
+                .set(SYNC_E2EE_KEYSET_SECRET_ID, previous.as_str())
+                .await
+                .err();
+            return Err(AppError::SecretStore(format!(
+                "sync encryption key deletion verification failed: {verification_error}{}",
+                rollback
+                    .map(|error| format!("; rollback failed: {error}"))
+                    .unwrap_or_default()
+            )));
+        }
+        drop(_guard);
+        self.status().await
+    }
+
+    async fn load_keyset(&self) -> AppResult<Option<SyncKeyset>> {
+        let Some(raw) = self.secrets.get(SYNC_E2EE_KEYSET_SECRET_ID).await? else {
+            return Ok(None);
+        };
+        let raw = Zeroizing::new(raw);
+        SyncKeyset::parse(raw.as_str()).map(Some)
+    }
+
+    async fn persist_new_keyset(&self, keyset: &SyncKeyset) -> AppResult<()> {
+        if self
+            .secrets
+            .get(SYNC_E2EE_KEYSET_SECRET_ID)
+            .await?
+            .is_some()
+        {
+            return Err(AppError::Other(
+                "Sync encryption keys are already configured".into(),
+            ));
+        }
+        let replacement = Zeroizing::new(keyset.serialize()?);
+        if let Err(error) = self
+            .secrets
+            .set(SYNC_E2EE_KEYSET_SECRET_ID, replacement.as_str())
+            .await
+        {
+            return Err(AppError::SecretStore(format!(
+                "sync encryption key write failed: {error}"
+            )));
+        }
+        let verification_error = match self.secrets.get(SYNC_E2EE_KEYSET_SECRET_ID).await {
+            Ok(Some(stored)) => {
+                let stored = Zeroizing::new(stored);
+                (stored.as_str() != replacement.as_str())
+                    .then(|| "stored keyset did not match".to_string())
+            }
+            Ok(None) => Some("stored keyset was missing".to_string()),
+            Err(error) => Some(error.to_string()),
+        };
+        if let Some(reason) = verification_error {
+            let rollback = self.secrets.delete(SYNC_E2EE_KEYSET_SECRET_ID).await.err();
+            return Err(AppError::SecretStore(format!(
+                "sync encryption key verification failed: {reason}{}",
+                rollback
+                    .map(|error| format!("; rollback failed: {error}"))
+                    .unwrap_or_default()
+            )));
+        }
+        Ok(())
     }
 
     pub async fn list_devices(&self) -> AppResult<Vec<SyncDevice>> {
@@ -133,7 +320,8 @@ impl SyncService {
         let Some(secret) = self.secrets.get(SYNC_CREDENTIAL_SECRET_ID).await? else {
             return Ok(None);
         };
-        let credential = SyncCredential::parse(&secret)?;
+        let secret = Zeroizing::new(secret);
+        let credential = SyncCredential::parse(secret.as_str())?;
         Ok(Some(HttpSyncTransport::new(
             self.client.clone(),
             SYNC_GATEWAY_URL,
@@ -487,6 +675,28 @@ fn validate_device_list(
         ));
     }
     Ok(response.devices)
+}
+
+fn validate_e2ee_status(
+    keyset: Option<&SyncKeyset>,
+    confirmed_version: Option<i64>,
+) -> AppResult<SyncE2eeStatus> {
+    if let Some(version) = confirmed_version {
+        let keyset = keyset.ok_or_else(|| {
+            AppError::Other("E2EE is enabled but the local keyset is missing".into())
+        })?;
+        if keyset.key(version).is_none() {
+            return Err(AppError::Other(format!(
+                "E2EE key version {version} is missing from the local keyset"
+            )));
+        }
+    }
+    Ok(SyncE2eeStatus {
+        keyset_configured: keyset.is_some(),
+        confirmed: confirmed_version.is_some(),
+        active_key_version: keyset.map(SyncKeyset::active_key_version),
+        transport_ready: E2EE_TRANSPORT_READY,
+    })
 }
 
 fn validate_revoked_device(
@@ -887,6 +1097,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn encrypted_only_gate_blocks_plaintext_sync_before_and_after_confirmation() {
+        let (path, service) = test_service("encrypted-only-gate");
+        service
+            .secrets
+            .set(
+                SYNC_CREDENTIAL_SECRET_ID,
+                &SyncCredential::Bearer {
+                    token: "test-device-token".into(),
+                }
+                .into_secret()
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        service
+            .db
+            .insert_agent(new_agent("encrypted-agent"))
+            .await
+            .unwrap();
+
+        let required = service.run_once().await.unwrap();
+        assert_eq!(required.state, "e2ee_required");
+        assert!(!required.e2ee.keyset_configured);
+        assert_eq!(required.database.pending_count, 1);
+
+        service.begin_e2ee_setup().await.unwrap();
+        let awaiting_confirmation = service.run_once().await.unwrap();
+        assert_eq!(awaiting_confirmation.state, "e2ee_required");
+        assert!(awaiting_confirmation.e2ee.keyset_configured);
+        assert!(!awaiting_confirmation.e2ee.confirmed);
+
+        let confirmed = service.confirm_e2ee_setup().await.unwrap();
+        assert_eq!(confirmed.state, "e2ee_pending");
+        assert!(confirmed.e2ee.confirmed);
+        assert_eq!(confirmed.e2ee.active_key_version, Some(1));
+        assert!(!confirmed.e2ee.transport_ready);
+        assert_eq!(service.run_once().await.unwrap().database.pending_count, 1);
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn recovery_installs_a_new_keyring_but_never_overwrites_a_different_keyset() {
+        let (source_path, source) = test_service("recovery-source");
+        let material = source.begin_e2ee_setup().await.unwrap();
+        source.confirm_e2ee_setup().await.unwrap();
+
+        let (target_path, target) = test_service("recovery-target");
+        let restored = target
+            .restore_e2ee(&material.recovery_key, &material.recovery_bundle)
+            .await
+            .unwrap();
+        assert!(restored.e2ee.keyset_configured);
+        assert!(restored.e2ee.confirmed);
+        assert_eq!(restored.e2ee.active_key_version, Some(1));
+        assert_eq!(restored.database.e2ee_key_version, Some(1));
+
+        let same = target
+            .restore_e2ee(&material.recovery_key, &material.recovery_bundle)
+            .await
+            .unwrap();
+        assert!(same.e2ee.confirmed);
+
+        let (other_path, other) = test_service("recovery-other");
+        let other_material = other.begin_e2ee_setup().await.unwrap();
+        let error = target
+            .restore_e2ee(
+                &other_material.recovery_key,
+                &other_material.recovery_bundle,
+            )
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("different sync encryption keyset"));
+        assert_eq!(
+            target.status().await.unwrap().e2ee.active_key_version,
+            Some(1)
+        );
+        assert!(target.discard_e2ee_setup().await.is_err());
+        let discarded = other.discard_e2ee_setup().await.unwrap();
+        assert!(!discarded.e2ee.keyset_configured);
+        assert!(!discarded.e2ee.confirmed);
+
+        drop(source);
+        drop(target);
+        drop(other);
+        let _ = std::fs::remove_file(source_path);
+        let _ = std::fs::remove_file(target_path);
+        let _ = std::fs::remove_file(other_path);
+    }
+
+    #[tokio::test]
     async fn accepted_push_advances_entity_state_and_clears_pending() {
         let (path, service) = test_service("accepted");
         service
@@ -1008,7 +1312,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a temporary remote bearer identity"]
+    #[ignore = "plaintext remote POC is disabled until encrypted transport is implemented"]
     async fn remote_bearer_push_accepts_a_fake_agent() {
         let token = std::env::var("AGNES_SYNC_E2E_TOKEN")
             .expect("AGNES_SYNC_E2E_TOKEN must contain the temporary bearer token");

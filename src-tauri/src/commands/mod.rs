@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use zeroize::Zeroize;
 
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -519,6 +520,41 @@ pub async fn set_sync_credential(
         )));
     }
     state.sync.status().await
+}
+
+#[tauri::command]
+pub async fn begin_sync_e2ee_setup(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::sync::crypto::RecoveryMaterial> {
+    state.sync.begin_e2ee_setup().await
+}
+
+#[tauri::command]
+pub async fn confirm_sync_e2ee_setup(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::sync::engine::SyncStatus> {
+    state.sync.confirm_e2ee_setup().await
+}
+
+#[tauri::command]
+pub async fn restore_sync_e2ee(
+    state: tauri::State<'_, AppState>,
+    mut recovery_key: String,
+    recovery_bundle: String,
+) -> AppResult<crate::sync::engine::SyncStatus> {
+    let result = state
+        .sync
+        .restore_e2ee(&recovery_key, &recovery_bundle)
+        .await;
+    recovery_key.zeroize();
+    result
+}
+
+#[tauri::command]
+pub async fn discard_sync_e2ee_setup(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::sync::engine::SyncStatus> {
+    state.sync.discard_e2ee_setup().await
 }
 
 /// 调试面板：调用 Python 框架拼装当前智能体（含可选会话历史）将要发送给 LLM 的完整提示词。

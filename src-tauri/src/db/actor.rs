@@ -267,6 +267,10 @@ pub enum DbCommand {
     GetSyncStatus {
         resp: oneshot::Sender<AppResult<repo::sync::SyncDbStatus>>,
     },
+    SetSyncE2eeKeyVersion {
+        key_version: Option<i64>,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ListSyncConflicts {
         resp: oneshot::Sender<AppResult<Vec<repo::sync::SyncConflictRow>>>,
     },
@@ -827,6 +831,13 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn set_sync_e2ee_key_version(&self, key_version: Option<i64>) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SetSyncE2eeKeyVersion { key_version, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn list_sync_conflicts(&self) -> AppResult<Vec<repo::sync::SyncConflictRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListSyncConflicts { resp })?;
@@ -1368,6 +1379,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::GetSyncStatus { resp } => {
                     let _ = resp.send(repo::sync::status(&conn));
+                }
+                DbCommand::SetSyncE2eeKeyVersion { key_version, resp } => {
+                    let _ = resp.send(repo::sync::set_e2ee_key_version(&conn, key_version));
                 }
                 DbCommand::ListSyncConflicts { resp } => {
                     let _ = resp.send(repo::sync::list_conflicts(&conn));

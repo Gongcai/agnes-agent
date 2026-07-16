@@ -1,15 +1,19 @@
 use std::collections::BTreeMap;
 
-use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use chacha20poly1305::{
     aead::{Aead, Generate, Payload},
     KeyInit, XChaCha20Poly1305, XNonce,
 };
+use hkdf::Hkdf;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::error::{AppError, AppResult};
 
@@ -20,6 +24,14 @@ const NONCE_BYTES: usize = 24;
 const TAG_BYTES: usize = 16;
 const MAX_KEY_VERSIONS: usize = 32;
 const AAD_DOMAIN: &[u8] = b"agnes-sync-payload-aad-v1\0";
+const RECOVERY_AAD: &[u8] = b"agnes-sync-recovery-bundle-v1\0";
+const RECOVERY_INFO: &[u8] = b"agnes-sync-recovery-wrap-key-v1";
+const RECOVERY_KEY_PREFIX: &str = "agnes-recovery-key-v1.";
+const RECOVERY_BUNDLE_PREFIX: &str = "agnes-recovery-bundle-v1.";
+const RECOVERY_KEY_BYTES: usize = 32;
+const RECOVERY_SALT_BYTES: usize = 16;
+const MAX_KEYSET_JSON_BYTES: usize = 16 * 1024;
+const MAX_RECOVERY_BUNDLE_BYTES: usize = 32 * 1024;
 
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SyncMasterKey([u8; MASTER_KEY_BYTES]);
@@ -69,6 +81,9 @@ impl SyncKeyset {
     }
 
     pub fn parse(raw: &str) -> AppResult<Self> {
+        if raw.len() > MAX_KEYSET_JSON_BYTES {
+            return Err(invalid_keyset());
+        }
         let stored: StoredKeyset = serde_json::from_str(raw).map_err(|_| invalid_keyset())?;
         if stored.format_version != KEYSET_FORMAT_VERSION
             || stored.active_key_version <= 0
@@ -147,6 +162,117 @@ impl SyncKeyset {
         self.active_key_version = next_version;
         Ok(next_version)
     }
+
+    pub fn create_recovery_material(&self) -> AppResult<RecoveryMaterial> {
+        let mut recovery_secret = Zeroizing::new([0_u8; RECOVERY_KEY_BYTES]);
+        OsRng.fill_bytes(recovery_secret.as_mut());
+        let recovery_key = format!(
+            "{RECOVERY_KEY_PREFIX}{}",
+            URL_SAFE_NO_PAD.encode(recovery_secret.as_ref())
+        );
+        let mut salt = [0_u8; RECOVERY_SALT_BYTES];
+        OsRng.fill_bytes(&mut salt);
+        let wrapping_key = derive_recovery_key(recovery_secret.as_ref(), &salt)?;
+
+        let nonce = XNonce::generate();
+        let cipher = XChaCha20Poly1305::new((&wrapping_key.0).into());
+        let mut plaintext = self.serialize()?;
+        let ciphertext = cipher.encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext.as_bytes(),
+                aad: RECOVERY_AAD,
+            },
+        );
+        plaintext.zeroize();
+        let ciphertext = ciphertext
+            .map_err(|_| AppError::Other("Unable to create sync recovery material".into()))?;
+        let bundle = StoredRecoveryBundle {
+            format_version: 1,
+            kdf: "hkdf-sha256".into(),
+            cipher: "xchacha20poly1305".into(),
+            salt: URL_SAFE_NO_PAD.encode(salt),
+            nonce: URL_SAFE_NO_PAD.encode(&nonce[..]),
+            ciphertext: URL_SAFE_NO_PAD.encode(ciphertext),
+        };
+        let bundle = serde_json::to_vec(&bundle)?;
+        Ok(RecoveryMaterial {
+            recovery_key,
+            recovery_bundle: format!("{RECOVERY_BUNDLE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bundle)),
+            active_key_version: self.active_key_version,
+        })
+    }
+
+    pub fn recover(recovery_key: &str, recovery_bundle: &str) -> AppResult<Self> {
+        if recovery_key.len() > 128 || recovery_bundle.len() > MAX_RECOVERY_BUNDLE_BYTES {
+            return Err(invalid_recovery_material());
+        }
+        let encoded_key = recovery_key
+            .strip_prefix(RECOVERY_KEY_PREFIX)
+            .ok_or_else(invalid_recovery_material)?;
+        let recovery_secret = Zeroizing::new(decode_canonical_url(encoded_key)?);
+        if recovery_secret.len() != RECOVERY_KEY_BYTES {
+            return Err(invalid_recovery_material());
+        }
+        let encoded_bundle = recovery_bundle
+            .strip_prefix(RECOVERY_BUNDLE_PREFIX)
+            .ok_or_else(invalid_recovery_material)?;
+        let bundle_bytes = decode_canonical_url(encoded_bundle)?;
+        let bundle: StoredRecoveryBundle =
+            serde_json::from_slice(&bundle_bytes).map_err(|_| invalid_recovery_material())?;
+        if bundle.format_version != 1
+            || bundle.kdf != "hkdf-sha256"
+            || bundle.cipher != "xchacha20poly1305"
+        {
+            return Err(invalid_recovery_material());
+        }
+        let salt = decode_canonical_url(&bundle.salt)?;
+        let nonce = decode_canonical_url(&bundle.nonce)?;
+        let ciphertext = decode_canonical_url(&bundle.ciphertext)?;
+        if salt.len() != RECOVERY_SALT_BYTES
+            || nonce.len() != NONCE_BYTES
+            || ciphertext.len() < TAG_BYTES
+            || ciphertext.len() > MAX_KEYSET_JSON_BYTES + TAG_BYTES
+        {
+            return Err(invalid_recovery_material());
+        }
+        let wrapping_key = derive_recovery_key(recovery_secret.as_ref(), &salt)?;
+        let nonce = XNonce::try_from(nonce.as_slice()).map_err(|_| invalid_recovery_material())?;
+        let cipher = XChaCha20Poly1305::new((&wrapping_key.0).into());
+        let mut plaintext = cipher
+            .decrypt(
+                &nonce,
+                Payload {
+                    msg: &ciphertext,
+                    aad: RECOVERY_AAD,
+                },
+            )
+            .map_err(|_| invalid_recovery_material())?;
+        let keyset = std::str::from_utf8(&plaintext)
+            .map_err(|_| invalid_recovery_material())
+            .and_then(Self::parse);
+        plaintext.zeroize();
+        keyset
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryMaterial {
+    pub recovery_key: String,
+    pub recovery_bundle: String,
+    pub active_key_version: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredRecoveryBundle {
+    format_version: u8,
+    kdf: String,
+    cipher: String,
+    salt: String,
+    nonce: String,
+    ciphertext: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -295,6 +421,28 @@ fn invalid_keyset() -> AppError {
     AppError::Other("Stored sync encryption keys are invalid".into())
 }
 
+fn invalid_recovery_material() -> AppError {
+    AppError::Other("Sync recovery material is invalid or does not match".into())
+}
+
+fn derive_recovery_key(secret: &[u8], salt: &[u8]) -> AppResult<SyncMasterKey> {
+    let mut key = [0_u8; MASTER_KEY_BYTES];
+    Hkdf::<Sha256>::new(Some(salt), secret)
+        .expand(RECOVERY_INFO, &mut key)
+        .map_err(|_| invalid_recovery_material())?;
+    Ok(SyncMasterKey(key))
+}
+
+fn decode_canonical_url(encoded: &str) -> AppResult<Vec<u8>> {
+    let decoded = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| invalid_recovery_material())?;
+    if URL_SAFE_NO_PAD.encode(&decoded) != encoded {
+        return Err(invalid_recovery_material());
+    }
+    Ok(decoded)
+}
+
 fn invalid_encrypted_payload(reason: &str) -> AppError {
     AppError::Other(format!("Invalid encrypted sync payload: {reason}"))
 }
@@ -435,5 +583,28 @@ mod tests {
             .unwrap(),
             json!({"content": "private memory"})
         );
+    }
+
+    #[test]
+    fn recovery_material_round_trips_the_full_keyset_and_rejects_mismatches() {
+        let mut keyset = SyncKeyset {
+            active_key_version: 1,
+            keys: BTreeMap::from([(1, SyncMasterKey::from_bytes([7; MASTER_KEY_BYTES]))]),
+        };
+        keyset.rotate().unwrap();
+        let expected = keyset.serialize().unwrap();
+        let material = keyset.create_recovery_material().unwrap();
+        let recovered =
+            SyncKeyset::recover(&material.recovery_key, &material.recovery_bundle).unwrap();
+        assert_eq!(recovered.serialize().unwrap(), expected);
+        assert_eq!(material.active_key_version, 2);
+        assert!(!material.recovery_bundle.contains(&expected));
+
+        let other = keyset.create_recovery_material().unwrap();
+        assert!(SyncKeyset::recover(&other.recovery_key, &material.recovery_bundle).is_err());
+        let mut tampered = material.recovery_bundle;
+        let replacement = if tampered.ends_with('A') { "B" } else { "A" };
+        tampered.replace_range(tampered.len() - 1.., replacement);
+        assert!(SyncKeyset::recover(&material.recovery_key, &tampered).is_err());
     }
 }

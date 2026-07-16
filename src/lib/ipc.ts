@@ -15,11 +15,27 @@ export async function listAgents(): Promise<AgentSummary[]> {
   return invoke<AgentSummary[]>("list_agents");
 }
 
+export interface SyncE2eeStatus {
+  keysetConfigured: boolean;
+  confirmed: boolean;
+  activeKeyVersion: number | null;
+  transportReady: boolean;
+}
+
 export interface SyncStatus {
-  state: "idle" | "pending" | "syncing" | "auth_required" | "conflict" | "error";
+  state:
+    | "idle"
+    | "pending"
+    | "syncing"
+    | "auth_required"
+    | "e2ee_required"
+    | "e2ee_pending"
+    | "conflict"
+    | "error";
   gatewayUrl: string;
   credentialConfigured: boolean;
   syncing: boolean;
+  e2ee: SyncE2eeStatus;
   deviceId: string;
   pendingCount: number;
   inFlightCount: number;
@@ -30,6 +46,7 @@ export interface SyncStatus {
   lastSuccessAt: number | null;
   lastErrorCode: string | null;
   backoffUntil: number | null;
+  e2eeKeyVersion: number | null;
 }
 
 export async function getSyncStatus(): Promise<SyncStatus> {
@@ -95,4 +112,29 @@ export async function setSyncCredential(
   credential: SyncCredentialInput | null,
 ): Promise<SyncStatus> {
   return invoke<SyncStatus>("set_sync_credential", { credential });
+}
+
+export interface SyncRecoveryMaterial {
+  recoveryKey: string;
+  recoveryBundle: string;
+  activeKeyVersion: number;
+}
+
+export async function beginSyncE2eeSetup(): Promise<SyncRecoveryMaterial> {
+  return invoke<SyncRecoveryMaterial>("begin_sync_e2ee_setup");
+}
+
+export async function confirmSyncE2eeSetup(): Promise<SyncStatus> {
+  return invoke<SyncStatus>("confirm_sync_e2ee_setup");
+}
+
+export async function restoreSyncE2ee(
+  recoveryKey: string,
+  recoveryBundle: string,
+): Promise<SyncStatus> {
+  return invoke<SyncStatus>("restore_sync_e2ee", { recoveryKey, recoveryBundle });
+}
+
+export async function discardSyncE2eeSetup(): Promise<SyncStatus> {
+  return invoke<SyncStatus>("discard_sync_e2ee_setup");
 }

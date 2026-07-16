@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -19,15 +19,20 @@ import {
   parseMemoryKeywords,
 } from "../lib/memory";
 import {
+  beginSyncE2eeSetup,
+  confirmSyncE2eeSetup,
+  discardSyncE2eeSetup,
   getSyncStatus,
   listSyncConflicts,
   listSyncDevices,
   resolveSyncConflict,
   revokeSyncDevice,
+  restoreSyncE2ee,
   setSyncCredential,
   syncNow,
   type SyncConflict,
   type SyncDevice,
+  type SyncRecoveryMaterial,
   type SyncStatus,
 } from "../lib/ipc";
 
@@ -431,6 +436,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
   const [syncDevices, setSyncDevices] = useState<SyncDevice[]>([]);
   const [revokingDeviceId, setRevokingDeviceId] = useState<string | null>(null);
+  const [syncRecoveryMaterial, setSyncRecoveryMaterial] = useState<SyncRecoveryMaterial | null>(null);
+  const [syncRecoveryAcknowledged, setSyncRecoveryAcknowledged] = useState(false);
+  const [showSyncRestore, setShowSyncRestore] = useState(false);
+  const [syncRecoveryKeyInput, setSyncRecoveryKeyInput] = useState("");
+  const [syncRecoveryBundleInput, setSyncRecoveryBundleInput] = useState("");
+  const [isConfiguringSyncE2ee, setIsConfiguringSyncE2ee] = useState(false);
 
   // Debug prompt panel state
   const [debugPrompt, setDebugPrompt] = useState<DebugPromptPreview | null>(null);
@@ -769,6 +780,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     };
   }, [activeTab, isOpen]);
 
+  useEffect(() => {
+    if (isOpen && activeTab === "llm") return;
+    setSyncRecoveryMaterial(null);
+    setSyncRecoveryAcknowledged(false);
+    setShowSyncRestore(false);
+    setSyncRecoveryKeyInput("");
+    setSyncRecoveryBundleInput("");
+  }, [activeTab, isOpen]);
+
   const handleSyncNow = async () => {
     setIsSyncingNow(true);
     setSyncStatusError(null);
@@ -853,6 +873,79 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setSyncStatusError(String(error));
     } finally {
       setIsSavingSyncCredential(false);
+    }
+  };
+
+  const handleBeginSyncE2eeSetup = async () => {
+    setIsConfiguringSyncE2ee(true);
+    setSyncStatusError(null);
+    try {
+      const material = await beginSyncE2eeSetup();
+      setSyncRecoveryMaterial(material);
+      setSyncRecoveryAcknowledged(false);
+      setShowSyncRestore(false);
+      setSyncStatus(await getSyncStatus());
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsConfiguringSyncE2ee(false);
+    }
+  };
+
+  const handleConfirmSyncE2eeSetup = async () => {
+    if (!syncRecoveryAcknowledged) return;
+    setIsConfiguringSyncE2ee(true);
+    setSyncStatusError(null);
+    try {
+      setSyncStatus(await confirmSyncE2eeSetup());
+      setSyncRecoveryMaterial(null);
+      setSyncRecoveryAcknowledged(false);
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsConfiguringSyncE2ee(false);
+    }
+  };
+
+  const handleRestoreSyncE2ee = async () => {
+    const recoveryKey = syncRecoveryKeyInput.trim();
+    const recoveryBundle = syncRecoveryBundleInput.trim();
+    if (!recoveryKey || !recoveryBundle) return;
+    setIsConfiguringSyncE2ee(true);
+    setSyncStatusError(null);
+    try {
+      setSyncStatus(await restoreSyncE2ee(recoveryKey, recoveryBundle));
+      setSyncRecoveryKeyInput("");
+      setSyncRecoveryBundleInput("");
+      setShowSyncRestore(false);
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsConfiguringSyncE2ee(false);
+    }
+  };
+
+  const handleCopyRecoveryValue = async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setSyncStatusError(null);
+    } catch (error) {
+      setSyncStatusError(String(error));
+    }
+  };
+
+  const handleDiscardSyncE2eeSetup = async () => {
+    if (!window.confirm("确定丢弃尚未确认的本机加密密钥吗？")) return;
+    setIsConfiguringSyncE2ee(true);
+    setSyncStatusError(null);
+    try {
+      setSyncStatus(await discardSyncE2eeSetup());
+      setSyncRecoveryMaterial(null);
+      setSyncRecoveryAcknowledged(false);
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsConfiguringSyncE2ee(false);
     }
   };
 
@@ -2501,7 +2594,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               ? "bg-emerald-500"
                               : syncStatus?.state === "syncing"
                                 ? "bg-blue-500"
-                                : syncStatus?.state === "pending"
+                                : syncStatus?.state === "pending" || syncStatus?.state === "e2ee_required" || syncStatus?.state === "e2ee_pending"
                                   ? "bg-amber-500"
                                   : "bg-stone-300"
                           }`}
@@ -2510,8 +2603,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <button
                         type="button"
                         onClick={handleSyncNow}
-                        disabled={!syncStatus?.credentialConfigured || isSyncingNow || syncStatus?.syncing}
-                        title={syncStatus?.credentialConfigured ? "立即同步" : "同步凭证尚未配置"}
+                        disabled={!syncStatus?.credentialConfigured || !syncStatus?.e2ee.confirmed || !syncStatus?.e2ee.transportReady || isSyncingNow || syncStatus?.syncing}
+                        title={
+                          !syncStatus?.credentialConfigured
+                            ? "同步凭证尚未配置"
+                            : !syncStatus.e2ee.confirmed
+                              ? "端到端加密尚未确认"
+                              : !syncStatus.e2ee.transportReady
+                                ? "加密传输尚未接入"
+                                : "立即同步"
+                        }
                         className="h-8 w-8 inline-flex items-center justify-center rounded-md border border-stone-200 text-stone-500 hover:text-stone-800 hover:bg-stone-50 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         <RefreshCw className={`h-4 w-4 ${isSyncingNow || syncStatus?.syncing ? "animate-spin" : ""}`} />
@@ -2543,6 +2644,204 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           </span>
                         </div>
                       </div>
+                    )}
+
+                    {syncStatus && (
+                      <section className="border-y border-stone-200 bg-white">
+                        <div className="flex min-h-10 items-center justify-between gap-3 border-b border-stone-200 px-3 py-2">
+                          <span className="flex min-w-0 items-center gap-2 text-xs font-semibold text-stone-700">
+                            <LockKeyhole className="h-3.5 w-3.5 shrink-0" />
+                            端到端加密
+                          </span>
+                          <span className={`text-[10px] font-semibold tabular-nums ${
+                            syncStatus.e2ee.confirmed
+                              ? "text-emerald-700"
+                              : syncStatus.e2ee.keysetConfigured
+                                ? "text-amber-700"
+                                : "text-stone-400"
+                          }`}>
+                            {syncStatus.e2ee.confirmed
+                              ? `Key v${syncStatus.e2ee.activeKeyVersion}`
+                              : syncStatus.e2ee.keysetConfigured
+                                ? "待确认"
+                                : "未配置"}
+                          </span>
+                        </div>
+
+                        {!syncRecoveryMaterial && !showSyncRestore && (
+                          <div className="flex min-h-11 items-center justify-between gap-2 px-3 py-2">
+                            <span className={`text-[10px] ${
+                              syncStatus.e2ee.confirmed && !syncStatus.e2ee.transportReady
+                                ? "text-amber-700"
+                                : "text-stone-500"
+                            }`}>
+                              {syncStatus.e2ee.confirmed && !syncStatus.e2ee.transportReady
+                                ? "加密传输待接入"
+                                : syncStatus.e2ee.keysetConfigured
+                                  ? "恢复材料尚未确认"
+                                  : "需要本机密钥与恢复材料"}
+                            </span>
+                            <div className="flex shrink-0 items-center gap-2">
+                              {!syncStatus.e2ee.keysetConfigured && (
+                                <button
+                                  type="button"
+                                  onClick={() => setShowSyncRestore(true)}
+                                  disabled={isConfiguringSyncE2ee}
+                                  className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-40"
+                                >
+                                  <FileKey2 className="h-3.5 w-3.5" />
+                                  恢复
+                                </button>
+                              )}
+                              {syncStatus.e2ee.keysetConfigured && !syncStatus.e2ee.confirmed && (
+                                <button
+                                  type="button"
+                                  onClick={handleDiscardSyncE2eeSetup}
+                                  disabled={isConfiguringSyncE2ee}
+                                  title="丢弃未确认密钥"
+                                  className="flex h-8 w-8 items-center justify-center rounded-md border border-stone-300 bg-white text-stone-500 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-40"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={handleBeginSyncE2eeSetup}
+                                disabled={isConfiguringSyncE2ee}
+                                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-stone-800 px-2.5 text-[11px] font-medium text-white hover:bg-stone-700 disabled:opacity-40"
+                              >
+                                <Key className="h-3.5 w-3.5" />
+                                {syncStatus.e2ee.keysetConfigured ? "导出恢复材料" : "创建密钥"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {showSyncRestore && !syncRecoveryMaterial && (
+                          <div className="space-y-2.5 px-3 py-3">
+                            <label className="block text-[10px] font-semibold text-stone-600">
+                              恢复密钥
+                              <textarea
+                                value={syncRecoveryKeyInput}
+                                onChange={(event) => setSyncRecoveryKeyInput(event.target.value)}
+                                rows={2}
+                                spellCheck={false}
+                                autoComplete="off"
+                                className="mt-1 w-full resize-none rounded-md border border-stone-200 bg-white px-2.5 py-2 font-mono text-[10px] leading-relaxed text-stone-700 outline-none focus:border-stone-400"
+                              />
+                            </label>
+                            <label className="block text-[10px] font-semibold text-stone-600">
+                              加密恢复包
+                              <textarea
+                                value={syncRecoveryBundleInput}
+                                onChange={(event) => setSyncRecoveryBundleInput(event.target.value)}
+                                rows={3}
+                                spellCheck={false}
+                                autoComplete="off"
+                                className="mt-1 w-full resize-none rounded-md border border-stone-200 bg-white px-2.5 py-2 font-mono text-[10px] leading-relaxed text-stone-700 outline-none focus:border-stone-400"
+                              />
+                            </label>
+                            <div className="flex justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowSyncRestore(false);
+                                  setSyncRecoveryKeyInput("");
+                                  setSyncRecoveryBundleInput("");
+                                }}
+                                className="h-8 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-medium text-stone-700 hover:bg-stone-50"
+                              >
+                                取消
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleRestoreSyncE2ee}
+                                disabled={isConfiguringSyncE2ee || !syncRecoveryKeyInput.trim() || !syncRecoveryBundleInput.trim()}
+                                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-stone-800 px-2.5 text-[11px] font-medium text-white hover:bg-stone-700 disabled:opacity-40"
+                              >
+                                <FileKey2 className="h-3.5 w-3.5" />
+                                恢复
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {syncRecoveryMaterial && (
+                          <div className="space-y-2.5 px-3 py-3">
+                            <div className="relative">
+                              <span className="block text-[10px] font-semibold text-stone-600">恢复密钥</span>
+                              <textarea
+                                readOnly
+                                value={syncRecoveryMaterial.recoveryKey}
+                                rows={2}
+                                spellCheck={false}
+                                className="mt-1 w-full resize-none rounded-md border border-stone-200 bg-stone-50 px-2.5 py-2 pr-9 font-mono text-[10px] leading-relaxed text-stone-700"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleCopyRecoveryValue(syncRecoveryMaterial.recoveryKey)}
+                                title="复制恢复密钥"
+                                className="absolute bottom-1.5 right-1.5 flex h-7 w-7 items-center justify-center rounded-md text-stone-400 hover:bg-white hover:text-stone-700"
+                              >
+                                <Copy className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                            <div className="relative">
+                              <span className="block text-[10px] font-semibold text-stone-600">加密恢复包</span>
+                              <textarea
+                                readOnly
+                                value={syncRecoveryMaterial.recoveryBundle}
+                                rows={3}
+                                spellCheck={false}
+                                className="mt-1 w-full resize-none rounded-md border border-stone-200 bg-stone-50 px-2.5 py-2 pr-9 font-mono text-[10px] leading-relaxed text-stone-700"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleCopyRecoveryValue(syncRecoveryMaterial.recoveryBundle)}
+                                title="复制加密恢复包"
+                                className="absolute bottom-1.5 right-1.5 flex h-7 w-7 items-center justify-center rounded-md text-stone-400 hover:bg-white hover:text-stone-700"
+                              >
+                                <Copy className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                            {!syncStatus.e2ee.confirmed ? (
+                              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                                <label className="flex items-center gap-2 text-[10px] text-stone-600">
+                                  <input
+                                    type="checkbox"
+                                    checked={syncRecoveryAcknowledged}
+                                    onChange={(event) => setSyncRecoveryAcknowledged(event.target.checked)}
+                                    className="h-3.5 w-3.5 rounded border-stone-300"
+                                  />
+                                  已分别保存两项恢复材料
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={handleConfirmSyncE2eeSetup}
+                                  disabled={!syncRecoveryAcknowledged || isConfiguringSyncE2ee}
+                                  className="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-700 px-2.5 text-[11px] font-medium text-white hover:bg-emerald-800 disabled:opacity-40"
+                                >
+                                  <ShieldCheck className="h-3.5 w-3.5" />
+                                  确认密钥
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex justify-end pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSyncRecoveryMaterial(null);
+                                    setSyncRecoveryAcknowledged(false);
+                                  }}
+                                  className="h-8 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-medium text-stone-700 hover:bg-stone-50"
+                                >
+                                  完成
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </section>
                     )}
 
                     {syncConflicts.length > 0 && (

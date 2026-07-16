@@ -127,7 +127,11 @@ fn main() {
             commands::list_sync_devices,
             commands::revoke_sync_device,
             commands::sync_now,
-            commands::set_sync_credential
+            commands::set_sync_credential,
+            commands::begin_sync_e2ee_setup,
+            commands::confirm_sync_e2ee_setup,
+            commands::restore_sync_e2ee,
+            commands::discard_sync_e2ee_setup
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

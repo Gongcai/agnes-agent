@@ -123,7 +123,39 @@ payload          = CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJxVCB5RLeHAyAMDIeGAFunUuH0rotB
 payloadHash      = 1cd7e8c0978997fe41774162553a5321e1335df5a38919f08712e960bbb3f15c
 ```
 
-## 7. 接入顺序
+## 7. 恢复材料格式
+
+恢复材料由两项组成，必须分别保存：
+
+```text
+Recovery Key    = agnes-recovery-key-v1.BASE64URL_NOPAD(random 32 bytes)
+Recovery Bundle = agnes-recovery-bundle-v1.BASE64URL_NOPAD(bundle JSON)
+```
+
+bundle JSON 为严格结构：
+
+```json
+{
+  "formatVersion": 1,
+  "kdf": "hkdf-sha256",
+  "cipher": "xchacha20poly1305",
+  "salt": "BASE64URL_NOPAD(random 16 bytes)",
+  "nonce": "BASE64URL_NOPAD(random 24 bytes)",
+  "ciphertext": "BASE64URL_NOPAD(encrypted full keyset)"
+}
+```
+
+Recovery Key 是随机 256-bit 高熵密钥，不是用户口令，因此 HKDF-SHA256 只用于域隔离，不承担
+低熵口令拉伸。派生 info 固定为 `agnes-sync-recovery-wrap-key-v1`；恢复包 AEAD associated data
+固定为 `agnes-sync-recovery-bundle-v1\0`。恢复时严格验证前缀、规范 Base64URL、字段、长度、tag
+和完整 keyset，错误统一返回“不匹配”，不暴露内部 key。
+
+每次导出都会为同一 keyset 生成新的 Recovery Key、salt 和 nonce。Renderer 只能一次性接收这两项
+恢复材料，不能读取 master key 或 keyset JSON。新设备恢复后把 keyset 写入 Keyring 并读回验证；
+已有不同 keyset 时拒绝覆盖。未确认的本机 keyset 可显式丢弃后改用旧设备恢复材料，已确认 keyset
+不能通过当前 UI 清除。
+
+## 8. 接入顺序
 
 ### Phase 4A：密码学核心（已完成）
 
@@ -131,12 +163,14 @@ payloadHash      = 1cd7e8c0978997fe41774162553a5321e1335df5a38919f08712e960bbb3f
 - 多版本 keyset 的生成、严格解析、序列化和轮换基础；
 - round-trip、随机 nonce、坏 Hash、错误 key、AAD/密文篡改和固定向量测试。
 
-### Phase 4B：本设备初始化与恢复材料
+### Phase 4B：本设备初始化与恢复材料（已完成）
 
-- 通过 Tauri command 在 Rust 内生成 keyset、写入 Keyring 并读回验证；
-- Renderer 只接收状态、版本和一次性恢复材料，不得读取 Sync Master Key/keyset JSON；
-- 恢复材料必须在用户确认保存后才允许启用 encrypted-only 同步；
-- 清除凭证与清除 E2EE keyset 必须是两个明确操作，防止误删唯一密钥副本。
+- Tauri command 在 Rust 内生成或恢复 keyset、写入 Keyring 并读回验证；
+- Renderer 只接收状态、版本和一次性 Recovery Key/Bundle，不读取 Sync Master Key/keyset JSON；
+- 用户确认分别保存两项恢复材料后，才写入本地 `e2ee_key_version`；
+- `run_once` 已启用 encrypted-only 门禁。Phase 4C 完成前业务 push/pull/bootstrap 全部暂停，设备
+  查询和撤销等不含业务 payload 的管理 API 仍可使用；
+- 未确认 keyset 可显式丢弃且验证删除结果；已确认 keyset 不提供清除入口，认证凭证清除保持独立。
 
 ### Phase 4C：传输接入
 
