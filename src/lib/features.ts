@@ -17,8 +17,8 @@ export const APP_FEATURES: readonly AppFeatureDefinition[] = [
   { id: "memory", label: "记忆", enabled: false },
   { id: "knowledge", label: "知识库", enabled: true },
   { id: "drive", label: "网盘", enabled: false },
-  { id: "calendar", label: "日历", enabled: false },
-  { id: "tasks", label: "待办", enabled: false },
+  { id: "calendar", label: "日历", enabled: true },
+  { id: "tasks", label: "待办", enabled: true },
 ];
 
 export const ENABLED_APP_FEATURES = APP_FEATURES.filter((feature) => feature.enabled);

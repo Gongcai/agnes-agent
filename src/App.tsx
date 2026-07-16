@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { KnowledgeWorkspace } from "./components/KnowledgeWorkspace";
+import { PlannerWorkspace } from "./components/PlannerWorkspace";
 import { SettingsModal } from "./components/SettingsModal";
 import type { AppFeatureId } from "./lib/features";
 import { useAgentStore, setupTauriEventListeners } from "./store/useAgentStore";
@@ -50,6 +51,13 @@ export default function App() {
       )}
       {activeFeature === "knowledge" && (
         <KnowledgeWorkspace
+          isSidebarOpen={isSidebarOpen}
+          onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
+        />
+      )}
+      {(activeFeature === "calendar" || activeFeature === "tasks") && (
+        <PlannerWorkspace
+          mode={activeFeature}
           isSidebarOpen={isSidebarOpen}
           onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
         />
