@@ -8,6 +8,8 @@
 
 大文件、RAG、加密向量制品、多网盘、日历和待办详见 `ProjectPlan/STORAGE_AND_RAG.md`。
 
+同步 E2EE 的密码学格式、AAD、keyset 与上线门禁详见 `ProjectPlan/E2EE.md`。
+
 # 项目定位
 
 `agnes-agent` 是一个**带 Agent 能力的酒馆式多角色聊天应用**（更接近 SillyTavern + Agents，而非纯 Agent 工具）。核心是可创建/管理多个 **AGENTS（角色卡）**，每个 Agent 有独立人设、系统提示词、工具权限与长期记忆；用户与某个 Agent 在 session 中对话，Agent 背后挂 Python LangGraph 运行时执行工具。**桌面端（Tauri）是真正的执行器**，负责本地文件、终端、Git、SSH、工具调用；**安卓端优先做轻客户端 + SSH 控制器**，不在 Android 内置 Termux/Ubuntu 跑完整 Agent（维护成本、权限、后台存活、依赖安装都太烦）。
@@ -169,7 +171,7 @@ System Prompt
 |---|---|---|
 | V0.1 | Tauri 2 + React 聊天 UI + SQLite + Python LangGraph sidecar + LiteLLM | 主链路已完成；发布态 sidecar 打包待收口 |
 | V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 已完成：摘要、抽取、结构化字段、AI 创建/更新、记忆决策提示词、`MEMORY.md` 专用工具、动态维度 sqlite-vec + RRF 混合检索；已使用 Qwen3-Embedding-8B 完成真实服务端到端验证，手动向量化、覆盖率统计与检索链路均可用 |
-| V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 进行中：Phase 0-3 已完成；Session 同字段配置使用 HLC 稳定决胜，显式记忆支持文本 diff3，无法自动合并的文本继续保留 base/local/remote 供人工处理。下一步进入 Phase 4 E2EE 与真实数据上线 |
+| V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | 进行中：Phase 0-3 与 Phase 4A 密码学核心已完成；XChaCha20-Poly1305 v1、AAD 和多版本 keyset 格式已冻结并有固定测试向量。下一步接入 OS Keyring 初始化、恢复材料与 encrypted-only 门禁 |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 未开始 |
 | V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；MCP 等能力待后续补齐 |
 | V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + R2/Google Drive Provider | 设计已写入 `STORAGE_AND_RAG.md`；未实现 |

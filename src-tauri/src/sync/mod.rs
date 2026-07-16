@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod client;
+pub mod crypto;
 pub mod engine;
 pub mod hlc;
 pub mod merge;
