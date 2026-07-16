@@ -196,7 +196,7 @@ describe("push and pull", () => {
     expect(secondBody.hasMore).toBe(false);
   });
 
-  it("does not allow append-only messages to be overwritten", async () => {
+  it("applies message edits through revision CAS", async () => {
     const message = makeChange({
       entityType: "message",
       entityId: "20000000-0000-4000-8000-000000000010",
@@ -214,8 +214,8 @@ describe("push and pull", () => {
     });
     const response = await push(TOKEN_A, DEVICE_A, [overwrite]);
     expect(await response.json()).toMatchObject({
-      accepted: [],
-      conflicts: [{ changeId: overwrite.changeId, currentRevision: 1 }],
+      accepted: [{ changeId: overwrite.changeId, revision: 2 }],
+      conflicts: [],
     });
   });
 

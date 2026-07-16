@@ -74,6 +74,7 @@ pub fn project(entity_type: SyncEntityType, source: &Value) -> AppResult<Value> 
             "id",
             "session_id",
             "role",
+            "seq",
             "parent_id",
             "selected_child_id",
             "created_at",
@@ -166,6 +167,7 @@ mod tests {
             "id": "message-1",
             "session_id": "session-1",
             "role": "assistant",
+            "seq": 7,
             "api_key": "must-not-sync",
             "folder_path": "/home/user/private",
             "cwd": "/home/user/project",
@@ -184,6 +186,7 @@ mod tests {
                 "id": "message-1",
                 "session_id": "session-1",
                 "role": "assistant",
+                "seq": 7,
                 "parts": [{"kind": "text", "content": "Visible response", "ordinal": 0}]
             })
         );

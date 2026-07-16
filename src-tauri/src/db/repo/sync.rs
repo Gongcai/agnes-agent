@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
 use serde_json::Value;
@@ -126,6 +128,65 @@ struct SessionPayload {
     summary: Option<String>,
     summary_updated_at: Option<String>,
     pinned: i64,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    #[serde(rename = "origin_device_id")]
+    _origin_device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MessagePayload {
+    id: String,
+    session_id: String,
+    role: String,
+    seq: i32,
+    parent_id: Option<String>,
+    selected_child_id: Option<String>,
+    parts: Vec<MessageTextPartPayload>,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    #[serde(rename = "origin_device_id")]
+    _origin_device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MessageTextPartPayload {
+    kind: String,
+    content: String,
+    ordinal: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExplicitMemoryPayload {
+    id: String,
+    agent_id: String,
+    kind: String,
+    content: String,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    #[serde(rename = "origin_device_id")]
+    _origin_device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryPayload {
+    id: String,
+    agent_id: String,
+    name: String,
+    keywords: Vec<String>,
+    content: String,
+    creator: String,
+    status: String,
     created_at: String,
     updated_at: String,
     version: i64,
@@ -545,7 +606,7 @@ fn validate_remote_entity(entity: &RemoteEntityInput) -> AppResult<()> {
         || entity.key_version.is_some()
         || !matches!(
             entity.entity_type.as_str(),
-            "agent" | "workspace" | "session"
+            "agent" | "workspace" | "session" | "message" | "explicit_memory" | "memory"
         )
     {
         return Err(AppError::Other(format!(
@@ -659,6 +720,11 @@ fn apply_remote_business_row(tx: &Transaction<'_>, entity: &RemoteEntityInput) -
         "agent" => apply_remote_agent(tx, entity, serde_json::from_value(payload)?),
         "workspace" => apply_remote_workspace(tx, entity, serde_json::from_value(payload)?),
         "session" => apply_remote_session(tx, entity, serde_json::from_value(payload)?),
+        "message" => apply_remote_message(tx, entity, serde_json::from_value(payload)?),
+        "explicit_memory" => {
+            apply_remote_explicit_memory(tx, entity, serde_json::from_value(payload)?)
+        }
+        "memory" => apply_remote_memory(tx, entity, serde_json::from_value(payload)?),
         other => Err(AppError::Other(format!(
             "remote entity type `{other}` is not enabled yet"
         ))),
@@ -811,6 +877,188 @@ fn validate_payload_identity(
     Ok(())
 }
 
+fn apply_remote_message(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    payload: MessagePayload,
+) -> AppResult<()> {
+    validate_payload_identity(
+        entity,
+        &payload.id,
+        payload.version,
+        payload.deleted_at.as_deref(),
+    )?;
+    if payload.seq < 0
+        || !matches!(payload.role.as_str(), "user" | "assistant" | "system")
+        || !is_valid_entity_id(&payload.session_id)
+        || payload
+            .parent_id
+            .as_deref()
+            .is_some_and(|id| !is_valid_entity_id(id) || id == entity.entity_id)
+        || payload
+            .selected_child_id
+            .as_deref()
+            .is_some_and(|id| !is_valid_entity_id(id) || id == entity.entity_id)
+    {
+        return Err(AppError::Other(format!(
+            "invalid message payload for `{}`",
+            entity.entity_id
+        )));
+    }
+    let mut ordinals = HashSet::new();
+    for part in &payload.parts {
+        if part.kind != "text" || part.ordinal < 0 || !ordinals.insert(part.ordinal) {
+            return Err(AppError::Other(format!(
+                "invalid message text parts for `{}`",
+                entity.entity_id
+            )));
+        }
+    }
+
+    tx.execute(
+        "INSERT INTO messages (id, session_id, role, seq, status, model, token_count, metadata, \
+         parent_id, selected_child_id, created_at, updated_at, version, deleted_at, origin_device_id) \
+         VALUES (?1, ?2, ?3, ?4, 'complete', NULL, NULL, NULL, ?5, ?6, ?7, ?8, ?9, NULL, ?10) \
+         ON CONFLICT(id) DO UPDATE SET session_id = excluded.session_id, role = excluded.role, \
+         seq = excluded.seq, status = 'complete', parent_id = excluded.parent_id, \
+         selected_child_id = excluded.selected_child_id, created_at = excluded.created_at, \
+         updated_at = excluded.updated_at, version = excluded.version, deleted_at = NULL, \
+         origin_device_id = excluded.origin_device_id",
+        params![
+            payload.id,
+            payload.session_id,
+            payload.role,
+            payload.seq,
+            payload.parent_id,
+            payload.selected_child_id,
+            payload.created_at,
+            payload.updated_at,
+            payload.version,
+            entity.origin_device_id,
+        ],
+    )?;
+    tx.execute(
+        "DELETE FROM message_parts WHERE message_id = ?1 AND kind = 'text'",
+        [&entity.entity_id],
+    )?;
+    for part in payload.parts {
+        tx.execute(
+            "INSERT INTO message_parts (id, message_id, kind, ordinal, content) \
+             VALUES (?1, ?2, 'text', ?3, ?4)",
+            params![
+                format!("{}:sync-text:{}", entity.entity_id, part.ordinal),
+                entity.entity_id,
+                part.ordinal,
+                part.content,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn apply_remote_explicit_memory(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    payload: ExplicitMemoryPayload,
+) -> AppResult<()> {
+    validate_payload_identity(
+        entity,
+        &payload.id,
+        payload.version,
+        payload.deleted_at.as_deref(),
+    )?;
+    let expected_id = super::explicit_memories::sync_entity_id(&payload.agent_id, &payload.kind)?;
+    if !is_valid_entity_id(&payload.agent_id) || expected_id != entity.entity_id {
+        return Err(AppError::Other(format!(
+            "explicit memory identity does not match `{}`",
+            entity.entity_id
+        )));
+    }
+    tx.execute(
+        "INSERT INTO explicit_memories (id, agent_id, kind, content, created_at, updated_at, \
+         version, deleted_at, origin_device_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8) \
+         ON CONFLICT(agent_id, kind) DO UPDATE SET content = excluded.content, \
+         created_at = excluded.created_at, updated_at = excluded.updated_at, \
+         version = excluded.version, deleted_at = NULL, origin_device_id = excluded.origin_device_id",
+        params![
+            entity.entity_id,
+            payload.agent_id,
+            payload.kind,
+            payload.content,
+            payload.created_at,
+            payload.updated_at,
+            payload.version,
+            entity.origin_device_id,
+        ],
+    )?;
+    Ok(())
+}
+
+fn apply_remote_memory(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    payload: MemoryPayload,
+) -> AppResult<()> {
+    validate_payload_identity(
+        entity,
+        &payload.id,
+        payload.version,
+        payload.deleted_at.as_deref(),
+    )?;
+    if payload.name.trim().is_empty()
+        || payload.content.trim().is_empty()
+        || !is_valid_entity_id(&payload.agent_id)
+        || !matches!(payload.creator.as_str(), "user" | "ai")
+        || payload.status != "active"
+        || super::memory::normalize_keywords(&payload.keywords) != payload.keywords
+    {
+        return Err(AppError::Other(format!(
+            "invalid memory payload for `{}`",
+            entity.entity_id
+        )));
+    }
+    let previous = tx
+        .query_row(
+            "SELECT content, embedding_id FROM memory_store WHERE id = ?1",
+            [&entity.entity_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?;
+    let keywords = serde_json::to_string(&payload.keywords)?;
+    tx.execute(
+        "INSERT INTO memory_store (id, agent_id, name, keywords, content, creator, type, scope, \
+         source, confidence, status, created_at, updated_at, embedding_id, version, deleted_at, \
+         origin_device_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'Note', 'agent', 'sync', 1.0, 'active', ?7, ?8, \
+                 NULL, ?9, NULL, ?10) \
+         ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, name = excluded.name, \
+         keywords = excluded.keywords, content = excluded.content, creator = excluded.creator, \
+         status = 'active', created_at = excluded.created_at, updated_at = excluded.updated_at, \
+         embedding_id = CASE WHEN memory_store.content = excluded.content \
+                             THEN memory_store.embedding_id ELSE NULL END, \
+         version = excluded.version, deleted_at = NULL, origin_device_id = excluded.origin_device_id",
+        params![
+            payload.id,
+            payload.agent_id,
+            payload.name,
+            keywords,
+            payload.content,
+            payload.creator,
+            payload.created_at,
+            payload.updated_at,
+            payload.version,
+            entity.origin_device_id,
+        ],
+    )?;
+    if let Some((old_content, Some(embedding_id))) = previous {
+        if old_content != payload.content {
+            super::memory::delete_embedding_by_id(tx, &embedding_id)?;
+        }
+    }
+    Ok(())
+}
+
 fn apply_remote_delete(tx: &Transaction<'_>, entity: &RemoteEntityInput) -> AppResult<()> {
     let deleted_at = entity.updated_at.to_string();
     match entity.entity_type.as_str() {
@@ -861,6 +1109,76 @@ fn apply_remote_delete(tx: &Transaction<'_>, entity: &RemoteEntityInput) -> AppR
                     entity.entity_id
                 ],
             )?;
+        }
+        "message" => {
+            tx.execute(
+                "UPDATE messages SET deleted_at = ?1, updated_at = ?1, \
+                 version = MAX(version + 1, ?2), origin_device_id = ?3 WHERE id = ?4",
+                params![
+                    deleted_at,
+                    entity.revision,
+                    entity.origin_device_id,
+                    entity.entity_id
+                ],
+            )?;
+        }
+        "explicit_memory" => {
+            let rows = {
+                let mut statement = tx.prepare(
+                    "SELECT id, agent_id, kind FROM explicit_memories WHERE deleted_at IS NULL",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            };
+            if let Some((local_id, _, _)) = rows.into_iter().find(|(_, agent_id, kind)| {
+                matches!(
+                    super::explicit_memories::sync_entity_id(agent_id, kind),
+                    Ok(sync_id) if sync_id == entity.entity_id
+                )
+            }) {
+                tx.execute(
+                    "UPDATE explicit_memories SET deleted_at = ?1, updated_at = ?1, \
+                     version = MAX(version + 1, ?2), origin_device_id = ?3 WHERE id = ?4",
+                    params![
+                        deleted_at,
+                        entity.revision,
+                        entity.origin_device_id,
+                        local_id
+                    ],
+                )?;
+            }
+        }
+        "memory" => {
+            let embedding_id = tx
+                .query_row(
+                    "SELECT embedding_id FROM memory_store WHERE id = ?1",
+                    [&entity.entity_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
+            tx.execute(
+                "UPDATE memory_store SET status = 'deleted', embedding_id = NULL, deleted_at = ?1, \
+                 updated_at = ?1, version = MAX(version + 1, ?2), origin_device_id = ?3 \
+                 WHERE id = ?4",
+                params![
+                    deleted_at,
+                    entity.revision,
+                    entity.origin_device_id,
+                    entity.entity_id
+                ],
+            )?;
+            if let Some(embedding_id) = embedding_id {
+                super::memory::delete_embedding_by_id(tx, &embedding_id)?;
+            }
         }
         other => {
             return Err(AppError::Other(format!(
@@ -1119,6 +1437,54 @@ mod tests {
             "created_at": "1",
             "updated_at": "1",
             "version": 1,
+            "deleted_at": null,
+            "origin_device_id": REMOTE_DEVICE
+        })
+    }
+
+    fn message_payload(id: &str, session_id: &str) -> Value {
+        json!({
+            "id": id,
+            "session_id": session_id,
+            "role": "assistant",
+            "seq": 2,
+            "parent_id": null,
+            "selected_child_id": null,
+            "parts": [{"kind": "text", "content": "Remote answer", "ordinal": 0}],
+            "created_at": "1",
+            "updated_at": "1",
+            "version": 1,
+            "deleted_at": null,
+            "origin_device_id": REMOTE_DEVICE
+        })
+    }
+
+    fn explicit_memory_payload(id: &str, agent_id: &str, content: &str, version: i64) -> Value {
+        json!({
+            "id": id,
+            "agent_id": agent_id,
+            "kind": "memory_md",
+            "content": content,
+            "created_at": "1",
+            "updated_at": version.to_string(),
+            "version": version,
+            "deleted_at": null,
+            "origin_device_id": REMOTE_DEVICE
+        })
+    }
+
+    fn memory_payload(id: &str, agent_id: &str, content: &str, version: i64) -> Value {
+        json!({
+            "id": id,
+            "agent_id": agent_id,
+            "name": "Remote fact",
+            "keywords": ["remote", "fact"],
+            "content": content,
+            "creator": "ai",
+            "status": "active",
+            "created_at": "1",
+            "updated_at": version.to_string(),
+            "version": version,
             "deleted_at": null,
             "origin_device_id": REMOTE_DEVICE
         })
@@ -1396,5 +1762,135 @@ mod tests {
             .unwrap();
         assert_eq!(rows, (1, "synced".into()));
         assert_eq!(status(&conn).unwrap().last_pull_cursor, 1);
+    }
+
+    #[test]
+    fn remote_message_and_memories_apply_without_echo_and_invalidate_stale_vectors() {
+        let mut conn = setup();
+        let explicit_id =
+            crate::db::repo::explicit_memories::sync_entity_id("agent-1", "memory_md").unwrap();
+        let entities = vec![
+            remote(
+                "agent",
+                "agent-1",
+                1,
+                1,
+                agent_payload("agent-1", "Agent", 1),
+            ),
+            remote(
+                "workspace",
+                "workspace-1",
+                1,
+                2,
+                workspace_payload("workspace-1", "agent-1"),
+            ),
+            remote(
+                "session",
+                "session-1",
+                1,
+                3,
+                session_payload("session-1", "agent-1", "workspace-1"),
+            ),
+            remote(
+                "message",
+                "message-1",
+                1,
+                4,
+                message_payload("message-1", "session-1"),
+            ),
+            remote(
+                "explicit_memory",
+                &explicit_id,
+                1,
+                5,
+                explicit_memory_payload(&explicit_id, "agent-1", "# Remote memory", 1),
+            ),
+            remote(
+                "memory",
+                "memory-1",
+                1,
+                6,
+                memory_payload("memory-1", "agent-1", "First remote content", 1),
+            ),
+        ];
+        apply_bootstrap_page(&mut conn, "required", &entities, 6, None, false, 2_000).unwrap();
+
+        let message: (String, String) = conn
+            .query_row(
+                "SELECT m.status, p.content FROM messages m JOIN message_parts p ON p.message_id = m.id \
+                 WHERE m.id = 'message-1' AND p.kind = 'text'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(message, ("complete".into(), "Remote answer".into()));
+        let explicit_content: String = conn
+            .query_row(
+                "SELECT content FROM explicit_memories WHERE agent_id = 'agent-1' AND kind = 'memory_md'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(explicit_content, "# Remote memory");
+        assert_eq!(status(&conn).unwrap().pending_count, 0);
+
+        conn.execute(
+            "INSERT INTO embedding_items (id, ref_type, ref_id, model, dims, content_hash, created_at) \
+             VALUES ('embedding-1', 'memory', 'memory-1', 'embed/model', 3, 'old', '1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE memory_store SET embedding_id = 'embedding-1' WHERE id = 'memory-1'",
+            [],
+        )
+        .unwrap();
+        apply_pull_page(
+            &mut conn,
+            6,
+            &[
+                remote(
+                    "explicit_memory",
+                    &explicit_id,
+                    2,
+                    7,
+                    explicit_memory_payload(&explicit_id, "agent-1", "# Updated remote memory", 2),
+                ),
+                remote(
+                    "memory",
+                    "memory-1",
+                    2,
+                    8,
+                    memory_payload("memory-1", "agent-1", "Updated remote content", 2),
+                ),
+            ],
+            8,
+            false,
+            3_000,
+        )
+        .unwrap();
+
+        let memory: (String, Option<String>) = conn
+            .query_row(
+                "SELECT content, embedding_id FROM memory_store WHERE id = 'memory-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(memory, ("Updated remote content".into(), None));
+        let embedding_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM embedding_items", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(embedding_count, 0);
+        let explicit_content: String = conn
+            .query_row(
+                "SELECT content FROM explicit_memories WHERE agent_id = 'agent-1' AND kind = 'memory_md'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(explicit_content, "# Updated remote memory");
+        assert_eq!(status(&conn).unwrap().last_pull_cursor, 8);
+        assert_eq!(status(&conn).unwrap().pending_count, 0);
     }
 }

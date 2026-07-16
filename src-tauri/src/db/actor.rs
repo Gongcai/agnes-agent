@@ -999,7 +999,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     let _ = resp.send(repo::agents::delete(&mut conn, &id));
                 }
                 DbCommand::InsertMemory { row, resp } => {
-                    let _ = resp.send(repo::memory::insert(&conn, &row));
+                    let _ = resp.send(repo::memory::insert(&mut conn, &row));
                 }
                 DbCommand::ListMemories { agent_id, resp } => {
                     let _ = resp.send(repo::memory::list(&conn, &agent_id));
@@ -1008,10 +1008,10 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     let _ = resp.send(repo::memory::get(&conn, &id, &agent_id));
                 }
                 DbCommand::UpdateMemory { id, agent_id, changes, resp } => {
-                    let _ = resp.send(repo::memory::update(&conn, &id, &agent_id, &changes));
+                    let _ = resp.send(repo::memory::update(&mut conn, &id, &agent_id, &changes));
                 }
                 DbCommand::DeleteMemory { id, agent_id, resp } => {
-                    let _ = resp.send(repo::memory::delete(&conn, &id, &agent_id));
+                    let _ = resp.send(repo::memory::delete(&mut conn, &id, &agent_id));
                 }
                 DbCommand::ListExplicitMemories { agent_id, resp } => {
                     let _ = resp.send(repo::explicit_memories::list(&conn, &agent_id));
@@ -1143,6 +1143,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         for part in &parts {
                             repo::messages::insert_part(&tx, part)?;
                         }
+                        repo::messages::enqueue_if_complete(&tx, &msg.id)?;
                         tx.commit()?;
                         Ok(())
                     })();
@@ -1158,7 +1159,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     let _ = resp.send(res);
                 }
                 DbCommand::UpdateMessageStatus { id, status, resp } => {
-                    let _ = resp.send(repo::messages::update_status(&conn, &id, &status));
+                    let _ = resp.send(repo::messages::update_status(&mut conn, &id, &status));
                 }
                 DbCommand::GetMessage { id, resp } => {
                     let _ = resp.send(repo::messages::get(&conn, &id));
@@ -1170,7 +1171,11 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     let _ = resp.send(repo::messages::count_children(&conn, &id));
                 }
                 DbCommand::SetSelectedChild { parent_id, child_id, resp } => {
-                    let _ = resp.send(repo::messages::set_selected_child(&conn, &parent_id, child_id.as_deref()));
+                    let _ = resp.send(repo::messages::set_selected_child(
+                        &mut conn,
+                        &parent_id,
+                        child_id.as_deref(),
+                    ));
                 }
                 DbCommand::DeleteMessage { id, resp } => {
                     let _ = resp.send(repo::messages::delete_message(&mut conn, &id));
@@ -1184,6 +1189,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                             repo::messages::insert_part(&tx, &p)?;
                         }
                         repo::messages::mark_content_updated(&tx, &message_id)?;
+                        repo::messages::enqueue_if_complete(&tx, &message_id)?;
                         tx.commit()?;
                         Ok(())
                     })();
@@ -1233,9 +1239,11 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         })?;
                         // 链接：父→user→ai
                         if let Some(ref pid) = parent_id {
-                            repo::messages::set_selected_child(&tx, pid, Some(&user_id))?;
+                            repo::messages::set_selected_child_local(&tx, pid, Some(&user_id))?;
+                            repo::messages::enqueue_if_complete(&tx, pid)?;
                         }
-                        repo::messages::set_selected_child(&tx, &user_id, Some(&ai_id))?;
+                        repo::messages::set_selected_child_local(&tx, &user_id, Some(&ai_id))?;
+                        repo::messages::enqueue_if_complete(&tx, &user_id)?;
                         tx.commit()?;
                         Ok((user_id, ai_id))
                     })();
@@ -1259,7 +1267,12 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                             selected_child_id: None,
                         })?;
                         // 把活动路径切到新 AI 同级
-                        repo::messages::set_selected_child(&tx, &parent_user_id, Some(&ai_id))?;
+                        repo::messages::set_selected_child_local(
+                            &tx,
+                            &parent_user_id,
+                            Some(&ai_id),
+                        )?;
+                        repo::messages::enqueue_if_complete(&tx, &parent_user_id)?;
                         tx.commit()?;
                         Ok(ai_id)
                     })();

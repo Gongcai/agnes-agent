@@ -84,7 +84,6 @@ interface BootstrapCursor {
   entityId: string;
 }
 
-const APPEND_ONLY_ENTITY_TYPES = new Set(["message"]);
 const BOOTSTRAP_ENTITY_ORDER_SQL = `CASE entity_type
   WHEN 'agent' THEN 0
   WHEN 'workspace' THEN 1
@@ -202,7 +201,7 @@ function canApply(change: SyncChange, state: EntityStateRow | undefined): boolea
   if (change.baseRevision !== state.revision) {
     return false;
   }
-  return !(APPEND_ONLY_ENTITY_TYPES.has(change.entityType) && change.operation === "upsert");
+  return true;
 }
 
 function makeEntityStatement(
@@ -243,8 +242,7 @@ function makeEntityStatement(
          latest_change_id = excluded.latest_change_id,
          updated_at = excluded.updated_at
        WHERE ? IS NOT NULL
-         AND sync_entities.revision = ?
-         AND (? != 'message' OR ? = 'delete')`,
+         AND sync_entities.revision = ?`,
     )
     .bind(
       ownerId,
@@ -268,8 +266,6 @@ function makeEntityStatement(
       change.baseRevision,
       change.baseRevision,
       change.baseRevision,
-      change.entityType,
-      change.operation,
     );
 }
 

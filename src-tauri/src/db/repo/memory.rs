@@ -1,11 +1,12 @@
 //! Structured long-term memory persistence and retrieval.
 use std::collections::HashMap;
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::error::{AppError, AppResult};
+use crate::sync::payload::SyncEntityType;
 
 pub const MAX_EMBEDDING_DIMS: usize = 8_192;
 
@@ -61,6 +62,22 @@ pub struct MemoryUpdate {
     pub name: String,
     pub keywords: Vec<String>,
     pub content: String,
+}
+
+#[derive(Serialize)]
+struct MemorySyncSource {
+    id: String,
+    agent_id: String,
+    name: String,
+    keywords: Vec<String>,
+    content: String,
+    creator: String,
+    status: String,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    origin_device_id: Option<String>,
 }
 
 fn normalize_required(value: &str, field: &str) -> AppResult<String> {
@@ -210,7 +227,7 @@ pub fn search_hybrid(
 }
 
 /// Insert an AI or user memory, skipping an exact duplicate within the same agent.
-pub fn insert(conn: &Connection, memory: &NewMemory) -> AppResult<bool> {
+pub fn insert(conn: &mut Connection, memory: &NewMemory) -> AppResult<bool> {
     let name = normalize_required(&memory.name, "Memory name")?;
     let content = normalize_required(&memory.content, "Memory content")?;
     if !matches!(memory.creator.as_str(), "ai" | "user") {
@@ -218,11 +235,13 @@ pub fn insert(conn: &Connection, memory: &NewMemory) -> AppResult<bool> {
     }
     let keywords = encode_keywords(&memory.keywords)?;
     let now = now();
-    let affected = conn.execute(
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
+    let affected = tx.execute(
         "INSERT INTO memory_store \
          (id, agent_id, name, keywords, content, creator, type, scope, source, confidence, \
-          created_at, updated_at, embedding_id, version) \
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12, 1 \
+          created_at, updated_at, embedding_id, version, origin_device_id) \
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12, 1, ?13 \
          WHERE NOT EXISTS ( \
            SELECT 1 FROM memory_store \
            WHERE agent_id = ?2 AND status = 'active' AND deleted_at IS NULL \
@@ -242,13 +261,18 @@ pub fn insert(conn: &Connection, memory: &NewMemory) -> AppResult<bool> {
             memory.confidence,
             now,
             memory.embedding_id,
+            device_id,
         ],
     )?;
+    if affected > 0 {
+        enqueue_current(&tx, &memory.id)?;
+    }
+    tx.commit()?;
     Ok(affected > 0)
 }
 
 pub fn update(
-    conn: &Connection,
+    conn: &mut Connection,
     id: &str,
     agent_id: &str,
     changes: &MemoryUpdate,
@@ -256,7 +280,9 @@ pub fn update(
     let name = normalize_required(&changes.name, "Memory name")?;
     let content = normalize_required(&changes.content, "Memory content")?;
     let keywords = encode_keywords(&changes.keywords)?;
-    let previous: Option<(String, Option<String>)> = conn
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
+    let previous: Option<(String, Option<String>)> = tx
         .query_row(
             "SELECT content, embedding_id FROM memory_store \
              WHERE id = ?1 AND agent_id = ?2 AND status = 'active' AND deleted_at IS NULL",
@@ -264,12 +290,13 @@ pub fn update(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    let affected = conn.execute(
+    let affected = tx.execute(
         "UPDATE memory_store \
          SET name = ?1, keywords = ?2, content = ?3, updated_at = ?4, version = version + 1, \
-             embedding_id = CASE WHEN content = ?3 THEN embedding_id ELSE NULL END \
-         WHERE id = ?5 AND agent_id = ?6 AND status = 'active' AND deleted_at IS NULL",
-        params![name, keywords, content, now(), id, agent_id],
+             embedding_id = CASE WHEN content = ?3 THEN embedding_id ELSE NULL END, \
+             origin_device_id = ?5 \
+         WHERE id = ?6 AND agent_id = ?7 AND status = 'active' AND deleted_at IS NULL",
+        params![name, keywords, content, now(), device_id, id, agent_id],
     )?;
     if affected == 0 {
         return Err(AppError::Other(
@@ -278,14 +305,18 @@ pub fn update(
     }
     if let Some((previous_content, Some(embedding_id))) = previous {
         if previous_content != content {
-            delete_embedding_by_id(conn, &embedding_id)?;
+            delete_embedding_by_id(&tx, &embedding_id)?;
         }
     }
+    enqueue_current(&tx, id)?;
+    tx.commit()?;
     Ok(())
 }
 
-pub fn delete(conn: &Connection, id: &str, agent_id: &str) -> AppResult<()> {
-    let embedding_id = conn
+pub fn delete(conn: &mut Connection, id: &str, agent_id: &str) -> AppResult<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
+    let embedding_id = tx
         .query_row(
             "SELECT embedding_id FROM memory_store WHERE id = ?1 AND agent_id = ?2",
             params![id, agent_id],
@@ -294,11 +325,12 @@ pub fn delete(conn: &Connection, id: &str, agent_id: &str) -> AppResult<()> {
         .optional()?
         .flatten();
     let timestamp = now();
-    let affected = conn.execute(
+    let affected = tx.execute(
         "UPDATE memory_store \
-         SET status = 'deleted', deleted_at = ?1, updated_at = ?1, version = version + 1 \
-         WHERE id = ?2 AND agent_id = ?3 AND status = 'active' AND deleted_at IS NULL",
-        params![timestamp, id, agent_id],
+         SET status = 'deleted', deleted_at = ?1, updated_at = ?1, version = version + 1, \
+             origin_device_id = ?2 \
+         WHERE id = ?3 AND agent_id = ?4 AND status = 'active' AND deleted_at IS NULL",
+        params![timestamp, device_id, id, agent_id],
     )?;
     if affected == 0 {
         return Err(AppError::Other(
@@ -306,8 +338,51 @@ pub fn delete(conn: &Connection, id: &str, agent_id: &str) -> AppResult<()> {
         ));
     }
     if let Some(embedding_id) = embedding_id {
-        delete_embedding_by_id(conn, &embedding_id)?;
+        delete_embedding_by_id(&tx, &embedding_id)?;
     }
+    enqueue_current(&tx, id)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn get_sync_source(conn: &Connection, id: &str) -> AppResult<Option<MemorySyncSource>> {
+    conn.query_row(
+        "SELECT id, agent_id, name, keywords, content, creator, status, created_at, updated_at, \
+         version, deleted_at, origin_device_id FROM memory_store WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(MemorySyncSource {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                name: row.get(2)?,
+                keywords: decode_keywords(row.get(3)?),
+                content: row.get(4)?,
+                creator: row.get(5)?,
+                status: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                version: row.get(9)?,
+                deleted_at: row.get(10)?,
+                origin_device_id: row.get(11)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn enqueue_current(conn: &Connection, id: &str) -> AppResult<()> {
+    let source = get_sync_source(conn, id)?
+        .ok_or_else(|| AppError::Other(format!("memory `{id}` disappeared during sync enqueue")))?;
+    let payload = serde_json::to_value(&source)?;
+    super::sync::enqueue_projection(
+        conn,
+        SyncEntityType::Memory,
+        &source.id,
+        source.version,
+        source.deleted_at.is_some(),
+        &payload,
+    )?;
     Ok(())
 }
 
@@ -483,7 +558,7 @@ fn table_exists(conn: &Connection, table: &str) -> AppResult<bool> {
     .map_err(Into::into)
 }
 
-fn delete_embedding_by_id(conn: &Connection, embedding_id: &str) -> AppResult<()> {
+pub(super) fn delete_embedding_by_id(conn: &Connection, embedding_id: &str) -> AppResult<()> {
     let dims = conn
         .query_row(
             "SELECT dims FROM embedding_items WHERE id = ?1",
@@ -545,6 +620,12 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO sync_runtime_state (singleton, device_id) \
+             VALUES (1, '00000000-0000-4000-8000-000000000001')",
+            [],
+        )
+        .unwrap();
         conn
     }
 
@@ -566,9 +647,9 @@ mod tests {
 
     #[test]
     fn searches_name_keywords_and_content_with_agent_isolation() {
-        let conn = connection();
-        assert!(insert(&conn, &memory("m1", "agent-a", "user")).unwrap());
-        assert!(insert(&conn, &memory("m2", "agent-b", "ai")).unwrap());
+        let mut conn = connection();
+        assert!(insert(&mut conn, &memory("m1", "agent-a", "user")).unwrap());
+        assert!(insert(&mut conn, &memory("m2", "agent-b", "ai")).unwrap());
 
         for query in ["Rust workspace", "workspace", "execution core"] {
             let found = search(&conn, query, "agent-a", 10).unwrap();
@@ -584,9 +665,9 @@ mod tests {
 
     #[test]
     fn validates_fields_preserves_creator_and_skips_duplicates() {
-        let conn = connection();
-        assert!(insert(&conn, &memory("m1", "agent-a", "user")).unwrap());
-        assert!(!insert(&conn, &memory("m2", "agent-a", "ai")).unwrap());
+        let mut conn = connection();
+        assert!(insert(&mut conn, &memory("m1", "agent-a", "user")).unwrap());
+        assert!(!insert(&mut conn, &memory("m2", "agent-a", "ai")).unwrap());
         assert_eq!(list(&conn, "agent-a").unwrap().len(), 1);
         let before = get(&conn, "m1", "agent-a").unwrap().unwrap();
         let before_version: i64 = conn
@@ -598,7 +679,7 @@ mod tests {
             .unwrap();
 
         update(
-            &conn,
+            &mut conn,
             "m1",
             "agent-a",
             &MemoryUpdate {
@@ -620,7 +701,7 @@ mod tests {
             .unwrap();
         assert_eq!(after_version, before_version + 1);
 
-        delete(&conn, "m1", "agent-a").unwrap();
+        delete(&mut conn, "m1", "agent-a").unwrap();
         assert!(list(&conn, "agent-a").unwrap().is_empty());
     }
 
@@ -637,10 +718,10 @@ mod tests {
         let mut other_model = memory("m4", "agent-a", "ai");
         other_model.name = "Other model".into();
         other_model.content = "This vector belongs to a different embedding model.".into();
-        assert!(insert(&conn, &first).unwrap());
-        assert!(insert(&conn, &second).unwrap());
-        assert!(insert(&conn, &foreign).unwrap());
-        assert!(insert(&conn, &other_model).unwrap());
+        assert!(insert(&mut conn, &first).unwrap());
+        assert!(insert(&mut conn, &second).unwrap());
+        assert!(insert(&mut conn, &foreign).unwrap());
+        assert!(insert(&mut conn, &other_model).unwrap());
 
         assert!(upsert_memory_embedding(
             &mut conn,
@@ -707,7 +788,7 @@ mod tests {
     fn content_changes_invalidate_the_previous_embedding() {
         let mut conn = connection();
         let first = memory("m1", "agent-a", "user");
-        assert!(insert(&conn, &first).unwrap());
+        assert!(insert(&mut conn, &first).unwrap());
         assert!(upsert_memory_embedding(
             &mut conn,
             "e1",
@@ -719,7 +800,7 @@ mod tests {
         .unwrap());
 
         update(
-            &conn,
+            &mut conn,
             "m1",
             "agent-a",
             &MemoryUpdate {
@@ -748,8 +829,8 @@ mod tests {
         let mut second = memory("m2", "agent-a", "ai");
         second.name = "Second memory".into();
         second.content = "Another indexed memory.".into();
-        assert!(insert(&conn, &first).unwrap());
-        assert!(insert(&conn, &second).unwrap());
+        assert!(insert(&mut conn, &first).unwrap());
+        assert!(insert(&mut conn, &second).unwrap());
 
         conn.execute_batch(
             "CREATE VIRTUAL TABLE vec_embeddings_3 USING vec0(\
@@ -810,7 +891,7 @@ mod tests {
     fn rejects_vectors_above_sqlite_vec_dimension_limit() {
         let mut conn = connection();
         let first = memory("m1", "agent-a", "user");
-        assert!(insert(&conn, &first).unwrap());
+        assert!(insert(&mut conn, &first).unwrap());
 
         let error = upsert_memory_embedding(
             &mut conn,
@@ -823,5 +904,33 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("1 to 8192"));
+    }
+
+    #[test]
+    fn sync_payload_contains_memory_text_but_never_embedding_metadata() {
+        let mut conn = connection();
+        let mut row = memory("m1", "agent-a", "ai");
+        row.embedding_id = Some("local-embedding".into());
+        assert!(insert(&mut conn, &row).unwrap());
+
+        let payload: String = conn
+            .query_row(
+                "SELECT payload FROM sync_outbox WHERE entity_type = 'memory' AND entity_id = 'm1'",
+                [],
+                |query_row| query_row.get(0),
+            )
+            .unwrap();
+        assert!(payload.contains("Rust workspace"));
+        assert!(payload.contains("\"creator\":\"ai\""));
+        assert!(payload.contains("\"status\":\"active\""));
+        for local_only in [
+            "local-embedding",
+            "embedding_id",
+            "confidence",
+            "source",
+            "scope",
+        ] {
+            assert!(!payload.contains(local_only));
+        }
     }
 }

@@ -792,7 +792,9 @@ pub async fn switch_version(
         _ => return Ok(()),
     };
     let new_id = siblings[new_idx].clone();
-    state.db.set_selected_child(parent_id, Some(new_id)).await
+    state.db.set_selected_child(parent_id, Some(new_id)).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 /// 创建分支：把该消息设为活动叶子（selected_child_id=NULL），其后代保留为
@@ -802,7 +804,9 @@ pub async fn create_branch(
     state: tauri::State<'_, AppState>,
     message_id: String,
 ) -> AppResult<()> {
-    state.db.set_selected_child(message_id, None).await
+    state.db.set_selected_child(message_id, None).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 /// 删除单条消息（仅叶子、非 pending/streaming）。若是父的 selected_child，
@@ -821,14 +825,9 @@ pub async fn delete_message(
     if cnt > 0 {
         return Err(AppError::Other("仅可删除末梢消息（无后续消息）".into()));
     }
-    if let Some(ref pid) = msg.parent_id {
-        if let Some(p) = state.db.get_message(pid.clone()).await? {
-            if p.selected_child_id.as_deref() == Some(message_id.as_str()) {
-                state.db.set_selected_child(pid.clone(), None).await?;
-            }
-        }
-    }
-    state.db.delete_message(message_id).await
+    state.db.delete_message(message_id).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 /// 编辑并重发：把编辑后的文本作为旧 user 消息的同级新版本插入（共享 parent），
@@ -849,6 +848,7 @@ pub async fn edit_and_resend(
     let (_user_id, assistant_msg_id) = state.db
         .append_user_and_assistant(msg.session_id.clone(), parent_id, text, cfg.model_name.clone())
         .await?;
+    state.sync.schedule();
     start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id).await
 }
 
@@ -870,6 +870,7 @@ pub async fn regenerate_message(
     let assistant_msg_id = state.db
         .append_assistant_sibling(msg.session_id.clone(), parent_user_id, cfg.model_name.clone())
         .await?;
+    state.sync.schedule();
     start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id).await
 }
 
@@ -907,7 +908,9 @@ pub async fn replace_message_parts(
         content: p.content,
         metadata: p.metadata,
     }).collect();
-    state.db.replace_message_parts(message_id, new_parts).await
+    state.db.replace_message_parts(message_id, new_parts).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 /// 取消某会话当前活跃的运行：取出 session→run_id 映射，向 Python 发 RUN_CANCEL。
@@ -1210,6 +1213,7 @@ pub async fn send_message(
     let (_user_id, assistant_msg_id) = state.db
         .append_user_and_assistant(session_id.clone(), leaf_id, text, cfg.model_name.clone())
         .await?;
+    state.sync.schedule();
 
     start_agent_run(&state, &cfg, &session_id, &assistant_msg_id).await
 }
@@ -1251,7 +1255,9 @@ pub async fn save_explicit_memories(
     user_md: String,
     memory_md: String,
 ) -> AppResult<()> {
-    crate::memory::save_explicit_memories(&state.db, &agent_id, &user_md, &memory_md).await
+    crate::memory::save_explicit_memories(&state.db, &agent_id, &user_md, &memory_md).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 #[tauri::command]
@@ -1339,6 +1345,7 @@ pub async fn create_memory(
     if !inserted {
         return Err(AppError::Other("已存在名称和内容完全相同的记忆".into()));
     }
+    state.sync.schedule();
     Ok(id)
 }
 
@@ -1355,7 +1362,9 @@ pub async fn update_memory(
         memory_id,
         agent_id,
         crate::db::repo::memory::MemoryUpdate { name, keywords, content },
-    ).await
+    ).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 #[tauri::command]
@@ -1364,7 +1373,9 @@ pub async fn delete_memory(
     memory_id: String,
     agent_id: String,
 ) -> AppResult<()> {
-    state.db.delete_memory(memory_id, agent_id).await
+    state.db.delete_memory(memory_id, agent_id).await?;
+    state.sync.schedule();
+    Ok(())
 }
 
 #[derive(serde::Serialize)]

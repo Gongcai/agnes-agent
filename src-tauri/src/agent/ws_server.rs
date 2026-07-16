@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::net::TcpListener as TokioListener;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -16,6 +16,7 @@ use crate::db::repo::messages::NewMessagePart;
 use crate::db::repo::tools::NewToolCall;
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
+use crate::state::AppState;
 use crate::tools::{PermissionMode, ToolExecutor, ToolPolicy};
 
 pub struct ActiveRun {
@@ -724,9 +725,14 @@ async fn handle_conn<R: tauri::Runtime>(
                         let _ = db.insert_message_parts(parts_to_insert).await;
                     }
 
-                    let _ = db
+                    let completed = db
                         .update_message_status(run.assistant_message_id, "complete".to_string())
                         .await;
+                    if completed.is_ok() {
+                        if let Some(state) = app_handle.try_state::<AppState>() {
+                            state.sync.schedule();
+                        }
+                    }
                 }
                 drop(runs);
 
