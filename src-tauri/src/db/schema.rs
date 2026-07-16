@@ -146,6 +146,90 @@ CREATE TABLE IF NOT EXISTS embedding_items (
 );
 -- vec_embeddings_{dims} tables are created lazily for each embedding dimension.
 
+CREATE TABLE IF NOT EXISTS calendars (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  color TEXT,
+  timezone TEXT NOT NULL,
+  provider_account_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id TEXT PRIMARY KEY,
+  calendar_id TEXT NOT NULL REFERENCES calendars(id),
+  title TEXT NOT NULL,
+  description TEXT,
+  location TEXT,
+  starts_at TEXT NOT NULL,
+  ends_at TEXT NOT NULL,
+  timezone TEXT NOT NULL,
+  all_day INTEGER NOT NULL DEFAULT 0 CHECK(all_day IN (0, 1)),
+  recurrence_rule TEXT,
+  recurrence_id TEXT,
+  status TEXT NOT NULL DEFAULT 'confirmed' CHECK(status IN ('confirmed', 'tentative', 'cancelled')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS event_exceptions (
+  event_id TEXT NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+  original_occurrence TEXT NOT NULL,
+  replacement_event_id TEXT REFERENCES calendar_events(id),
+  is_cancelled INTEGER NOT NULL DEFAULT 0 CHECK(is_cancelled IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(event_id, original_occurrence)
+);
+
+CREATE TABLE IF NOT EXISTS task_lists (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  color TEXT,
+  provider_account_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  task_list_id TEXT NOT NULL REFERENCES task_lists(id),
+  parent_id TEXT REFERENCES tasks(id),
+  title TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'completed', 'cancelled')),
+  priority INTEGER NOT NULL DEFAULT 0 CHECK(priority BETWEEN 0 AND 4),
+  starts_at TEXT,
+  due_at TEXT,
+  completed_at TEXT,
+  recurrence_rule TEXT,
+  sort_order REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_events_range
+  ON calendar_events(calendar_id, starts_at, ends_at) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_calendar_events_recurrence
+  ON calendar_events(recurrence_id) WHERE recurrence_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_list_status_due
+  ON tasks(task_list_id, status, due_at, sort_order) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_parent
+  ON tasks(parent_id, sort_order) WHERE parent_id IS NOT NULL AND deleted_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS tool_calls (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id),
