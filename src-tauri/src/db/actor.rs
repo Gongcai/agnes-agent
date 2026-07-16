@@ -122,6 +122,26 @@ pub enum DbCommand {
         limit: usize,
         resp: oneshot::Sender<AppResult<Vec<repo::knowledge::KnowledgeSearchResult>>>,
     },
+    ListKnowledgeChunksForEmbedding {
+        model: String,
+        collection_id: Option<String>,
+        resp: oneshot::Sender<AppResult<Vec<repo::knowledge::KnowledgeChunkForEmbedding>>>,
+    },
+    UpsertKnowledgeChunkEmbedding {
+        embedding_id: String,
+        chunk_id: String,
+        collection_id: String,
+        model: String,
+        content_hash: String,
+        vector: Vec<f32>,
+        resp: oneshot::Sender<AppResult<bool>>,
+    },
+    SearchKnowledgeVectors {
+        collection_id: String,
+        query: repo::knowledge::KnowledgeQueryEmbedding,
+        limit: usize,
+        resp: oneshot::Sender<AppResult<Vec<repo::knowledge::KnowledgeSearchResult>>>,
+    },
     ListCalendars {
         resp: oneshot::Sender<AppResult<Vec<repo::planner::CalendarRow>>>,
     },
@@ -685,6 +705,61 @@ impl DbActorHandle {
             agent_id,
             query,
             collection_id,
+            limit,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_knowledge_chunks_for_embedding(
+        &self,
+        model: String,
+        collection_id: Option<String>,
+    ) -> AppResult<Vec<repo::knowledge::KnowledgeChunkForEmbedding>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListKnowledgeChunksForEmbedding {
+            model,
+            collection_id,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn upsert_knowledge_chunk_embedding(
+        &self,
+        embedding_id: String,
+        chunk_id: String,
+        collection_id: String,
+        model: String,
+        content_hash: String,
+        vector: Vec<f32>,
+    ) -> AppResult<bool> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpsertKnowledgeChunkEmbedding {
+            embedding_id,
+            chunk_id,
+            collection_id,
+            model,
+            content_hash,
+            vector,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn search_knowledge_vectors(
+        &self,
+        collection_id: String,
+        query: repo::knowledge::KnowledgeQueryEmbedding,
+        limit: usize,
+    ) -> AppResult<Vec<repo::knowledge::KnowledgeSearchResult>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SearchKnowledgeVectors {
+            collection_id,
+            query,
             limit,
             resp,
         })?;
@@ -1540,6 +1615,49 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         &agent_id,
                         &query,
                         collection_id.as_deref(),
+                        limit,
+                    ));
+                }
+                DbCommand::ListKnowledgeChunksForEmbedding {
+                    model,
+                    collection_id,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::knowledge::chunks_needing_embeddings(
+                        &conn,
+                        &model,
+                        collection_id.as_deref(),
+                    ));
+                }
+                DbCommand::UpsertKnowledgeChunkEmbedding {
+                    embedding_id,
+                    chunk_id,
+                    collection_id,
+                    model,
+                    content_hash,
+                    vector,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::knowledge::upsert_chunk_embedding(
+                        &mut conn,
+                        &embedding_id,
+                        &chunk_id,
+                        &collection_id,
+                        &model,
+                        &content_hash,
+                        &vector,
+                    ));
+                }
+                DbCommand::SearchKnowledgeVectors {
+                    collection_id,
+                    query,
+                    limit,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::knowledge::search_vector(
+                        &conn,
+                        &collection_id,
+                        &query,
                         limit,
                     ));
                 }

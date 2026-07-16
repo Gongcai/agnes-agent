@@ -174,8 +174,8 @@ System Prompt
 | V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | Phase 0-4 已完成：密文传输、SPAKE2 新设备配对、两阶段密钥轮换、Recovery Bundle 多版本恢复和线上日志审计均已完成；Worker `7316feb3-48b1-4635-8363-a83e78e7dc33` 已部署，production D1 五张相关表均为空。本轮未上传业务数据 |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 暂缓：先稳定桌面客户端与本地 Agent 能力，再启动 Android 客户端 |
 | V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；MCP 等能力待后续补齐 |
-| V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + R2/Google Drive Provider | 进行中：侧边栏导航、图标轨和会话折叠已完成；知识库正式 schema、旧表迁移、权限隔离、UTF-8 文本导入/分块、FTS 检索和桌面页面已完成；向量/RRF、加密制品与 Provider 待实现 |
-| V0.7 | 日历 + 待办 + 外部 Calendar/Task Provider | 进行中：本地领域表、Local Provider 与桌面 CRUD 页面已完成；Agent 工具、D1 E2EE 同步与外部 Provider 待实现 |
+| V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + R2/Google Drive Provider | 进行中：侧边栏导航、图标轨和会话折叠已完成；知识库正式 schema、旧表迁移、权限隔离、UTF-8 文本导入/分块、FTS5 + sqlite-vec 分区、显式向量化、RRF 混合检索和安全 Agent 上下文注入已完成；加密制品与 Provider 待实现 |
+| V0.7 | 日历 + 待办 + 外部 Calendar/Task Provider | 进行中：本地领域表、Local Provider、桌面 CRUD 页面与受审批约束的 Agent 基础工具已完成；D1 E2EE 同步与外部 Provider 待实现 |
 
 # 关键决策约束
 

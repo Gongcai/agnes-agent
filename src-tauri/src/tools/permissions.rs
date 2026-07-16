@@ -181,8 +181,12 @@ mod tests {
     fn planner_writes_require_approval_outside_full_access() {
         for tool in ["calendar_create", "task_create", "task_complete"] {
             assert!(approval_decision(PermissionMode::Auto, tool, Risk::High).needs_approval);
-            assert!(approval_decision(PermissionMode::AcceptEdits, tool, Risk::High).needs_approval);
-            assert!(!approval_decision(PermissionMode::FullAccess, tool, Risk::High).needs_approval);
+            assert!(
+                approval_decision(PermissionMode::AcceptEdits, tool, Risk::High).needs_approval
+            );
+            assert!(
+                !approval_decision(PermissionMode::FullAccess, tool, Risk::High).needs_approval
+            );
         }
     }
 

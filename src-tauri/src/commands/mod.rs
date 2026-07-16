@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -740,6 +742,8 @@ pub async fn get_debug_prompt(
             }
         }
     }
+    let retrieved_knowledge =
+        retrieve_knowledge_for_history(&state, &agent.id, &history_json).await;
 
     let task_llm_configs = resolve_task_llm_configs(&state, &model_roles).await?;
     let snapshot = json!({
@@ -768,6 +772,7 @@ pub async fn get_debug_prompt(
             "summary": summary,
             "explicitMemories": { "user_md": user_md, "memory_md": memory_md },
             "retrievedMemories": [],
+            "retrievedKnowledge": retrieved_knowledge,
             "projectContext": []
         }
     });
@@ -1358,6 +1363,8 @@ async fn start_agent_run(
             "parts": parts_json,
         }));
     }
+    let retrieved_knowledge =
+        retrieve_knowledge_for_history(state, &cfg.agent.id, &history_json).await;
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let context_snapshot = json!({
@@ -1391,6 +1398,7 @@ async fn start_agent_run(
                 "memory_md": memory_md
             },
             "retrievedMemories": [],
+            "retrievedKnowledge": retrieved_knowledge,
             "projectContext": []
         }
     });
@@ -1829,6 +1837,239 @@ pub async fn search_knowledge(
         .db
         .search_knowledge(agent_id, query, collection_id, limit.unwrap_or(10))
         .await
+}
+
+#[derive(Serialize)]
+pub struct KnowledgeVectorizationResult {
+    pub indexed_now: usize,
+    pub model_ref: String,
+}
+
+#[tauri::command]
+pub async fn vectorize_knowledge(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    collection_id: Option<String>,
+) -> AppResult<KnowledgeVectorizationResult> {
+    let roles = load_model_roles(&state.db).await?;
+    let model_ref = roles
+        .embedding_model
+        .as_deref()
+        .ok_or_else(|| AppError::Other("尚未配置嵌入模型".into()))?;
+    let config = resolve_routed_llm_config(&state, Some(model_ref))
+        .await?
+        .ok_or_else(|| AppError::Other("嵌入模型配置不可用".into()))?;
+    let visible_collections = state.db.list_knowledge_collections(agent_id).await?;
+    let collection_ids = match collection_id {
+        Some(collection_id) => {
+            if visible_collections
+                .iter()
+                .any(|collection| collection.id == collection_id)
+            {
+                vec![collection_id]
+            } else {
+                return Err(AppError::Other("知识库不可用".into()));
+            }
+        }
+        None => visible_collections
+            .into_iter()
+            .map(|collection| collection.id)
+            .collect(),
+    };
+    let mut indexed_now = 0;
+    for collection_id in collection_ids {
+        indexed_now += crate::embeddings::ensure_knowledge_index(
+            &state.db,
+            &state.agent,
+            &config,
+            Some(&collection_id),
+        )
+        .await?;
+    }
+    Ok(KnowledgeVectorizationResult {
+        indexed_now,
+        model_ref: model_ref.to_string(),
+    })
+}
+
+async fn retrieve_knowledge_hybrid(
+    state: &AppState,
+    agent_id: &str,
+    query: &str,
+    collection_id: Option<&str>,
+    limit: usize,
+) -> AppResult<Vec<crate::db::repo::knowledge::KnowledgeSearchResult>> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = limit.clamp(1, 20);
+    let candidate_limit = limit.saturating_mul(3).clamp(limit, 60);
+    let visible_collection_ids = state
+        .db
+        .list_knowledge_collections(agent_id.to_string())
+        .await?
+        .into_iter()
+        .map(|collection| collection.id)
+        .collect::<Vec<_>>();
+    let selected_collection_id = collection_id.map(ToString::to_string);
+    if let Some(requested_collection_id) = selected_collection_id.as_deref() {
+        if !visible_collection_ids
+            .iter()
+            .any(|collection_id| collection_id == requested_collection_id)
+        {
+            return Ok(Vec::new());
+        }
+    } else if visible_collection_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let text_results = state
+        .db
+        .search_knowledge(
+            agent_id.to_string(),
+            query.to_string(),
+            selected_collection_id.clone(),
+            candidate_limit,
+        )
+        .await?;
+    let mut fused = HashMap::new();
+    for (rank, result) in text_results.into_iter().enumerate() {
+        fused.insert(
+            result.chunk_id.clone(),
+            (1.0 / (60.0 + rank as f64 + 1.0), result),
+        );
+    }
+
+    let roles = load_model_roles(&state.db).await?;
+    let Some(model_ref) = roles.embedding_model.as_deref() else {
+        return Ok(rank_knowledge_results(fused, limit));
+    };
+    let Some(config) = resolve_routed_llm_config(state, Some(model_ref)).await? else {
+        return Ok(rank_knowledge_results(fused, limit));
+    };
+    let vector =
+        match crate::embeddings::request_embeddings(&state.agent, config, vec![query.to_string()])
+            .await
+        {
+            Ok(mut vectors) if vectors.len() == 1 => vectors.remove(0),
+            Ok(_) => return Ok(rank_knowledge_results(fused, limit)),
+            Err(error) => {
+                eprintln!("[rag] Query embedding failed; using FTS only: {error}");
+                return Ok(rank_knowledge_results(fused, limit));
+            }
+        };
+    let collections = if let Some(collection_id) = selected_collection_id {
+        vec![collection_id]
+    } else {
+        visible_collection_ids
+    };
+    for collection_id in collections {
+        let results = state
+            .db
+            .search_knowledge_vectors(
+                collection_id,
+                crate::db::repo::knowledge::KnowledgeQueryEmbedding {
+                    model: model_ref.to_string(),
+                    vector: vector.clone(),
+                },
+                candidate_limit,
+            )
+            .await?;
+        for (rank, result) in results.into_iter().enumerate() {
+            let score = 1.0 / (60.0 + rank as f64 + 1.0);
+            fused
+                .entry(result.chunk_id.clone())
+                .and_modify(
+                    |entry: &mut (f64, crate::db::repo::knowledge::KnowledgeSearchResult)| {
+                        entry.0 += score
+                    },
+                )
+                .or_insert((score, result));
+        }
+    }
+    Ok(rank_knowledge_results(fused, limit))
+}
+
+fn latest_user_query(history: &[serde_json::Value]) -> Option<String> {
+    history.iter().rev().find_map(|message| {
+        if message.get("role").and_then(serde_json::Value::as_str) != Some("user") {
+            return None;
+        }
+        let query = message
+            .get("parts")
+            .and_then(serde_json::Value::as_array)?
+            .iter()
+            .filter(|part| part.get("kind").and_then(serde_json::Value::as_str) == Some("text"))
+            .filter_map(|part| part.get("content").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+        (!query.trim().is_empty()).then(|| query.trim().to_string())
+    })
+}
+
+async fn retrieve_knowledge_for_history(
+    state: &AppState,
+    agent_id: &str,
+    history: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    let Some(query) = latest_user_query(history) else {
+        return Vec::new();
+    };
+    match retrieve_knowledge_hybrid(state, agent_id, &query, None, 6).await {
+        Ok(results) => results
+            .into_iter()
+            .map(|result| {
+                json!({
+                    "documentId": result.document_id,
+                    "documentVersionId": result.document_version_id,
+                    "chunkId": result.chunk_id,
+                    "title": result.title,
+                    "sectionPath": result.section_path,
+                    "content": result.content,
+                })
+            })
+            .collect(),
+        Err(error) => {
+            eprintln!("[rag] Knowledge retrieval failed; continuing without it: {error}");
+            Vec::new()
+        }
+    }
+}
+
+fn rank_knowledge_results(
+    fused: HashMap<String, (f64, crate::db::repo::knowledge::KnowledgeSearchResult)>,
+    limit: usize,
+) -> Vec<crate::db::repo::knowledge::KnowledgeSearchResult> {
+    let mut ranked = fused.into_values().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then_with(|| left.1.document_id.cmp(&right.1.document_id))
+            .then_with(|| left.1.ordinal.cmp(&right.1.ordinal))
+    });
+    ranked
+        .into_iter()
+        .map(|(_, result)| result)
+        .take(limit)
+        .collect()
+}
+
+#[tauri::command]
+pub async fn search_knowledge_hybrid(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    query: String,
+    collection_id: Option<String>,
+    limit: Option<usize>,
+) -> AppResult<Vec<crate::db::repo::knowledge::KnowledgeSearchResult>> {
+    retrieve_knowledge_hybrid(
+        &state,
+        &agent_id,
+        query.trim(),
+        collection_id.as_deref(),
+        limit.unwrap_or(10),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2421,7 +2662,34 @@ pub async fn set_setting(
 
 #[cfg(test)]
 mod tests {
-    use super::saved_provider_endpoint_matches;
+    use super::{latest_user_query, saved_provider_endpoint_matches};
+
+    #[test]
+    fn latest_user_query_uses_the_newest_text_message() {
+        let history = vec![
+            serde_json::json!({
+                "role": "user",
+                "parts": [{"kind": "text", "content": "older question"}],
+            }),
+            serde_json::json!({
+                "role": "assistant",
+                "parts": [{"kind": "text", "content": "assistant reply"}],
+            }),
+            serde_json::json!({
+                "role": "user",
+                "parts": [
+                    {"kind": "tool_result", "content": "ignore this"},
+                    {"kind": "text", "content": " latest "},
+                    {"kind": "text", "content": "question "},
+                ],
+            }),
+        ];
+
+        assert_eq!(
+            latest_user_query(&history).as_deref(),
+            Some("latest \nquestion")
+        );
+    }
 
     #[test]
     fn stored_credentials_are_only_reused_for_the_saved_endpoint() {

@@ -112,6 +112,8 @@ fn main() {
             commands::list_knowledge_documents,
             commands::import_local_knowledge_document,
             commands::search_knowledge,
+            commands::vectorize_knowledge,
+            commands::search_knowledge_hybrid,
             commands::list_calendars,
             commands::create_calendar,
             commands::list_calendar_events,

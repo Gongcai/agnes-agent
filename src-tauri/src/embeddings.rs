@@ -111,7 +111,60 @@ pub async fn ensure_agent_memory_index(
     Ok(indexed)
 }
 
-async fn request_embeddings(
+pub async fn ensure_knowledge_index(
+    db: &DbActorHandle,
+    agent: &Arc<AgentManager>,
+    config: &Value,
+    collection_id: Option<&str>,
+) -> AppResult<usize> {
+    let model_ref = config
+        .get("modelRef")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| AppError::Other("Embedding model reference is missing".into()))?;
+    let mut indexed = 0;
+    loop {
+        let stale = db
+            .list_knowledge_chunks_for_embedding(
+                model_ref.to_string(),
+                collection_id.map(ToString::to_string),
+            )
+            .await?;
+        if stale.is_empty() {
+            break;
+        }
+        for batch in stale.chunks(EMBEDDING_BATCH_SIZE) {
+            let inputs = batch
+                .iter()
+                .map(|chunk| chunk.content.clone())
+                .collect::<Vec<_>>();
+            let vectors = request_embeddings(agent, config.clone(), inputs).await?;
+            if vectors.len() != batch.len() {
+                return Err(AppError::Other(
+                    "Embedding sidecar returned an unexpected vector count".into(),
+                ));
+            }
+            for (chunk, vector) in batch.iter().zip(vectors) {
+                if db
+                    .upsert_knowledge_chunk_embedding(
+                        uuid::Uuid::new_v4().to_string(),
+                        chunk.id.clone(),
+                        chunk.collection_id.clone(),
+                        model_ref.to_string(),
+                        chunk.content_hash.clone(),
+                        vector,
+                    )
+                    .await?
+                {
+                    indexed += 1;
+                }
+            }
+        }
+    }
+    Ok(indexed)
+}
+
+pub(crate) async fn request_embeddings(
     agent: &Arc<AgentManager>,
     config: Value,
     inputs: Vec<String>,
