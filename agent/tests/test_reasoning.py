@@ -196,6 +196,8 @@ def test_get_available_tools():
     assert "apply_patch" not in tool_names
     assert "git" in tool_names
     assert "memory_search" in tool_names
+    assert "memory_create" in tool_names
+    assert "memory_update" in tool_names
     assert "memory_md_view" in tool_names
     assert "memory_md_edit" in tool_names
 
@@ -212,6 +214,8 @@ def test_get_available_tools():
         "apply_patch",
         "git",
         "memory_search",
+        "memory_create",
+        "memory_update",
         "memory_md_view",
         "memory_md_edit",
     ]
@@ -221,6 +225,8 @@ def test_get_available_tools():
         for tool in get_available_tools({"memory": {"enabled": False}})
     ]
     assert "memory_search" not in memory_disabled_names
+    assert "memory_create" not in memory_disabled_names
+    assert "memory_update" not in memory_disabled_names
     assert "memory_md_view" not in memory_disabled_names
     assert "memory_md_edit" not in memory_disabled_names
 

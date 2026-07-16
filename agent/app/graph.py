@@ -185,6 +185,47 @@ def get_available_tools(tool_policy: Dict[str, Any]) -> List[Dict[str, Any]]:
             {
                 "type": "function",
                 "function": {
+                    "name": "memory_create",
+                    "description": "Create one structured long-term memory for this agent. The system assigns its ID, agent, creator, and timestamps.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "keywords": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "content": {"type": "string"},
+                        },
+                        "required": ["name", "content"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_update",
+                    "description": "Update selected fields of one structured long-term memory belonging to this agent. The creator and creation time are preserved.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "memory_id": {"type": "string"},
+                            "name": {"type": "string"},
+                            "keywords": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "content": {"type": "string"},
+                        },
+                        "required": ["memory_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "memory_md_view",
                     "description": "Read the complete MEMORY.md for this agent. Use after editing to verify final content.",
                     "parameters": {

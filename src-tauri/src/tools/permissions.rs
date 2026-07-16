@@ -89,12 +89,14 @@ pub fn approval_decision(mode: PermissionMode, tool: &str, risk: Risk) -> Approv
                     | "file_edit"
                     | "apply_patch"
                     | "memory_search"
+                    | "memory_create"
+                    | "memory_update"
                     | "memory_md_view"
                     | "memory_md_edit"
             );
             ApprovalDecision {
                 needs_approval: !accepts_without_prompt,
-                reason: "接受编辑会自动处理文件读写，但 Shell、Git 和未知工具仍需要你的批准。",
+                reason: "接受编辑会自动处理文件和记忆读写，但 Shell、Git 和未知工具仍需要你的批准。",
                 is_secondary_confirmation: false,
             }
         }
@@ -157,6 +159,8 @@ mod tests {
             "file_edit",
             "apply_patch",
             "memory_search",
+            "memory_create",
+            "memory_update",
             "memory_md_view",
             "memory_md_edit",
         ] {

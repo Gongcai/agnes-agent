@@ -323,6 +323,14 @@ mod tests {
         assert!(insert(&conn, &memory("m1", "agent-a", "user")).unwrap());
         assert!(!insert(&conn, &memory("m2", "agent-a", "ai")).unwrap());
         assert_eq!(list(&conn, "agent-a").unwrap().len(), 1);
+        let before = get(&conn, "m1", "agent-a").unwrap().unwrap();
+        let before_version: i64 = conn
+            .query_row(
+                "SELECT version FROM memory_store WHERE id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         update(
             &conn,
@@ -335,10 +343,17 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(
-            get(&conn, "m1", "agent-a").unwrap().unwrap().creator,
-            "user"
-        );
+        let after = get(&conn, "m1", "agent-a").unwrap().unwrap();
+        assert_eq!(after.creator, "user");
+        assert_eq!(after.created_at, before.created_at);
+        let after_version: i64 = conn
+            .query_row(
+                "SELECT version FROM memory_store WHERE id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after_version, before_version + 1);
 
         delete(&conn, "m1", "agent-a").unwrap();
         assert!(list(&conn, "agent-a").unwrap().is_empty());

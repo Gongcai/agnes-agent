@@ -33,7 +33,7 @@
 | `grep` | 递归内容搜索（只读，ripgrep 风式） | Low |
 | `apply_patch` | 统一 diff 补丁应用（codex 风格，多段一次性改） | Medium |
 
-> `memory_search` / `browser` / `ssh` 暂不实现（超出「基础」范围，后续单独设计）。
+> `memory_search`、`memory_create`、`memory_update` 与 `MEMORY.md` 专用工具已随记忆系统实现；`browser` / `ssh` 仍留待后续单独设计。
 
 ### 工具模块拆分
 `src-tauri/src/tools/` 改为：
@@ -240,7 +240,7 @@ pub struct NetworkPolicy { pub allow: bool }
 ## 十一、实施结果与安全边界（2026-07-16）
 
 - Phase A–E 已完成；对应提交：`4b4a056`、`1e65bcf`、`a02fa80`、`e070c4d`、`dc6cce5`。
-- Rust 内置工具共 11 个：`shell`、`file_read`、`file_write`、`file_edit`、`list_files`、`grep`、`apply_patch`、`git`、`memory_search`、`memory_md_view`、`memory_md_edit`；Python sidecar 已声明同一组 schema。记忆工具只访问当前 session 所属 Agent，不能接受任意路径或外部 `agent_id`。
+- Rust 内置工具共 13 个：`shell`、`file_read`、`file_write`、`file_edit`、`list_files`、`grep`、`apply_patch`、`git`、`memory_search`、`memory_create`、`memory_update`、`memory_md_view`、`memory_md_edit`；Python sidecar 已声明同一组 schema。记忆工具只访问当前 session 所属 Agent，不能接受任意路径或外部 `agent_id`。结构化记忆写工具固定由系统生成创建人和时间等字段。
 - Linux 已验证 Landlock workspace 写边界、symlink 逃逸拒绝、rlimit 文件大小上限，以及 bubblewrap loopback 网络隔离。
 - 原生文件工具由路径能力层保护；Landlock 仅施加给 shell/git 子进程，避免污染桌面主进程。
 - 非 Linux 或 Landlock 不可用时，文件工具仍受严格路径检查；shell/git 的内核级文件隔离会降级。bubblewrap 不可用且网络关闭时仅能启发式拒绝已知网络动作，不能视为完整网络沙箱。

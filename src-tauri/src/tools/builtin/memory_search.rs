@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::error::{AppError, AppResult};
+use crate::tools::builtin::memory_entry::visible_memory;
 use crate::tools::builtin::{BuiltinTool, ToolCtx};
 use crate::tools::policy::Risk;
 
@@ -72,18 +73,7 @@ impl BuiltinTool for MemorySearchTool {
             None,
         )
         .await?;
-        let visible_memories = memories
-            .into_iter()
-            .map(|memory| {
-                json!({
-                    "name": memory.name,
-                    "keywords": memory.keywords,
-                    "created_at": memory.created_at,
-                    "content": memory.content,
-                    "creator": memory.creator,
-                })
-            })
-            .collect::<Vec<_>>();
+        let visible_memories = memories.iter().map(visible_memory).collect::<Vec<_>>();
         Ok(json!({"memories": visible_memories}))
     }
 }

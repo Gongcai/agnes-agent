@@ -38,6 +38,11 @@ pub enum DbCommand {
         agent_id: String,
         resp: oneshot::Sender<AppResult<Vec<repo::memory::MemoryRow>>>,
     },
+    GetMemory {
+        id: String,
+        agent_id: String,
+        resp: oneshot::Sender<AppResult<Option<repo::memory::MemoryRow>>>,
+    },
     UpdateMemory {
         id: String,
         agent_id: String,
@@ -304,6 +309,17 @@ impl DbActorHandle {
     pub async fn list_memories(&self, agent_id: String) -> AppResult<Vec<repo::memory::MemoryRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListMemories { agent_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn get_memory(
+        &self,
+        id: String,
+        agent_id: String,
+    ) -> AppResult<Option<repo::memory::MemoryRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetMemory { id, agent_id, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -730,6 +746,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::ListMemories { agent_id, resp } => {
                     let _ = resp.send(repo::memory::list(&conn, &agent_id));
+                }
+                DbCommand::GetMemory { id, agent_id, resp } => {
+                    let _ = resp.send(repo::memory::get(&conn, &id, &agent_id));
                 }
                 DbCommand::UpdateMemory { id, agent_id, changes, resp } => {
                     let _ = resp.send(repo::memory::update(&conn, &id, &agent_id, &changes));

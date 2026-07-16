@@ -332,7 +332,7 @@ impl ToolPolicy {
             "file_write" | "file_edit" | "apply_patch" => self.file.approval,
             "git" => self.git.approval,
             "memory_search" | "memory_md_view" => ApprovalTier::Never,
-            "memory_md_edit" => self.memory.approval,
+            "memory_create" | "memory_update" | "memory_md_edit" => self.memory.approval,
             _ => ApprovalTier::Always,
         }
     }

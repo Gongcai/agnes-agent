@@ -136,18 +136,10 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    #[tokio::test]
-    async fn test_tool_executor_shell_and_file() {
-        let db_path = PathBuf::from("target/test_tools.db");
-        if db_path.exists() {
-            let _ = fs::remove_file(&db_path);
-        }
-        let db = spawn_db_actor(db_path.clone());
-        let executor = ToolExecutor::new(db.clone());
-
-        let agent = crate::db::repo::agents::NewAgent {
-            id: "test-agent".into(),
-            name: "Test Agent".into(),
+    fn new_agent(id: &str, name: &str) -> crate::db::repo::agents::NewAgent {
+        crate::db::repo::agents::NewAgent {
+            id: id.into(),
+            name: name.into(),
             persona: "You are a test agent".into(),
             scenario: "".into(),
             system_prompt: "Be a test agent".into(),
@@ -159,8 +151,24 @@ mod tests {
             tags: "".into(),
             thinking_mode: "off".into(),
             thinking_budget: 0,
-        };
-        db.insert_agent(agent).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tool_executor_shell_and_file() {
+        let db_path = PathBuf::from("target/test_tools.db");
+        if db_path.exists() {
+            let _ = fs::remove_file(&db_path);
+        }
+        let db = spawn_db_actor(db_path.clone());
+        let executor = ToolExecutor::new(db.clone());
+
+        db.insert_agent(new_agent("test-agent", "Test Agent"))
+            .await
+            .unwrap();
+        db.insert_agent(new_agent("other-agent", "Other Agent"))
+            .await
+            .unwrap();
 
         let temp_project = std::env::current_dir()
             .unwrap()
@@ -478,7 +486,129 @@ mod tests {
             memory_result["memories"][0]["content"],
             "Use pnpm for frontend dependencies."
         );
+        assert_eq!(memory_result["memories"][0]["id"], "memory-1");
         assert!(memory_result["memories"][0].get("agent_id").is_none());
+
+        let spoofed_create = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-memory-create-spoofed",
+                "memory_create",
+                &json!({
+                    "name": "Spoofed",
+                    "content": "This must not be created.",
+                    "creator": "user"
+                }),
+                &policy,
+            )
+            .await;
+        assert!(spoofed_create.is_err());
+
+        let create_result = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-memory-create-1",
+                "memory_create",
+                &json!({
+                    "name": "Rust test command",
+                    "keywords": ["cargo", " rust ", "cargo"],
+                    "content": "Use cargo test for the Rust core."
+                }),
+                &policy,
+            )
+            .await
+            .unwrap();
+        let created = &create_result["memory"];
+        let created_id = created["id"].as_str().unwrap().to_string();
+        let created_at = created["created_at"].as_str().unwrap().to_string();
+        assert_eq!(created["creator"], "ai");
+        assert_eq!(created["keywords"], json!(["cargo", "rust"]));
+        assert!(created.get("agent_id").is_none());
+
+        let created_search = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-memory-search-created",
+                "memory_search",
+                &json!({"query": "cargo test"}),
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(created_search["memories"][0]["id"], created_id);
+
+        let update_result = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-memory-update-1",
+                "memory_update",
+                &json!({
+                    "memory_id": created_id,
+                    "keywords": ["tests"],
+                    "content": "Run cargo test --no-fail-fast for the Rust core."
+                }),
+                &policy,
+            )
+            .await
+            .unwrap();
+        let updated = &update_result["memory"];
+        assert_eq!(updated["name"], "Rust test command");
+        assert_eq!(updated["creator"], "ai");
+        assert_eq!(updated["created_at"], created_at);
+        assert_eq!(updated["keywords"], json!(["tests"]));
+
+        let updated_search = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-memory-search-updated",
+                "memory_search",
+                &json!({"query": "no-fail-fast"}),
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated_search["memories"][0]["id"], updated["id"]);
+        assert!(updated_search["memories"][0].get("agent_id").is_none());
+
+        db.insert_memory(crate::db::repo::memory::NewMemory {
+            id: "other-memory".into(),
+            agent_id: "other-agent".into(),
+            name: "Private memory".into(),
+            keywords: vec![],
+            content: "Only the other agent can update this.".into(),
+            creator: "ai".into(),
+            memory_type: "Note".into(),
+            scope: "agent".into(),
+            source: "test".into(),
+            confidence: 1.0,
+            embedding_id: None,
+        })
+        .await
+        .unwrap();
+        let cross_agent_update = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-memory-update-cross-agent",
+                "memory_update",
+                &json!({"memory_id": "other-memory", "content": "Compromised"}),
+                &policy,
+            )
+            .await;
+        assert!(cross_agent_update.is_err());
+        assert_eq!(
+            db.get_memory("other-memory".into(), "other-agent".into())
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "Only the other agent can update this."
+        );
 
         let _ = fs::remove_dir_all(&temp_project);
         let _ = fs::remove_file(&db_path);
