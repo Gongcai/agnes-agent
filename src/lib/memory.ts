@@ -25,3 +25,15 @@ export function formatMemoryTime(value: string): string {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return value;
   return new Date(timestamp * 1000).toLocaleString("zh-CN", { hour12: false });
 }
+
+export function memoryEmbeddingProgress(indexed: number, total: number): number {
+  if (!Number.isFinite(total) || total <= 0) return 0;
+  const ratio = Number.isFinite(indexed) ? indexed / total : 0;
+  return Math.round(Math.min(1, Math.max(0, ratio)) * 100);
+}
+
+export function embeddingModelName(modelRef: string | null): string {
+  if (!modelRef) return "未配置嵌入模型";
+  const separator = modelRef.indexOf("/");
+  return separator >= 0 ? modelRef.slice(separator + 1) : modelRef;
+}

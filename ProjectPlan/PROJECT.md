@@ -121,7 +121,7 @@ created_at / updated_at
 - 存储：`memory_store` 表（区别于 MEMORY.md 文件）：
   用户可见字段固定为 `name / keywords? / created_at / content / creator(user|ai)`；另有 `id / agent_id / status / version / embedding_id` 等内部字段。`agent_id` 保证记忆库按 Agent 隔离，详细约束见 `MEMORY_SYSTEM.md`。
 - 检索（混合）：AI 按需调 `memory_search(q)`。名称、关键词和内容参与字符串匹配；配置嵌入模型后，仅对 `content` 建立按实际维度分表的 sqlite-vec cosine 索引，并以 RRF 融合字符串与同 Agent、同模型的向量候选，返回 top-k 作为工具结果进入上下文。模型未配置或向量调用失败时自动降级为字符串检索。
-- 索引维护：每次 Agent 运行前批量回填缺失、正文变化或模型切换后的记忆向量；正文修改和删除会清理旧向量。sqlite-vec 支持的维度范围为 1 到 8192，向量仅保存在本机，不参与云同步。
+- 索引维护：每次 Agent 运行前批量回填缺失、正文变化或模型切换后的记忆向量；正文修改和删除会清理旧向量。记忆管理页按当前 Agent 展示当前模型、覆盖率和待处理数量，并允许手动触发同一批量回填链路。sqlite-vec 支持的维度范围为 1 到 8192，向量仅保存在本机，不参与云同步。
 - 写入：后台 memory extractor 从对话抽取，或 AI 调用 `memory_create` / `memory_update` 写入当前 Agent 的结构化记忆；Rust 强制 AI 创建入口标记 `creator=ai`，用户从记忆管理界面创建时强制标记 `creator=user`。创建时间和创建人均由系统生成，不接受调用方伪造，更新时保持不变。
 - AI 工具边界：`memory_search` 返回稳定 `id` 供 `memory_update` 使用，但不返回 `agent_id`；`memory_create` 和 `memory_update` 都从当前 session 解析 Agent，不能跨 Agent 写入。提示词已要求 AI 写入前先检索相关记忆，再判断新增或更新；基础工具层不强制该调用顺序。
 - `MEMORY.md`：AI 使用 `memory_md_view` 再次查看，使用 `memory_md_edit` 进行追加或唯一精确替换；工具只能操作当前 Agent 的 `MEMORY.md`，不能修改 `USER.md` 或任意文件。

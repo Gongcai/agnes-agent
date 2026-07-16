@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { formatMemoryTime, memoryMatchesQuery, parseMemoryKeywords } from "./memory";
+import {
+  embeddingModelName,
+  formatMemoryTime,
+  memoryEmbeddingProgress,
+  memoryMatchesQuery,
+  parseMemoryKeywords,
+} from "./memory";
 
 describe("structured memory helpers", () => {
   it("normalizes optional keywords", () => {
@@ -26,5 +32,13 @@ describe("structured memory helpers", () => {
 
   it("keeps invalid timestamps readable", () => {
     expect(formatMemoryTime("not-a-time")).toBe("not-a-time");
+  });
+
+  it("formats embedding coverage and model references", () => {
+    expect(memoryEmbeddingProgress(3, 4)).toBe(75);
+    expect(memoryEmbeddingProgress(1, 0)).toBe(0);
+    expect(memoryEmbeddingProgress(8, 4)).toBe(100);
+    expect(embeddingModelName("provider-id/Qwen3-Embedding-8B")).toBe("Qwen3-Embedding-8B");
+    expect(embeddingModelName(null)).toBe("未配置嵌入模型");
   });
 });

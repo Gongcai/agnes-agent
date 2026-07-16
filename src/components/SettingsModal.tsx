@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -11,7 +11,13 @@ import type {
   ModelRoleAssignments,
 } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
-import { formatMemoryTime, memoryMatchesQuery, parseMemoryKeywords } from "../lib/memory";
+import {
+  embeddingModelName,
+  formatMemoryTime,
+  memoryEmbeddingProgress,
+  memoryMatchesQuery,
+  parseMemoryKeywords,
+} from "../lib/memory";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -37,6 +43,18 @@ interface StructuredMemory {
   creator: "user" | "ai";
   created_at: string;
   updated_at: string;
+}
+
+interface MemoryEmbeddingStatus {
+  total: number;
+  indexed: number;
+  pending: number;
+  model_ref: string | null;
+}
+
+interface MemoryVectorizationResult {
+  indexed_now: number;
+  status: MemoryEmbeddingStatus;
 }
 
 interface MemoryFormValues {
@@ -332,6 +350,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [memoryForm, setMemoryForm] = useState<MemoryFormValues>(EMPTY_MEMORY_FORM);
   const [isSavingMemory, setIsSavingMemory] = useState(false);
   const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [memoryEmbeddingStatus, setMemoryEmbeddingStatus] = useState<MemoryEmbeddingStatus | null>(null);
+  const [isVectorizingMemories, setIsVectorizingMemories] = useState(false);
+  const [memoryVectorMessage, setMemoryVectorMessage] = useState<{ success: boolean; text: string } | null>(null);
 
   // Audit state
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -607,22 +628,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Sync memory text when activeAgentId changes
   useEffect(() => {
     if (activeAgentId && activeTab === "memory") {
+      setMemoryEmbeddingStatus(null);
+      setMemoryVectorMessage(null);
       Promise.all([
         invoke<{ user_md: string; memory_md: string }>("get_explicit_memories", {
           agentId: activeAgentId,
         }),
         invoke<StructuredMemory[]>("list_memories", { agentId: activeAgentId }),
+        invoke<MemoryEmbeddingStatus>("get_memory_embedding_status", { agentId: activeAgentId }),
       ])
-        .then(([explicit, memories]) => {
+        .then(([explicit, memories, embeddingStatus]) => {
           setUserMdText(explicit.user_md);
           setMemoryMdText(explicit.memory_md);
           setStructuredMemories(memories);
+          setMemoryEmbeddingStatus(embeddingStatus);
           setIsEditingUserMd(false);
           setIsEditingMemoryMd(false);
           setEditingMemoryId(null);
           setMemoryError(null);
         })
-        .catch(console.error);
+        .catch((error) => {
+          console.error(error);
+          setMemoryVectorMessage({ success: false, text: String(error) });
+        });
     }
   }, [activeAgentId, activeTab]);
 
@@ -675,10 +703,38 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const refreshStructuredMemories = async () => {
     if (!activeAgentId) return;
-    const memories = await invoke<StructuredMemory[]>("list_memories", {
-      agentId: activeAgentId,
-    });
+    const [memories, embeddingStatus] = await Promise.all([
+      invoke<StructuredMemory[]>("list_memories", { agentId: activeAgentId }),
+      invoke<MemoryEmbeddingStatus>("get_memory_embedding_status", { agentId: activeAgentId }),
+    ]);
     setStructuredMemories(memories);
+    setMemoryEmbeddingStatus(embeddingStatus);
+    setMemoryVectorMessage(null);
+  };
+
+  const vectorizeStructuredMemories = async () => {
+    if (!activeAgentId || isVectorizingMemories) return;
+    setIsVectorizingMemories(true);
+    setMemoryVectorMessage(null);
+    try {
+      const result = await invoke<MemoryVectorizationResult>("vectorize_memories", {
+        agentId: activeAgentId,
+      });
+      setMemoryEmbeddingStatus(result.status);
+      setMemoryVectorMessage({
+        success: true,
+        text: result.indexed_now > 0
+          ? `本次完成 ${result.indexed_now} 条记忆向量化`
+          : "当前记忆向量索引已是最新状态",
+      });
+    } catch (error) {
+      setMemoryVectorMessage({ success: false, text: String(error) });
+      invoke<MemoryEmbeddingStatus>("get_memory_embedding_status", { agentId: activeAgentId })
+        .then(setMemoryEmbeddingStatus)
+        .catch(console.error);
+    } finally {
+      setIsVectorizingMemories(false);
+    }
   };
 
   const openNewMemory = () => {
@@ -755,6 +811,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const visibleMemories = structuredMemories.filter((memory) =>
     memoryMatchesQuery(memory, memorySearch),
   );
+  const embeddingProgress = memoryEmbeddingStatus
+    ? memoryEmbeddingProgress(memoryEmbeddingStatus.indexed, memoryEmbeddingStatus.total)
+    : 0;
 
   // --- Provider editor helpers ---
   const openAddProvider = () => {
@@ -1564,6 +1623,76 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       新建记忆
                     </button>
                   </div>
+
+                  <div className="flex min-h-14 flex-wrap items-center justify-between gap-3 border-y border-stone-200 bg-stone-50/70 px-3 py-2.5">
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      <Database className="h-4 w-4 shrink-0 text-stone-500" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                          <span
+                            className="max-w-full truncate font-semibold text-stone-700"
+                            title={memoryEmbeddingStatus?.model_ref || undefined}
+                          >
+                            {memoryEmbeddingStatus
+                              ? embeddingModelName(memoryEmbeddingStatus.model_ref)
+                              : "正在读取向量索引"}
+                          </span>
+                          {memoryEmbeddingStatus && (
+                            <span className="text-stone-500">
+                              {memoryEmbeddingStatus.indexed}/{memoryEmbeddingStatus.total} 已向量化
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-1 flex items-center gap-2">
+                          <div className="h-1.5 w-28 shrink-0 overflow-hidden rounded-full bg-stone-200">
+                            <div
+                              className={`h-full rounded-full transition-[width] ${
+                                memoryEmbeddingStatus?.pending === 0 && memoryEmbeddingStatus.total > 0
+                                  ? "bg-emerald-500"
+                                  : "bg-amber-500"
+                              }`}
+                              style={{ width: `${embeddingProgress}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] text-stone-400">
+                            {!memoryEmbeddingStatus
+                              ? "读取中"
+                              : !memoryEmbeddingStatus.model_ref
+                                ? "向量检索关闭"
+                                : memoryEmbeddingStatus.total === 0
+                                  ? "记忆库为空"
+                                  : memoryEmbeddingStatus.pending > 0
+                                    ? `${memoryEmbeddingStatus.pending} 条待处理 · ${embeddingProgress}%`
+                                    : `索引已同步 · ${embeddingProgress}%`}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={vectorizeStructuredMemories}
+                      disabled={
+                        isVectorizingMemories
+                        || !memoryEmbeddingStatus?.model_ref
+                        || memoryEmbeddingStatus.total === 0
+                        || memoryEmbeddingStatus.pending === 0
+                      }
+                      title="向量化当前 Agent 的待处理记忆"
+                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-semibold text-stone-700 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${isVectorizingMemories ? "animate-spin" : ""}`} />
+                      {isVectorizingMemories ? "向量化中" : "向量化"}
+                    </button>
+                  </div>
+
+                  {memoryVectorMessage && (
+                    <p
+                      aria-live="polite"
+                      className={`text-xs ${memoryVectorMessage.success ? "text-emerald-700" : "text-red-600"}`}
+                    >
+                      {memoryVectorMessage.text}
+                    </p>
+                  )}
 
                   <div className="relative max-w-sm">
                     <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-stone-400" />

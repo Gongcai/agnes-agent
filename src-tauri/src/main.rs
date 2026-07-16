@@ -73,6 +73,8 @@ fn main() {
             commands::get_explicit_memories,
             commands::save_explicit_memories,
             commands::list_memories,
+            commands::get_memory_embedding_status,
+            commands::vectorize_memories,
             commands::create_memory,
             commands::update_memory,
             commands::delete_memory,

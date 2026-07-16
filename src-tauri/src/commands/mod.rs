@@ -1166,6 +1166,58 @@ pub async fn list_memories(
     state.db.list_memories(agent_id).await
 }
 
+#[derive(Serialize)]
+pub struct MemoryVectorizationResult {
+    pub indexed_now: usize,
+    pub status: crate::embeddings::MemoryIndexStatus,
+}
+
+#[tauri::command]
+pub async fn get_memory_embedding_status(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> AppResult<crate::embeddings::MemoryIndexStatus> {
+    let roles = load_model_roles(&state.db).await?;
+    crate::embeddings::agent_memory_index_status(
+        &state.db,
+        &agent_id,
+        roles.embedding_model.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn vectorize_memories(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> AppResult<MemoryVectorizationResult> {
+    let roles = load_model_roles(&state.db).await?;
+    let model_ref = roles
+        .embedding_model
+        .as_deref()
+        .ok_or_else(|| AppError::Other("尚未配置嵌入模型".into()))?;
+    let config = resolve_routed_llm_config(&state.db, Some(model_ref))
+        .await?
+        .ok_or_else(|| AppError::Other("嵌入模型配置不可用".into()))?;
+    let indexed_now = crate::embeddings::ensure_agent_memory_index(
+        &state.db,
+        &state.agent,
+        &agent_id,
+        &config,
+    )
+    .await?;
+    let status = crate::embeddings::agent_memory_index_status(
+        &state.db,
+        &agent_id,
+        Some(model_ref),
+    )
+    .await?;
+    Ok(MemoryVectorizationResult {
+        indexed_now,
+        status,
+    })
+}
+
 #[tauri::command]
 pub async fn create_memory(
     state: tauri::State<'_, AppState>,
