@@ -263,7 +263,7 @@ def get_available_tools(tool_policy: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "type": "function",
                 "function": {
                     "name": "calendar_list",
-                    "description": "List local calendars, or events in one calendar when calendar_id and an ISO 8601 range are provided.",
+                    "description": "List local calendars, or expanded event occurrences in one calendar when calendar_id and an ISO 8601 range are provided. In each recurring result, id is the event_id used for updates; occurrence_id and original_occurrence identify that occurrence.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -317,7 +317,7 @@ def get_available_tools(tool_policy: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "type": "function",
                 "function": {
                     "name": "calendar_update",
-                    "description": "Update selected fields of an existing local calendar event. This write always requires approval outside Full Access.",
+                    "description": "Update a recurring series or one occurrence. Omit original_occurrence to update the series; include it to update one occurrence. With original_occurrence, cancelled=true cancels that occurrence and cancelled=false restores the original occurrence. Do not combine cancelled with edit fields. This write always requires approval outside Full Access.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -328,6 +328,8 @@ def get_available_tools(tool_policy: Dict[str, Any]) -> List[Dict[str, Any]]:
                             "timezone": {"type": "string"},
                             "all_day": {"type": "boolean"},
                             "recurrence_rule": {"type": ["string", "null"]},
+                            "original_occurrence": {"type": "string"},
+                            "cancelled": {"type": "boolean"},
                         },
                         "required": ["event_id"],
                         "additionalProperties": False,

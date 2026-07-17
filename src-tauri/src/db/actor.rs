@@ -174,6 +174,23 @@ pub enum DbCommand {
         changes: repo::planner::EventUpdate,
         resp: oneshot::Sender<AppResult<repo::planner::EventRow>>,
     },
+    UpdateCalendarOccurrence {
+        replacement_id: String,
+        event_id: String,
+        original_occurrence: String,
+        changes: repo::planner::OccurrenceUpdate,
+        resp: oneshot::Sender<AppResult<repo::planner::EventRow>>,
+    },
+    CancelCalendarOccurrence {
+        event_id: String,
+        original_occurrence: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    RestoreCalendarOccurrence {
+        event_id: String,
+        original_occurrence: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ListTaskLists {
         resp: oneshot::Sender<AppResult<Vec<repo::planner::TaskListRow>>>,
     },
@@ -850,6 +867,52 @@ impl DbActorHandle {
     ) -> AppResult<repo::planner::EventRow> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::UpdateCalendarEvent { id, changes, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+    pub async fn update_calendar_occurrence(
+        &self,
+        replacement_id: String,
+        event_id: String,
+        original_occurrence: String,
+        changes: repo::planner::OccurrenceUpdate,
+    ) -> AppResult<repo::planner::EventRow> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateCalendarOccurrence {
+            replacement_id,
+            event_id,
+            original_occurrence,
+            changes,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+    pub async fn cancel_calendar_occurrence(
+        &self,
+        event_id: String,
+        original_occurrence: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::CancelCalendarOccurrence {
+            event_id,
+            original_occurrence,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+    pub async fn restore_calendar_occurrence(
+        &self,
+        event_id: String,
+        original_occurrence: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::RestoreCalendarOccurrence {
+            event_id,
+            original_occurrence,
+            resp,
+        })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -1742,7 +1805,44 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     ));
                 }
                 DbCommand::UpdateCalendarEvent { id, changes, resp } => {
-                    let _ = resp.send(repo::planner::update_event(&conn, &id, changes));
+                    let _ = resp.send(repo::planner::update_event(&mut conn, &id, changes));
+                }
+                DbCommand::UpdateCalendarOccurrence {
+                    replacement_id,
+                    event_id,
+                    original_occurrence,
+                    changes,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::planner::update_occurrence(
+                        &mut conn,
+                        &replacement_id,
+                        &event_id,
+                        &original_occurrence,
+                        changes,
+                    ));
+                }
+                DbCommand::CancelCalendarOccurrence {
+                    event_id,
+                    original_occurrence,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::planner::cancel_occurrence(
+                        &mut conn,
+                        &event_id,
+                        &original_occurrence,
+                    ));
+                }
+                DbCommand::RestoreCalendarOccurrence {
+                    event_id,
+                    original_occurrence,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::planner::restore_occurrence(
+                        &mut conn,
+                        &event_id,
+                        &original_occurrence,
+                    ));
                 }
                 DbCommand::ListTaskLists { resp } => {
                     let _ = resp.send(repo::planner::list_task_lists(&conn));

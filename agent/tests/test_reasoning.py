@@ -352,6 +352,8 @@ def test_planner_tools_expose_stable_ids_and_update_fields():
         "timezone",
     ]
     assert "event_id" in tools["calendar_update"]["parameters"]["properties"]
+    assert "original_occurrence" in tools["calendar_update"]["parameters"]["properties"]
+    assert "cancelled" in tools["calendar_update"]["parameters"]["properties"]
     assert "task_id" in tools["task_update"]["parameters"]["properties"]
 
 

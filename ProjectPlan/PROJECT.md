@@ -175,7 +175,7 @@ System Prompt
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 暂缓：先稳定桌面客户端与本地 Agent 能力，再启动 Android 客户端 |
 | V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；MCP 等能力待后续补齐 |
 | V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + R2/Google Drive Provider | 进行中：侧边栏导航、图标轨和会话折叠已完成；知识库正式 schema、旧表迁移、权限隔离、UTF-8 文本导入/分块、FTS5 + sqlite-vec 分区、显式向量化、RRF 混合检索和安全 Agent 上下文注入已完成；加密制品与 Provider 待实现 |
-| V0.7 | 日历 + 待办 + 外部 Calendar/Task Provider | 进行中：本地领域表、Local Provider、桌面基础页面与受审批约束的 Agent 创建/更新工具已完成；重复事件例外、D1 E2EE 同步与外部 Provider 待实现 |
+| V0.7 | 日历 + 待办 + 外部 Calendar/Task Provider | 进行中：本地领域表、Local Provider、桌面基础页面、受审批约束的 Agent 工具，以及基于 RFC 5545/IANA 时区的 occurrence 展开与单次修改、取消、恢复均已完成；D1 E2EE 同步与外部 Provider 待实现 |
 
 # 关键决策约束
 

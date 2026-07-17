@@ -2129,6 +2129,28 @@ impl From<CalendarEventUpdatePayload> for crate::db::repo::planner::EventUpdate 
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarOccurrenceUpdatePayload {
+    pub title: Option<String>,
+    pub starts_at: Option<String>,
+    pub ends_at: Option<String>,
+    pub timezone: Option<String>,
+    pub all_day: Option<bool>,
+}
+
+impl From<CalendarOccurrenceUpdatePayload> for crate::db::repo::planner::OccurrenceUpdate {
+    fn from(value: CalendarOccurrenceUpdatePayload) -> Self {
+        Self {
+            title: value.title,
+            starts_at: value.starts_at,
+            ends_at: value.ends_at,
+            timezone: value.timezone,
+            all_day: value.all_day,
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn create_calendar_event(
     state: tauri::State<'_, AppState>,
@@ -2166,6 +2188,48 @@ pub async fn update_calendar_event(
     state
         .db
         .update_calendar_event(event_id, changes.into())
+        .await
+}
+
+#[tauri::command]
+pub async fn update_calendar_occurrence(
+    state: tauri::State<'_, AppState>,
+    event_id: String,
+    original_occurrence: String,
+    changes: CalendarOccurrenceUpdatePayload,
+) -> AppResult<crate::db::repo::planner::EventRow> {
+    state
+        .db
+        .update_calendar_occurrence(
+            uuid::Uuid::new_v4().to_string(),
+            event_id,
+            original_occurrence,
+            changes.into(),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn cancel_calendar_occurrence(
+    state: tauri::State<'_, AppState>,
+    event_id: String,
+    original_occurrence: String,
+) -> AppResult<()> {
+    state
+        .db
+        .cancel_calendar_occurrence(event_id, original_occurrence)
+        .await
+}
+
+#[tauri::command]
+pub async fn restore_calendar_occurrence(
+    state: tauri::State<'_, AppState>,
+    event_id: String,
+    original_occurrence: String,
+) -> AppResult<()> {
+    state
+        .db
+        .restore_calendar_occurrence(event_id, original_occurrence)
         .await
 }
 #[tauri::command]

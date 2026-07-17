@@ -2,10 +2,14 @@ import React, { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   CalendarDays,
+  Ban,
   CheckSquare2,
   CirclePlus,
   LoaderCircle,
   Menu,
+  Pencil,
+  Repeat2,
+  RotateCcw,
 } from "lucide-react";
 
 type PlannerMode = "calendar" | "tasks";
@@ -24,10 +28,14 @@ interface Calendar {
 
 interface CalendarEvent {
   id: string;
+  occurrence_id: string;
   title: string;
   starts_at: string;
   ends_at: string;
   all_day: boolean;
+  recurrence_rule: string | null;
+  original_occurrence: string | null;
+  is_exception: boolean;
 }
 
 interface TaskList {
@@ -147,6 +155,8 @@ export const PlannerWorkspace: React.FC<PlannerWorkspaceProps> = ({
           new Date(Date.now() + 3_600_000).toISOString(),
         );
         if (!startsAt || !endsAt) return;
+        const recurrenceRule = window.prompt("重复规则（RRULE，可留空）", "");
+        if (recurrenceRule === null) return;
 
         await invoke("create_calendar_event", {
           calendarId: selectedId,
@@ -155,7 +165,7 @@ export const PlannerWorkspace: React.FC<PlannerWorkspaceProps> = ({
           endsAt,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           allDay: false,
-          recurrenceRule: null,
+          recurrenceRule: recurrenceRule.trim() || null,
         });
       } else {
         await invoke("create_task", {
@@ -186,6 +196,77 @@ export const PlannerWorkspace: React.FC<PlannerWorkspaceProps> = ({
       await loadItems(selectedId);
     } catch (reason) {
       setError(String(reason));
+    }
+  };
+
+  const editEvent = async (event: CalendarEvent) => {
+    if (!selectedId) return;
+    const title = window.prompt("事件标题", event.title);
+    if (!title?.trim()) return;
+    const startsAt = window.prompt("开始时间（ISO 8601）", event.starts_at);
+    if (!startsAt) return;
+    const endsAt = window.prompt("结束时间（ISO 8601）", event.ends_at);
+    if (!endsAt) return;
+
+    setBusy(true);
+    try {
+      const changes = {
+        title: title.trim(),
+        startsAt,
+        endsAt,
+      };
+      if (event.original_occurrence) {
+        await invoke("update_calendar_occurrence", {
+          eventId: event.id,
+          originalOccurrence: event.original_occurrence,
+          changes,
+        });
+      } else {
+        await invoke("update_calendar_event", {
+          eventId: event.id,
+          changes,
+        });
+      }
+      await loadItems(selectedId);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelOccurrence = async (event: CalendarEvent) => {
+    if (!selectedId || !event.original_occurrence) return;
+    if (!window.confirm(`取消“${event.title}”的本次日程？`)) return;
+
+    setBusy(true);
+    try {
+      await invoke("cancel_calendar_occurrence", {
+        eventId: event.id,
+        originalOccurrence: event.original_occurrence,
+      });
+      await loadItems(selectedId);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const restoreOccurrence = async (event: CalendarEvent) => {
+    if (!selectedId || !event.original_occurrence) return;
+
+    setBusy(true);
+    try {
+      await invoke("restore_calendar_occurrence", {
+        eventId: event.id,
+        originalOccurrence: event.original_occurrence,
+      });
+      await loadItems(selectedId);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -261,13 +342,62 @@ export const PlannerWorkspace: React.FC<PlannerWorkspaceProps> = ({
             {isCalendar ? (
               <div className="space-y-2">
                 {events.map((event) => (
-                  <article key={event.id} className="rounded-xl border border-stone-200 bg-white p-4">
-                    <p className="text-sm font-semibold text-stone-800">{event.title}</p>
-                    <p className="mt-1 text-xs text-stone-500">
-                      {event.all_day
-                        ? event.starts_at.slice(0, 10)
-                        : new Date(event.starts_at).toLocaleString()}
-                    </p>
+                  <article
+                    key={event.occurrence_id}
+                    className="flex items-start justify-between gap-4 rounded-lg border border-stone-200 bg-white p-4"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-sm font-semibold text-stone-800">{event.title}</p>
+                        {event.recurrence_rule && (
+                          <Repeat2
+                            className="h-3.5 w-3.5 shrink-0 text-stone-400"
+                            aria-label="重复事件"
+                          />
+                        )}
+                      </div>
+                      <p className="mt-1 text-xs text-stone-500">
+                        {event.all_day
+                          ? event.starts_at.slice(0, 10)
+                          : new Date(event.starts_at).toLocaleString()}
+                      </p>
+                      {event.is_exception && (
+                        <p className="mt-1 text-[11px] text-amber-700">本次日程已修改</p>
+                      )}
+                    </div>
+                    <div className="flex h-8 shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => editEvent(event)}
+                        disabled={busy}
+                        className="grid h-8 w-8 place-items-center rounded-md text-stone-500 hover:bg-stone-100 disabled:opacity-40"
+                        title={event.original_occurrence ? "编辑本次" : "编辑事件"}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      {event.is_exception && (
+                        <button
+                          type="button"
+                          onClick={() => restoreOccurrence(event)}
+                          disabled={busy}
+                          className="grid h-8 w-8 place-items-center rounded-md text-stone-500 hover:bg-stone-100 disabled:opacity-40"
+                          title="恢复本次"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      {event.original_occurrence && (
+                        <button
+                          type="button"
+                          onClick={() => cancelOccurrence(event)}
+                          disabled={busy}
+                          className="grid h-8 w-8 place-items-center rounded-md text-rose-600 hover:bg-rose-50 disabled:opacity-40"
+                          title="取消本次"
+                        >
+                          <Ban className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </article>
                 ))}
                 {events.length === 0 && (

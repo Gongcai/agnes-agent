@@ -111,7 +111,7 @@ impl BuiltinTool for CalendarListTool {
             "type": "function",
             "function": {
                 "name": self.name(),
-                "description": "List local calendars, or events in one calendar when calendar_id and an ISO 8601 range are provided.",
+                "description": "List local calendars, or expanded event occurrences in one calendar when calendar_id and an ISO 8601 range are provided. In each recurring result, id is the event_id used for updates; occurrence_id and original_occurrence identify that occurrence.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -344,7 +344,7 @@ impl BuiltinTool for CalendarUpdateTool {
             "type": "function",
             "function": {
                 "name": self.name(),
-                "description": "Update an existing local calendar event. Include only the fields that should change. This write always requires approval outside Full Access.",
+                "description": "Update a recurring series or one occurrence. Omit original_occurrence to update the series; include it to update one occurrence. With original_occurrence, cancelled=true cancels that occurrence and cancelled=false restores the original occurrence. Do not combine cancelled with edit fields. This write always requires approval outside Full Access.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -354,7 +354,9 @@ impl BuiltinTool for CalendarUpdateTool {
                         "ends_at": {"type": "string", "description": "ISO 8601 instant after starts_at."},
                         "timezone": {"type": "string", "description": "IANA timezone."},
                         "all_day": {"type": "boolean"},
-                        "recurrence_rule": {"type": ["string", "null"], "description": "Use null to clear recurrence."}
+                        "recurrence_rule": {"type": ["string", "null"], "description": "Use null to clear recurrence on the series."},
+                        "original_occurrence": {"type": "string", "description": "Stable ISO 8601 value returned by calendar_list. When present, edit only this occurrence."},
+                        "cancelled": {"type": "boolean", "description": "With original_occurrence, true cancels this occurrence and false restores the unmodified occurrence."}
                     },
                     "required": ["event_id"],
                     "additionalProperties": false
@@ -377,39 +379,148 @@ impl BuiltinTool for CalendarUpdateTool {
             Ok(value) => value,
             Err(error) => return fail(ctx, error).await,
         };
-        let changes = crate::db::repo::planner::EventUpdate {
-            title: match optional_required(args, "title") {
-                Ok(value) => value,
-                Err(error) => return fail(ctx, error).await,
-            },
-            starts_at: match optional_required(args, "starts_at") {
-                Ok(value) => value,
-                Err(error) => return fail(ctx, error).await,
-            },
-            ends_at: match optional_required(args, "ends_at") {
-                Ok(value) => value,
-                Err(error) => return fail(ctx, error).await,
-            },
-            timezone: match optional_required(args, "timezone") {
-                Ok(value) => value,
-                Err(error) => return fail(ctx, error).await,
-            },
-            all_day: match optional_bool(args, "all_day") {
-                Ok(value) => value,
-                Err(error) => return fail(ctx, error).await,
-            },
-            recurrence_rule: match optional_update(args, "recurrence_rule") {
-                Ok(value) => value,
-                Err(error) => return fail(ctx, error).await,
-            },
+        let title = match optional_required(args, "title") {
+            Ok(value) => value,
+            Err(error) => return fail(ctx, error).await,
+        };
+        let starts_at = match optional_required(args, "starts_at") {
+            Ok(value) => value,
+            Err(error) => return fail(ctx, error).await,
+        };
+        let ends_at = match optional_required(args, "ends_at") {
+            Ok(value) => value,
+            Err(error) => return fail(ctx, error).await,
+        };
+        let timezone = match optional_required(args, "timezone") {
+            Ok(value) => value,
+            Err(error) => return fail(ctx, error).await,
+        };
+        let all_day = match optional_bool(args, "all_day") {
+            Ok(value) => value,
+            Err(error) => return fail(ctx, error).await,
+        };
+        let recurrence_rule = match optional_update(args, "recurrence_rule") {
+            Ok(value) => value,
+            Err(error) => return fail(ctx, error).await,
+        };
+        let original_occurrence = match optional_required(args, "original_occurrence") {
+            Ok(value) => value,
+            Err(error) => return fail(ctx, error).await,
+        };
+        let cancelled = match optional_bool(args, "cancelled") {
+            Ok(value) => value,
+            Err(error) => return fail(ctx, error).await,
         };
         ctx.update_running("planner://calendar-events").await?;
-        match ctx.db.update_calendar_event(event_id, changes).await {
-            Ok(event) => {
-                complete(ctx, format!("Updated calendar event {}", event.id)).await?;
-                Ok(json!({"event": event}))
+        match original_occurrence {
+            Some(original_occurrence) => {
+                if recurrence_rule.is_some() {
+                    return fail(
+                        ctx,
+                        AppError::Other(
+                            "`recurrence_rule` can only be changed on the recurring series".into(),
+                        ),
+                    )
+                    .await;
+                }
+                let occurrence_changes = crate::db::repo::planner::OccurrenceUpdate {
+                    title,
+                    starts_at,
+                    ends_at,
+                    timezone,
+                    all_day,
+                };
+                if let Some(cancelled) = cancelled {
+                    if !occurrence_changes.is_empty() {
+                        return fail(
+                            ctx,
+                            AppError::Other(
+                                "`cancelled` cannot be combined with occurrence edit fields".into(),
+                            ),
+                        )
+                        .await;
+                    }
+                    let result = if cancelled {
+                        ctx.db
+                            .cancel_calendar_occurrence(
+                                event_id.clone(),
+                                original_occurrence.clone(),
+                            )
+                            .await
+                    } else {
+                        ctx.db
+                            .restore_calendar_occurrence(
+                                event_id.clone(),
+                                original_occurrence.clone(),
+                            )
+                            .await
+                    };
+                    match result {
+                        Ok(()) => {
+                            complete(
+                                ctx,
+                                format!(
+                                    "{} calendar occurrence {}",
+                                    if cancelled { "Cancelled" } else { "Restored" },
+                                    original_occurrence
+                                ),
+                            )
+                            .await?;
+                            Ok(json!({
+                                "event_id": event_id,
+                                "original_occurrence": original_occurrence,
+                                "cancelled": cancelled,
+                            }))
+                        }
+                        Err(error) => fail(ctx, error).await,
+                    }
+                } else {
+                    match ctx
+                        .db
+                        .update_calendar_occurrence(
+                            uuid::Uuid::new_v4().to_string(),
+                            event_id,
+                            original_occurrence,
+                            occurrence_changes,
+                        )
+                        .await
+                    {
+                        Ok(event) => {
+                            complete(
+                                ctx,
+                                format!("Updated calendar occurrence {}", event.occurrence_id),
+                            )
+                            .await?;
+                            Ok(json!({"event": event}))
+                        }
+                        Err(error) => fail(ctx, error).await,
+                    }
+                }
             }
-            Err(error) => fail(ctx, error).await,
+            None => {
+                if cancelled.is_some() {
+                    return fail(
+                        ctx,
+                        AppError::Other("`cancelled` requires `original_occurrence`".into()),
+                    )
+                    .await;
+                }
+                let changes = crate::db::repo::planner::EventUpdate {
+                    title,
+                    starts_at,
+                    ends_at,
+                    timezone,
+                    all_day,
+                    recurrence_rule,
+                };
+                match ctx.db.update_calendar_event(event_id, changes).await {
+                    Ok(event) => {
+                        complete(ctx, format!("Updated calendar event {}", event.id)).await?;
+                        Ok(json!({"event": event}))
+                    }
+                    Err(error) => fail(ctx, error).await,
+                }
+            }
         }
     }
 }

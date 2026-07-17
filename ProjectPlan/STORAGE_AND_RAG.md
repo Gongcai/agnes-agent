@@ -1,7 +1,7 @@
 # 存储、RAG 与外部服务设计
 
 > 状态：详细设计初稿  
-> 日期：2026-07-16  
+> 日期：2026-07-17
 > 适用范围：聊天、记忆、RAG 知识库、大文件、向量制品、多网盘、日历与待办  
 > 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`UI_DESIGN.md`
 
@@ -421,6 +421,8 @@ tasks
 ```
 
 - 重复规则使用明确的 RRULE + timezone + exception，不预生成无限 occurrence 行。
+- RRULE 由成熟的 RFC 5545 实现校验并按 IANA 时区动态展开，跨 DST 保持事件本地钟点；单个系列、单次查询最多返回 4096 个 occurrence。
+- 重复事件列表返回稳定的系列 ID、`occurrence_id` 与 `original_occurrence`；单次修改写入 replacement event，取消与恢复写入或清理 `event_exceptions`。系列起点、时区或 RRULE 实际变化时清理已失效例外。
 - 时间存储明确区分 UTC instant、用户时区和 all-day local date。
 - 任务完成是结构化状态，不依赖聊天文本或记忆抽取推断。
 
@@ -560,7 +562,7 @@ tasks
 - [x] 完成 Local Provider 的本地 CRUD 与 Tauri IPC：日历/事件、任务列表/任务、任务完成状态；
 - [x] 完成日历与待办桌面基础页面：本地容器、事件、任务、任务完成状态可操作；
 - [x] 完成受 policy 约束的 Agent 工具：`calendar_list`、`calendar_create`、`calendar_event_create`、`calendar_update`、`task_list`、`task_create`、`task_update`、`task_complete`；所有写工具为 High 风险并要求审批（Full Access 例外）；
-- [ ] 增加重复事件例外编辑工具与 occurrence 展开；
+- [x] 增加基于 RFC 5545/IANA 时区的 occurrence 动态展开，以及单次修改、取消、恢复；Agent 复用 `calendar_update` 并保持 High 风险审批；
 - [ ] 接入 D1 E2EE 同步；
 - 再接 Google Calendar / Google Tasks / CalDAV；
 
