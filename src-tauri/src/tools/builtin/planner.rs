@@ -577,7 +577,7 @@ impl BuiltinTool for TaskCreateTool {
         "task_create"
     }
     fn schema(&self) -> Value {
-        json!({"type":"function","function":{"name":self.name(),"description":"Create a local task in an existing task list. This write always requires approval outside Full Access.","parameters":{"type":"object","properties":{"task_list_id":{"type":"string"},"title":{"type":"string"},"description":{"type":["string","null"]},"due_at":{"type":["string","null"],"description":"Optional ISO 8601 instant."},"priority":{"type":"integer","minimum":0,"maximum":4}},"required":["task_list_id","title"],"additionalProperties":false}}})
+        json!({"type":"function","function":{"name":self.name(),"description":"Create a local task in an existing task list. Use due_date for a local YYYY-MM-DD deadline or due_at for an exact ISO 8601 instant, never both. This write always requires approval outside Full Access.","parameters":{"type":"object","properties":{"task_list_id":{"type":"string"},"title":{"type":"string"},"description":{"type":["string","null"]},"due_date":{"type":["string","null"]},"due_at":{"type":["string","null"]},"due_timezone":{"type":["string","null"]},"is_important":{"type":"boolean"},"my_day_date":{"type":["string","null"]},"recurrence_rule":{"type":["string","null"]},"priority":{"type":"integer","minimum":0,"maximum":4}},"required":["task_list_id","title"],"additionalProperties":false}}})
     }
     fn risk(&self, _: &Value) -> Risk {
         Risk::High
@@ -604,21 +604,46 @@ impl BuiltinTool for TaskCreateTool {
             Ok(value) => value,
             Err(error) => return fail(ctx, error).await,
         };
+        let due_date = match optional(args, "due_date") {
+            Ok(value) => value,
+            Err(error) => return fail(ctx, error).await,
+        };
+        let due_timezone = match optional(args, "due_timezone") {
+            Ok(value) => value,
+            Err(error) => return fail(ctx, error).await,
+        };
+        let my_day_date = match optional(args, "my_day_date") {
+            Ok(value) => value,
+            Err(error) => return fail(ctx, error).await,
+        };
+        let recurrence_rule = match optional(args, "recurrence_rule") {
+            Ok(value) => value,
+            Err(error) => return fail(ctx, error).await,
+        };
+        let is_important = match optional_bool(args, "is_important") {
+            Ok(value) => value.unwrap_or(false),
+            Err(error) => return fail(ctx, error).await,
+        };
         let priority = args.get("priority").and_then(Value::as_i64).unwrap_or(0);
         let id = uuid::Uuid::new_v4().to_string();
         ctx.update_running("planner://tasks").await?;
         match ctx
             .db
-            .create_task(
-                id.clone(),
-                task_list_id.clone(),
-                None,
-                title.clone(),
+            .create_task(crate::db::repo::planner::NewTask {
+                id: id.clone(),
+                task_list_id: task_list_id.clone(),
+                parent_id: None,
+                title: title.clone(),
                 description,
                 priority,
+                due_date,
                 due_at,
-                0.0,
-            )
+                due_timezone,
+                is_important,
+                my_day_date,
+                recurrence_rule,
+                sort_order: 0.0,
+            })
             .await
         {
             Ok(()) => {
@@ -687,7 +712,12 @@ impl BuiltinTool for TaskUpdateTool {
                         "title": {"type": "string"},
                         "description": {"type": ["string", "null"], "description": "Use null to clear the description."},
                         "priority": {"type": "integer", "minimum": 0, "maximum": 4},
-                        "due_at": {"type": ["string", "null"], "description": "ISO 8601 instant, or null to clear the due time."}
+                        "due_date": {"type": ["string", "null"], "description": "Local YYYY-MM-DD deadline, or null to clear it."},
+                        "due_at": {"type": ["string", "null"], "description": "ISO 8601 instant, or null to clear it."},
+                        "due_timezone": {"type": ["string", "null"], "description": "IANA timezone for the deadline."},
+                        "is_important": {"type": "boolean"},
+                        "my_day_date": {"type": ["string", "null"], "description": "YYYY-MM-DD membership in My Day, or null to remove."},
+                        "recurrence_rule": {"type": ["string", "null"], "description": "RRULE recurrence, or null to clear."}
                     },
                     "required": ["task_id"],
                     "additionalProperties": false
@@ -723,10 +753,31 @@ impl BuiltinTool for TaskUpdateTool {
                 Ok(value) => value,
                 Err(error) => return fail(ctx, error).await,
             },
+            due_date: match optional_update(args, "due_date") {
+                Ok(value) => value,
+                Err(error) => return fail(ctx, error).await,
+            },
             due_at: match optional_update(args, "due_at") {
                 Ok(value) => value,
                 Err(error) => return fail(ctx, error).await,
             },
+            due_timezone: match optional_update(args, "due_timezone") {
+                Ok(value) => value,
+                Err(error) => return fail(ctx, error).await,
+            },
+            is_important: match optional_bool(args, "is_important") {
+                Ok(value) => value,
+                Err(error) => return fail(ctx, error).await,
+            },
+            my_day_date: match optional_update(args, "my_day_date") {
+                Ok(value) => value,
+                Err(error) => return fail(ctx, error).await,
+            },
+            recurrence_rule: match optional_update(args, "recurrence_rule") {
+                Ok(value) => value,
+                Err(error) => return fail(ctx, error).await,
+            },
+            sort_order: None,
         };
         ctx.update_running("planner://tasks").await?;
         match ctx.db.update_task(task_id, changes).await {

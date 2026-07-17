@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -17,6 +17,14 @@ use crate::model_registry::{
 use crate::secrets::{provider_api_key_secret_id, SecretStore, SYNC_CREDENTIAL_SECRET_ID};
 use crate::state::AppState;
 use crate::sync::auth::SyncCredential;
+
+fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
 
 #[derive(Serialize)]
 pub struct AgentSummary {
@@ -2105,6 +2113,14 @@ pub async fn list_calendar_events(
         .await
 }
 
+#[tauri::command]
+pub async fn get_calendar_event(
+    state: tauri::State<'_, AppState>,
+    event_id: String,
+) -> AppResult<crate::db::repo::planner::EventRow> {
+    state.db.get_calendar_event(event_id).await
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarEventUpdatePayload {
@@ -2113,6 +2129,7 @@ pub struct CalendarEventUpdatePayload {
     pub ends_at: Option<String>,
     pub timezone: Option<String>,
     pub all_day: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub recurrence_rule: Option<Option<String>>,
 }
 
@@ -2232,6 +2249,15 @@ pub async fn restore_calendar_occurrence(
         .restore_calendar_occurrence(event_id, original_occurrence)
         .await
 }
+
+#[tauri::command]
+pub async fn delete_calendar_event(
+    state: tauri::State<'_, AppState>,
+    event_id: String,
+) -> AppResult<()> {
+    state.db.delete_calendar_event(event_id).await
+}
+
 #[tauri::command]
 pub async fn list_task_lists(
     state: tauri::State<'_, AppState>,
@@ -2255,6 +2281,14 @@ pub async fn list_tasks(
 ) -> AppResult<Vec<crate::db::repo::planner::TaskRow>> {
     state.db.list_tasks(task_list_id).await
 }
+
+#[tauri::command]
+pub async fn list_all_tasks(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<crate::db::repo::planner::TaskRow>> {
+    state.db.list_all_tasks().await
+}
+
 #[tauri::command]
 pub async fn create_task(
     state: tauri::State<'_, AppState>,
@@ -2263,22 +2297,32 @@ pub async fn create_task(
     title: String,
     description: Option<String>,
     priority: i64,
+    due_date: Option<String>,
     due_at: Option<String>,
+    due_timezone: Option<String>,
+    is_important: Option<bool>,
+    my_day_date: Option<String>,
+    recurrence_rule: Option<String>,
     sort_order: f64,
 ) -> AppResult<String> {
     let id = uuid::Uuid::new_v4().to_string();
     state
         .db
-        .create_task(
-            id.clone(),
+        .create_task(crate::db::repo::planner::NewTask {
+            id: id.clone(),
             task_list_id,
             parent_id,
             title,
             description,
             priority,
+            due_date,
             due_at,
+            due_timezone,
+            is_important: is_important.unwrap_or(false),
+            my_day_date,
+            recurrence_rule,
             sort_order,
-        )
+        })
         .await?;
     Ok(id)
 }
@@ -2295,9 +2339,21 @@ pub async fn complete_task(
 #[serde(rename_all = "camelCase")]
 pub struct TaskUpdatePayload {
     pub title: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub description: Option<Option<String>>,
     pub priority: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub due_date: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub due_at: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub due_timezone: Option<Option<String>>,
+    pub is_important: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub my_day_date: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub recurrence_rule: Option<Option<String>>,
+    pub sort_order: Option<f64>,
 }
 
 impl From<TaskUpdatePayload> for crate::db::repo::planner::TaskUpdate {
@@ -2306,7 +2362,13 @@ impl From<TaskUpdatePayload> for crate::db::repo::planner::TaskUpdate {
             title: value.title,
             description: value.description,
             priority: value.priority,
+            due_date: value.due_date,
             due_at: value.due_at,
+            due_timezone: value.due_timezone,
+            is_important: value.is_important,
+            my_day_date: value.my_day_date,
+            recurrence_rule: value.recurrence_rule,
+            sort_order: value.sort_order,
         }
     }
 }
@@ -2318,6 +2380,11 @@ pub async fn update_task(
     changes: TaskUpdatePayload,
 ) -> AppResult<crate::db::repo::planner::TaskRow> {
     state.db.update_task(task_id, changes.into()).await
+}
+
+#[tauri::command]
+pub async fn delete_task(state: tauri::State<'_, AppState>, task_id: String) -> AppResult<()> {
+    state.db.delete_task(task_id).await
 }
 
 #[derive(serde::Serialize)]
@@ -2792,7 +2859,10 @@ pub async fn set_setting(
 
 #[cfg(test)]
 mod tests {
-    use super::{latest_user_query, saved_provider_endpoint_matches};
+    use super::{
+        latest_user_query, saved_provider_endpoint_matches, CalendarEventUpdatePayload,
+        TaskUpdatePayload,
+    };
 
     #[test]
     fn latest_user_query_uses_the_newest_text_message() {
@@ -2841,5 +2911,32 @@ mod tests {
             "openai_compatible",
             None,
         ));
+    }
+
+    #[test]
+    fn planner_updates_distinguish_omitted_and_null_fields() {
+        let omitted: TaskUpdatePayload = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(omitted.description.is_none());
+        assert!(omitted.due_date.is_none());
+
+        let cleared: TaskUpdatePayload = serde_json::from_value(serde_json::json!({
+            "description": null,
+            "dueDate": null,
+            "recurrenceRule": null
+        }))
+        .unwrap();
+        assert_eq!(cleared.description, Some(None));
+        assert_eq!(cleared.due_date, Some(None));
+        assert_eq!(cleared.recurrence_rule, Some(None));
+
+        let assigned: TaskUpdatePayload = serde_json::from_value(serde_json::json!({
+            "dueDate": "2026-07-18"
+        }))
+        .unwrap();
+        assert_eq!(assigned.due_date, Some(Some("2026-07-18".to_string())));
+
+        let event: CalendarEventUpdatePayload =
+            serde_json::from_value(serde_json::json!({ "recurrenceRule": null })).unwrap();
+        assert_eq!(event.recurrence_rule, Some(None));
     }
 }

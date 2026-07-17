@@ -11,6 +11,7 @@ export default function App() {
   const { init } = useAgentStore();
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [activeFeature, setActiveFeature] = useState<AppFeatureId>("chat");
+  const [requestedPlannerTaskId, setRequestedPlannerTaskId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [settingsTab, setSettingsTab] = useState<"general" | "agents" | "memory" | "llm" | "audit" | "debug">("agents");
 
@@ -59,7 +60,13 @@ export default function App() {
         <PlannerWorkspace
           mode={activeFeature}
           isSidebarOpen={isSidebarOpen}
+          requestedTaskId={requestedPlannerTaskId}
           onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
+          onOpenTask={(taskId) => {
+            setRequestedPlannerTaskId(taskId);
+            setActiveFeature("tasks");
+          }}
+          onCloseRequestedTask={() => setRequestedPlannerTaskId(null)}
         />
       )}
 

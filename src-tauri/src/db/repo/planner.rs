@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use chrono::{DateTime, Duration, LocalResult, NaiveDate, SecondsFormat, TimeZone, Utc};
 use chrono_tz::Tz as ChronoTz;
 use rrule::{RRule, RRuleSet, Tz as RRuleTz, Unvalidated};
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -48,9 +48,15 @@ pub struct TaskRow {
     pub status: String,
     pub priority: i64,
     pub starts_at: Option<String>,
+    pub due_date: Option<String>,
     pub due_at: Option<String>,
+    pub due_timezone: Option<String>,
+    pub is_important: bool,
+    pub my_day_date: Option<String>,
     pub completed_at: Option<String>,
     pub recurrence_rule: Option<String>,
+    pub recurrence_anchor: Option<String>,
+    pub recurrence_source_id: Option<String>,
     pub sort_order: f64,
 }
 
@@ -121,7 +127,13 @@ pub struct TaskUpdate {
     pub title: Option<String>,
     pub description: Option<Option<String>>,
     pub priority: Option<i64>,
+    pub due_date: Option<Option<String>>,
     pub due_at: Option<Option<String>>,
+    pub due_timezone: Option<Option<String>>,
+    pub is_important: Option<bool>,
+    pub my_day_date: Option<Option<String>>,
+    pub recurrence_rule: Option<Option<String>>,
+    pub sort_order: Option<f64>,
 }
 
 impl TaskUpdate {
@@ -129,8 +141,30 @@ impl TaskUpdate {
         self.title.is_none()
             && self.description.is_none()
             && self.priority.is_none()
+            && self.due_date.is_none()
             && self.due_at.is_none()
+            && self.due_timezone.is_none()
+            && self.is_important.is_none()
+            && self.my_day_date.is_none()
+            && self.recurrence_rule.is_none()
+            && self.sort_order.is_none()
     }
+}
+
+pub struct NewTask {
+    pub id: String,
+    pub task_list_id: String,
+    pub parent_id: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub priority: i64,
+    pub due_date: Option<String>,
+    pub due_at: Option<String>,
+    pub due_timezone: Option<String>,
+    pub is_important: bool,
+    pub my_day_date: Option<String>,
+    pub recurrence_rule: Option<String>,
+    pub sort_order: f64,
 }
 
 fn now() -> String {
@@ -170,6 +204,32 @@ fn parse_timezone(value: &str) -> AppResult<ChronoTz> {
         .map_err(|_| AppError::Other("Timezone must be a valid IANA timezone".into()))
 }
 
+fn parse_local_date(value: &str, label: &str) -> AppResult<NaiveDate> {
+    NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+        .map_err(|_| AppError::Other(format!("{label} must use YYYY-MM-DD")))
+}
+
+fn canonical_date(value: Option<String>, label: &str) -> AppResult<Option<String>> {
+    nullable(value)
+        .map(|value| {
+            parse_local_date(&value, label).map(|date| date.format("%Y-%m-%d").to_string())
+        })
+        .transpose()
+}
+
+fn local_midnight(date: NaiveDate, timezone: ChronoTz) -> AppResult<DateTime<Utc>> {
+    let local = date
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| AppError::Other("Task date is outside the supported range".into()))?;
+    match timezone.from_local_datetime(&local) {
+        LocalResult::Single(value) => Ok(value.with_timezone(&Utc)),
+        LocalResult::Ambiguous(first, _) => Ok(first.with_timezone(&Utc)),
+        LocalResult::None => Err(AppError::Other(
+            "Task date does not map to a valid local time".into(),
+        )),
+    }
+}
+
 fn recurrence(
     value: Option<String>,
     starts_at: DateTime<Utc>,
@@ -192,6 +252,86 @@ fn recurrence(
         .validate(starts_at.with_timezone(&recurrence_timezone))
         .map_err(|error| AppError::Other(format!("Invalid recurrence rule: {error}")))?;
     Ok(Some(value))
+}
+
+fn build_recurrence_set(
+    recurrence_rule: &str,
+    starts_at: DateTime<Utc>,
+    timezone: ChronoTz,
+) -> AppResult<RRuleSet> {
+    let rule = recurrence(Some(recurrence_rule.to_string()), starts_at, timezone)?
+        .ok_or_else(|| AppError::Other("Recurrence rule is required".into()))?;
+    let body = rule
+        .strip_prefix("RRULE:")
+        .ok_or_else(|| AppError::Other("Stored recurrence rule is invalid".into()))?;
+    let recurrence_timezone = RRuleTz::from(timezone);
+    body.parse::<RRule<Unvalidated>>()
+        .and_then(|rule| rule.build(starts_at.with_timezone(&recurrence_timezone)))
+        .map_err(|error| AppError::Other(format!("Invalid recurrence rule: {error}")))
+}
+
+struct NormalizedTaskSchedule {
+    due_date: Option<String>,
+    due_at: Option<String>,
+    due_timezone: Option<String>,
+    recurrence_rule: Option<String>,
+    recurrence_anchor: Option<String>,
+}
+
+fn normalize_task_schedule(
+    due_date: Option<String>,
+    due_at: Option<String>,
+    due_timezone: Option<String>,
+    recurrence_rule: Option<String>,
+    recurrence_anchor: Option<String>,
+) -> AppResult<NormalizedTaskSchedule> {
+    let due_date = canonical_date(due_date, "Task due date")?;
+    let due_at = nullable(due_at)
+        .map(|value| parse_instant(&value, "Task due time").map(format_instant))
+        .transpose()?;
+    if due_date.is_some() && due_at.is_some() {
+        return Err(AppError::Other(
+            "Task cannot have both a due date and a due time".into(),
+        ));
+    }
+    let has_due = due_date.is_some() || due_at.is_some();
+    let timezone = if has_due {
+        Some(parse_timezone(due_timezone.as_deref().unwrap_or("UTC"))?)
+    } else {
+        None
+    };
+    let recurrence_rule = nullable(recurrence_rule);
+    if recurrence_rule.is_some() && !has_due {
+        return Err(AppError::Other(
+            "Recurring tasks require a due date or due time".into(),
+        ));
+    }
+    let recurrence_rule = match (recurrence_rule, timezone) {
+        (Some(rule), Some(timezone)) => {
+            let starts_at = match (&due_date, &due_at) {
+                (Some(date), None) => {
+                    local_midnight(parse_local_date(date, "Task due date")?, timezone)?
+                }
+                (None, Some(instant)) => parse_instant(instant, "Task due time")?,
+                _ => unreachable!("validated task due shape"),
+            };
+            recurrence(Some(rule), starts_at, timezone)?
+        }
+        (None, _) => None,
+        _ => unreachable!("recurrence requires a due value"),
+    };
+    let recurrence_anchor = if recurrence_rule.is_some() {
+        recurrence_anchor.or_else(|| due_date.clone().or_else(|| due_at.clone()))
+    } else {
+        None
+    };
+    Ok(NormalizedTaskSchedule {
+        due_date,
+        due_at,
+        due_timezone: timezone.map(|timezone| timezone.name().to_string()),
+        recurrence_rule,
+        recurrence_anchor,
+    })
 }
 
 fn stored_event_from_row(row: &Row<'_>) -> rusqlite::Result<StoredEvent> {
@@ -220,6 +360,16 @@ fn get_event(conn: &Connection, id: &str) -> AppResult<StoredEvent> {
         rusqlite::Error::QueryReturnedNoRows => AppError::Other("Event does not exist".into()),
         error => error.into(),
     })
+}
+
+pub fn get_event_by_id(conn: &Connection, id: &str) -> AppResult<EventRow> {
+    let event = get_event(conn, id)?;
+    if event.recurrence_id.is_some() {
+        return Err(AppError::Other(
+            "Calendar event lookup requires a master event id".into(),
+        ));
+    }
+    Ok(master_row(&event))
 }
 
 fn occurrence_id(event_id: &str, original_occurrence: &str) -> String {
@@ -306,15 +456,11 @@ fn event_times(event: &StoredEvent) -> AppResult<(DateTime<Utc>, DateTime<Utc>, 
 fn recurrence_set(event: &StoredEvent) -> AppResult<RRuleSet> {
     let (starts_at, _, _) = event_times(event)?;
     let timezone = parse_timezone(&event.timezone)?;
-    let rule = recurrence(event.recurrence_rule.clone(), starts_at, timezone)?
+    let rule = event
+        .recurrence_rule
+        .as_deref()
         .ok_or_else(|| AppError::Other("Event is not recurring".into()))?;
-    let body = rule
-        .strip_prefix("RRULE:")
-        .ok_or_else(|| AppError::Other("Stored recurrence rule is invalid".into()))?;
-    let recurrence_timezone = RRuleTz::from(timezone);
-    body.parse::<RRule<Unvalidated>>()
-        .and_then(|rule| rule.build(starts_at.with_timezone(&recurrence_timezone)))
-        .map_err(|error| AppError::Other(format!("Invalid recurrence rule: {error}")))
+    build_recurrence_set(rule, starts_at, timezone)
 }
 
 fn overlaps(
@@ -862,8 +1008,38 @@ pub fn restore_occurrence(
     transaction.commit()?;
     Ok(())
 }
+
+pub fn delete_event(conn: &mut Connection, id: &str) -> AppResult<()> {
+    let transaction = conn.transaction()?;
+    let event = get_event(&transaction, id)?;
+    if event.recurrence_id.is_some() {
+        return Err(AppError::Other(
+            "Delete occurrence exceptions through their recurring master event".into(),
+        ));
+    }
+    let timestamp = now();
+    transaction.execute(
+        "UPDATE calendar_events SET deleted_at=?1,updated_at=?1,version=version+1 \
+         WHERE id IN (SELECT replacement_event_id FROM event_exceptions \
+                      WHERE event_id=?2 AND replacement_event_id IS NOT NULL) \
+           AND deleted_at IS NULL",
+        params![timestamp, id],
+    )?;
+    transaction.execute("DELETE FROM event_exceptions WHERE event_id=?1", [id])?;
+    transaction.execute(
+        "UPDATE calendar_events SET deleted_at=?1,updated_at=?1,version=version+1 \
+         WHERE id=?2 AND deleted_at IS NULL",
+        params![timestamp, id],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub fn list_task_lists(conn: &Connection) -> AppResult<Vec<TaskListRow>> {
-    let mut statement=conn.prepare("SELECT id,name,color FROM task_lists WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE,id")?;
+    let mut statement = conn.prepare(
+        "SELECT id,name,color FROM task_lists \
+         WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE,id",
+    )?;
     let rows = statement.query_map([], |r| {
         Ok(TaskListRow {
             id: r.get(0)?,
@@ -891,52 +1067,222 @@ pub fn create_task_list(
     )?;
     Ok(())
 }
+
+fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRow> {
+    Ok(TaskRow {
+        id: row.get(0)?,
+        task_list_id: row.get(1)?,
+        parent_id: row.get(2)?,
+        title: row.get(3)?,
+        description: row.get(4)?,
+        status: row.get(5)?,
+        priority: row.get(6)?,
+        starts_at: row.get(7)?,
+        due_date: row.get(8)?,
+        due_at: row.get(9)?,
+        due_timezone: row.get(10)?,
+        is_important: row.get::<_, i64>(11)? != 0,
+        my_day_date: row.get(12)?,
+        completed_at: row.get(13)?,
+        recurrence_rule: row.get(14)?,
+        recurrence_anchor: row.get(15)?,
+        recurrence_source_id: row.get(16)?,
+        sort_order: row.get(17)?,
+    })
+}
+
+const TASK_SELECT: &str =
+    "SELECT id,task_list_id,parent_id,title,description,status,priority,starts_at, \
+            due_date,due_at,due_timezone,is_important,my_day_date,completed_at, \
+            recurrence_rule,recurrence_anchor,recurrence_source_id,sort_order \
+     FROM tasks";
+
+fn get_task(conn: &Connection, id: &str) -> AppResult<TaskRow> {
+    conn.query_row(
+        &format!("{TASK_SELECT} WHERE id=?1 AND deleted_at IS NULL"),
+        [id],
+        task_from_row,
+    )
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => AppError::Other("Task does not exist".into()),
+        error => error.into(),
+    })
+}
+
 pub fn list_tasks(conn: &Connection, task_list_id: &str) -> AppResult<Vec<TaskRow>> {
-    let mut statement=conn.prepare("SELECT id,task_list_id,parent_id,title,description,status,priority,starts_at,due_at,completed_at,recurrence_rule,sort_order FROM tasks WHERE task_list_id=?1 AND deleted_at IS NULL ORDER BY status='completed',sort_order,due_at,id")?;
-    let rows = statement.query_map([task_list_id], |r| {
-        Ok(TaskRow {
-            id: r.get(0)?,
-            task_list_id: r.get(1)?,
-            parent_id: r.get(2)?,
-            title: r.get(3)?,
-            description: r.get(4)?,
-            status: r.get(5)?,
-            priority: r.get(6)?,
-            starts_at: r.get(7)?,
-            due_at: r.get(8)?,
-            completed_at: r.get(9)?,
-            recurrence_rule: r.get(10)?,
-            sort_order: r.get(11)?,
-        })
-    })?;
+    let mut statement = conn.prepare(&format!(
+        "{TASK_SELECT} WHERE task_list_id=?1 AND deleted_at IS NULL \
+         ORDER BY status='completed',sort_order,due_date,due_at,id"
+    ))?;
+    let rows = statement.query_map([task_list_id], task_from_row)?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
-pub fn create_task(
-    conn: &Connection,
-    id: &str,
-    task_list_id: &str,
-    parent_id: Option<String>,
-    title: &str,
-    description: Option<String>,
-    priority: i64,
-    due_at: Option<String>,
-    sort_order: f64,
-) -> AppResult<()> {
-    if !(0..=4).contains(&priority) {
+
+pub fn list_all_tasks(conn: &Connection) -> AppResult<Vec<TaskRow>> {
+    let mut statement = conn.prepare(&format!(
+        "{TASK_SELECT} WHERE deleted_at IS NULL \
+         ORDER BY status='completed',sort_order,due_date,due_at,id"
+    ))?;
+    let rows = statement.query_map([], task_from_row)?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+pub fn create_task(conn: &Connection, task: NewTask) -> AppResult<()> {
+    if !(0..=4).contains(&task.priority) {
         return Err(AppError::Other(
             "Task priority must be between 0 and 4".into(),
         ));
     }
+    let my_day_date = canonical_date(task.my_day_date, "My Day date")?;
+    let schedule = normalize_task_schedule(
+        task.due_date,
+        task.due_at,
+        task.due_timezone,
+        task.recurrence_rule,
+        None,
+    )?;
     let timestamp = now();
-    conn.execute("INSERT INTO tasks (id,task_list_id,parent_id,title,description,priority,due_at,sort_order,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",params![id,task_list_id,nullable(parent_id),required(title,"Task title")?,nullable(description),priority,nullable(due_at),sort_order,timestamp])?;
+    conn.execute(
+        "INSERT INTO tasks \
+         (id,task_list_id,parent_id,title,description,priority,due_date,due_at,due_timezone, \
+          is_important,my_day_date,recurrence_rule,recurrence_anchor,sort_order,created_at,updated_at) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15)",
+        params![
+            task.id,
+            task.task_list_id,
+            nullable(task.parent_id),
+            required(&task.title, "Task title")?,
+            nullable(task.description),
+            task.priority,
+            schedule.due_date,
+            schedule.due_at,
+            schedule.due_timezone,
+            task.is_important as i64,
+            my_day_date,
+            schedule.recurrence_rule,
+            schedule.recurrence_anchor,
+            task.sort_order,
+            timestamp
+        ],
+    )?;
     Ok(())
 }
-pub fn complete_task(conn: &Connection, id: &str, completed: bool) -> AppResult<()> {
+
+fn next_task_schedule(task: &TaskRow) -> AppResult<Option<(Option<String>, Option<String>)>> {
+    let Some(recurrence_rule) = task.recurrence_rule.as_deref() else {
+        return Ok(None);
+    };
+    let timezone = parse_timezone(task.due_timezone.as_deref().unwrap_or("UTC"))?;
+    let is_date_only = task.due_date.is_some();
+    let current = match (&task.due_date, &task.due_at) {
+        (Some(date), None) => local_midnight(parse_local_date(date, "Task due date")?, timezone)?,
+        (None, Some(instant)) => parse_instant(instant, "Task due time")?,
+        _ => {
+            return Err(AppError::Other(
+                "Recurring task has an invalid due value".into(),
+            ))
+        }
+    };
+    let anchor = task.recurrence_anchor.as_deref().unwrap_or_else(|| {
+        task.due_date
+            .as_deref()
+            .or(task.due_at.as_deref())
+            .expect("validated recurring task due value")
+    });
+    let anchor = if is_date_only {
+        local_midnight(
+            parse_local_date(anchor, "Task recurrence anchor")?,
+            timezone,
+        )?
+    } else {
+        parse_instant(anchor, "Task recurrence anchor")?
+    };
+    let recurrence_timezone = RRuleTz::from(timezone);
+    let next = build_recurrence_set(recurrence_rule, anchor, timezone)?
+        .after((current + Duration::nanoseconds(1)).with_timezone(&recurrence_timezone))
+        .all(1)
+        .dates
+        .into_iter()
+        .next();
+    Ok(next.map(|next| {
+        if is_date_only {
+            (
+                Some(
+                    next.with_timezone(&timezone)
+                        .date_naive()
+                        .format("%Y-%m-%d")
+                        .to_string(),
+                ),
+                None,
+            )
+        } else {
+            (None, Some(format_instant(next.with_timezone(&Utc))))
+        }
+    }))
+}
+
+pub fn complete_task(
+    conn: &mut Connection,
+    id: &str,
+    completed: bool,
+    next_task_id: &str,
+) -> AppResult<()> {
+    let transaction = conn.transaction()?;
+    let task = get_task(&transaction, id)?;
+    if (task.status == "completed") == completed {
+        return Ok(());
+    }
     let timestamp = now();
-    let changed=conn.execute("UPDATE tasks SET status=?1,completed_at=?2,updated_at=?2,version=version+1 WHERE id=?3 AND deleted_at IS NULL",params![if completed{"completed"}else{"open"},if completed{Some(timestamp.as_str())}else{None},id])?;
+    let completed_at = completed.then_some(timestamp.as_str());
+    let changed = transaction.execute(
+        "UPDATE tasks SET status=?1,completed_at=?2,updated_at=?3,version=version+1 \
+         WHERE id=?4 AND deleted_at IS NULL",
+        params![
+            if completed { "completed" } else { "open" },
+            completed_at,
+            timestamp,
+            id
+        ],
+    )?;
     if changed == 0 {
         return Err(AppError::Other("Task does not exist".into()));
     }
+    if completed {
+        if let Some((due_date, due_at)) = next_task_schedule(&task)? {
+            transaction.execute(
+                "INSERT OR IGNORE INTO tasks \
+                 (id,task_list_id,parent_id,title,description,status,priority,starts_at,due_date,due_at, \
+                  due_timezone,is_important,my_day_date,completed_at,recurrence_rule,recurrence_anchor, \
+                  recurrence_source_id,sort_order,created_at,updated_at) \
+                 VALUES (?1,?2,?3,?4,?5,'open',?6,?7,?8,?9,?10,?11,NULL,NULL,?12,?13,?14,?15,?16,?16)",
+                params![
+                    next_task_id,
+                    task.task_list_id,
+                    task.parent_id,
+                    task.title,
+                    task.description,
+                    task.priority,
+                    task.starts_at,
+                    due_date,
+                    due_at,
+                    task.due_timezone,
+                    task.is_important as i64,
+                    task.recurrence_rule,
+                    task.recurrence_anchor,
+                    task.id,
+                    task.sort_order,
+                    timestamp
+                ],
+            )?;
+        }
+    } else {
+        transaction.execute(
+            "UPDATE tasks SET deleted_at=?1,updated_at=?1,version=version+1 \
+             WHERE recurrence_source_id=?2 AND status='open' AND version=1 AND deleted_at IS NULL",
+            params![timestamp, id],
+        )?;
+    }
+    transaction.commit()?;
     Ok(())
 }
 
@@ -946,32 +1292,7 @@ pub fn update_task(conn: &Connection, id: &str, changes: TaskUpdate) -> AppResul
             "Task update must change at least one field".into(),
         ));
     }
-    let current = conn
-        .query_row(
-            "SELECT task_list_id,parent_id,title,description,status,priority,starts_at,due_at,completed_at,recurrence_rule,sort_order \
-             FROM tasks WHERE id=?1 AND deleted_at IS NULL",
-            [id],
-            |row| {
-                Ok(TaskRow {
-                    id: id.to_string(),
-                    task_list_id: row.get(0)?,
-                    parent_id: row.get(1)?,
-                    title: row.get(2)?,
-                    description: row.get(3)?,
-                    status: row.get(4)?,
-                    priority: row.get(5)?,
-                    starts_at: row.get(6)?,
-                    due_at: row.get(7)?,
-                    completed_at: row.get(8)?,
-                    recurrence_rule: row.get(9)?,
-                    sort_order: row.get(10)?,
-                })
-            },
-        )
-        .map_err(|error| match error {
-            rusqlite::Error::QueryReturnedNoRows => AppError::Other("Task does not exist".into()),
-            error => error.into(),
-        })?;
+    let current = get_task(conn, id)?;
     let title = changes
         .title
         .map(|value| required(&value, "Task title"))
@@ -984,11 +1305,46 @@ pub fn update_task(conn: &Connection, id: &str, changes: TaskUpdate) -> AppResul
             "Task priority must be between 0 and 4".into(),
         ));
     }
-    let due_at = changes.due_at.unwrap_or(current.due_at);
+    let schedule_changed = changes.due_date.is_some()
+        || changes.due_at.is_some()
+        || changes.due_timezone.is_some()
+        || changes.recurrence_rule.is_some();
+    let schedule = normalize_task_schedule(
+        changes.due_date.unwrap_or(current.due_date),
+        changes.due_at.unwrap_or(current.due_at),
+        changes.due_timezone.unwrap_or(current.due_timezone),
+        changes.recurrence_rule.unwrap_or(current.recurrence_rule),
+        (!schedule_changed)
+            .then_some(current.recurrence_anchor)
+            .flatten(),
+    )?;
+    let is_important = changes.is_important.unwrap_or(current.is_important);
+    let my_day_date = match changes.my_day_date {
+        Some(value) => canonical_date(value, "My Day date")?,
+        None => current.my_day_date,
+    };
+    let sort_order = changes.sort_order.unwrap_or(current.sort_order);
     let timestamp = now();
     conn.execute(
-        "UPDATE tasks SET title=?1,description=?2,priority=?3,due_at=?4,updated_at=?5,version=version+1 WHERE id=?6 AND deleted_at IS NULL",
-        params![title, description, priority, due_at, timestamp, id],
+        "UPDATE tasks SET title=?1,description=?2,priority=?3,due_date=?4,due_at=?5, \
+         due_timezone=?6,is_important=?7,my_day_date=?8,recurrence_rule=?9, \
+         recurrence_anchor=?10,sort_order=?11,updated_at=?12,version=version+1 \
+         WHERE id=?13 AND deleted_at IS NULL",
+        params![
+            title,
+            description,
+            priority,
+            schedule.due_date,
+            schedule.due_at,
+            schedule.due_timezone,
+            is_important as i64,
+            my_day_date,
+            schedule.recurrence_rule,
+            schedule.recurrence_anchor,
+            sort_order,
+            timestamp,
+            id
+        ],
     )?;
     Ok(TaskRow {
         id: id.to_string(),
@@ -999,16 +1355,63 @@ pub fn update_task(conn: &Connection, id: &str, changes: TaskUpdate) -> AppResul
         status: current.status,
         priority,
         starts_at: current.starts_at,
-        due_at,
+        due_date: schedule.due_date,
+        due_at: schedule.due_at,
+        due_timezone: schedule.due_timezone,
+        is_important,
+        my_day_date,
         completed_at: current.completed_at,
-        recurrence_rule: current.recurrence_rule,
-        sort_order: current.sort_order,
+        recurrence_rule: schedule.recurrence_rule,
+        recurrence_anchor: schedule.recurrence_anchor,
+        recurrence_source_id: current.recurrence_source_id,
+        sort_order,
     })
+}
+
+pub fn delete_task(conn: &Connection, id: &str) -> AppResult<()> {
+    let timestamp = now();
+    let changed = conn.execute(
+        "UPDATE tasks SET deleted_at=?1,updated_at=?1,version=version+1 \
+         WHERE (id=?2 OR parent_id=?2) AND deleted_at IS NULL",
+        params![timestamp, id],
+    )?;
+    if changed == 0 {
+        return Err(AppError::Other("Task does not exist".into()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn create_test_task(
+        conn: &Connection,
+        id: &str,
+        task_list_id: &str,
+        due_date: Option<&str>,
+        due_at: Option<&str>,
+        recurrence_rule: Option<&str>,
+    ) -> AppResult<()> {
+        create_task(
+            conn,
+            NewTask {
+                id: id.into(),
+                task_list_id: task_list_id.into(),
+                parent_id: None,
+                title: format!("Task {id}"),
+                description: None,
+                priority: 0,
+                due_date: due_date.map(str::to_string),
+                due_at: due_at.map(str::to_string),
+                due_timezone: Some("Asia/Shanghai".into()),
+                is_important: false,
+                my_day_date: None,
+                recurrence_rule: recurrence_rule.map(str::to_string),
+                sort_order: 0.0,
+            },
+        )
+    }
 
     #[test]
     fn updates_events_and_tasks_without_overwriting_omitted_fields() {
@@ -1063,14 +1466,21 @@ mod tests {
         create_task_list(&conn, "task-list-1", "Work", None).unwrap();
         create_task(
             &conn,
-            "task-1",
-            "task-list-1",
-            None,
-            "Draft proposal",
-            Some("Initial outline".into()),
-            1,
-            Some("2026-07-18T09:00:00Z".into()),
-            0.0,
+            NewTask {
+                id: "task-1".into(),
+                task_list_id: "task-list-1".into(),
+                parent_id: None,
+                title: "Draft proposal".into(),
+                description: Some("Initial outline".into()),
+                priority: 1,
+                due_date: None,
+                due_at: Some("2026-07-18T09:00:00Z".into()),
+                due_timezone: Some("Asia/Shanghai".into()),
+                is_important: false,
+                my_day_date: None,
+                recurrence_rule: None,
+                sort_order: 0.0,
+            },
         )
         .unwrap();
 
@@ -1081,7 +1491,13 @@ mod tests {
                 title: None,
                 description: Some(None),
                 priority: Some(3),
+                due_date: None,
                 due_at: Some(Some("2026-07-19T09:00:00Z".into())),
+                due_timezone: None,
+                is_important: None,
+                my_day_date: None,
+                recurrence_rule: None,
+                sort_order: None,
             },
         )
         .unwrap();
@@ -1089,6 +1505,160 @@ mod tests {
         assert_eq!(task.description, None);
         assert_eq!(task.priority, 3);
         assert_eq!(task.due_at.as_deref(), Some("2026-07-19T09:00:00Z"));
+    }
+
+    #[test]
+    fn completes_reopens_and_completes_a_task_again() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::apply(&mut conn).unwrap();
+        create_task_list(&conn, "list-1", "Work", None).unwrap();
+        create_test_task(&conn, "task-1", "list-1", None, None, None).unwrap();
+
+        complete_task(&mut conn, "task-1", true, "unused-next-1").unwrap();
+        complete_task(&mut conn, "task-1", false, "unused-next-2").unwrap();
+        complete_task(&mut conn, "task-1", true, "unused-next-3").unwrap();
+
+        let task = get_task(&conn, "task-1").unwrap();
+        assert_eq!(task.status, "completed");
+        assert!(task.completed_at.is_some());
+        let updated_at: Option<String> = conn
+            .query_row(
+                "SELECT updated_at FROM tasks WHERE id='task-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(updated_at.is_some());
+    }
+
+    #[test]
+    fn validates_task_dates_times_and_recurrence_requirements() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::apply(&mut conn).unwrap();
+        create_task_list(&conn, "list-1", "Work", None).unwrap();
+
+        assert!(create_task(
+            &conn,
+            NewTask {
+                id: "invalid-schedule".into(),
+                task_list_id: "list-1".into(),
+                parent_id: None,
+                title: "Invalid schedule".into(),
+                description: None,
+                priority: 0,
+                due_date: Some("2026-07-18".into()),
+                due_at: Some("2026-07-18T09:00:00Z".into()),
+                due_timezone: Some("UTC".into()),
+                is_important: false,
+                my_day_date: None,
+                recurrence_rule: None,
+                sort_order: 0.0,
+            },
+        )
+        .is_err());
+        assert!(create_task(
+            &conn,
+            NewTask {
+                id: "invalid-my-day".into(),
+                task_list_id: "list-1".into(),
+                parent_id: None,
+                title: "Invalid My Day".into(),
+                description: None,
+                priority: 0,
+                due_date: None,
+                due_at: None,
+                due_timezone: None,
+                is_important: false,
+                my_day_date: Some("18/07/2026".into()),
+                recurrence_rule: None,
+                sort_order: 0.0,
+            },
+        )
+        .is_err());
+        assert!(create_test_task(
+            &conn,
+            "invalid-recurrence",
+            "list-1",
+            None,
+            None,
+            Some("RRULE:FREQ=DAILY"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn creates_and_reconciles_recurring_task_instances() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::apply(&mut conn).unwrap();
+        create_task_list(&conn, "list-1", "Work", None).unwrap();
+        create_test_task(
+            &conn,
+            "task-1",
+            "list-1",
+            Some("2026-07-17"),
+            None,
+            Some("RRULE:FREQ=DAILY;COUNT=3"),
+        )
+        .unwrap();
+
+        complete_task(&mut conn, "task-1", true, "task-2").unwrap();
+        let generated = get_task(&conn, "task-2").unwrap();
+        assert_eq!(generated.due_date.as_deref(), Some("2026-07-18"));
+        assert_eq!(generated.recurrence_source_id.as_deref(), Some("task-1"));
+
+        complete_task(&mut conn, "task-1", false, "unused-next").unwrap();
+        assert!(get_task(&conn, "task-2").is_err());
+
+        complete_task(&mut conn, "task-1", true, "task-2-edited").unwrap();
+        update_task(
+            &conn,
+            "task-2-edited",
+            TaskUpdate {
+                title: Some("Edited generated task".into()),
+                description: None,
+                priority: None,
+                due_date: None,
+                due_at: None,
+                due_timezone: None,
+                is_important: None,
+                my_day_date: None,
+                recurrence_rule: None,
+                sort_order: None,
+            },
+        )
+        .unwrap();
+        complete_task(&mut conn, "task-1", false, "unused-next").unwrap();
+        assert_eq!(
+            get_task(&conn, "task-2-edited").unwrap().title,
+            "Edited generated task"
+        );
+    }
+
+    #[test]
+    fn stops_recurring_tasks_at_count_and_lists_then_deletes_them() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::apply(&mut conn).unwrap();
+        create_task_list(&conn, "list-1", "Work", None).unwrap();
+        create_task_list(&conn, "list-2", "Personal", None).unwrap();
+        create_test_task(
+            &conn,
+            "task-1",
+            "list-1",
+            Some("2026-07-17"),
+            None,
+            Some("RRULE:FREQ=DAILY;COUNT=3"),
+        )
+        .unwrap();
+        create_test_task(&conn, "other-task", "list-2", None, None, None).unwrap();
+
+        complete_task(&mut conn, "task-1", true, "task-2").unwrap();
+        complete_task(&mut conn, "task-2", true, "task-3").unwrap();
+        complete_task(&mut conn, "task-3", true, "task-after-count").unwrap();
+
+        assert!(get_task(&conn, "task-after-count").is_err());
+        assert_eq!(list_all_tasks(&conn).unwrap().len(), 4);
+        delete_task(&conn, "other-task").unwrap();
+        assert_eq!(list_all_tasks(&conn).unwrap().len(), 3);
     }
 
     #[test]
@@ -1340,5 +1910,8 @@ mod tests {
             "2026-07-17T11:00:00Z",
         )
         .is_err());
+
+        delete_event(&mut conn, "event-1").unwrap();
+        assert!(get_event(&conn, "event-1").is_err());
     }
 }

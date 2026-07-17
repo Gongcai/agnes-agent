@@ -154,6 +154,23 @@ fn ensure_knowledge_embedding_metadata(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
+fn ensure_planner_task_metadata(conn: &Connection) -> AppResult<()> {
+    ensure_column(conn, "tasks", "due_date", "TEXT")?;
+    ensure_column(conn, "tasks", "due_timezone", "TEXT")?;
+    ensure_column(conn, "tasks", "is_important", "INTEGER NOT NULL DEFAULT 0")?;
+    ensure_column(conn, "tasks", "my_day_date", "TEXT")?;
+    ensure_column(conn, "tasks", "recurrence_anchor", "TEXT")?;
+    ensure_column(conn, "tasks", "recurrence_source_id", "TEXT")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_smart_views \
+           ON tasks(status,is_important,my_day_date,due_date,due_at) WHERE deleted_at IS NULL; \
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_recurrence_source \
+           ON tasks(recurrence_source_id) \
+           WHERE recurrence_source_id IS NOT NULL AND deleted_at IS NULL;",
+    )?;
+    Ok(())
+}
+
 fn rename_legacy_document_tables(conn: &Connection) -> AppResult<()> {
     if !table_exists(conn, "documents") || has_column(conn, "documents", "collection_id") {
         return Ok(());
@@ -348,6 +365,7 @@ fn migrate_legacy_documents(conn: &mut Connection) -> AppResult<()> {
 /// 应用 DB 建表与预置数据。
 pub fn apply(conn: &mut Connection) -> AppResult<()> {
     conn.execute_batch(crate::db::schema::SCHEMA)?;
+    ensure_planner_task_metadata(conn)?;
     rename_legacy_document_tables(conn)?;
     ensure_knowledge_embedding_metadata(conn)?;
     conn.execute_batch(crate::db::schema::KNOWLEDGE_SCHEMA)?;

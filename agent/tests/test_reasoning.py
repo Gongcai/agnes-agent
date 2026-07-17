@@ -355,6 +355,18 @@ def test_planner_tools_expose_stable_ids_and_update_fields():
     assert "original_occurrence" in tools["calendar_update"]["parameters"]["properties"]
     assert "cancelled" in tools["calendar_update"]["parameters"]["properties"]
     assert "task_id" in tools["task_update"]["parameters"]["properties"]
+    task_create_fields = tools["task_create"]["parameters"]["properties"]
+    task_update_fields = tools["task_update"]["parameters"]["properties"]
+    for field in (
+        "due_date",
+        "due_at",
+        "due_timezone",
+        "is_important",
+        "my_day_date",
+        "recurrence_rule",
+    ):
+        assert field in task_create_fields
+        assert field in task_update_fields
 
 
 def test_task_model_routing_and_fallback():

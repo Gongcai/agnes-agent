@@ -104,6 +104,78 @@ body {
   animation: pulse-ring-red 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+/* FullCalendar is scoped to the planner so the rest of the app keeps its typography. */
+.fc {
+  --fc-border-color: #e7e5e4;
+  --fc-page-bg-color: transparent;
+  --fc-neutral-bg-color: #f5f5f4;
+  --fc-today-bg-color: rgba(79, 127, 104, 0.07);
+  --fc-now-indicator-color: #c45d55;
+  color: #44403c;
+  font-size: 12px;
+}
+
+.fc .fc-scrollgrid {
+  overflow: hidden;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.fc .fc-col-header-cell-cushion,
+.fc .fc-daygrid-day-number {
+  color: #57534e;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.fc .fc-col-header-cell-cushion {
+  padding: 9px 4px;
+  font-size: 11px;
+}
+
+.fc .fc-daygrid-day-number {
+  min-width: 26px;
+  padding: 6px;
+  text-align: center;
+}
+
+.fc .fc-daygrid-day-frame {
+  min-height: 88px;
+}
+
+.fc .fc-event {
+  border-radius: 3px;
+  border-width: 0;
+  padding: 1px 2px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.fc .fc-timegrid-event {
+  border-left-width: 3px;
+}
+
+.fc .fc-list-event:hover td {
+  background: #fafaf9;
+}
+
+.fc .planner-selected-day .fc-daygrid-day-number {
+  border-radius: 9999px;
+  background: #4f7f68;
+  color: white;
+}
+
+.fc .planner-task-event,
+.fc .planner-task-completed {
+  border-style: dashed;
+  border-left-width: 3px;
+}
+
+.fc .planner-task-completed {
+  opacity: 0.62;
+  text-decoration: line-through;
+}
+
 /* Typing indicator dot bounce */
 @keyframes typing-bounce {
   0%, 100% {

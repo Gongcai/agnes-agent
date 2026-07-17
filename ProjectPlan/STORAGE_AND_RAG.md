@@ -416,15 +416,19 @@ task_lists
 
 tasks
   id / task_list_id / parent_id? / title / description
-  status / priority / starts_at? / due_at? / completed_at?
-  recurrence_rule? / sort_order / created_at / updated_at / version / deleted_at
+  status / priority / starts_at? / due_date? / due_at? / due_timezone?
+  is_important / my_day_date? / completed_at?
+  recurrence_rule? / recurrence_anchor? / recurrence_source_id?
+  sort_order / created_at / updated_at / version / deleted_at
 ```
 
 - 重复规则使用明确的 RRULE + timezone + exception，不预生成无限 occurrence 行。
 - RRULE 由成熟的 RFC 5545 实现校验并按 IANA 时区动态展开，跨 DST 保持事件本地钟点；单个系列、单次查询最多返回 4096 个 occurrence。
 - 重复事件列表返回稳定的系列 ID、`occurrence_id` 与 `original_occurrence`；单次修改写入 replacement event，取消与恢复写入或清理 `event_exceptions`。系列起点、时区或 RRULE 实际变化时清理已失效例外。
 - 时间存储明确区分 UTC instant、用户时区和 all-day local date。
-- 任务完成是结构化状态，不依赖聊天文本或记忆抽取推断。
+- 任务的 `due_date`（本地日期）和 `due_at`（UTC instant）互斥；只有存在其中之一时才保存 `due_timezone`，重复任务必须具有截止日期或时间。
+- “我的一天”采用手动加入语义，`my_day_date` 只在对应本地日期的智能视图生效，不自动滚动到次日。
+- 任务完成是结构化状态，不依赖聊天文本或记忆抽取推断。完成重复任务会保留该完成实例并生成下一实例；重新打开源实例时，自动生成且未编辑的下一实例会被软删除，已编辑实例保留；RRULE `COUNT/UNTIL` 结束后不再生成。
 
 ### 9.2 Provider 端口
 
@@ -443,6 +447,14 @@ tasks
 - 写操作遵守 Agent tool policy 和人工审批模式；
 - 工具结果返回结构化 ID 和时区结果，不仅返回自然语言文本；
 - 外部 Provider 不可用时，本地新增/修改先成功并进入待同步状态。
+
+### 9.4 桌面交互与通知边界
+
+- 日历使用月、周、日、议程四种真实日历视图；多个日历按颜色叠加并可独立显隐，带截止日期/时间的任务作为单独“待办”图层开关。
+- 选中日期后在日历下方显示当天事件和任务；事件编辑使用日期、时间、时区和常用重复选项，不向普通用户暴露 ISO/RRULE 文本输入。
+- 待办提供“我的一天、重要、已计划、全部、已完成”智能视图、自定义列表、快速添加、完成分组和任务详情抽屉；步骤仅在父任务详情中管理。
+- 完成/重新打开采用前端乐观更新、失败时单任务回滚，成功后从 SQLite 刷新以接收重复任务的新实例。
+- 本阶段不实现提醒。后续建立通用 `NotificationService` 和统一通知事件模型，同时承载 AI 完成回复、AI 请求许可、任务期限与日历事件提醒；不得在 Calendar/TODO Provider 或 React 页面内分别复制系统通知逻辑。
 
 ---
 
@@ -560,9 +572,11 @@ tasks
 
 - [x] 完成本地 Calendar/TODO 领域表与索引，覆盖时区、全天事件、RRULE、例外、子任务、优先级与完成状态；
 - [x] 完成 Local Provider 的本地 CRUD 与 Tauri IPC：日历/事件、任务列表/任务、任务完成状态；
-- [x] 完成日历与待办桌面基础页面：本地容器、事件、任务、任务完成状态可操作；
+- [x] 完成日历与待办桌面工作区：月/周/日/议程、多日历与待办图层、当天议程、结构化事件编辑器，以及五类智能任务视图、自定义列表、步骤、日期/时间、重要、我的一天和重复任务均可操作；
 - [x] 完成受 policy 约束的 Agent 工具：`calendar_list`、`calendar_create`、`calendar_event_create`、`calendar_update`、`task_list`、`task_create`、`task_update`、`task_complete`；所有写工具为 High 风险并要求审批（Full Access 例外）；
 - [x] 增加基于 RFC 5545/IANA 时区的 occurrence 动态展开，以及单次修改、取消、恢复；Agent 复用 `calendar_update` 并保持 High 风险审批；
+- [x] 完成重复任务实例语义：完成后生成下一实例，重新打开时清理未编辑的自动实例，保留已编辑实例，并遵守 RRULE `COUNT/UNTIL`；
+- [ ] 抽象统一 `NotificationService`，再接入 AI 回复/许可请求、任务和日历提醒；
 - [ ] 接入 D1 E2EE 同步；
 - 再接 Google Calendar / Google Tasks / CalDAV；
 
