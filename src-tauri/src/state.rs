@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::agent::AgentManager;
 use crate::db::DbActorHandle;
+use crate::notifications::NotificationService;
 use crate::secrets::SecretStore;
 use crate::sync::engine::SyncService;
 
@@ -11,5 +12,6 @@ pub struct AppState {
     pub agent: Arc<AgentManager>,
     pub secrets: Arc<dyn SecretStore>,
     pub sync: Arc<SyncService>,
+    pub notifications: Arc<NotificationService>,
     pub secret_store_startup_error: Option<String>,
 }

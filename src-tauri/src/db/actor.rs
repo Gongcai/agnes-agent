@@ -234,6 +234,26 @@ pub enum DbCommand {
         id: String,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    ListNotifications {
+        limit: usize,
+        resp: oneshot::Sender<AppResult<Vec<repo::notifications::NotificationRow>>>,
+    },
+    CreateNotification {
+        notification: repo::notifications::NewNotification,
+        resp: oneshot::Sender<AppResult<Option<repo::notifications::NotificationRow>>>,
+    },
+    MarkNotificationRead {
+        id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    MarkAllNotificationsRead {
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    MarkNotificationSourceRead {
+        source_kind: String,
+        source_id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ListSessions {
         agent_id: String,
         resp: oneshot::Sender<AppResult<Vec<repo::sessions::SessionRow>>>,
@@ -1001,6 +1021,55 @@ impl DbActorHandle {
     ) -> AppResult<repo::planner::TaskRow> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::UpdateTask { id, changes, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_notifications(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<repo::notifications::NotificationRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListNotifications { limit, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn create_notification(
+        &self,
+        notification: repo::notifications::NewNotification,
+    ) -> AppResult<Option<repo::notifications::NotificationRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::CreateNotification { notification, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn mark_notification_read(&self, id: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::MarkNotificationRead { id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn mark_all_notifications_read(&self) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::MarkAllNotificationsRead { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn mark_notification_source_read(
+        &self,
+        source_kind: String,
+        source_id: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::MarkNotificationSourceRead {
+            source_kind,
+            source_id,
+            resp,
+        })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -1902,6 +1971,29 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::DeleteTask { id, resp } => {
                     let _ = resp.send(repo::planner::delete_task(&conn, &id));
+                }
+                DbCommand::ListNotifications { limit, resp } => {
+                    let _ = resp.send(repo::notifications::list(&conn, limit));
+                }
+                DbCommand::CreateNotification { notification, resp } => {
+                    let _ = resp.send(repo::notifications::create_if_absent(&conn, notification));
+                }
+                DbCommand::MarkNotificationRead { id, resp } => {
+                    let _ = resp.send(repo::notifications::mark_read(&conn, &id));
+                }
+                DbCommand::MarkAllNotificationsRead { resp } => {
+                    let _ = resp.send(repo::notifications::mark_all_read(&conn));
+                }
+                DbCommand::MarkNotificationSourceRead {
+                    source_kind,
+                    source_id,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::notifications::mark_source_read(
+                        &conn,
+                        &source_kind,
+                        &source_id,
+                    ));
                 }
                 DbCommand::ListSessions { agent_id, resp } => {
                     let _ = resp.send(repo::sessions::list(&conn, &agent_id));

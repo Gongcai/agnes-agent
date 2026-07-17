@@ -7,6 +7,7 @@ mod embeddings;
 mod error;
 mod memory;
 mod model_registry;
+mod notifications;
 mod secrets;
 mod state;
 pub mod sync;
@@ -54,6 +55,11 @@ fn main() {
                     .expect("无法初始化同步服务"),
             );
             sync.clone().start_background();
+            let notifications = Arc::new(notifications::NotificationService::new(
+                db.clone(),
+                app.handle().clone(),
+            ));
+            notifications.clone().start_background();
 
             // 2) 启动 AgentManager：Rust 起 WS Server + 拉起 Python sidecar。
             //    非致命：失败仅日志，不阻断 UI 启动。
@@ -67,6 +73,7 @@ fn main() {
                 agent,
                 secrets,
                 sync,
+                notifications,
                 secret_store_startup_error,
             });
             Ok(())
@@ -132,6 +139,9 @@ fn main() {
             commands::complete_task,
             commands::update_task,
             commands::delete_task,
+            commands::list_notifications,
+            commands::mark_notification_read,
+            commands::mark_all_notifications_read,
             commands::list_audit_logs,
             commands::list_providers,
             commands::upsert_provider,

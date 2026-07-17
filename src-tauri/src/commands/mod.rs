@@ -1465,6 +1465,7 @@ pub async fn approve_tool(
 ) -> AppResult<()> {
     let resolved = state.agent.resolve_approval(&tool_call_id, approved);
     if resolved {
+        state.notifications.resolve_approval(&tool_call_id).await?;
         Ok(())
     } else {
         Err(AppError::Other(format!(
@@ -2385,6 +2386,29 @@ pub async fn update_task(
 #[tauri::command]
 pub async fn delete_task(state: tauri::State<'_, AppState>, task_id: String) -> AppResult<()> {
     state.db.delete_task(task_id).await
+}
+
+/// Device-local notification inbox. Notifications are derived data and are not
+/// included in the encrypted entity sync payload.
+#[tauri::command]
+pub async fn list_notifications(
+    state: tauri::State<'_, AppState>,
+    limit: Option<usize>,
+) -> AppResult<Vec<crate::db::repo::notifications::NotificationRow>> {
+    state.db.list_notifications(limit.unwrap_or(50)).await
+}
+
+#[tauri::command]
+pub async fn mark_notification_read(
+    state: tauri::State<'_, AppState>,
+    notification_id: String,
+) -> AppResult<()> {
+    state.notifications.mark_read(&notification_id).await
+}
+
+#[tauri::command]
+pub async fn mark_all_notifications_read(state: tauri::State<'_, AppState>) -> AppResult<()> {
+    state.notifications.mark_all_read().await
 }
 
 #[derive(serde::Serialize)]

@@ -7,18 +7,22 @@ interface PlannerWorkspaceProps {
   mode: PlannerMode;
   isSidebarOpen: boolean;
   requestedTaskId: string | null;
+  requestedEventId: string | null;
   onToggleSidebar: () => void;
   onOpenTask: (taskId: string) => void;
   onCloseRequestedTask: () => void;
+  onCloseRequestedEvent: () => void;
 }
 
 export function PlannerWorkspace({
   mode,
   isSidebarOpen,
   requestedTaskId,
+  requestedEventId,
   onToggleSidebar,
   onOpenTask,
   onCloseRequestedTask,
+  onCloseRequestedEvent,
 }: PlannerWorkspaceProps) {
   const isCalendar = mode === "calendar";
   const HeaderIcon = isCalendar ? CalendarDays : CheckSquare2;
@@ -42,7 +46,11 @@ export function PlannerWorkspace({
       </header>
 
       {isCalendar ? (
-        <CalendarWorkspace onOpenTask={onOpenTask} />
+        <CalendarWorkspace
+          requestedEventId={requestedEventId}
+          onCloseRequestedEvent={onCloseRequestedEvent}
+          onOpenTask={onOpenTask}
+        />
       ) : (
         <TodoWorkspace
           requestedTaskId={requestedTaskId}

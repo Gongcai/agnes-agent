@@ -4,6 +4,7 @@ pub mod knowledge;
 pub mod memory;
 pub mod messages;
 pub mod model_providers;
+pub mod notifications;
 pub mod planner;
 pub mod sessions;
 pub mod settings;

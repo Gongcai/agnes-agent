@@ -4,14 +4,17 @@ import { ChatWorkspace } from "./components/ChatWorkspace";
 import { KnowledgeWorkspace } from "./components/KnowledgeWorkspace";
 import { PlannerWorkspace } from "./components/PlannerWorkspace";
 import { SettingsModal } from "./components/SettingsModal";
+import { NotificationCenter, type AppNotification } from "./components/NotificationCenter";
 import type { AppFeatureId } from "./lib/features";
 import { useAgentStore, setupTauriEventListeners } from "./store/useAgentStore";
+import { invoke } from "@tauri-apps/api/core";
 
 export default function App() {
-  const { init } = useAgentStore();
+  const { init, agents, setActiveAgentId, setActiveSessionId } = useAgentStore();
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [activeFeature, setActiveFeature] = useState<AppFeatureId>("chat");
   const [requestedPlannerTaskId, setRequestedPlannerTaskId] = useState<string | null>(null);
+  const [requestedPlannerEventId, setRequestedPlannerEventId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [settingsTab, setSettingsTab] = useState<"general" | "agents" | "memory" | "llm" | "audit" | "debug">("agents");
 
@@ -30,6 +33,37 @@ export default function App() {
   const handleOpenSettings = (tab: "general" | "agents" | "memory" | "llm" | "audit" | "debug" = "agents") => {
     setSettingsTab(tab);
     setIsSettingsOpen(true);
+  };
+
+  const handleNotificationNavigate = async (notification: AppNotification) => {
+    const targetId = notification.target_id;
+    if (!targetId) return;
+    if (notification.target_kind === "chat") {
+      // A completed background run may belong to another agent. Locate its
+      // owner before selecting the precise session in the shared chat store.
+      const sessionGroups = await Promise.all(
+        agents.map(async (agent) => ({
+          agentId: agent.id,
+          sessions: await invoke<{ id: string }[]>("list_sessions", { agentId: agent.id }),
+        })),
+      );
+      const owner = sessionGroups.find((group) => group.sessions.some((session) => session.id === targetId));
+      if (owner) await setActiveAgentId(owner.agentId);
+      await setActiveSessionId(targetId);
+      setActiveFeature("chat");
+      return;
+    }
+    if (notification.target_kind === "task") {
+      setRequestedPlannerEventId(null);
+      setRequestedPlannerTaskId(targetId);
+      setActiveFeature("tasks");
+      return;
+    }
+    if (notification.target_kind === "calendar") {
+      setRequestedPlannerTaskId(null);
+      setRequestedPlannerEventId(targetId);
+      setActiveFeature("calendar");
+    }
   };
 
   return (
@@ -61,14 +95,18 @@ export default function App() {
           mode={activeFeature}
           isSidebarOpen={isSidebarOpen}
           requestedTaskId={requestedPlannerTaskId}
+          requestedEventId={requestedPlannerEventId}
           onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
           onOpenTask={(taskId) => {
             setRequestedPlannerTaskId(taskId);
             setActiveFeature("tasks");
           }}
           onCloseRequestedTask={() => setRequestedPlannerTaskId(null)}
+          onCloseRequestedEvent={() => setRequestedPlannerEventId(null)}
         />
       )}
+
+      <NotificationCenter onNavigate={handleNotificationNavigate} />
 
       {/* Configuration Modal Panels */}
       <SettingsModal

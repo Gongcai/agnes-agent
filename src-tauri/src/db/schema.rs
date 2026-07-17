@@ -255,6 +255,29 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   created_at TEXT
 );
 
+-- Notifications are intentionally device-local. They are derived from local agent
+-- activity and scheduled planner data, so they do not participate in D1 sync.
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK(kind IN ('agent_completed', 'approval_requested', 'task_due', 'event_start')),
+  title TEXT NOT NULL,
+  body TEXT,
+  target_kind TEXT NOT NULL CHECK(target_kind IN ('chat', 'task', 'calendar', 'none')),
+  target_id TEXT,
+  source_kind TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  scheduled_at TEXT,
+  delivered_at TEXT NOT NULL,
+  read_at TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_inbox
+  ON notifications(read_at, delivered_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_source
+  ON notifications(source_kind, source_id);
+
 CREATE TABLE IF NOT EXISTS sync_log (
   id TEXT PRIMARY KEY,
   device_id TEXT,

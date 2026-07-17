@@ -402,6 +402,17 @@ async fn handle_conn<R: tauri::Runtime>(
                     "role_policy_requires_approval": role_policy_requires_approval,
                     "status": if approval_decision.needs_approval { "pending_approval" } else { "running" },
                 }));
+                if approval_decision.needs_approval {
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        if let Err(error) = state
+                            .notifications
+                            .notify_approval_requested(&session_id, &tc_id, &tool_name)
+                            .await
+                        {
+                            eprintln!("[notifications] failed to record approval request: {error}");
+                        }
+                    }
+                }
 
                 let mut approved = true;
                 let mut cancelled_during_approval = false;
@@ -739,6 +750,16 @@ async fn handle_conn<R: tauri::Runtime>(
                 // 清除 run 与 session 映射（运行已结束）
                 let _ = manager.remove_run(&run_id);
                 let _ = manager.remove_session_run(&session_id);
+
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    if let Err(error) = state
+                        .notifications
+                        .notify_agent_completed(&session_id, &run_id)
+                        .await
+                    {
+                        eprintln!("[notifications] failed to record completed run: {error}");
+                    }
+                }
 
                 // 通知前端渲染完成
                 let _ = app_handle.emit(

@@ -36,6 +36,8 @@ import {
 const fallbackColors = ["#4f8a6f", "#3b82a0", "#b7791f", "#9b5f86", "#c45d55", "#697386"];
 
 interface CalendarWorkspaceProps {
+  requestedEventId: string | null;
+  onCloseRequestedEvent: () => void;
   onOpenTask: (taskId: string) => void;
 }
 
@@ -55,7 +57,11 @@ const viewOptions = [
   { id: "listWeek", label: "议程" },
 ] as const;
 
-export function CalendarWorkspace({ onOpenTask }: CalendarWorkspaceProps) {
+export function CalendarWorkspace({
+  requestedEventId,
+  onCloseRequestedEvent,
+  onOpenTask,
+}: CalendarWorkspaceProps) {
   const calendarRef = useRef<FullCalendar | null>(null);
   const initializedVisibility = useRef(false);
   const [calendars, setCalendars] = useState<PlannerCalendar[]>([]);
@@ -233,6 +239,23 @@ export function CalendarWorkspace({ onOpenTask }: CalendarWorkspaceProps) {
       setError(String(reason));
     }
   };
+
+  useEffect(() => {
+    if (!requestedEventId) return;
+    let active = true;
+    invoke<CalendarEvent>("get_calendar_event", { eventId: requestedEventId })
+      .then(async (event) => {
+        if (!active) return;
+        calendarRef.current?.getApi().gotoDate(event.starts_at);
+        setSelectedDate(isoToDateKey(event.starts_at, event.timezone));
+        await openExistingEvent(event);
+      })
+      .catch((reason) => active && setError(String(reason)))
+      .finally(() => active && onCloseRequestedEvent());
+    return () => {
+      active = false;
+    };
+  }, [requestedEventId, onCloseRequestedEvent]);
 
   const clickEvent = (info: EventClickArg) => {
     const props = info.event.extendedProps as {

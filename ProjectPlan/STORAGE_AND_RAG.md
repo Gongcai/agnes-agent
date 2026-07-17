@@ -454,7 +454,9 @@ tasks
 - 选中日期后在日历下方显示当天事件和任务；事件编辑使用日期、时间、时区和常用重复选项，不向普通用户暴露 ISO/RRULE 文本输入。
 - 待办提供“我的一天、重要、已计划、全部、已完成”智能视图、自定义列表、快速添加、完成分组和任务详情抽屉；步骤仅在父任务详情中管理。
 - 完成/重新打开采用前端乐观更新、失败时单任务回滚，成功后从 SQLite 刷新以接收重复任务的新实例。
-- 本阶段不实现提醒。后续建立通用 `NotificationService` 和统一通知事件模型，同时承载 AI 完成回复、AI 请求许可、任务期限与日历事件提醒；不得在 Calendar/TODO Provider 或 React 页面内分别复制系统通知逻辑。
+- `NotificationService` 统一持久化、去重、定时扫描和前端事件投递；AI 完成回复、AI 请求许可、任务到期和日历事件开始均进入同一设备本地收件箱，不在 Calendar/TODO Provider 或 React 页面内分别复制计时逻辑。
+- 精确时间任务和日历事件在其 UTC instant 提醒；仅日期任务与全天事件在所属 IANA 时区的 09:00 提醒。重复事件以 `occurrence_id + scheduled_at` 去重，重复任务以已生成的任务实例 + 到期时间去重；应用短暂重启后只补发最近 10 分钟内遗漏的提醒。
+- 通知中心可标记已读并跳转到对应聊天会话、任务详情或日历事件；当前仅实现应用内投递。系统原生通知以后作为独立 output adapter 接入，不改变领域服务或数据模型。
 
 ---
 
@@ -576,7 +578,7 @@ tasks
 - [x] 完成受 policy 约束的 Agent 工具：`calendar_list`、`calendar_create`、`calendar_event_create`、`calendar_update`、`task_list`、`task_create`、`task_update`、`task_complete`；所有写工具为 High 风险并要求审批（Full Access 例外）；
 - [x] 增加基于 RFC 5545/IANA 时区的 occurrence 动态展开，以及单次修改、取消、恢复；Agent 复用 `calendar_update` 并保持 High 风险审批；
 - [x] 完成重复任务实例语义：完成后生成下一实例，重新打开时清理未编辑的自动实例，保留已编辑实例，并遵守 RRULE `COUNT/UNTIL`；
-- [ ] 抽象统一 `NotificationService`，再接入 AI 回复/许可请求、任务和日历提醒；
+- [x] 抽象本地统一 `NotificationService`：持久化收件箱、未读状态、来源去重、AI 回复/许可请求、任务到期和日历事件提醒均已接入；
 - [ ] 接入 D1 E2EE 同步；
 - 再接 Google Calendar / Google Tasks / CalDAV；
 
