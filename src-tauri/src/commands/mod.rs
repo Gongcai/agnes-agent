@@ -776,6 +776,7 @@ pub async fn get_debug_prompt(
             },
             "taskLlmConfigs": task_llm_configs,
             "settings": { "user_context_limit": serde_json::Value::Null },
+            "currentDateTime": chrono::Local::now().to_rfc3339(),
             "recentMessages": history_json,
             "summary": summary,
             "explicitMemories": { "user_md": user_md, "memory_md": memory_md },
@@ -1036,7 +1037,7 @@ pub async fn edit_and_resend(
         )
         .await?;
     state.sync.schedule();
-    start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id).await
+    start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id, false).await
 }
 
 /// 单条重新生成：为 AI 消息造一个同级新版本（共享父 user 消息），切换活动路径
@@ -1058,6 +1059,13 @@ pub async fn regenerate_message(
         .parent_id
         .clone()
         .ok_or_else(|| AppError::Other("AI 消息无父用户消息".into()))?;
+    // The rolling summary may include the rejected answer even though the
+    // selected message branch changes to the new pending sibling. Invalidate
+    // it before rebuilding context so retry never feeds that answer back.
+    state
+        .db
+        .update_session_summary(msg.session_id.clone(), String::new())
+        .await?;
     let cfg = resolve_llm(&state, &msg.session_id).await?;
     let assistant_msg_id = state
         .db
@@ -1068,7 +1076,7 @@ pub async fn regenerate_message(
         )
         .await?;
     state.sync.schedule();
-    start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id).await
+    start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id, true).await
 }
 
 /// 修改记忆：替换某条 AI 消息的全部片段（用户在弹窗里编辑/删除/新增片段）。
@@ -1318,6 +1326,7 @@ async fn start_agent_run(
     cfg: &ResolvedLlm,
     session_id: &str,
     assistant_msg_id: &str,
+    is_regeneration: bool,
 ) -> AppResult<()> {
     if let Some(config) = cfg.task_llm_configs.get("embedding") {
         if let Err(error) = crate::embeddings::ensure_agent_memory_index(
@@ -1399,8 +1408,9 @@ async fn start_agent_run(
             "settings": {
                 "user_context_limit": cfg.session_context_limit
             },
+            "currentDateTime": chrono::Local::now().to_rfc3339(),
             "recentMessages": history_json,
-            "summary": cfg.session_summary,
+            "summary": if is_regeneration { None } else { cfg.session_summary.clone() },
             "explicitMemories": {
                 "user_md": user_md,
                 "memory_md": memory_md
@@ -1453,7 +1463,7 @@ pub async fn send_message(
         .await?;
     state.sync.schedule();
 
-    start_agent_run(&state, &cfg, &session_id, &assistant_msg_id).await
+    start_agent_run(&state, &cfg, &session_id, &assistant_msg_id, false).await
 }
 
 /// 批准或拒绝挂起的工具调用。由 React 用户点击卡片同意/拒绝时触发。

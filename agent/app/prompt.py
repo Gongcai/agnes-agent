@@ -248,6 +248,14 @@ def assemble_prompt(
             f"You have permissions configured as follows:\n{json.dumps(tool_policy, indent=2)}\n"
             f"Always explain your rationale briefly before calling tools."
         )
+
+    current_datetime = context.get("currentDateTime")
+    if current_datetime:
+        system_parts.append(
+            f"# Current Local Time\n{current_datetime}\n"
+            "Use this as the current time for calendar and task requests. When calling calendar tools, "
+            "always send RFC 3339 / ISO 8601 instants with an explicit timezone offset or Z."
+        )
         
     # 3. Memory behavior and explicit files (USER.md / MEMORY.md)
     memory_enabled = (tool_policy or {}).get("memory", {}).get("enabled", True)

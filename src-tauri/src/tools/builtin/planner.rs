@@ -111,13 +111,13 @@ impl BuiltinTool for CalendarListTool {
             "type": "function",
             "function": {
                 "name": self.name(),
-                "description": "List local calendars, or expanded event occurrences in one calendar when calendar_id and an ISO 8601 range are provided. In each recurring result, id is the event_id used for updates; occurrence_id and original_occurrence identify that occurrence.",
+                "description": "List local calendars first to obtain calendar IDs. Then call again with calendar_id plus range_start and range_end to read event occurrences; do not conclude that a calendar has no events from the first call alone. Range values must be RFC 3339 / ISO 8601 instants including Z or a numeric UTC offset, for example 2026-07-18T00:00:00+08:00. In each recurring result, id is the event_id used for updates; occurrence_id and original_occurrence identify that occurrence.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "calendar_id": {"type": "string"},
-                        "range_start": {"type": "string", "description": "ISO 8601 range start, required with calendar_id."},
-                        "range_end": {"type": "string", "description": "ISO 8601 range end, required with calendar_id."}
+                        "calendar_id": {"type": "string", "description": "Calendar ID returned by calendar_list."},
+                        "range_start": {"type": "string", "description": "Required with calendar_id. RFC 3339 / ISO 8601 range start with Z or an explicit offset, for example 2026-07-18T00:00:00+08:00; never omit the timezone."},
+                        "range_end": {"type": "string", "description": "Required with calendar_id. RFC 3339 / ISO 8601 exclusive range end with Z or an explicit offset, for example 2026-07-19T00:00:00+08:00; never omit the timezone."}
                     },
                     "additionalProperties": false
                 }
@@ -240,17 +240,17 @@ impl BuiltinTool for CalendarEventCreateTool {
             "type": "function",
             "function": {
                 "name": self.name(),
-                "description": "Create an event in an existing local calendar. This writes user data and always requires approval outside Full Access.",
+                "description": "Create an event in an existing local calendar. starts_at and ends_at must be RFC 3339 / ISO 8601 instants with Z or an explicit UTC offset, never a timezone-less datetime. For an all-day event, use local midnight for starts_at and the next local midnight for ends_at in the supplied timezone. This writes user data and always requires approval outside Full Access.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "calendar_id": {"type": "string"},
-                        "title": {"type": "string"},
-                        "starts_at": {"type": "string", "description": "ISO 8601 instant."},
-                        "ends_at": {"type": "string", "description": "ISO 8601 instant after starts_at."},
-                        "timezone": {"type": "string", "description": "IANA timezone, for example Asia/Shanghai."},
-                        "all_day": {"type": "boolean"},
-                        "recurrence_rule": {"type": ["string", "null"], "description": "Optional RRULE: prefixed recurrence rule."}
+                        "calendar_id": {"type": "string", "description": "Calendar ID returned by calendar_list."},
+                        "title": {"type": "string", "description": "Event title."},
+                        "starts_at": {"type": "string", "description": "RFC 3339 / ISO 8601 start instant with timezone: use Z or an explicit UTC offset, for example 2026-07-18T09:00:00+08:00."},
+                        "ends_at": {"type": "string", "description": "RFC 3339 / ISO 8601 end instant after starts_at with timezone: use Z or an explicit UTC offset, for example 2026-07-18T10:00:00+08:00."},
+                        "timezone": {"type": "string", "description": "IANA timezone used for wall-clock and recurrence semantics, for example Asia/Shanghai."},
+                        "all_day": {"type": "boolean", "description": "True for an all-day range whose instants are local midnights."},
+                        "recurrence_rule": {"type": ["string", "null"], "description": "Optional RFC 5545 rule prefixed with RRULE:, for example RRULE:FREQ=WEEKLY."}
                     },
                     "required": ["calendar_id", "title", "starts_at", "ends_at", "timezone"],
                     "additionalProperties": false
@@ -344,19 +344,19 @@ impl BuiltinTool for CalendarUpdateTool {
             "type": "function",
             "function": {
                 "name": self.name(),
-                "description": "Update a recurring series or one occurrence. Omit original_occurrence to update the series; include it to update one occurrence. With original_occurrence, cancelled=true cancels that occurrence and cancelled=false restores the original occurrence. Do not combine cancelled with edit fields. This write always requires approval outside Full Access.",
+                "description": "Update a recurring series or one occurrence. starts_at and ends_at, when supplied, must be RFC 3339 / ISO 8601 instants with Z or an explicit UTC offset. Omit original_occurrence to update the series; include it to update one occurrence. With original_occurrence, cancelled=true cancels that occurrence and cancelled=false restores the original occurrence. Do not combine cancelled with edit fields. This write always requires approval outside Full Access.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "event_id": {"type": "string"},
-                        "title": {"type": "string"},
-                        "starts_at": {"type": "string", "description": "ISO 8601 instant."},
-                        "ends_at": {"type": "string", "description": "ISO 8601 instant after starts_at."},
-                        "timezone": {"type": "string", "description": "IANA timezone."},
-                        "all_day": {"type": "boolean"},
-                        "recurrence_rule": {"type": ["string", "null"], "description": "Use null to clear recurrence on the series."},
-                        "original_occurrence": {"type": "string", "description": "Stable ISO 8601 value returned by calendar_list. When present, edit only this occurrence."},
-                        "cancelled": {"type": "boolean", "description": "With original_occurrence, true cancels this occurrence and false restores the unmodified occurrence."}
+                        "event_id": {"type": "string", "description": "Stable event ID returned by calendar_list."},
+                        "title": {"type": "string", "description": "Replacement title."},
+                        "starts_at": {"type": "string", "description": "RFC 3339 / ISO 8601 start instant with timezone: use Z or an explicit UTC offset, for example 2026-07-18T09:00:00+08:00."},
+                        "ends_at": {"type": "string", "description": "RFC 3339 / ISO 8601 end instant after starts_at with timezone: use Z or an explicit UTC offset."},
+                        "timezone": {"type": "string", "description": "IANA timezone, for example Asia/Shanghai."},
+                        "all_day": {"type": "boolean", "description": "Whether the resulting event is all-day."},
+                        "recurrence_rule": {"type": ["string", "null"], "description": "RFC 5545 rule prefixed with RRULE:, or null to clear series recurrence."},
+                        "original_occurrence": {"type": "string", "description": "Exact ISO 8601 instant returned by calendar_list. When present, edit only that occurrence."},
+                        "cancelled": {"type": "boolean", "description": "With original_occurrence only: true cancels and false restores the occurrence."}
                     },
                     "required": ["event_id"],
                     "additionalProperties": false

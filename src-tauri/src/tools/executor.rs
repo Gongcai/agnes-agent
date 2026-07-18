@@ -665,6 +665,76 @@ mod tests {
             "Only the other agent can update this."
         );
 
+        // Calendar UI writes and planner tool writes share the same local
+        // provider/database. This protects both directions of visibility.
+        db.create_calendar(
+            "calendar-ui".into(),
+            "Test calendar".into(),
+            Some("#4f8a6f".into()),
+            "Asia/Shanghai".into(),
+        )
+        .await
+        .unwrap();
+        db.create_calendar_event(
+            "event-ui".into(),
+            "calendar-ui".into(),
+            "Created in UI".into(),
+            "2026-07-18T01:00:00Z".into(),
+            "2026-07-18T02:00:00Z".into(),
+            "Asia/Shanghai".into(),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        let tool_read = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-calendar-list-ui-event",
+                "calendar_list",
+                &json!({
+                    "calendar_id": "calendar-ui",
+                    "range_start": "2026-07-18T00:00:00+08:00",
+                    "range_end": "2026-07-19T00:00:00+08:00"
+                }),
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(tool_read["events"][0]["title"], "Created in UI");
+
+        let tool_write = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-calendar-create-agent-event",
+                "calendar_event_create",
+                &json!({
+                    "calendar_id": "calendar-ui",
+                    "title": "Created by agent",
+                    "starts_at": "2026-07-18T03:00:00+08:00",
+                    "ends_at": "2026-07-18T04:00:00+08:00",
+                    "timezone": "Asia/Shanghai",
+                    "all_day": false
+                }),
+                &policy,
+            )
+            .await
+            .unwrap();
+        let agent_event_id = tool_write["event"]["id"].as_str().unwrap();
+        let ui_read = db
+            .list_calendar_events(
+                "calendar-ui".into(),
+                "2026-07-18T00:00:00+08:00".into(),
+                "2026-07-19T00:00:00+08:00".into(),
+            )
+            .await
+            .unwrap();
+        assert!(ui_read
+            .iter()
+            .any(|event| event.id == agent_event_id && event.title == "Created by agent"));
+
         let _ = fs::remove_dir_all(&temp_project);
         let _ = fs::remove_file(&db_path);
     }

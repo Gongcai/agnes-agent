@@ -355,6 +355,13 @@ def test_planner_tools_expose_stable_ids_and_update_fields():
     assert "original_occurrence" in tools["calendar_update"]["parameters"]["properties"]
     assert "cancelled" in tools["calendar_update"]["parameters"]["properties"]
     assert "task_id" in tools["task_update"]["parameters"]["properties"]
+    range_start_description = tools["calendar_list"]["parameters"]["properties"]["range_start"]["description"]
+    assert "RFC 3339" in range_start_description
+    assert "timezone" in range_start_description
+    assert "+08:00" in range_start_description
+    event_start_description = tools["calendar_event_create"]["parameters"]["properties"]["starts_at"]["description"]
+    assert "RFC 3339" in event_start_description
+    assert "timezone" in event_start_description.lower()
     task_create_fields = tools["task_create"]["parameters"]["properties"]
     task_update_fields = tools["task_update"]["parameters"]["properties"]
     for field in (
@@ -367,6 +374,20 @@ def test_planner_tools_expose_stable_ids_and_update_fields():
     ):
         assert field in task_create_fields
         assert field in task_update_fields
+
+
+def test_prompt_exposes_current_time_for_planner_requests():
+    system_prompt, _, _ = assemble_prompt(
+        {
+            "context": {
+                "agent": {"model": "gpt-4o", "toolPolicy": {}},
+                "currentDateTime": "2026-07-18T09:30:00+08:00",
+            }
+        }
+    )
+
+    assert "2026-07-18T09:30:00+08:00" in system_prompt
+    assert "RFC 3339" in system_prompt
 
 
 def test_task_model_routing_and_fallback():

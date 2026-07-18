@@ -8,6 +8,7 @@ import timeGridPlugin from "@fullcalendar/timegrid";
 import listPlugin from "@fullcalendar/list";
 import interactionPlugin from "@fullcalendar/interaction";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { DateTime } from "luxon";
 import {
   CalendarPlus2,
@@ -132,6 +133,22 @@ export function CalendarWorkspace({
       active = false;
     };
   }, [loadEvents]);
+
+  // Calendar writes performed by the agent share the same local SQLite store,
+  // but do not pass through this component's own save handlers. Reload the
+  // visible range after their tool result so the current calendar stays live.
+  useEffect(() => {
+    const plannerWrites = new Set(["calendar_create", "calendar_event_create", "calendar_update"]);
+    const unlisten = listen<{ tool?: string; status?: string }>("agent://tool_result", (event) => {
+      if (event.payload.status !== "succeeded" || !plannerWrites.has(event.payload.tool ?? "")) return;
+      void loadContainers()
+        .then(() => loadEvents())
+        .catch((reason) => setError(String(reason)));
+    });
+    return () => {
+      void unlisten.then((unsubscribe) => unsubscribe());
+    };
+  }, [loadContainers, loadEvents]);
 
   const calendarColors = useMemo(
     () =>
