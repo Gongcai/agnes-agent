@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -9,7 +9,7 @@ use chrono::Utc;
 use futures_util::StreamExt;
 use md5::Digest;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, RANGE};
-use reqwest::{Method, Response, StatusCode};
+use reqwest::{Method, Response, StatusCode, Url};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
@@ -22,7 +22,8 @@ use super::domain::{
     StorageProviderAccount, UploadFileChunkRequest, UploadedFileChunk,
 };
 use super::ports::{
-    FileSourceProvider, FileUploadProvider, ProviderAuthorizationResult, ProviderCredentialAccess,
+    FileSourceProvider, FileUploadProvider, ProviderAuthorizationChallenge,
+    ProviderAuthorizationResult, ProviderAuthorizationStep, ProviderCredentialAccess,
     ProviderFactory, ProviderSession, QuotaProvider,
 };
 
@@ -36,6 +37,7 @@ const USER_AGENT: &str =
 pub struct QuarkDriveFactory {
     client: reqwest::Client,
     sessions: StdMutex<HashMap<String, Weak<QuarkDriveSession>>>,
+    qr_challenges: StdMutex<HashMap<String, QuarkQrChallenge>>,
 }
 
 impl QuarkDriveFactory {
@@ -49,6 +51,7 @@ impl QuarkDriveFactory {
         Ok(Self {
             client,
             sessions: StdMutex::new(HashMap::new()),
+            qr_challenges: StdMutex::new(HashMap::new()),
         })
     }
 }
@@ -81,39 +84,180 @@ impl ProviderFactory for QuarkDriveFactory {
         &self,
         request: ProviderAuthorizationRequest,
     ) -> ProviderResult<ProviderAuthorizationResult> {
-        let cookie = request
+        let cookie = cookie_from_authorization_input(&request.input).await?;
+        authorized_from_cookie(&self.client, &cookie).await
+    }
+
+    async fn begin_authorization(
+        &self,
+        request: ProviderAuthorizationRequest,
+    ) -> ProviderResult<ProviderAuthorizationChallenge> {
+        let method = request
             .input
-            .get("cookie")
+            .get("method")
             .and_then(Value::as_str)
-            .map(str::trim)
-            .ok_or_else(|| invalid_request("请提供夸克网盘 Cookie"))?;
-        validate_cookie(cookie)?;
-        // A capacity request verifies the cookie without persisting it anywhere outside Keyring.
-        request_json(
-            &self.client,
-            cookie,
-            Method::GET,
-            "capacity",
-            Vec::new(),
-            None,
-        )
-        .await?;
-        let uid = cookie_value(cookie, "__uid").unwrap_or_else(|| "account".into());
-        let account_id = format!("quark-{}", short_hash(uid.as_bytes()));
-        Ok(ProviderAuthorizationResult {
-            account: StorageProviderAccount {
-                id: account_id,
-                provider_id: PROVIDER_ID.into(),
-                display_name: format!("夸克网盘 - {}", truncate(&uid, 64)),
-                account_subject: Some(truncate(&uid, 512)),
-                config: json!({
-                    "api_base": API_BASE,
-                    "community_adapter": true,
-                    "credential_kind": "cookie"
-                }),
-            },
-            credential: Zeroizing::new(cookie.to_string()),
+            .unwrap_or_default();
+        if method != "qr" {
+            return Err(invalid_request("夸克网盘授权挑战需要 method=qr"));
+        }
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let mut token_url = Url::parse("https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin")
+            .map_err(|_| invalid_response("夸克二维码地址无效"))?;
+        token_url
+            .query_pairs_mut()
+            .append_pair("client_id", "532")
+            .append_pair("v", "1.2")
+            .append_pair("request_id", &request_id);
+        let response = self
+            .client
+            .get(token_url)
+            .headers(public_headers()?)
+            .send()
+            .await
+            .map_err(network_error)?;
+        let status = response.status();
+        let value: Value = response
+            .json()
+            .await
+            .map_err(|_| invalid_response("夸克二维码接口返回了无效响应"))?;
+        if !status.is_success() {
+            return Err(status_error_with_message(status, &value));
+        }
+        let token = value
+            .get("data")
+            .and_then(|value| value.get("members"))
+            .and_then(|value| value.get("token"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| api_value_error(&value))?;
+        let mut qr_url = Url::parse("https://su.quark.cn/4_eMHBJ")
+            .map_err(|_| invalid_response("夸克二维码地址无效"))?;
+        qr_url
+            .query_pairs_mut()
+            .append_pair("token", token)
+            .append_pair("client_id", "532")
+            .append_pair("ssb", "weblogin")
+            .append_pair("uc_param_str", "")
+            .append_pair(
+                "uc_biz_str",
+                "S:custom|OPT:SAREA@0|OPT:IMMERSIVE@1|OPT:BACK_BTN_STYLE@0",
+            );
+        let challenge_id = format!("quark-qr-{}", uuid::Uuid::new_v4());
+        let expires_at = Instant::now() + Duration::from_secs(300);
+        self.qr_challenges
+            .lock()
+            .map_err(|_| {
+                ProviderError::new(
+                    ProviderErrorCategory::RemoteUnavailable,
+                    "夸克二维码会话注册表不可用",
+                )
+            })?
+            .insert(
+                challenge_id.clone(),
+                QuarkQrChallenge {
+                    token: token.to_string(),
+                    expires_at,
+                },
+            );
+        Ok(ProviderAuthorizationChallenge {
+            challenge_id,
+            provider_id: PROVIDER_ID.into(),
+            kind: "qr_code".into(),
+            payload: json!({"qr_url": qr_url.as_str()}),
+            expires_at: Some((now_epoch() + 300).to_string()),
         })
+    }
+
+    async fn poll_authorization(
+        &self,
+        challenge_id: &str,
+    ) -> ProviderResult<ProviderAuthorizationStep> {
+        let challenge = {
+            let challenges = self.qr_challenges.lock().map_err(|_| {
+                ProviderError::new(
+                    ProviderErrorCategory::RemoteUnavailable,
+                    "夸克二维码会话注册表不可用",
+                )
+            })?;
+            challenges.get(challenge_id).cloned()
+        }
+        .ok_or_else(|| {
+            ProviderError::new(
+                ProviderErrorCategory::NotFound,
+                "夸克二维码会话不存在或已过期",
+            )
+        })?;
+        if Instant::now() >= challenge.expires_at {
+            self.qr_challenges
+                .lock()
+                .map_err(|_| invalid_response("夸克二维码会话注册表不可用"))?
+                .remove(challenge_id);
+            return Err(ProviderError::new(
+                ProviderErrorCategory::Authentication,
+                "夸克二维码已过期，请重新获取",
+            ));
+        }
+        let mut status_url =
+            Url::parse("https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken")
+                .map_err(|_| invalid_response("夸克二维码状态地址无效"))?;
+        status_url
+            .query_pairs_mut()
+            .append_pair("client_id", "532")
+            .append_pair("v", "1.2")
+            .append_pair("token", &challenge.token)
+            .append_pair("request_id", &uuid::Uuid::new_v4().to_string());
+        let response = self
+            .client
+            .get(status_url)
+            .headers(public_headers()?)
+            .send()
+            .await
+            .map_err(network_error)?;
+        let http_status = response.status();
+        let value: Value = response
+            .json()
+            .await
+            .map_err(|_| invalid_response("夸克二维码状态响应无效"))?;
+        if !http_status.is_success() {
+            return Err(status_error_with_message(http_status, &value));
+        }
+        let status_code = value.get("status").and_then(Value::as_i64);
+        let message = value
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if status_code == Some(2000000) {
+            let ticket = value
+                .get("data")
+                .and_then(|value| value.get("members"))
+                .and_then(|value| value.get("service_ticket"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| invalid_response("夸克二维码响应缺少 service_ticket"))?;
+            let cookie = exchange_service_ticket(&self.client, ticket).await?;
+            let authorized = authorized_from_cookie(&self.client, &cookie).await?;
+            self.qr_challenges
+                .lock()
+                .map_err(|_| invalid_response("夸克二维码会话注册表不可用"))?
+                .remove(challenge_id);
+            return Ok(ProviderAuthorizationStep::Authorized(authorized));
+        }
+        if matches!(status_code, Some(50004002 | 50004003 | 50004004))
+            || ["expired", "failed", "timeout", "invalid"]
+                .iter()
+                .any(|value| message.contains(value))
+        {
+            self.qr_challenges
+                .lock()
+                .map_err(|_| invalid_response("夸克二维码会话注册表不可用"))?
+                .remove(challenge_id);
+            return Err(ProviderError::new(
+                ProviderErrorCategory::Authentication,
+                "夸克二维码登录失败或已过期",
+            ));
+        }
+        Ok(ProviderAuthorizationStep::Pending)
     }
 
     async fn connect(
@@ -155,6 +299,12 @@ struct QuarkDriveSession {
     client: reqwest::Client,
     credentials: Arc<dyn ProviderCredentialAccess>,
     uploads: Mutex<HashMap<String, QuarkUploadState>>,
+}
+
+#[derive(Clone)]
+struct QuarkQrChallenge {
+    token: String,
+    expires_at: Instant,
 }
 
 #[async_trait]
@@ -885,6 +1035,12 @@ async fn request_json(
 }
 
 fn base_headers(cookie: &str) -> ProviderResult<HeaderMap> {
+    let mut headers = public_headers()?;
+    headers.insert("cookie", header_value(cookie)?);
+    Ok(headers)
+}
+
+fn public_headers() -> ProviderResult<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert(
         "accept",
@@ -897,8 +1053,198 @@ fn base_headers(cookie: &str) -> ProviderResult<HeaderMap> {
     headers.insert("origin", HeaderValue::from_static("https://pan.quark.cn"));
     headers.insert("referer", HeaderValue::from_static("https://pan.quark.cn/"));
     headers.insert("user-agent", HeaderValue::from_static(USER_AGENT));
-    headers.insert("cookie", header_value(cookie)?);
     Ok(headers)
+}
+
+async fn exchange_service_ticket(client: &reqwest::Client, ticket: &str) -> ProviderResult<String> {
+    let response = client
+        .get("https://pan.quark.cn/account/info")
+        .headers(public_headers()?)
+        .query(&[("st", ticket), ("lw", "scan")])
+        .send()
+        .await
+        .map_err(network_error)?;
+    let status = response.status();
+    let cookie = cookie_string_from_headers(response.headers());
+    if !status.is_success() {
+        return Err(status_error(status, "夸克二维码换取登录 Cookie 失败"));
+    }
+    let cookie =
+        cookie.ok_or_else(|| invalid_response("夸克二维码登录成功，但响应没有返回 Cookie"))?;
+    validate_cookie(&cookie)?;
+    Ok(cookie)
+}
+
+async fn authorized_from_cookie(
+    client: &reqwest::Client,
+    cookie: &str,
+) -> ProviderResult<ProviderAuthorizationResult> {
+    validate_cookie(cookie)?;
+    request_json(client, cookie, Method::GET, "capacity", Vec::new(), None).await?;
+    let uid = cookie_value(cookie, "__uid").unwrap_or_else(|| "account".into());
+    Ok(ProviderAuthorizationResult {
+        account: StorageProviderAccount {
+            id: format!("quark-{}", short_hash(uid.as_bytes())),
+            provider_id: PROVIDER_ID.into(),
+            display_name: format!("夸克网盘 - {}", truncate(&uid, 64)),
+            account_subject: Some(truncate(&uid, 512)),
+            config: json!({
+                "api_base": API_BASE,
+                "community_adapter": true,
+                "credential_kind": "cookie"
+            }),
+        },
+        credential: Zeroizing::new(cookie.to_string()),
+    })
+}
+
+async fn cookie_from_authorization_input(input: &Value) -> ProviderResult<String> {
+    if let Some(path) = input
+        .get("cookie_json_path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let path = std::path::PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err(invalid_request("Cookie JSON 文件路径必须是绝对路径"));
+        }
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .map_err(|_| invalid_request("Cookie JSON 文件不存在或无法读取"))?;
+        if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
+            return Err(invalid_request(
+                "Cookie JSON 文件必须是 2 MiB 以内的普通文件",
+            ));
+        }
+        let text = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|_| invalid_request("Cookie JSON 文件不是有效的 UTF-8 文本"))?;
+        return cookie_from_json_text(&text);
+    }
+    if let Some(value) = input.get("cookie_json") {
+        if let Some(text) = value.as_str() {
+            return cookie_from_json_text(text);
+        }
+        return cookie_from_json_value(value);
+    }
+    let cookie = input
+        .get("cookie")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| invalid_request("请提供夸克网盘 Cookie 或 Cookie JSON 文件"))?;
+    if cookie.starts_with('{') || cookie.starts_with('[') {
+        return cookie_from_json_text(cookie);
+    }
+    Ok(cookie.to_string())
+}
+
+fn cookie_from_json_text(text: &str) -> ProviderResult<String> {
+    let value: Value =
+        serde_json::from_str(text).map_err(|_| invalid_request("Cookie JSON 格式无效"))?;
+    cookie_from_json_value(&value)
+}
+
+fn cookie_from_json_value(value: &Value) -> ProviderResult<String> {
+    let mut pairs = Vec::new();
+    collect_cookie_pairs(value, &mut pairs);
+    if pairs.is_empty() {
+        return Err(invalid_request(
+            "Cookie JSON 中没有找到 name/value 或 Cookie 字段",
+        ));
+    }
+    Ok(pairs
+        .into_iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; "))
+}
+
+fn collect_cookie_pairs(value: &Value, pairs: &mut Vec<(String, String)>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_cookie_pairs(item, pairs);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(cookie_string) = object.get("cookie_string").and_then(Value::as_str) {
+                collect_raw_cookie_pairs(cookie_string, pairs);
+            }
+            if let (Some(name), Some(value)) = (
+                object.get("name").and_then(Value::as_str),
+                object.get("value").and_then(Value::as_str),
+            ) {
+                push_cookie_pair(name, value, pairs);
+                return;
+            }
+            if let Some(cookies) = object.get("cookies") {
+                collect_cookie_pairs(cookies, pairs);
+            }
+            for (name, value) in object {
+                if matches!(
+                    name.as_str(),
+                    "cookie_string" | "cookies" | "timestamp" | "source"
+                ) {
+                    continue;
+                }
+                if let Some(value) = value.as_str() {
+                    push_cookie_pair(name, value, pairs);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_raw_cookie_pairs(raw: &str, pairs: &mut Vec<(String, String)>) {
+    for pair in raw.split(';') {
+        if let Some((name, value)) = pair.trim().split_once('=') {
+            push_cookie_pair(name, value, pairs);
+        }
+    }
+}
+
+fn push_cookie_pair(name: &str, value: &str, pairs: &mut Vec<(String, String)>) {
+    let name = name.trim();
+    let value = value.trim();
+    if name.is_empty()
+        || value.is_empty()
+        || name
+            .chars()
+            .any(|char| char.is_control() || matches!(char, ';' | '='))
+    {
+        return;
+    }
+    if let Some(existing) = pairs.iter_mut().find(|(key, _)| key == name) {
+        existing.1 = value.to_string();
+    } else {
+        pairs.push((name.to_string(), value.to_string()));
+    }
+}
+
+fn cookie_string_from_headers(headers: &HeaderMap) -> Option<String> {
+    let mut pairs = Vec::new();
+    for value in headers.get_all("set-cookie") {
+        if let Ok(value) = value.to_str() {
+            if let Some((name, value)) = value
+                .split_once(';')
+                .and_then(|value| value.0.split_once('='))
+            {
+                push_cookie_pair(name, value, &mut pairs);
+            } else if let Some((name, value)) = value.split_once('=') {
+                push_cookie_pair(name, value, &mut pairs);
+            }
+        }
+    }
+    (!pairs.is_empty()).then(|| {
+        pairs
+            .into_iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
 }
 
 fn remote_file_item(value: &Value, parent_id: Option<&str>) -> ProviderResult<RemoteFileItem> {
@@ -1172,6 +1518,22 @@ mod tests {
     fn cookie_validation_requires_quark_identity_cookies() {
         assert!(validate_cookie("__uid=u; __kps=k").is_ok());
         assert!(validate_cookie("__uid=u").is_err());
+    }
+
+    #[test]
+    fn cookie_json_formats_are_normalized_without_metadata_fields() {
+        let browser_export = cookie_from_json_text(
+            r#"[{"name":"__uid","value":"u","domain":".quark.cn"},{"name":"__kps","value":"k"}]"#,
+        )
+        .unwrap();
+        assert!(validate_cookie(&browser_export).is_ok());
+        assert!(!browser_export.contains("domain="));
+
+        let quarkpan_export = cookie_from_json_text(
+            r#"{"cookies":{"__uid":"u","__kps":"k"},"cookie_string":"__uid=u; __kps=k","timestamp":1}"#,
+        )
+        .unwrap();
+        assert_eq!(quarkpan_export, "__uid=u; __kps=k");
     }
 
     #[test]

@@ -2945,6 +2945,33 @@ pub async fn authorize_storage_provider(
 }
 
 #[tauri::command]
+pub async fn begin_storage_provider_authorization(
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+    input: serde_json::Value,
+) -> AppResult<crate::storage::ports::ProviderAuthorizationChallenge> {
+    state
+        .storage
+        .begin_authorization(
+            provider_id,
+            crate::storage::ProviderAuthorizationRequest { input },
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn poll_storage_provider_authorization(
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+    challenge_id: String,
+) -> AppResult<crate::storage::service::StorageAuthorizationProgress> {
+    state
+        .storage
+        .poll_authorization(provider_id, challenge_id)
+        .await
+}
+
+#[tauri::command]
 pub async fn list_storage_files(
     state: tauri::State<'_, AppState>,
     account_id: String,

@@ -18,7 +18,10 @@ use super::domain::{
     ProviderDescriptor, ProviderError, ProviderQuota, RemoteFileItem, RemoteFileKind,
     RemoteFilePage, StorageProviderAccount, UploadFileChunkRequest,
 };
-use super::ports::{ProviderCredentialStore, ProviderSession};
+use super::ports::{
+    ProviderAuthorizationChallenge, ProviderAuthorizationStep, ProviderCredentialStore,
+    ProviderSession,
+};
 use super::registry::StorageProviderRegistry;
 use super::ScopedProviderCredentialAccess;
 
@@ -28,6 +31,12 @@ pub struct StorageAccountView {
     pub account: StorageAccountRow,
     pub provider_installed: bool,
     pub has_credential: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageAuthorizationProgress {
+    pub status: String,
+    pub account_id: Option<String>,
 }
 
 pub struct StorageService {
@@ -483,6 +492,71 @@ impl StorageService {
         self.save_connected_account(authorized.account, authorized.credential)
             .await?;
         Ok(account_id)
+    }
+
+    pub async fn begin_authorization(
+        &self,
+        provider_id: String,
+        request: ProviderAuthorizationRequest,
+    ) -> AppResult<ProviderAuthorizationChallenge> {
+        let factory = self
+            .registry
+            .factory(&provider_id)
+            .map_err(provider_error)?;
+        let descriptor = self
+            .registry
+            .descriptor(&provider_id)
+            .map_err(provider_error)?;
+        if !descriptor.capabilities.user_authorization {
+            return Err(AppError::Other(
+                "Storage provider does not support interactive authorization".into(),
+            ));
+        }
+        let challenge = factory
+            .begin_authorization(request)
+            .await
+            .map_err(provider_error)?;
+        if challenge.provider_id != provider_id {
+            return Err(AppError::Other(
+                "Storage provider authorization returned a mismatched provider ID".into(),
+            ));
+        }
+        Ok(challenge)
+    }
+
+    pub async fn poll_authorization(
+        &self,
+        provider_id: String,
+        challenge_id: String,
+    ) -> AppResult<StorageAuthorizationProgress> {
+        let factory = self
+            .registry
+            .factory(&provider_id)
+            .map_err(provider_error)?;
+        let step = factory
+            .poll_authorization(&challenge_id)
+            .await
+            .map_err(provider_error)?;
+        match step {
+            ProviderAuthorizationStep::Pending => Ok(StorageAuthorizationProgress {
+                status: "pending".into(),
+                account_id: None,
+            }),
+            ProviderAuthorizationStep::Authorized(authorized) => {
+                if authorized.account.provider_id != provider_id {
+                    return Err(AppError::Other(
+                        "Storage provider authorization returned a mismatched provider ID".into(),
+                    ));
+                }
+                let account_id = authorized.account.id.clone();
+                self.save_connected_account(authorized.account, authorized.credential)
+                    .await?;
+                Ok(StorageAuthorizationProgress {
+                    status: "completed".into(),
+                    account_id: Some(account_id),
+                })
+            }
+        }
     }
 
     pub async fn save_connected_account(

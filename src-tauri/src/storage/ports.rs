@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::Serialize;
 use zeroize::Zeroizing;
 
 use super::domain::{
@@ -14,6 +15,20 @@ use super::domain::{
 pub struct ProviderAuthorizationResult {
     pub account: StorageProviderAccount,
     pub credential: Zeroizing<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderAuthorizationChallenge {
+    pub challenge_id: String,
+    pub provider_id: String,
+    pub kind: String,
+    pub payload: serde_json::Value,
+    pub expires_at: Option<String>,
+}
+
+pub enum ProviderAuthorizationStep {
+    Pending,
+    Authorized(ProviderAuthorizationResult),
 }
 
 #[async_trait]
@@ -105,6 +120,20 @@ pub trait ProviderFactory: Send + Sync {
         _request: ProviderAuthorizationRequest,
     ) -> ProviderResult<ProviderAuthorizationResult> {
         Err(ProviderError::unsupported("interactive authorization"))
+    }
+
+    async fn begin_authorization(
+        &self,
+        _request: ProviderAuthorizationRequest,
+    ) -> ProviderResult<ProviderAuthorizationChallenge> {
+        Err(ProviderError::unsupported("authorization challenge"))
+    }
+
+    async fn poll_authorization(
+        &self,
+        _challenge_id: &str,
+    ) -> ProviderResult<ProviderAuthorizationStep> {
+        Err(ProviderError::unsupported("authorization challenge"))
     }
 
     async fn connect(

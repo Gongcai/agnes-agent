@@ -186,6 +186,8 @@ fn main() {
             commands::list_storage_provider_catalog,
             commands::list_storage_accounts,
             commands::authorize_storage_provider,
+            commands::begin_storage_provider_authorization,
+            commands::poll_storage_provider_authorization,
             commands::list_storage_files,
             commands::download_storage_file,
             commands::download_storage_folder,

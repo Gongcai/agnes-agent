@@ -178,7 +178,7 @@ Python 本轮内只做：prompt 拼装 / 模型调用 / 工具决策 / 记忆抽
     BundledBinLauncher → 发布态加载 externalBin（agentd 二进制）
   ```
 - `tools/`：`ToolExecutor` + 每工具模块（shell/file/git/ssh/memory_search/browser），统一 trait；MCP 外部工具 V0.5 以同类 trait 接入。
-- `storage/`：网盘领域 DTO、`FileSourceProvider / FileUploadProvider / ObjectStorageProvider / QuotaProvider / ProviderFactory` 窄端口、Keyring 凭证 adapter、开放注册表与 `StorageService`。`google_drive` 通过官方 API 实现 Desktop OAuth + PKCE、Drive v3 文件源/断点上传及 `appDataFolder` 对象存储；`quark_drive` 通过 community HTTP adapter 实现 Cookie 授权、文件源、分片上传和配额，但不实现应用对象存储。业务层和 renderer 不依赖任一服务商 API 类型。
+- `storage/`：网盘领域 DTO、`FileSourceProvider / FileUploadProvider / ObjectStorageProvider / QuotaProvider / ProviderFactory` 窄端口、Keyring 凭证 adapter、开放注册表与 `StorageService`。`ProviderFactory` 同时提供可选的一次性授权和 challenge/poll 两阶段授权，凭证结果不经过 renderer。`google_drive` 通过官方 API 实现 Desktop OAuth + PKCE、Drive v3 文件源/断点上传及 `appDataFolder` 对象存储；`quark_drive` 通过 community HTTP adapter 实现文本/JSON Cookie 与二维码授权、文件源、分片上传和配额，但不实现应用对象存储。业务层和 renderer 不依赖任一服务商 API 类型。
 - `memory/`：实现 `memory_search`（sqlite-vec cosine 向量 + 字符串包含匹配，RRF 融合）；负责 `USER.md`/`MEMORY.md` 读写（DB 为真相源，见 §8）。
 - `state.rs`：Tauri `State` 托管 `DbActor` 句柄 / `AgentManager` / `Config`。
 
