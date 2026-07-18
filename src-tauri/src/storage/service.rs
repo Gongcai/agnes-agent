@@ -149,12 +149,6 @@ impl StorageService {
                 return Err(provider_error(error));
             }
         };
-        if !remote_file.downloadable {
-            return Err(AppError::Other(
-                "The selected storage item cannot be downloaded".into(),
-            ));
-        }
-
         let job_id = uuid::Uuid::new_v4().to_string();
         let bytes_total = remote_file.size.and_then(|value| i64::try_from(value).ok());
         self.db
@@ -1205,7 +1199,7 @@ mod tests {
                 size: Some(128),
                 modified_at: None,
                 revision: Some("revision-1".into()),
-                downloadable: true,
+                downloadable: file_id != "remote-hint-disabled",
             })
         }
 
@@ -1401,6 +1395,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(std::fs::read(&destination).unwrap(), vec![b'x'; 128]);
+        let advisory_destination = std::env::temp_dir().join(format!(
+            "agnes-storage-service-advisory-download-{}.md",
+            uuid::Uuid::new_v4()
+        ));
+        service
+            .download_file(
+                "account-1".into(),
+                "remote-hint-disabled".into(),
+                Some("revision-1".into()),
+                advisory_destination.to_string_lossy().to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&advisory_destination).unwrap(),
+            vec![b'x'; 128]
+        );
         let batch_directory = std::env::temp_dir().join(format!(
             "agnes-storage-batch-download-{}",
             uuid::Uuid::new_v4()
@@ -1438,7 +1449,7 @@ mod tests {
             .list_transfers(Some("account-1".into()), 10)
             .await
             .unwrap();
-        assert_eq!(transfers.len(), 3);
+        assert_eq!(transfers.len(), 4);
         assert!(transfers
             .iter()
             .all(|transfer| transfer.status == "completed"));
@@ -1462,6 +1473,7 @@ mod tests {
 
         drop(service);
         let _ = std::fs::remove_file(destination);
+        let _ = std::fs::remove_file(advisory_destination);
         let _ = std::fs::remove_dir_all(batch_directory);
         let _ = std::fs::remove_dir_all(upload_directory);
         let _ = std::fs::remove_file(path);

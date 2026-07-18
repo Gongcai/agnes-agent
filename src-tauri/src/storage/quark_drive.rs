@@ -388,9 +388,6 @@ impl FileSourceProvider for QuarkDriveSession {
     ) -> ProviderResult<ProviderByteStream> {
         validate_range(request.range_start, request.range_end_inclusive)?;
         let file = self.get_file(&request.file_id).await?;
-        if !file.downloadable {
-            return Err(ProviderError::unsupported("下载此夸克网盘项目"));
-        }
         if request
             .expected_revision
             .as_deref()

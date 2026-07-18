@@ -254,6 +254,7 @@ pub struct RemoteFileItem {
     pub size: Option<u64>,
     pub modified_at: Option<String>,
     pub revision: Option<String>,
+    /// Advisory capability for list UIs; the provider download call remains authoritative.
     pub downloadable: bool,
 }
 
