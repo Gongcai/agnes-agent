@@ -1282,11 +1282,13 @@ fn remote_file_item(value: &Value, parent_id: Option<&str>) -> ProviderResult<Re
     let id = value_string(value, &["fid", "id"])
         .ok_or_else(|| invalid_response("夸克网盘项目缺少 fid"))?;
     let name = value_string(value, &["file_name", "name"]).unwrap_or_else(|| id.clone());
-    let folder = value
-        .get("dir")
-        .and_then(Value::as_bool)
-        .or_else(|| value.get("is_dir").and_then(Value::as_bool))
-        .unwrap_or_else(|| value.get("file_type").and_then(Value::as_i64) == Some(0));
+    // Quark returns directory markers as booleans, numbers, or strings depending on the endpoint.
+    // Prefer explicit `dir` fields so a numeric zero is not mistaken for the legacy file_type=0 folder marker.
+    let folder = ["dir", "is_dir", "is_folder", "folder"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(value_as_boolish))
+        .or_else(|| value.get("file_type").and_then(file_type_is_folder))
+        .unwrap_or(false);
     let size = find_number(value, &["size", "file_size"]);
     let modified = value_string(value, &["updated_at", "modified_at", "update_time"]);
     let revision = modified
@@ -1307,6 +1309,31 @@ fn remote_file_item(value: &Value, parent_id: Option<&str>) -> ProviderResult<Re
         revision,
         downloadable: !folder,
     })
+}
+
+fn value_as_boolish(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(value) => Some(*value),
+        Value::Number(value) => value.as_i64().map(|value| value != 0),
+        Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "folder" | "directory" | "dir" => Some(true),
+            "0" | "false" | "no" | "file" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn file_type_is_folder(value: &Value) -> Option<bool> {
+    match value {
+        Value::Number(value) => value.as_i64().map(|value| value == 0),
+        Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "0" | "folder" | "directory" | "dir" => Some(true),
+            "1" | "file" => Some(false),
+            _ => None,
+        },
+        _ => value_as_boolish(value),
+    }
 }
 
 fn validate_upload_request(request: &BeginFileUploadRequest) -> ProviderResult<()> {
@@ -1602,6 +1629,36 @@ mod tests {
         assert_eq!(folder.kind, RemoteFileKind::Folder);
         assert_eq!(folder.parent_id.as_deref(), Some("0"));
         assert!(!folder.downloadable);
+
+        let file_with_numeric_directory_marker = remote_file_item(
+            &json!({
+                "fid": "file-1",
+                "file_name": "notes.md",
+                "dir": 0,
+                "file_type": 0,
+                "size": 128
+            }),
+            Some("0"),
+        )
+        .unwrap();
+        assert_eq!(
+            file_with_numeric_directory_marker.kind,
+            RemoteFileKind::File
+        );
+        assert!(file_with_numeric_directory_marker.downloadable);
+
+        let numeric_folder = remote_file_item(
+            &json!({
+                "fid": "folder-2",
+                "file_name": "archive",
+                "dir": 1,
+                "file_type": 1
+            }),
+            Some("0"),
+        )
+        .unwrap();
+        assert_eq!(numeric_folder.kind, RemoteFileKind::Folder);
+        assert!(!numeric_folder.downloadable);
 
         assert_eq!(
             api_value_error(&json!({"message": "cookie login expired"})).category,
