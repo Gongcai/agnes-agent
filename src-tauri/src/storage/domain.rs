@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::pin::Pin;
 
@@ -97,6 +98,14 @@ pub enum ProviderAuthKind {
     Managed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentHashAlgorithm {
+    Md5,
+    Sha1,
+    Sha256,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StorageCapabilities {
@@ -114,6 +123,8 @@ pub struct StorageCapabilities {
     pub worker_proxy: bool,
     pub max_object_bytes: Option<u64>,
     pub recommended_chunk_bytes: Option<u64>,
+    #[serde(default)]
+    pub required_upload_hashes: Vec<ContentHashAlgorithm>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,6 +302,8 @@ pub struct BeginFileUploadRequest {
     pub size: u64,
     pub media_type: String,
     pub chunk_size: u64,
+    #[serde(default)]
+    pub content_hashes: BTreeMap<ContentHashAlgorithm, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

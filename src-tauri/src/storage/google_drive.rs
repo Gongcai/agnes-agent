@@ -1556,6 +1556,7 @@ mod tests {
             size: 128,
             media_type: "text/plain".into(),
             chunk_size: 8 * 1024 * 1024,
+            content_hashes: Default::default(),
         })
         .is_ok());
     }

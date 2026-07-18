@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
+use md5::Digest;
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zeroize::Zeroizing;
@@ -13,9 +14,9 @@ use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 
 use super::domain::{
-    BeginFileUploadRequest, ListFilesRequest, ProviderAuthorizationRequest, ProviderDescriptor,
-    ProviderError, ProviderQuota, RemoteFileItem, RemoteFileKind, RemoteFilePage,
-    StorageProviderAccount, UploadFileChunkRequest,
+    BeginFileUploadRequest, ContentHashAlgorithm, ListFilesRequest, ProviderAuthorizationRequest,
+    ProviderDescriptor, ProviderError, ProviderQuota, RemoteFileItem, RemoteFileKind,
+    RemoteFilePage, StorageProviderAccount, UploadFileChunkRequest,
 };
 use super::ports::{ProviderCredentialStore, ProviderSession};
 use super::registry::StorageProviderRegistry;
@@ -315,7 +316,7 @@ impl StorageService {
         parent_id: Option<String>,
         source: String,
     ) -> AppResult<RemoteFileItem> {
-        const UPLOAD_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
+        const DEFAULT_UPLOAD_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 
         let source = std::path::PathBuf::from(source);
         if !source.is_absolute() {
@@ -342,6 +343,17 @@ impl StorageService {
             .essence_str()
             .to_string();
         let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let descriptor = self
+            .registry
+            .descriptor(&row.provider_id)
+            .map_err(provider_error)?;
+        let content_hashes =
+            hash_local_file(&source, &descriptor.capabilities.required_upload_hashes).await?;
+        let upload_chunk_bytes = descriptor
+            .capabilities
+            .recommended_chunk_bytes
+            .unwrap_or(DEFAULT_UPLOAD_CHUNK_BYTES)
+            .clamp(256 * 1024, 32 * 1024 * 1024);
         let uploader = session.file_upload().ok_or_else(|| {
             AppError::Other("Storage provider does not support user file uploads".into())
         })?;
@@ -367,7 +379,8 @@ impl StorageService {
                 name,
                 size,
                 media_type,
-                chunk_size: UPLOAD_CHUNK_BYTES,
+                chunk_size: upload_chunk_bytes,
+                content_hashes,
             })
             .await
         {
@@ -396,7 +409,7 @@ impl StorageService {
                     source: &source,
                     session_id: &session.session_id,
                     size,
-                    chunk_size: UPLOAD_CHUNK_BYTES,
+                    chunk_size: upload_chunk_bytes,
                     job_id: &job_id,
                     bytes_total,
                 },
@@ -865,6 +878,64 @@ struct FileUploadStream<'a> {
     chunk_size: u64,
     job_id: &'a str,
     bytes_total: i64,
+}
+
+async fn hash_local_file(
+    path: &std::path::Path,
+    algorithms: &[ContentHashAlgorithm],
+) -> AppResult<std::collections::BTreeMap<ContentHashAlgorithm, String>> {
+    if algorithms.is_empty() {
+        return Ok(Default::default());
+    }
+    let path = path.to_path_buf();
+    let algorithms = algorithms.to_vec();
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+
+        let mut file = std::fs::File::open(path)?;
+        let mut md5 = algorithms
+            .contains(&ContentHashAlgorithm::Md5)
+            .then(md5::Md5::new);
+        let mut sha1 = algorithms
+            .contains(&ContentHashAlgorithm::Sha1)
+            .then(sha1::Sha1::new);
+        let mut sha256 = algorithms
+            .contains(&ContentHashAlgorithm::Sha256)
+            .then(sha2::Sha256::new);
+        let mut buffer = [0_u8; 1024 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            if let Some(hash) = md5.as_mut() {
+                hash.update(&buffer[..read]);
+            }
+            if let Some(hash) = sha1.as_mut() {
+                hash.update(&buffer[..read]);
+            }
+            if let Some(hash) = sha256.as_mut() {
+                hash.update(&buffer[..read]);
+            }
+        }
+        let mut hashes = std::collections::BTreeMap::new();
+        if let Some(hash) = md5 {
+            hashes.insert(ContentHashAlgorithm::Md5, format!("{:x}", hash.finalize()));
+        }
+        if let Some(hash) = sha1 {
+            hashes.insert(ContentHashAlgorithm::Sha1, format!("{:x}", hash.finalize()));
+        }
+        if let Some(hash) = sha256 {
+            hashes.insert(
+                ContentHashAlgorithm::Sha256,
+                format!("{:x}", hash.finalize()),
+            );
+        }
+        Ok::<_, std::io::Error>(hashes)
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("Unable to calculate upload hashes: {error}")))?
+    .map_err(AppError::from)
 }
 
 fn validate_download_destination(path: &std::path::Path) -> AppResult<()> {

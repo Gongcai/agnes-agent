@@ -6,6 +6,8 @@ import {
   ChevronRight,
   Cloud,
   Download,
+  Eye,
+  EyeOff,
   File,
   Folder,
   FolderDown,
@@ -14,8 +16,10 @@ import {
   LoaderCircle,
   Plus,
   RefreshCw,
+  ShieldAlert,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import { formatStorageBytes, storageProgress } from "../lib/storage";
 
@@ -29,6 +33,7 @@ interface ProviderDescriptor {
     read_files: boolean;
     write_files: boolean;
     object_storage: boolean;
+    user_authorization: boolean;
   };
 }
 
@@ -135,6 +140,9 @@ export function DriveWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [authorizationMessage, setAuthorizationMessage] = useState<string | null>(null);
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenu | null>(null);
+  const [showQuarkAuthorization, setShowQuarkAuthorization] = useState(false);
+  const [quarkCookie, setQuarkCookie] = useState("");
+  const [showQuarkCookie, setShowQuarkCookie] = useState(false);
   const fileRequestId = useRef(0);
 
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? null;
@@ -302,6 +310,41 @@ export function DriveWorkspace() {
     } finally {
       setAuthorizationMessage(null);
       setLoading(false);
+    }
+  };
+
+  const connectQuarkDrive = async () => {
+    const cookie = quarkCookie.trim();
+    if (!cookie) return;
+    try {
+      setLoading(true);
+      setError(null);
+      setAuthorizationMessage("正在验证夸克网盘 Cookie");
+      const accountId = await invoke<string>("authorize_storage_provider", {
+        providerId: "quark_drive",
+        input: { cookie },
+      });
+      setQuarkCookie("");
+      setShowQuarkCookie(false);
+      setShowQuarkAuthorization(false);
+      await loadShell();
+      setSelectedAccountId(accountId);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setAuthorizationMessage(null);
+      setLoading(false);
+    }
+  };
+
+  const connectProvider = (providerId: string) => {
+    if (providerId === "google_drive") {
+      void connectGoogleDrive();
+      return;
+    }
+    if (providerId === "quark_drive") {
+      setError(null);
+      setShowQuarkAuthorization(true);
     }
   };
 
@@ -484,14 +527,19 @@ export function DriveWorkspace() {
               <div className="px-3 py-8 text-center text-xs text-stone-400">暂无已连接账户</div>
             )}
           </div>
-          <button
-            onClick={() => void connectGoogleDrive()}
-            disabled={loading}
-            className="mt-auto flex h-9 w-full items-center justify-center gap-2 rounded-md border border-stone-200 bg-white text-xs font-medium text-stone-600 hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            连接/重新授权 Google Drive
-          </button>
+          <div className="mt-auto space-y-2">
+            {catalog.filter((provider) => provider.capabilities.user_authorization).map((provider) => (
+              <button
+                key={provider.id}
+                onClick={() => connectProvider(provider.id)}
+                disabled={loading}
+                className="flex min-h-9 w-full items-center justify-center gap-2 rounded-md border border-stone-200 bg-white px-2 py-2 text-xs font-medium text-stone-600 hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
+              >
+                <Plus className="h-3.5 w-3.5 shrink-0" />
+                <span>连接/重新授权 {provider.display_name}</span>
+              </button>
+            ))}
+          </div>
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col">
@@ -716,6 +764,85 @@ export function DriveWorkspace() {
             )}
           </div>
         </>
+      )}
+
+      {showQuarkAuthorization && (
+        <div className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/30 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-lg border border-stone-200 bg-[#FAF9F5] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3">
+              <div>
+                <h2 className="text-sm font-semibold text-stone-900">连接夸克网盘</h2>
+                <p className="mt-0.5 text-[11px] text-stone-500">粘贴 pan.quark.cn 登录会话的完整 Cookie</p>
+              </div>
+              <button
+                onClick={() => {
+                  setQuarkCookie("");
+                  setShowQuarkAuthorization(false);
+                }}
+                disabled={loading}
+                className="grid h-8 w-8 place-items-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-700 disabled:opacity-50"
+                title="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-4 p-4">
+              <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
+                <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>这是社区逆向 API 适配器，可能因夸克接口变更或风控失效。Cookie 仅保存在本机系统 Keyring。</span>
+              </div>
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-medium text-stone-700">Cookie</span>
+                <div className="flex items-center rounded-md border border-stone-200 bg-white focus-within:border-emerald-400 focus-within:ring-2 focus-within:ring-emerald-100">
+                  <input
+                    type={showQuarkCookie ? "text" : "password"}
+                    value={quarkCookie}
+                    onChange={(event) => setQuarkCookie(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && quarkCookie.trim() && !loading) void connectQuarkDrive();
+                    }}
+                    autoFocus
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="__kps=...; __uid=...; ..."
+                    className="h-10 min-w-0 flex-1 bg-transparent px-3 text-xs text-stone-800 outline-none placeholder:text-stone-300"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowQuarkCookie((visible) => !visible)}
+                    className="grid h-9 w-9 shrink-0 place-items-center text-stone-400 hover:text-stone-700"
+                    title={showQuarkCookie ? "隐藏 Cookie" : "显示 Cookie"}
+                  >
+                    {showQuarkCookie ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </label>
+              <div className="text-[11px] leading-5 text-stone-500">
+                在浏览器登录夸克网盘后，从开发者工具的 Network 请求头复制 Cookie；必须包含 <code>__kps</code> 和 <code>__uid</code>。
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-stone-200 px-4 py-3">
+              <button
+                onClick={() => {
+                  setQuarkCookie("");
+                  setShowQuarkAuthorization(false);
+                }}
+                disabled={loading}
+                className="h-8 rounded-md px-3 text-xs font-medium text-stone-500 hover:bg-stone-100 disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => void connectQuarkDrive()}
+                disabled={loading || !quarkCookie.trim()}
+                className="flex h-8 items-center gap-2 rounded-md bg-emerald-700 px-3 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-40"
+              >
+                {loading && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+                连接
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

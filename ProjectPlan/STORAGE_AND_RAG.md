@@ -357,12 +357,11 @@ storage_transfer_jobs                      # 本机传输执行状态
 
 ### 7.5 夸克网盘 Provider
 
-- 作为浏览器只读能力完成后的首批高优先级 Provider，优先解决 Linux 缺少官方客户端时的文件浏览、下载和知识库/书架导入。
-- 通过 `quarkpan` 或同类开源逆向 API 的可替换 community adapter 提供；业务层只依赖 `ObjectStorageProvider`，不得直接依赖逆向接口的数据结构。
-- 新账户默认未连接，必须由用户显式启用并提供授权；首个版本优先只读浏览、下载和导入，写入、移动、删除在兼容性验证后单独开放。
-- 必须声明版本和可用性，不得在应用日志、SQLite 或 D1 保存 Cookie/token 明文。
-- 失效只影响该 Provider，不得阻断本地文件、R2、Drive 或其他功能。
-- 在引入前单独检查服务条款、账号风控和法律风险。
+- 作为浏览器只读能力完成后的首批高优先级 Provider，解决 Linux 缺少官方客户端时的文件浏览、下载和上传需求。
+- 当前实现为 Rust `quark_drive` community adapter，提取并重实现 `quarkpan` 的稳定 HTTP API 语义；业务层只依赖 `FileSourceProvider / FileUploadProvider / QuotaProvider`，不依赖逆向接口的数据结构，也不把夸克伪装成应用加密对象存储。
+- 新账户必须由用户显式启用并粘贴 `pan.quark.cn` Cookie；Cookie 只进入账户级 OS Keyring，SQLite、D1 和日志不保存明文。连接时先调用容量接口验证 Cookie，失效后仅将该账户标记为 `auth_required`。
+- 当前支持目录分页、文件详情、下载链接、Range 下载、容量查询，以及预上传、MD5/SHA1 更新、4 MiB 分片 OSS 上传、合并和 finish。移动、删除、二维码登录、知识库/书架导入和跨设备凭证同步留待后续迭代。
+- Provider 明确标记为 `community`，UI 提示接口变更、风控和服务条款风险；任何夸克故障不得阻断本地文件、R2、Drive 或其他功能。
 
 WebDAV 和通用 S3 可作为比逆向网盘 API 更稳定的后续 Provider。
 
@@ -593,8 +592,8 @@ tasks
 - [x] 文件列表拦截默认右键菜单：文件可下载，文件夹可打开或递归批量下载；递归下载限制深度/条目数并处理重复、不安全本地名称；
 - [x] Google Drive `appDataFolder` 实现加密制品所需的 stat、Range download、resumable upload、断点 offset 和删除端口；上层 artifact manifest/加密编排仍在 Phase B；
 - [ ] 将网盘文件直接导入知识库和书架，并完成真实 Google 账户授权、目录、导出、下载和 token 刷新验收；
-- [ ] 夸克以 `quarkpan` 或同类兼容层实现文件浏览、下载、Range/续传能力探测，以及知识库和书架导入；Cookie/token 只存 Keyring；
-- [ ] 扩展统一契约测试覆盖授权丢失、接口字段变化、限流、断点恢复和 Provider 切换；夸克 adapter 失效时给出明确错误且不影响其他功能。
+- [x] 夸克以可替换的 Rust community adapter 实现 Cookie 授权、文件浏览、下载、Range 下载、配额和分片上传；Cookie 只存 Keyring，Provider 失效时只影响对应账户。
+- [ ] 补齐夸克二维码登录、移动/删除、知识库和书架导入，并扩展统一契约测试覆盖授权丢失、接口字段变化、限流、断点恢复和 Provider 切换。
 
 ### Phase E：R2 Provider
 

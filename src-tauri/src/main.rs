@@ -80,6 +80,11 @@ fn main() {
                     storage::GoogleDriveFactory::new().expect("无法初始化 Google Drive Provider"),
                 ))
                 .expect("无法注册 Google Drive Provider");
+            storage_registry
+                .register(Arc::new(
+                    storage::QuarkDriveFactory::new().expect("无法初始化夸克网盘 Provider"),
+                ))
+                .expect("无法注册夸克网盘 Provider");
             let storage_credentials = Arc::new(storage::KeyringProviderCredentialStore::new(
                 secrets.clone(),
             ));
