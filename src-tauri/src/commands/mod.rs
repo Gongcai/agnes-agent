@@ -2998,11 +2998,18 @@ pub async fn download_storage_file(
     account_id: String,
     file_id: String,
     expected_revision: Option<String>,
+    expected_size: Option<u64>,
     destination: String,
 ) -> AppResult<()> {
     state
         .storage
-        .download_file(account_id, file_id, expected_revision, destination)
+        .download_file(
+            account_id,
+            file_id,
+            expected_revision,
+            expected_size,
+            destination,
+        )
         .await
 }
 

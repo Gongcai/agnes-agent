@@ -17,3 +17,10 @@ export function storageProgress(transferred: number, total: number | null): numb
   if (total === null || total <= 0 || transferred < 0) return null;
   return Math.min(100, Math.max(0, (transferred / total) * 100));
 }
+
+export function formatTransferSpeed(bytesPerSecond: number | null | undefined): string {
+  if (bytesPerSecond === null || bytesPerSecond === undefined || !Number.isFinite(bytesPerSecond) || bytesPerSecond < 0) {
+    return "--";
+  }
+  return `${formatStorageBytes(bytesPerSecond)}/s`;
+}

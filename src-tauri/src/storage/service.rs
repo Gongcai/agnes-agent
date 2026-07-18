@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use md5::Digest;
@@ -134,6 +135,7 @@ impl StorageService {
         account_id: String,
         file_id: String,
         expected_revision: Option<String>,
+        expected_size: Option<u64>,
         destination: String,
     ) -> AppResult<()> {
         let destination = std::path::PathBuf::from(destination);
@@ -159,6 +161,7 @@ impl StorageService {
             .stable_file_sizes
             .then(|| remote_file.size)
             .flatten()
+            .or_else(|| expected_size)
             .and_then(|value| i64::try_from(value).ok());
         self.db
             .insert_storage_transfer_job(NewStorageTransferJob {
@@ -187,6 +190,7 @@ impl StorageService {
                 &destination,
                 &job_id,
                 bytes_total,
+                descriptor.capabilities.stable_file_sizes,
             )
             .await;
         match result {
@@ -195,7 +199,11 @@ impl StorageService {
                     &job_id,
                     "completed",
                     bytes_transferred,
-                    bytes_total.or(Some(bytes_transferred)),
+                    if descriptor.capabilities.stable_file_sizes {
+                        bytes_total.or(Some(bytes_transferred))
+                    } else {
+                        Some(bytes_transferred)
+                    },
                     None,
                 )
                 .await?;
@@ -305,6 +313,7 @@ impl StorageService {
                                 account_id.clone(),
                                 item.id,
                                 item.revision,
+                                item.size,
                                 path.to_string_lossy().to_string(),
                             )
                             .await?;
@@ -752,6 +761,7 @@ impl StorageService {
         destination: &std::path::Path,
         job_id: &str,
         bytes_total: Option<i64>,
+        exact_size: bool,
     ) -> Result<i64, DownloadFailure> {
         let parent = destination.parent().ok_or_else(|| {
             DownloadFailure::Local(AppError::Other("Invalid download destination".into()))
@@ -770,6 +780,7 @@ impl StorageService {
                 .map_err(DownloadFailure::Provider)?;
             let mut transferred = 0_i64;
             let mut last_reported = 0_i64;
+            let mut last_reported_at = Instant::now();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.map_err(DownloadFailure::Provider)?;
                 output.write_all(&chunk).await.map_err(AppError::from)?;
@@ -779,13 +790,21 @@ impl StorageService {
                 transferred = transferred.checked_add(chunk_size).ok_or_else(|| {
                     AppError::Other("Downloaded storage file exceeds the local size range".into())
                 })?;
-                if transferred - last_reported >= 1024 * 1024 {
-                    self.update_transfer(job_id, "running", transferred, bytes_total, None)
+                let mut progress_total = bytes_total;
+                if progress_total.is_some_and(|total| transferred > total) {
+                    progress_total = Some(transferred);
+                }
+                if transferred - last_reported >= 1024 * 1024
+                    || last_reported == 0
+                    || last_reported_at.elapsed() >= Duration::from_millis(250)
+                {
+                    self.update_transfer(job_id, "running", transferred, progress_total, None)
                         .await?;
                     last_reported = transferred;
+                    last_reported_at = Instant::now();
                 }
             }
-            if bytes_total.is_some_and(|expected| transferred != expected) {
+            if exact_size && bytes_total.is_some_and(|expected| transferred != expected) {
                 return Err(DownloadFailure::Provider(ProviderError::new(
                     super::domain::ProviderErrorCategory::InvalidResponse,
                     "Storage provider download ended before the declared file size",
@@ -1399,6 +1418,7 @@ mod tests {
                 "account-1".into(),
                 "remote-1".into(),
                 Some("revision-1".into()),
+                None,
                 destination.to_string_lossy().to_string(),
             )
             .await
@@ -1413,6 +1433,7 @@ mod tests {
                 "account-1".into(),
                 "remote-hint-disabled".into(),
                 Some("revision-1".into()),
+                Some(64),
                 advisory_destination.to_string_lossy().to_string(),
             )
             .await

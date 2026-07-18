@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatStorageBytes, storageProgress } from "./storage";
+import { formatStorageBytes, formatTransferSpeed, storageProgress } from "./storage";
 
 describe("storage formatters", () => {
   it("formats byte counts without losing unavailable states", () => {
@@ -13,5 +13,11 @@ describe("storage formatters", () => {
     expect(storageProgress(25, 100)).toBe(25);
     expect(storageProgress(120, 100)).toBe(100);
     expect(storageProgress(0, null)).toBeNull();
+  });
+
+  it("formats current transfer speed", () => {
+    expect(formatTransferSpeed(0)).toBe("0 B/s");
+    expect(formatTransferSpeed(1024 * 1024)).toBe("1.00 MB/s");
+    expect(formatTransferSpeed(null)).toBe("--");
   });
 });

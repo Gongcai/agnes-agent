@@ -23,7 +23,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { formatStorageBytes, storageProgress } from "../lib/storage";
+import { formatStorageBytes, formatTransferSpeed, storageProgress } from "../lib/storage";
 
 interface ProviderDescriptor {
   id: string;
@@ -97,6 +97,7 @@ interface FileContextMenu {
 
 type DriveView = "files" | "transfers";
 type QuarkAuthorizationMode = "cookie" | "qr";
+type TransferSpeedSample = { timestamp: number; bytes: number };
 
 interface StorageAuthorizationChallenge {
   challenge_id: string;
@@ -152,6 +153,7 @@ export function DriveWorkspace() {
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [folderPath, setFolderPath] = useState<FolderLevel[]>([{ id: null, name: "根目录" }]);
   const [transfers, setTransfers] = useState<TransferJob[]>([]);
+  const [transferSpeeds, setTransferSpeeds] = useState<Record<string, number>>({});
   const [view, setView] = useState<DriveView>("files");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -168,6 +170,7 @@ export function DriveWorkspace() {
   const [quarkQrLoading, setQuarkQrLoading] = useState(false);
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
   const fileRequestId = useRef(0);
+  const transferSpeedSamples = useRef(new Map<string, TransferSpeedSample>());
 
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? null;
   const selectedProvider = catalog.find(
@@ -283,7 +286,11 @@ export function DriveWorkspace() {
   }, [fileContextMenu]);
 
   useEffect(() => {
-    if (view !== "transfers") return;
+    if (view !== "transfers") {
+      transferSpeedSamples.current.clear();
+      setTransferSpeeds({});
+      return;
+    }
     let cancelled = false;
     const refreshTransfers = async () => {
       try {
@@ -291,7 +298,33 @@ export function DriveWorkspace() {
           accountId: null,
           limit: 100,
         });
-        if (!cancelled) setTransfers(next);
+        if (!cancelled) {
+          const timestamp = Date.now();
+          setTransferSpeeds((current) => {
+            const speeds = { ...current };
+            const activeIds = new Set(next.map((job) => job.id));
+            for (const job of next) {
+              const previous = transferSpeedSamples.current.get(job.id);
+              if (previous) {
+                const elapsed = (timestamp - previous.timestamp) / 1000;
+                const delta = job.bytes_transferred - previous.bytes;
+                if (elapsed > 0 && delta >= 0) speeds[job.id] = delta / elapsed;
+              }
+              transferSpeedSamples.current.set(job.id, {
+                timestamp,
+                bytes: job.bytes_transferred,
+              });
+            }
+            for (const id of transferSpeedSamples.current.keys()) {
+              if (!activeIds.has(id)) {
+                transferSpeedSamples.current.delete(id);
+                delete speeds[id];
+              }
+            }
+            return speeds;
+          });
+          setTransfers(next);
+        }
       } catch (reason) {
         if (!cancelled) setError(String(reason));
       }
@@ -510,6 +543,7 @@ export function DriveWorkspace() {
         accountId: selectedAccount.id,
         fileId: item.id,
         expectedRevision: item.revision,
+        expectedSize: item.size,
         destination,
       });
       await loadShell();
@@ -883,18 +917,28 @@ export function DriveWorkspace() {
                   <div className="border-y border-stone-200 bg-white/40">
                     {transfers.filter((job) => job.account_id === selectedAccount.id).map((job) => {
                       const progress = storageProgress(job.bytes_transferred, job.bytes_total);
+                      const speed = transferSpeeds[job.id];
                       return (
                         <div key={job.id} className="grid grid-cols-[minmax(0,1fr)_90px] items-center gap-3 border-b border-stone-100 px-3 py-3 text-xs last:border-b-0 sm:grid-cols-[minmax(0,1fr)_100px_140px] sm:gap-4">
                           <div className="min-w-0">
                             <div className="truncate font-medium text-stone-700">{job.display_name}</div>
                             <div className="mt-1 text-[10px] text-stone-400">{OPERATION_LABELS[job.operation] ?? job.operation}</div>
-                            {progress !== null && (
+                            {progress !== null ? (
                               <div className="mt-2 h-1 overflow-hidden rounded bg-stone-100">
                                 <div className="h-full bg-[#8CA38A]" style={{ width: `${progress}%` }} />
                               </div>
+                            ) : job.status === "running" ? (
+                              <div className="mt-2 h-1 overflow-hidden rounded bg-stone-100">
+                                <div className="h-full w-1/3 animate-pulse bg-[#8CA38A]" />
+                              </div>
+                            ) : null}
+                          </div>
+                          <div className="text-right text-stone-500">
+                            <div>{TRANSFER_STATUS_LABELS[job.status] ?? job.status}</div>
+                            {job.status === "running" && (
+                              <div className="mt-1 text-[10px] text-stone-400">{formatTransferSpeed(speed)}</div>
                             )}
                           </div>
-                          <span className="text-stone-500">{TRANSFER_STATUS_LABELS[job.status] ?? job.status}</span>
                           <span className="col-span-2 truncate text-stone-400 sm:col-span-1">{job.error_message ?? formatTimestamp(job.updated_at)}</span>
                         </div>
                       );
