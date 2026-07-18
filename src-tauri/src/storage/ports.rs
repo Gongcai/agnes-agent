@@ -4,11 +4,11 @@ use async_trait::async_trait;
 use zeroize::Zeroizing;
 
 use super::domain::{
-    BeginObjectUploadRequest, DownloadFileRequest, DownloadObjectRequest, ListFilesRequest,
-    ObjectUploadSession, ProviderAuthorizationRequest, ProviderByteStream, ProviderDescriptor,
-    ProviderError, ProviderQuota, ProviderResult, RemoteFileItem, RemoteFilePage,
-    RemoteObjectLocator, RemoteObjectState, StorageProviderAccount, UploadObjectChunkRequest,
-    UploadedObjectChunk,
+    BeginFileUploadRequest, BeginObjectUploadRequest, DownloadFileRequest, DownloadObjectRequest,
+    FileUploadSession, ListFilesRequest, ObjectUploadSession, ProviderAuthorizationRequest,
+    ProviderByteStream, ProviderDescriptor, ProviderError, ProviderQuota, ProviderResult,
+    RemoteFileItem, RemoteFilePage, RemoteObjectLocator, RemoteObjectState, StorageProviderAccount,
+    UploadFileChunkRequest, UploadObjectChunkRequest, UploadedFileChunk, UploadedObjectChunk,
 };
 
 pub struct ProviderAuthorizationResult {
@@ -38,6 +38,19 @@ pub trait FileSourceProvider: Send + Sync {
         &self,
         request: DownloadFileRequest,
     ) -> ProviderResult<ProviderByteStream>;
+}
+
+#[async_trait]
+pub trait FileUploadProvider: Send + Sync {
+    async fn begin_file_upload(
+        &self,
+        request: BeginFileUploadRequest,
+    ) -> ProviderResult<FileUploadSession>;
+    async fn upload_file_chunk(
+        &self,
+        request: UploadFileChunkRequest,
+    ) -> ProviderResult<UploadedFileChunk>;
+    async fn abort_file_upload(&self, session_id: &str) -> ProviderResult<()>;
 }
 
 #[async_trait]
@@ -71,6 +84,10 @@ pub trait ProviderSession: Send + Sync {
     }
 
     fn quota_source(&self) -> Option<&dyn QuotaProvider> {
+        None
+    }
+
+    fn file_upload(&self) -> Option<&dyn FileUploadProvider> {
         None
     }
 

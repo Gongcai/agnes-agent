@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use serde::Serialize;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zeroize::Zeroizing;
 
 use crate::db::repo::storage::{
@@ -13,8 +13,9 @@ use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 
 use super::domain::{
-    ListFilesRequest, ProviderAuthorizationRequest, ProviderDescriptor, ProviderError,
-    ProviderQuota, RemoteFilePage, StorageProviderAccount,
+    BeginFileUploadRequest, ListFilesRequest, ProviderAuthorizationRequest, ProviderDescriptor,
+    ProviderError, ProviderQuota, RemoteFileItem, RemoteFileKind, RemoteFilePage,
+    StorageProviderAccount, UploadFileChunkRequest,
 };
 use super::ports::{ProviderCredentialStore, ProviderSession};
 use super::registry::StorageProviderRegistry;
@@ -210,6 +211,219 @@ impl StorageService {
                         "failed",
                         0,
                         bytes_total,
+                        Some(("local_io", message.as_str())),
+                    )
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn download_folder(
+        &self,
+        account_id: String,
+        folder_id: String,
+        folder_name: String,
+        destination_directory: String,
+    ) -> AppResult<usize> {
+        const MAX_FOLDER_DEPTH: usize = 64;
+        const MAX_FOLDER_ITEMS: usize = 10_000;
+
+        let destination_directory = std::path::PathBuf::from(destination_directory);
+        if !destination_directory.is_absolute() || !destination_directory.is_dir() {
+            return Err(AppError::Other(
+                "Folder download destination must be an existing absolute directory".into(),
+            ));
+        }
+        let mut planned_paths = std::collections::HashSet::new();
+        let root = available_child_path(
+            &destination_directory,
+            &safe_local_name(&folder_name),
+            &folder_id,
+            &mut planned_paths,
+        );
+        tokio::fs::create_dir_all(&root).await?;
+        let mut queue = std::collections::VecDeque::from([(folder_id, root, 0_usize)]);
+        let mut visited = std::collections::HashSet::new();
+        let mut discovered = 0_usize;
+        let mut downloaded = 0_usize;
+
+        while let Some((current_id, local_directory, depth)) = queue.pop_front() {
+            if depth > MAX_FOLDER_DEPTH {
+                return Err(AppError::Other(
+                    "Storage folder exceeds the recursive download depth limit".into(),
+                ));
+            }
+            if !visited.insert(current_id.clone()) {
+                continue;
+            }
+            let mut page_token = None;
+            loop {
+                let page = self
+                    .list_files(
+                        account_id.clone(),
+                        ListFilesRequest {
+                            parent_id: Some(current_id.clone()),
+                            page_token,
+                            page_size: 200,
+                        },
+                    )
+                    .await?;
+                for item in page.items {
+                    discovered += 1;
+                    if discovered > MAX_FOLDER_ITEMS {
+                        return Err(AppError::Other(
+                            "Storage folder exceeds the 10000 item download limit".into(),
+                        ));
+                    }
+                    let path = available_child_path(
+                        &local_directory,
+                        &safe_local_name(&item.name),
+                        &item.id,
+                        &mut planned_paths,
+                    );
+                    match item.kind {
+                        RemoteFileKind::Folder => {
+                            tokio::fs::create_dir_all(&path).await?;
+                            queue.push_back((item.id, path, depth + 1));
+                        }
+                        RemoteFileKind::File if item.downloadable => {
+                            self.download_file(
+                                account_id.clone(),
+                                item.id,
+                                item.revision,
+                                path.to_string_lossy().to_string(),
+                            )
+                            .await?;
+                            downloaded += 1;
+                        }
+                        RemoteFileKind::File | RemoteFileKind::Shortcut => {}
+                    }
+                }
+                page_token = page.next_page_token;
+                if page_token.is_none() {
+                    break;
+                }
+            }
+        }
+        Ok(downloaded)
+    }
+
+    pub async fn upload_file(
+        &self,
+        account_id: String,
+        parent_id: Option<String>,
+        source: String,
+    ) -> AppResult<RemoteFileItem> {
+        const UPLOAD_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
+
+        let source = std::path::PathBuf::from(source);
+        if !source.is_absolute() {
+            return Err(AppError::Other(
+                "Upload source must be an absolute file path".into(),
+            ));
+        }
+        let metadata = tokio::fs::metadata(&source).await?;
+        if !metadata.is_file() {
+            return Err(AppError::Other(
+                "Upload source must be a regular file".into(),
+            ));
+        }
+        let name = source
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| AppError::Other("Upload source has no file name".into()))?;
+        let size = metadata.len();
+        let bytes_total = i64::try_from(size)
+            .map_err(|_| AppError::Other("Upload file exceeds the local transfer range".into()))?;
+        let media_type = mime_guess::from_path(&source)
+            .first_or_octet_stream()
+            .essence_str()
+            .to_string();
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let uploader = session.file_upload().ok_or_else(|| {
+            AppError::Other("Storage provider does not support user file uploads".into())
+        })?;
+        let job_id = uuid::Uuid::new_v4().to_string();
+        self.db
+            .insert_storage_transfer_job(NewStorageTransferJob {
+                id: job_id.clone(),
+                account_id: row.id.clone(),
+                operation: "file_upload".into(),
+                remote_item_id: None,
+                display_name: name.clone(),
+                destination_kind: Some("remote_folder".into()),
+                destination_id: parent_id.clone(),
+                bytes_total: Some(bytes_total),
+            })
+            .await?;
+        self.update_transfer(&job_id, "running", 0, Some(bytes_total), None)
+            .await?;
+
+        let session = match uploader
+            .begin_file_upload(BeginFileUploadRequest {
+                parent_id,
+                name,
+                size,
+                media_type,
+                chunk_size: UPLOAD_CHUNK_BYTES,
+            })
+            .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                self.finish_upload_failure(&row, &job_id, 0, bytes_total, &error)
+                    .await;
+                return Err(provider_error(error));
+            }
+        };
+        if session.next_offset != 0 {
+            let error = ProviderError::new(
+                super::domain::ProviderErrorCategory::InvalidResponse,
+                "Storage provider started a new upload at a non-zero offset",
+            );
+            let _ = uploader.abort_file_upload(&session.session_id).await;
+            self.finish_upload_failure(&row, &job_id, 0, bytes_total, &error)
+                .await;
+            return Err(provider_error(error));
+        }
+
+        let upload_result = self
+            .stream_file_to_provider(
+                uploader,
+                FileUploadStream {
+                    source: &source,
+                    session_id: &session.session_id,
+                    size,
+                    chunk_size: UPLOAD_CHUNK_BYTES,
+                    job_id: &job_id,
+                    bytes_total,
+                },
+            )
+            .await;
+        match upload_result {
+            Ok(file) => {
+                self.update_transfer(&job_id, "completed", bytes_total, Some(bytes_total), None)
+                    .await?;
+                self.update_provider_status(&row, None).await;
+                Ok(file)
+            }
+            Err(UploadFailure::Provider { error, transferred }) => {
+                let _ = uploader.abort_file_upload(&session.session_id).await;
+                self.finish_upload_failure(&row, &job_id, transferred, bytes_total, &error)
+                    .await;
+                Err(provider_error(error))
+            }
+            Err(UploadFailure::Local { error, transferred }) => {
+                let _ = uploader.abort_file_upload(&session.session_id).await;
+                let message = error.to_string();
+                let _ = self
+                    .update_transfer(
+                        &job_id,
+                        "failed",
+                        transferred,
+                        Some(bytes_total),
                         Some(("local_io", message.as_str())),
                     )
                     .await;
@@ -492,6 +706,121 @@ impl StorageService {
             )
             .await
     }
+
+    async fn stream_file_to_provider(
+        &self,
+        uploader: &dyn super::ports::FileUploadProvider,
+        request: FileUploadStream<'_>,
+    ) -> Result<RemoteFileItem, UploadFailure> {
+        let mut input = tokio::fs::File::open(request.source)
+            .await
+            .map_err(|error| UploadFailure::local(error.into(), 0))?;
+        let mut offset = 0_u64;
+        loop {
+            let remaining = request.size.saturating_sub(offset);
+            let current_size = remaining.min(request.chunk_size);
+            let mut bytes = vec![
+                0_u8;
+                usize::try_from(current_size).map_err(|_| {
+                    UploadFailure::local(
+                        AppError::Other("Upload chunk exceeds memory limits".into()),
+                        offset,
+                    )
+                })?
+            ];
+            if current_size > 0 {
+                input
+                    .read_exact(&mut bytes)
+                    .await
+                    .map_err(|error| UploadFailure::local(error.into(), offset))?;
+            }
+            let result = uploader
+                .upload_file_chunk(UploadFileChunkRequest {
+                    session_id: request.session_id.to_string(),
+                    offset,
+                    total_size: request.size,
+                    bytes,
+                })
+                .await
+                .map_err(|error| UploadFailure::provider(error, offset))?;
+            let expected_next = offset.saturating_add(current_size);
+            if result.next_offset != expected_next {
+                return Err(UploadFailure::provider(
+                    ProviderError::new(
+                        super::domain::ProviderErrorCategory::InvalidResponse,
+                        "Storage provider returned an unexpected upload offset",
+                    ),
+                    offset,
+                ));
+            }
+            offset = result.next_offset;
+            let transferred = i64::try_from(offset).map_err(|_| {
+                UploadFailure::local(
+                    AppError::Other("Upload exceeds the local transfer range".into()),
+                    offset,
+                )
+            })?;
+            self.update_transfer(
+                request.job_id,
+                "running",
+                transferred,
+                Some(request.bytes_total),
+                None,
+            )
+            .await
+            .map_err(|error| UploadFailure::local(error, offset))?;
+            if result.complete {
+                if offset != request.size {
+                    return Err(UploadFailure::provider(
+                        ProviderError::new(
+                            super::domain::ProviderErrorCategory::InvalidResponse,
+                            "Storage provider completed upload before the full file was sent",
+                        ),
+                        offset,
+                    ));
+                }
+                return result.file.ok_or_else(|| {
+                    UploadFailure::provider(
+                        ProviderError::new(
+                            super::domain::ProviderErrorCategory::InvalidResponse,
+                            "Storage provider completed upload without file metadata",
+                        ),
+                        offset,
+                    )
+                });
+            }
+            if offset >= request.size {
+                return Err(UploadFailure::provider(
+                    ProviderError::new(
+                        super::domain::ProviderErrorCategory::InvalidResponse,
+                        "Storage provider did not complete the final upload chunk",
+                    ),
+                    offset,
+                ));
+            }
+        }
+    }
+
+    async fn finish_upload_failure(
+        &self,
+        row: &StorageAccountRow,
+        job_id: &str,
+        transferred: u64,
+        bytes_total: i64,
+        error: &ProviderError,
+    ) {
+        self.update_provider_status(row, Some(error)).await;
+        let transferred = i64::try_from(transferred).unwrap_or(bytes_total);
+        let _ = self
+            .update_transfer(
+                job_id,
+                "failed",
+                transferred,
+                Some(bytes_total),
+                Some((error.category.as_str(), error.message.as_str())),
+            )
+            .await;
+    }
 }
 
 enum DownloadFailure {
@@ -503,6 +832,39 @@ impl From<AppError> for DownloadFailure {
     fn from(error: AppError) -> Self {
         Self::Local(error)
     }
+}
+
+enum UploadFailure {
+    Provider {
+        error: ProviderError,
+        transferred: u64,
+    },
+    Local {
+        error: AppError,
+        transferred: i64,
+    },
+}
+
+impl UploadFailure {
+    fn provider(error: ProviderError, transferred: u64) -> Self {
+        Self::Provider { error, transferred }
+    }
+
+    fn local(error: AppError, transferred: u64) -> Self {
+        Self::Local {
+            error,
+            transferred: i64::try_from(transferred).unwrap_or(i64::MAX),
+        }
+    }
+}
+
+struct FileUploadStream<'a> {
+    source: &'a std::path::Path,
+    session_id: &'a str,
+    size: u64,
+    chunk_size: u64,
+    job_id: &'a str,
+    bytes_total: i64,
 }
 
 fn validate_download_destination(path: &std::path::Path) -> AppResult<()> {
@@ -547,6 +909,64 @@ async fn install_download(
     }
 }
 
+fn safe_local_name(value: &str) -> String {
+    let name = value
+        .chars()
+        .map(|character| {
+            if character == '/' || character == '\\' || character.is_control() {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let name = name.trim();
+    if name.is_empty() || name == "." || name == ".." {
+        "unnamed".into()
+    } else {
+        name.chars().take(240).collect()
+    }
+}
+
+fn available_child_path(
+    parent: &std::path::Path,
+    name: &str,
+    remote_id: &str,
+    planned: &mut std::collections::HashSet<std::path::PathBuf>,
+) -> std::path::PathBuf {
+    let preferred = parent.join(name);
+    if !preferred.exists() && planned.insert(preferred.clone()) {
+        return preferred;
+    }
+    let suffix = remote_id
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .take(8)
+        .collect::<String>();
+    let path = std::path::Path::new(name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("file");
+    let extension = path.extension().and_then(|value| value.to_str());
+    for ordinal in 1..=10_000 {
+        let marker = if ordinal == 1 {
+            suffix.clone()
+        } else {
+            format!("{suffix}-{ordinal}")
+        };
+        let candidate_name = match extension {
+            Some(extension) if !extension.is_empty() => format!("{stem} ({marker}).{extension}"),
+            _ => format!("{stem} ({marker})"),
+        };
+        let candidate = parent.join(candidate_name);
+        if !candidate.exists() && planned.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    parent.join(format!("download-{}", uuid::Uuid::new_v4()))
+}
+
 fn provider_error(error: ProviderError) -> AppError {
     AppError::Other(format!(
         "Storage provider error ({}): {}",
@@ -580,12 +1000,13 @@ mod tests {
 
     use crate::secrets::InMemorySecretStore;
     use crate::storage::domain::{
-        DownloadFileRequest, ProviderAuthKind, ProviderByteStream, ProviderResult,
-        ProviderStability, RemoteFileItem, RemoteFileKind, StorageCapabilities,
+        BeginFileUploadRequest, DownloadFileRequest, FileUploadSession, ProviderAuthKind,
+        ProviderByteStream, ProviderResult, ProviderStability, RemoteFileItem, RemoteFileKind,
+        StorageCapabilities, UploadFileChunkRequest, UploadedFileChunk,
     };
     use crate::storage::ports::{
-        FileSourceProvider, ProviderAuthorizationResult, ProviderCredentialAccess, ProviderFactory,
-        QuotaProvider,
+        FileSourceProvider, FileUploadProvider, ProviderAuthorizationResult,
+        ProviderCredentialAccess, ProviderFactory, QuotaProvider,
     };
 
     struct FakeDrive;
@@ -634,12 +1055,61 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl FileUploadProvider for FakeDrive {
+        async fn begin_file_upload(
+            &self,
+            request: BeginFileUploadRequest,
+        ) -> ProviderResult<FileUploadSession> {
+            assert_eq!(request.name, "upload.txt");
+            assert_eq!(request.size, 128);
+            assert_eq!(request.chunk_size, 8 * 1024 * 1024);
+            Ok(FileUploadSession {
+                session_id: "upload-session".into(),
+                next_offset: 0,
+                expires_at: None,
+            })
+        }
+
+        async fn upload_file_chunk(
+            &self,
+            request: UploadFileChunkRequest,
+        ) -> ProviderResult<UploadedFileChunk> {
+            assert_eq!(request.session_id, "upload-session");
+            assert_eq!(request.offset, 0);
+            assert_eq!(request.bytes, vec![b'u'; 128]);
+            Ok(UploadedFileChunk {
+                next_offset: request.total_size,
+                complete: true,
+                file: Some(RemoteFileItem {
+                    id: "uploaded-1".into(),
+                    parent_id: None,
+                    name: "upload.txt".into(),
+                    kind: RemoteFileKind::File,
+                    media_type: Some("text/plain".into()),
+                    size: Some(128),
+                    modified_at: None,
+                    revision: Some("revision-2".into()),
+                    downloadable: true,
+                }),
+            })
+        }
+
+        async fn abort_file_upload(&self, _session_id: &str) -> ProviderResult<()> {
+            Ok(())
+        }
+    }
+
     impl ProviderSession for FakeDrive {
         fn file_source(&self) -> Option<&dyn FileSourceProvider> {
             Some(self)
         }
 
         fn quota_source(&self) -> Option<&dyn QuotaProvider> {
+            Some(self)
+        }
+
+        fn file_upload(&self) -> Option<&dyn FileUploadProvider> {
             Some(self)
         }
     }
@@ -658,6 +1128,7 @@ mod tests {
                 capabilities: StorageCapabilities {
                     browse_files: true,
                     read_files: true,
+                    write_files: true,
                     quota: true,
                     user_authorization: true,
                     ..StorageCapabilities::default()
@@ -743,12 +1214,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(std::fs::read(&destination).unwrap(), vec![b'x'; 128]);
+        let batch_directory = std::env::temp_dir().join(format!(
+            "agnes-storage-batch-download-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&batch_directory).unwrap();
+        let downloaded = service
+            .download_folder(
+                "account-1".into(),
+                "folder-1".into(),
+                "Folder/Name".into(),
+                batch_directory.to_string_lossy().to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(downloaded, 1);
+        assert_eq!(
+            std::fs::read(batch_directory.join("Folder_Name/Notes.md")).unwrap(),
+            vec![b'x'; 128]
+        );
+        let upload_directory =
+            std::env::temp_dir().join(format!("agnes-storage-upload-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&upload_directory).unwrap();
+        let upload_source = upload_directory.join("upload.txt");
+        std::fs::write(&upload_source, vec![b'u'; 128]).unwrap();
+        let uploaded = service
+            .upload_file(
+                "account-1".into(),
+                None,
+                upload_source.to_string_lossy().to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(uploaded.id, "uploaded-1");
         let transfers = service
             .list_transfers(Some("account-1".into()), 10)
             .await
             .unwrap();
-        assert_eq!(transfers.len(), 1);
-        assert_eq!(transfers[0].status, "completed");
+        assert_eq!(transfers.len(), 3);
+        assert!(transfers
+            .iter()
+            .all(|transfer| transfer.status == "completed"));
+        assert!(transfers
+            .iter()
+            .any(|transfer| transfer.operation == "file_upload"));
         let quota = service.refresh_quota("account-1".into()).await.unwrap();
         assert_eq!(quota.total_bytes, Some(1024));
         service.remove_account("account-1".into()).await.unwrap();
@@ -756,6 +1265,8 @@ mod tests {
 
         drop(service);
         let _ = std::fs::remove_file(destination);
+        let _ = std::fs::remove_dir_all(batch_directory);
+        let _ = std::fs::remove_dir_all(upload_directory);
         let _ = std::fs::remove_file(path);
     }
 

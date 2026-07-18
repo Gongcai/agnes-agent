@@ -2980,6 +2980,33 @@ pub async fn download_storage_file(
 }
 
 #[tauri::command]
+pub async fn download_storage_folder(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    folder_id: String,
+    folder_name: String,
+    destination_directory: String,
+) -> AppResult<usize> {
+    state
+        .storage
+        .download_folder(account_id, folder_id, folder_name, destination_directory)
+        .await
+}
+
+#[tauri::command]
+pub async fn upload_storage_file(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    parent_id: Option<String>,
+    source: String,
+) -> AppResult<crate::storage::RemoteFileItem> {
+    state
+        .storage
+        .upload_file(account_id, parent_id, source)
+        .await
+}
+
+#[tauri::command]
 pub async fn refresh_storage_quota(
     state: tauri::State<'_, AppState>,
     account_id: String,

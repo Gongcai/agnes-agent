@@ -347,7 +347,7 @@ storage_transfer_jobs                      # 本机传输执行状态
 ### 7.4 Google Drive Provider
 
 - 作为浏览器只读能力完成后的首批高优先级 Provider，与夸克网盘共用账户、文件浏览、导入、传输队列和错误状态模型。
-- 只使用 Google Drive 官方 API 和 OAuth 2.0 + PKCE，并按账户能力选择最小 scope：应用管理的加密副本使用 `drive.file`；浏览和导入用户已有文件需要 `drive.readonly`；覆盖、移动或删除已有文件才显式申请完整 `drive`。不得用 `drive.file` 冒充全盘浏览能力。
+- 只使用 Google Drive 官方 API 和 OAuth 2.0 + PKCE。仅浏览模式可使用 `drive.readonly`；当前网盘工作区需要在用户已存在的任意当前目录上传文件，因此显式申请完整 `drive`，并同时申请隔离的 `drive.appdata`。`drive.file` 只可靠授权应用创建或经 Google Picker 授权的文件，不能冒充任意目录写入能力。adapter 即使持有完整 scope 也不暴露删除、移动或覆盖已有用户文件端口。
 - 使用 resumable upload 上传大型加密制品，使用 Range download 续传。
 - Drive 中使用随机文件名，明文标题、MIME 和目录归属在客户端加密 manifest 中保存。
 - D1 记录加密 file ID、Drive revision/modified time、密文 Hash 和 size，不记录 access/refresh token。
@@ -589,6 +589,8 @@ tasks
 - [x] Google Drive 仅接受 Desktop OAuth Client JSON，以本地回环地址、随机 state 和 S256 PKCE 完成授权；client 配置、refresh/access token 作为账户级凭证只存 Keyring；
 - [x] Google Drive 实现 token 到期/401 单飞刷新、鉴权失效状态、限流与 5xx 有界退避、文件/配额浏览、revision 校验、Range download 和 Docs/Sheets/Slides 导出；
 - [x] 通用下载服务使用同目录临时文件和原子替换，校验远端声明大小，并将运行/完成/失败进度写入统一传输队列；
+- [x] 新增可选 `FileUploadProvider` 窄端口；Google Drive 支持当前目录多文件 resumable upload，旧只读 token 会要求重新授权，不影响未来只读夸克 adapter；
+- [x] 文件列表拦截默认右键菜单：文件可下载，文件夹可打开或递归批量下载；递归下载限制深度/条目数并处理重复、不安全本地名称；
 - [x] Google Drive `appDataFolder` 实现加密制品所需的 stat、Range download、resumable upload、断点 offset 和删除端口；上层 artifact manifest/加密编排仍在 Phase B；
 - [ ] 将网盘文件直接导入知识库和书架，并完成真实 Google 账户授权、目录、导出、下载和 token 刷新验收；
 - [ ] 夸克以 `quarkpan` 或同类兼容层实现文件浏览、下载、Range/续传能力探测，以及知识库和书架导入；Cookie/token 只存 Keyring；
@@ -608,7 +610,7 @@ tasks
 - [x] 增加知识库页面路由：collection、文档导入、显式向量索引、索引状态和本地混合检索结果可用；
 - [x] 增加日历、待办页面路由；
 - [x] 增加网盘页面路由和按需加载；Google Drive 官方 adapter 注册后开放侧边栏入口；
-- [x] 网盘页显示 Provider 账户、配额、传输队列、错误、Google OAuth 连接与本地下载；
+- [x] 网盘页显示 Provider 账户、配额、实时传输队列、错误、Google OAuth 连接、本地下载、目录批量下载与当前目录上传；
 - 知识库页显示源文件、抽取/分块/向量进度和设备覆盖状态。
 
 ### Phase G：日历、待办与外部适配器
@@ -647,5 +649,6 @@ tasks
 
 - R2 实现开始时：由 Wrangler 创建 bucket 和 Worker binding，不要手动创建或粘贴 R2 API Token。
 - Google Drive：项目、Drive API、OAuth consent screen 和 Desktop Client 已配置。首次连接在“网盘 → 连接 Google Drive”选择下载的 JSON；授权成功后 client 配置与 token 进入 OS Keyring，原 JSON 不复制进仓库或 SQLite。
+- Google Drive 上传：从早期只读版本升级后，使用账户栏底部“连接/重新授权 Google Drive”再次选择同一 JSON，以授予当前目录上传所需的完整 Drive scope。
 - Google Calendar / Tasks 开始时：在同一 Google Cloud 项目按最小权限增加对应 API 和 scope。
 - 夸克接入前：由用户明确接受社区逆向 adapter 的失效、风控和条款风险，不在核心应用中隐式启用。

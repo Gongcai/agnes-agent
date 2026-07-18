@@ -183,6 +183,8 @@ fn main() {
             commands::authorize_storage_provider,
             commands::list_storage_files,
             commands::download_storage_file,
+            commands::download_storage_folder,
+            commands::upload_storage_file,
             commands::refresh_storage_quota,
             commands::list_storage_transfers,
             commands::remove_storage_account,

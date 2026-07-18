@@ -182,6 +182,60 @@ fn ensure_reading_metadata(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
+fn ensure_open_storage_transfer_operations(conn: &mut Connection) -> AppResult<()> {
+    if !table_exists(conn, "storage_transfer_jobs") {
+        return Ok(());
+    }
+    let schema: String = conn.query_row(
+        "SELECT COALESCE(sql, '') FROM sqlite_master WHERE type='table' AND name='storage_transfer_jobs'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !schema.contains("CHECK(operation IN") {
+        return Ok(());
+    }
+    let transaction = conn.transaction()?;
+    transaction.execute_batch(
+        "DROP INDEX IF EXISTS idx_storage_transfers_account;
+         DROP INDEX IF EXISTS idx_storage_transfers_active;
+         ALTER TABLE storage_transfer_jobs RENAME TO legacy_storage_transfer_jobs;
+         CREATE TABLE storage_transfer_jobs (
+           id TEXT PRIMARY KEY,
+           account_id TEXT NOT NULL REFERENCES storage_provider_accounts(id),
+           operation TEXT NOT NULL,
+           remote_item_id TEXT,
+           display_name TEXT NOT NULL,
+           destination_kind TEXT,
+           destination_id TEXT,
+           status TEXT NOT NULL DEFAULT 'queued'
+             CHECK(status IN ('queued','running','paused','completed','failed','cancelled')),
+           bytes_transferred INTEGER NOT NULL DEFAULT 0 CHECK(bytes_transferred >= 0),
+           bytes_total INTEGER CHECK(bytes_total IS NULL OR bytes_total >= 0),
+           error_category TEXT,
+           error_message TEXT,
+           created_at TEXT NOT NULL,
+           updated_at TEXT NOT NULL,
+           completed_at TEXT
+         );
+         INSERT INTO storage_transfer_jobs (
+           id,account_id,operation,remote_item_id,display_name,destination_kind,destination_id,
+           status,bytes_transferred,bytes_total,error_category,error_message,created_at,updated_at,
+           completed_at
+         ) SELECT
+           id,account_id,operation,remote_item_id,display_name,destination_kind,destination_id,
+           status,bytes_transferred,bytes_total,error_category,error_message,created_at,updated_at,
+           completed_at
+         FROM legacy_storage_transfer_jobs;
+         DROP TABLE legacy_storage_transfer_jobs;
+         CREATE INDEX idx_storage_transfers_account
+           ON storage_transfer_jobs(account_id,status,created_at DESC);
+         CREATE INDEX idx_storage_transfers_active
+           ON storage_transfer_jobs(status,updated_at) WHERE status IN ('queued','running','paused');",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn ensure_planner_task_metadata(conn: &Connection) -> AppResult<()> {
     ensure_column(conn, "tasks", "due_date", "TEXT")?;
     ensure_column(conn, "tasks", "due_timezone", "TEXT")?;
@@ -438,6 +492,7 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
     conn.execute_batch(crate::db::schema::READING_SCHEMA)?;
     ensure_reading_metadata(conn)?;
     conn.execute_batch(crate::db::schema::STORAGE_SCHEMA)?;
+    ensure_open_storage_transfer_operations(conn)?;
 
     // 检查是否已有 agent，如果没有则预置默认角色
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))?;
@@ -1016,5 +1071,76 @@ mod tests {
         assert_eq!(rows.0.as_deref(), Some("{\"name\":\"legacy\"}"));
         assert_eq!(rows.1, None);
         assert_eq!(rows.2, "pending");
+    }
+
+    #[test]
+    fn opens_legacy_storage_transfer_operations_without_losing_jobs() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE storage_provider_accounts (id TEXT PRIMARY KEY);
+             INSERT INTO storage_provider_accounts (id) VALUES ('account-1');
+             CREATE TABLE storage_transfer_jobs (
+               id TEXT PRIMARY KEY,
+               account_id TEXT NOT NULL,
+               operation TEXT NOT NULL
+                 CHECK(operation IN ('file_download','knowledge_import','reading_import','object_upload','object_download')),
+               remote_item_id TEXT,
+               display_name TEXT NOT NULL,
+               destination_kind TEXT,
+               destination_id TEXT,
+               status TEXT NOT NULL DEFAULT 'queued'
+                 CHECK(status IN ('queued','running','paused','completed','failed','cancelled')),
+               bytes_transferred INTEGER NOT NULL DEFAULT 0,
+               bytes_total INTEGER,
+               error_category TEXT,
+               error_message TEXT,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               completed_at TEXT
+             );
+             CREATE INDEX idx_storage_transfers_account
+               ON storage_transfer_jobs(account_id,status,created_at DESC);
+             CREATE INDEX idx_storage_transfers_active
+               ON storage_transfer_jobs(status,updated_at) WHERE status IN ('queued','running','paused');
+             INSERT INTO storage_transfer_jobs
+               (id,account_id,operation,display_name,status,created_at,updated_at)
+             VALUES ('old-job','account-1','file_download','old.txt','completed','1','2');",
+        )
+        .unwrap();
+
+        ensure_open_storage_transfer_operations(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO storage_transfer_jobs
+               (id,account_id,operation,display_name,status,created_at,updated_at)
+             VALUES ('new-job','account-1','file_upload','new.txt','queued','3','3')",
+            [],
+        )
+        .unwrap();
+
+        let rows: Vec<(String, String)> = {
+            let mut statement = conn
+                .prepare("SELECT id,operation FROM storage_transfer_jobs ORDER BY id")
+                .unwrap();
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            rows,
+            vec![
+                ("new-job".into(), "file_upload".into()),
+                ("old-job".into(), "file_download".into()),
+            ]
+        );
+        let schema: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='storage_transfer_jobs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!schema.contains("CHECK(operation IN"));
     }
 }

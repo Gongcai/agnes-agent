@@ -25,15 +25,16 @@ use tokio::time::{sleep, timeout};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::domain::{
-    BeginObjectUploadRequest, DownloadFileRequest, DownloadObjectRequest, ListFilesRequest,
-    ObjectUploadSession, ProviderAuthKind, ProviderAuthorizationRequest, ProviderByteStream,
-    ProviderDescriptor, ProviderError, ProviderErrorCategory, ProviderQuota, ProviderResult,
-    ProviderStability, RemoteFileItem, RemoteFileKind, RemoteFilePage, RemoteObjectLocator,
-    RemoteObjectState, StorageCapabilities, StorageProviderAccount, UploadObjectChunkRequest,
+    BeginFileUploadRequest, BeginObjectUploadRequest, DownloadFileRequest, DownloadObjectRequest,
+    FileUploadSession, ListFilesRequest, ObjectUploadSession, ProviderAuthKind,
+    ProviderAuthorizationRequest, ProviderByteStream, ProviderDescriptor, ProviderError,
+    ProviderErrorCategory, ProviderQuota, ProviderResult, ProviderStability, RemoteFileItem,
+    RemoteFileKind, RemoteFilePage, RemoteObjectLocator, RemoteObjectState, StorageCapabilities,
+    StorageProviderAccount, UploadFileChunkRequest, UploadObjectChunkRequest, UploadedFileChunk,
     UploadedObjectChunk,
 };
 use super::ports::{
-    FileSourceProvider, ObjectStorageProvider, ProviderAuthorizationResult,
+    FileSourceProvider, FileUploadProvider, ObjectStorageProvider, ProviderAuthorizationResult,
     ProviderCredentialAccess, ProviderFactory, ProviderSession, QuotaProvider,
 };
 
@@ -42,7 +43,7 @@ const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const DRIVE_API: &str = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD_API: &str = "https://www.googleapis.com/upload/drive/v3";
-const DRIVE_READONLY_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
+const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 const DRIVE_APPDATA_SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata";
 const GOOGLE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 const GOOGLE_SHORTCUT_MIME: &str = "application/vnd.google-apps.shortcut";
@@ -84,6 +85,7 @@ impl ProviderFactory for GoogleDriveFactory {
             capabilities: StorageCapabilities {
                 browse_files: true,
                 read_files: true,
+                write_files: true,
                 object_storage: true,
                 range_download: true,
                 resumable_upload: true,
@@ -110,6 +112,15 @@ impl ProviderFactory for GoogleDriveFactory {
             .ok_or_else(|| invalid_request("Google Desktop OAuth client file is required"))?;
         let client_config = read_client_config(Path::new(client_path)).await?;
         let token = authorize_with_pkce(&self.client, &client_config).await?;
+        let granted_scopes = token.scope.as_deref().unwrap_or_default();
+        if !scope_granted(granted_scopes, DRIVE_SCOPE)
+            || !scope_granted(granted_scopes, DRIVE_APPDATA_SCOPE)
+        {
+            return Err(ProviderError::new(
+                ProviderErrorCategory::Permission,
+                "Google did not grant the required Drive permissions",
+            ));
+        }
         let about = fetch_about_with_token(&self.client, token.access_token.as_str()).await?;
         let subject = about
             .user
@@ -364,6 +375,74 @@ impl QuotaProvider for GoogleDriveSession {
 }
 
 #[async_trait]
+impl FileUploadProvider for GoogleDriveSession {
+    async fn begin_file_upload(
+        &self,
+        request: BeginFileUploadRequest,
+    ) -> ProviderResult<FileUploadSession> {
+        validate_file_upload_request(&request)?;
+        self.require_scope(DRIVE_SCOPE).await?;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-upload-content-length"),
+            header_value(&request.size.to_string(), "file size")?,
+        );
+        headers.insert(
+            HeaderName::from_static("x-upload-content-type"),
+            header_value(&request.media_type, "file media type")?,
+        );
+        let response = self
+            .send_authorized(
+                Method::POST,
+                &format!("{DRIVE_UPLOAD_API}/files"),
+                &[
+                    ("uploadType".into(), "resumable".into()),
+                    ("fields".into(), FILE_FIELDS.into()),
+                    ("supportsAllDrives".into(), "true".into()),
+                ],
+                headers,
+                RequestBody::Json(json!({
+                    "name": request.name,
+                    "parents": [request.parent_id.unwrap_or_else(|| "root".into())],
+                })),
+                false,
+                &[],
+            )
+            .await?;
+        let session_id = resumable_session_id(&response)?;
+        Ok(FileUploadSession {
+            session_id,
+            next_offset: 0,
+            expires_at: None,
+        })
+    }
+
+    async fn upload_file_chunk(
+        &self,
+        request: UploadFileChunkRequest,
+    ) -> ProviderResult<UploadedFileChunk> {
+        let result = self
+            .send_upload_chunk(
+                &request.session_id,
+                request.offset,
+                request.total_size,
+                request.bytes,
+            )
+            .await?;
+        let complete = result.file.is_some();
+        Ok(UploadedFileChunk {
+            next_offset: result.next_offset,
+            complete,
+            file: result.file.map(remote_file_item).transpose()?,
+        })
+    }
+
+    async fn abort_file_upload(&self, session_id: &str) -> ProviderResult<()> {
+        self.abort_upload(session_id).await
+    }
+}
+
+#[async_trait]
 impl ObjectStorageProvider for GoogleDriveSession {
     async fn stat_object(
         &self,
@@ -449,13 +528,7 @@ impl ObjectStorageProvider for GoogleDriveSession {
                 &[],
             )
             .await?;
-        let session_id = response
-            .headers()
-            .get(LOCATION)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned)
-            .ok_or_else(|| invalid_response("Google Drive omitted the resumable upload URL"))?;
-        validate_upload_session_url(&session_id)?;
+        let session_id = resumable_session_id(&response)?;
         Ok(ObjectUploadSession {
             session_id,
             next_offset: 0,
@@ -467,87 +540,24 @@ impl ObjectStorageProvider for GoogleDriveSession {
         &self,
         request: UploadObjectChunkRequest,
     ) -> ProviderResult<UploadedObjectChunk> {
-        validate_upload_session_url(&request.session_id)?;
-        let byte_count = u64::try_from(request.bytes.len())
-            .map_err(|_| invalid_request("Upload chunk is too large"))?;
-        if request.offset > request.total_size
-            || request.offset.saturating_add(byte_count) > request.total_size
-        {
-            return Err(invalid_request(
-                "Upload chunk exceeds the declared object size",
-            ));
-        }
-        if byte_count == 0 && request.total_size != 0 {
-            return Err(invalid_request("Upload chunk cannot be empty"));
-        }
-        let content_range = if request.total_size == 0 {
-            "bytes */0".into()
-        } else {
-            format!(
-                "bytes {}-{}/{}",
-                request.offset,
-                request.offset + byte_count - 1,
-                request.total_size
-            )
-        };
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            CONTENT_LENGTH,
-            header_value(&byte_count.to_string(), "chunk size")?,
-        );
-        headers.insert(
-            CONTENT_RANGE,
-            header_value(&content_range, "content range")?,
-        );
-        headers.insert(
-            CONTENT_TYPE,
-            HeaderValue::from_static("application/octet-stream"),
-        );
-        let response = self
-            .send_authorized(
-                Method::PUT,
+        let result = self
+            .send_upload_chunk(
                 &request.session_id,
-                &[],
-                headers,
-                RequestBody::Bytes(request.bytes),
-                true,
-                &[StatusCode::PERMANENT_REDIRECT],
+                request.offset,
+                request.total_size,
+                request.bytes,
             )
             .await?;
-        if response.status() == StatusCode::PERMANENT_REDIRECT {
-            let next_offset = response
-                .headers()
-                .get(RANGE)
-                .and_then(|value| value.to_str().ok())
-                .and_then(parse_uploaded_range)
-                .unwrap_or(0);
-            return Ok(UploadedObjectChunk {
-                next_offset,
-                complete: false,
-                object: None,
-            });
-        }
-        let file: GoogleFile = parse_json_response(response).await?;
+        let complete = result.file.is_some();
         Ok(UploadedObjectChunk {
-            next_offset: request.total_size,
-            complete: true,
-            object: Some(remote_object_state(file)?),
+            next_offset: result.next_offset,
+            complete,
+            object: result.file.map(remote_object_state).transpose()?,
         })
     }
 
     async fn abort_object_upload(&self, session_id: &str) -> ProviderResult<()> {
-        validate_upload_session_url(session_id)?;
-        self.send_authorized(
-            Method::DELETE,
-            session_id,
-            &[],
-            HeaderMap::new(),
-            RequestBody::Empty,
-            false,
-            &[StatusCode::NOT_FOUND],
-        )
-        .await?;
-        Ok(())
+        self.abort_upload(session_id).await
     }
 
     async fn delete_object(&self, locator: &RemoteObjectLocator) -> ProviderResult<()> {
@@ -571,6 +581,10 @@ impl ProviderSession for GoogleDriveSession {
     }
 
     fn quota_source(&self) -> Option<&dyn QuotaProvider> {
+        Some(self)
+    }
+
+    fn file_upload(&self) -> Option<&dyn FileUploadProvider> {
         Some(self)
     }
 
@@ -617,6 +631,119 @@ impl GoogleDriveSession {
             self.credentials.store(Zeroizing::new(serialized)).await?;
         }
         Ok(Zeroizing::new(credential.access_token.clone()))
+    }
+
+    async fn require_scope(&self, required: &str) -> ProviderResult<()> {
+        let stored = self.credentials.load().await?.ok_or_else(|| {
+            ProviderError::new(
+                ProviderErrorCategory::Authentication,
+                "Google Drive authorization is missing on this device",
+            )
+        })?;
+        let credential = Zeroizing::new(parse_credential(stored.as_str())?);
+        if credential
+            .scope
+            .as_deref()
+            .is_some_and(|scopes| scope_granted(scopes, required))
+        {
+            Ok(())
+        } else {
+            Err(ProviderError::new(
+                ProviderErrorCategory::Permission,
+                "Google Drive upload permission is missing; reconnect the account to grant the new scope",
+            ))
+        }
+    }
+
+    async fn send_upload_chunk(
+        &self,
+        session_id: &str,
+        offset: u64,
+        total_size: u64,
+        bytes: Vec<u8>,
+    ) -> ProviderResult<UploadChunkResult> {
+        validate_upload_session_url(session_id)?;
+        let byte_count =
+            u64::try_from(bytes.len()).map_err(|_| invalid_request("Upload chunk is too large"))?;
+        if offset > total_size || offset.saturating_add(byte_count) > total_size {
+            return Err(invalid_request(
+                "Upload chunk exceeds the declared file size",
+            ));
+        }
+        if byte_count == 0 && total_size != 0 {
+            return Err(invalid_request("Upload chunk cannot be empty"));
+        }
+        let content_range = if total_size == 0 {
+            "bytes */0".into()
+        } else {
+            format!(
+                "bytes {}-{}/{}",
+                offset,
+                offset + byte_count - 1,
+                total_size
+            )
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_LENGTH,
+            header_value(&byte_count.to_string(), "chunk size")?,
+        );
+        headers.insert(
+            CONTENT_RANGE,
+            header_value(&content_range, "content range")?,
+        );
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
+        let response = self
+            .send_authorized(
+                Method::PUT,
+                session_id,
+                &[],
+                headers,
+                RequestBody::Bytes(bytes),
+                true,
+                &[StatusCode::PERMANENT_REDIRECT],
+            )
+            .await?;
+        if response.status() == StatusCode::PERMANENT_REDIRECT {
+            let next_offset = response
+                .headers()
+                .get(RANGE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_uploaded_range)
+                .unwrap_or(0);
+            if next_offset > total_size {
+                return Err(invalid_response(
+                    "Google Drive returned an invalid resumable upload offset",
+                ));
+            }
+            return Ok(UploadChunkResult {
+                next_offset,
+                file: None,
+            });
+        }
+        let file: GoogleFile = parse_json_response(response).await?;
+        Ok(UploadChunkResult {
+            next_offset: total_size,
+            file: Some(file),
+        })
+    }
+
+    async fn abort_upload(&self, session_id: &str) -> ProviderResult<()> {
+        validate_upload_session_url(session_id)?;
+        self.send_authorized(
+            Method::DELETE,
+            session_id,
+            &[],
+            HeaderMap::new(),
+            RequestBody::Empty,
+            false,
+            &[StatusCode::NOT_FOUND],
+        )
+        .await?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -676,6 +803,11 @@ impl GoogleDriveSession {
             "Google Drive request exhausted its retry budget",
         ))
     }
+}
+
+struct UploadChunkResult {
+    next_offset: u64,
+    file: Option<GoogleFile>,
 }
 
 #[derive(Clone)]
@@ -842,10 +974,7 @@ async fn authorize_with_pkce(
         .append_pair("client_id", &config.client_id)
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("response_type", "code")
-        .append_pair(
-            "scope",
-            &format!("{DRIVE_READONLY_SCOPE} {DRIVE_APPDATA_SCOPE}"),
-        )
+        .append_pair("scope", &format!("{DRIVE_SCOPE} {DRIVE_APPDATA_SCOPE}"))
         .append_pair("access_type", "offline")
         .append_pair("prompt", "consent")
         .append_pair("include_granted_scopes", "true")
@@ -1097,6 +1226,36 @@ fn validate_upload_request(request: &BeginObjectUploadRequest) -> ProviderResult
     Ok(())
 }
 
+fn validate_file_upload_request(request: &BeginFileUploadRequest) -> ProviderResult<()> {
+    if request.name.trim().is_empty()
+        || request.name.chars().count() > 1024
+        || request.name.chars().any(char::is_control)
+        || request.media_type.is_empty()
+        || request.media_type.len() > 255
+        || request.chunk_size == 0
+        || !request.chunk_size.is_multiple_of(256 * 1024)
+    {
+        return Err(invalid_request(
+            "Google Drive file metadata or upload chunk size is invalid",
+        ));
+    }
+    if let Some(parent_id) = request.parent_id.as_deref() {
+        validate_opaque_id(parent_id, "parent folder ID")?;
+    }
+    Ok(())
+}
+
+fn resumable_session_id(response: &Response) -> ProviderResult<String> {
+    let session_id = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .ok_or_else(|| invalid_response("Google Drive omitted the resumable upload URL"))?;
+    validate_upload_session_url(&session_id)?;
+    Ok(session_id)
+}
+
 fn validate_upload_session_url(value: &str) -> ProviderResult<()> {
     let url = Url::parse(value).map_err(|_| invalid_request("Invalid resumable upload URL"))?;
     let host = url.host_str().unwrap_or_default();
@@ -1177,6 +1336,10 @@ fn random_base64(bytes: usize) -> String {
     let mut value = vec![0_u8; bytes];
     rand::thread_rng().fill_bytes(&mut value);
     URL_SAFE_NO_PAD.encode(value)
+}
+
+fn scope_granted(scopes: &str, required: &str) -> bool {
+    scopes.split_whitespace().any(|scope| scope == required)
 }
 
 fn now_epoch() -> u64 {
@@ -1382,6 +1545,19 @@ mod tests {
         .is_ok());
         assert!(validate_upload_session_url("https://example.com/upload/drive/v3/files").is_err());
         assert_eq!(parse_uploaded_range("bytes=0-1048575"), Some(1048576));
+        assert!(scope_granted(
+            &format!("{DRIVE_SCOPE} {DRIVE_APPDATA_SCOPE}"),
+            DRIVE_SCOPE
+        ));
+        assert!(!scope_granted(DRIVE_APPDATA_SCOPE, DRIVE_SCOPE));
+        assert!(validate_file_upload_request(&BeginFileUploadRequest {
+            parent_id: Some("folder-1".into()),
+            name: "notes.txt".into(),
+            size: 128,
+            media_type: "text/plain".into(),
+            chunk_size: 8 * 1024 * 1024,
+        })
+        .is_ok());
     }
 
     #[tokio::test]

@@ -8,11 +8,14 @@ import {
   Download,
   File,
   Folder,
+  FolderDown,
+  FolderOpen,
   HardDrive,
   LoaderCircle,
   Plus,
   RefreshCw,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { formatStorageBytes, storageProgress } from "../lib/storage";
 
@@ -24,6 +27,7 @@ interface ProviderDescriptor {
   capabilities: {
     browse_files: boolean;
     read_files: boolean;
+    write_files: boolean;
     object_storage: boolean;
   };
 }
@@ -77,6 +81,12 @@ interface FolderLevel {
   name: string;
 }
 
+interface FileContextMenu {
+  item: RemoteFileItem;
+  x: number;
+  y: number;
+}
+
 type DriveView = "files" | "transfers";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -89,6 +99,7 @@ const STATUS_LABELS: Record<string, string> = {
 
 const OPERATION_LABELS: Record<string, string> = {
   file_download: "下载",
+  file_upload: "上传",
   knowledge_import: "导入知识库",
   reading_import: "导入书架",
   object_upload: "上传副本",
@@ -123,6 +134,7 @@ export function DriveWorkspace() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authorizationMessage, setAuthorizationMessage] = useState<string | null>(null);
+  const [fileContextMenu, setFileContextMenu] = useState<FileContextMenu | null>(null);
   const fileRequestId = useRef(0);
 
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? null;
@@ -222,6 +234,37 @@ export function DriveWorkspace() {
     if (view === "files") void loadFiles(false);
   }, [selectedAccountId, selectedAccount?.auth_state, selectedAccount?.enabled, selectedAccount?.provider_installed, currentFolder.id, view]);
 
+  useEffect(() => {
+    if (!fileContextMenu) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFileContextMenu(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [fileContextMenu]);
+
+  useEffect(() => {
+    if (view !== "transfers") return;
+    let cancelled = false;
+    const refreshTransfers = async () => {
+      try {
+        const next = await invoke<TransferJob[]>("list_storage_transfers", {
+          accountId: null,
+          limit: 100,
+        });
+        if (!cancelled) setTransfers(next);
+      } catch (reason) {
+        if (!cancelled) setError(String(reason));
+      }
+    };
+    void refreshTransfers();
+    const timer = window.setInterval(() => void refreshTransfers(), 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [view]);
+
   const refreshQuota = async () => {
     if (!selectedAccountId) return;
     setLoading(true);
@@ -301,6 +344,76 @@ export function DriveWorkspace() {
     }
   };
 
+  const openFolder = (item: RemoteFileItem) => {
+    if (item.kind !== "folder") return;
+    setFolderPath((path) => [...path, { id: item.id, name: item.name }]);
+  };
+
+  const downloadFolder = async (item: RemoteFileItem) => {
+    if (!selectedAccount || item.kind !== "folder") return;
+    try {
+      const destinationDirectory = await open({
+        title: "选择文件夹下载位置",
+        directory: true,
+        multiple: false,
+      });
+      if (typeof destinationDirectory !== "string") return;
+      setLoading(true);
+      setError(null);
+      await invoke("download_storage_folder", {
+        accountId: selectedAccount.id,
+        folderId: item.id,
+        folderName: item.name,
+        destinationDirectory,
+      });
+      await loadShell();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const uploadFiles = async () => {
+    if (!selectedAccount || !selectedProvider?.capabilities.write_files) return;
+    try {
+      const selected = await open({
+        title: "上传文件到当前目录",
+        directory: false,
+        multiple: true,
+      });
+      const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+      if (paths.length === 0) return;
+      setLoading(true);
+      setError(null);
+      for (const source of paths) {
+        await invoke("upload_storage_file", {
+          accountId: selectedAccount.id,
+          parentId: currentFolder.id,
+          source,
+        });
+      }
+      await loadShell();
+      await loadFiles(false);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openFileContextMenu = (event: React.MouseEvent, item: RemoteFileItem) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const menuWidth = 176;
+    const menuHeight = item.kind === "folder" ? 82 : 44;
+    setFileContextMenu({
+      item,
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+    });
+  };
+
   return (
     <main className="flex h-full min-w-0 flex-1 flex-col bg-[#FAF9F5]">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white/40 px-5 backdrop-blur-md">
@@ -377,7 +490,7 @@ export function DriveWorkspace() {
             className="mt-auto flex h-9 w-full items-center justify-center gap-2 rounded-md border border-stone-200 bg-white text-xs font-medium text-stone-600 hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
           >
             <Plus className="h-3.5 w-3.5" />
-            连接 Google Drive
+            连接/重新授权 Google Drive
           </button>
         </aside>
 
@@ -429,30 +542,42 @@ export function DriveWorkspace() {
 
               {view === "files" ? (
                 <div className="flex min-h-0 flex-1 flex-col px-5 py-4">
-                  <div className="mb-3 flex h-8 items-center gap-1 overflow-x-auto text-xs text-stone-500">
-                    {folderPath.map((folder, index) => (
-                      <span key={`${folder.id ?? "root"}-${index}`} className="flex shrink-0 items-center gap-1">
-                        {index > 0 && <ChevronRight className="h-3.5 w-3.5 text-stone-300" />}
-                        <button
-                          onClick={() => setFolderPath((path) => path.slice(0, index + 1))}
-                          className="rounded-md px-1.5 py-1 hover:bg-stone-100 hover:text-stone-900"
-                        >
-                          {folder.name}
-                        </button>
-                      </span>
-                    ))}
+                  <div className="mb-3 flex h-8 items-center justify-between gap-3 text-xs text-stone-500">
+                    <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+                      {folderPath.map((folder, index) => (
+                        <span key={`${folder.id ?? "root"}-${index}`} className="flex shrink-0 items-center gap-1">
+                          {index > 0 && <ChevronRight className="h-3.5 w-3.5 text-stone-300" />}
+                          <button
+                            onClick={() => setFolderPath((path) => path.slice(0, index + 1))}
+                            className="rounded-md px-1.5 py-1 hover:bg-stone-100 hover:text-stone-900"
+                          >
+                            {folder.name}
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => void uploadFiles()}
+                      disabled={loading || !selectedProvider?.capabilities.write_files}
+                      className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 hover:bg-white hover:text-stone-900 disabled:opacity-35"
+                      title={selectedProvider?.capabilities.write_files ? "上传文件" : "当前 Provider 不支持上传"}
+                    >
+                      <Upload className="h-4 w-4" />
+                    </button>
                   </div>
-                  <div className="min-h-0 flex-1 overflow-auto border-y border-stone-200 bg-white/40">
+                  <div
+                    className="min-h-0 flex-1 overflow-auto border-y border-stone-200 bg-white/40"
+                    onContextMenu={(event) => event.preventDefault()}
+                  >
                     {sortedFiles.map((item) => (
                       <div
                         key={item.id}
+                        onContextMenu={(event) => openFileContextMenu(event, item)}
                         className="grid w-full grid-cols-[minmax(0,1fr)_74px_28px] items-center gap-3 border-b border-stone-100 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-white sm:grid-cols-[minmax(0,1fr)_90px_130px_28px] sm:gap-4"
                       >
                         <button
                           onClick={() => {
-                            if (item.kind === "folder") {
-                              setFolderPath((path) => [...path, { id: item.id, name: item.name }]);
-                            }
+                            openFolder(item);
                           }}
                           disabled={item.kind !== "folder"}
                           className="flex min-w-0 items-center gap-2 text-left text-stone-700 disabled:cursor-default"
@@ -534,6 +659,64 @@ export function DriveWorkspace() {
           )}
         </section>
       </div>
+
+      {fileContextMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setFileContextMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setFileContextMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-50 w-44 overflow-hidden rounded-xl border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl"
+            style={{ left: fileContextMenu.x, top: fileContextMenu.y }}
+          >
+            {fileContextMenu.item.kind === "folder" ? (
+              <>
+                <button
+                  onClick={() => {
+                    openFolder(fileContextMenu.item);
+                    setFileContextMenu(null);
+                  }}
+                  disabled={loading}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
+                >
+                  <FolderOpen className="h-3.5 w-3.5 text-amber-500" />
+                  打开文件夹
+                </button>
+                <button
+                  onClick={() => {
+                    const item = fileContextMenu.item;
+                    setFileContextMenu(null);
+                    void downloadFolder(item);
+                  }}
+                  disabled={loading}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
+                >
+                  <FolderDown className="h-3.5 w-3.5 text-stone-500" />
+                  批量下载
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => {
+                  const item = fileContextMenu.item;
+                  setFileContextMenu(null);
+                  void downloadFile(item);
+                }}
+                disabled={loading || !fileContextMenu.item.downloadable}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
+              >
+                <Download className="h-3.5 w-3.5" />
+                下载
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </main>
   );
 }

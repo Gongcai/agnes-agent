@@ -181,7 +181,7 @@ System Prompt
 | V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | Phase 0-4 已完成：密文传输、SPAKE2 新设备配对、两阶段密钥轮换、Recovery Bundle 多版本恢复和线上日志审计均已完成；Worker `7316feb3-48b1-4635-8363-a83e78e7dc33` 已部署，production D1 五张相关表均为空。本轮未上传业务数据 |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 暂缓：先稳定桌面客户端与本地 Agent 能力，再启动 Android 客户端 |
 | V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 进行中：工具、审批、Linux 沙箱、审计、模型路由、内置 `web_search/web_fetch/browser_open`、可配置 SearXNG/Brave Search Provider、MCP Client 与主模型零输出故障回退已完成；浏览器为隔离无登录的严格只读渲染能力。diff review 待后续补齐 |
-| V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + 通用网盘 Provider | 进行中：本地 RAG 与通用网盘 Provider 基础已完成；Google Drive 官方 adapter 已接入 Desktop OAuth + PKCE、Keyring token 轮换、文件/配额浏览、本地原子下载、Workspace 文档导出、Range 下载及 `appDataFolder` 断点对象上传，网盘入口已开放。下一步完成 Google 文件直接导入知识库/书架与真实授权验收，再实现夸克社区 adapter；加密制品 manifest 与 R2 随后接入 |
+| V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + 通用网盘 Provider | 进行中：本地 RAG 与通用网盘 Provider 基础已完成；Google Drive 官方 adapter 已接入 Desktop OAuth + PKCE、Keyring token 轮换、文件/配额浏览、文件与目录下载、当前目录断点上传、Workspace 文档导出、Range 下载及 `appDataFolder` 对象上传；网盘入口、右键操作与实时传输视图已开放。下一步完成 Google 文件直接导入知识库/书架，再实现夸克社区 adapter；加密制品 manifest 与 R2 随后接入 |
 | V0.7 | 本地日历 + 待办 | 已完成：本地域模型、Local Provider、受审批约束的 Agent 工具、完整桌面工作区、本地统一通知服务和 D1 E2EE 同步均已完成。日历支持月/周/日/议程、多日历叠加、当天议程、待办图层及重复 occurrence 例外；待办支持五类智能视图、自定义列表、重要/我的一天、日期或精确时间、步骤和完成后生成下一重复实例；通知中心覆盖 AI 回复/许可、任务到期和日历事件。Google Calendar / Google Tasks / CalDAV 不纳入默认路线图，未来仅按实际需求作为可选扩展评估。 |
 | V0.8 | Read With AI | 已完成本地优先 v1：EPUB 2/3 导入与原样渲染、阅读进度、CFI 划线、用户级书架、按书籍 × Agent 隔离的连续讨论、已知书籍模式，以及未知书籍首次书内检索授权。原始 EPUB 的加密大对象与跨设备同步留待 V0.6 数据层完成后接入。 |
 

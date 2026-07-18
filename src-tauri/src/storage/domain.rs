@@ -285,6 +285,37 @@ pub struct DownloadFileRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BeginFileUploadRequest {
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub size: u64,
+    pub media_type: String,
+    pub chunk_size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileUploadSession {
+    pub session_id: String,
+    pub next_offset: u64,
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadFileChunkRequest {
+    pub session_id: String,
+    pub offset: u64,
+    pub total_size: u64,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadedFileChunk {
+    pub next_offset: u64,
+    pub complete: bool,
+    pub file: Option<RemoteFileItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteObjectLocator {
     pub opaque_id: String,
     pub revision: Option<String>,

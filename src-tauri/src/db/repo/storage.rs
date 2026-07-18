@@ -414,6 +414,7 @@ fn validate_transfer_operation(value: &str) -> AppResult<()> {
     if matches!(
         value,
         "file_download"
+            | "file_upload"
             | "knowledge_import"
             | "reading_import"
             | "object_upload"

@@ -645,8 +645,7 @@ CREATE TABLE IF NOT EXISTS storage_provider_bindings (
 CREATE TABLE IF NOT EXISTS storage_transfer_jobs (
   id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES storage_provider_accounts(id),
-  operation TEXT NOT NULL
-    CHECK(operation IN ('file_download','knowledge_import','reading_import','object_upload','object_download')),
+  operation TEXT NOT NULL,
   remote_item_id TEXT,
   display_name TEXT NOT NULL,
   destination_kind TEXT,
