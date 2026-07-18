@@ -744,6 +744,39 @@ async fn handle_conn<R: tauri::Runtime>(
                 let _ = manager.send_to_agent(reply);
             }
 
+            msg_type::SESSION_TITLE_UPDATE => {
+                let title_update = (|| {
+                    let generated = env.payload.get("value")?.as_str()?;
+                    let expected = env.payload.get("fallbackTitle")?.as_str()?;
+                    let generated = crate::commands::normalize_session_title(generated)?;
+                    Some((generated, expected.to_string()))
+                })();
+
+                // Only replace the exact fallback written for this run. A manual rename
+                // performed while the title model was running must always win.
+                if let Some((generated, expected)) = title_update {
+                    if let Ok(Some(session)) = db.get_session(session_id.clone()).await {
+                        if session.title == expected
+                            && db
+                                .update_session_title(session_id.clone(), generated.clone())
+                                .await
+                                .is_ok()
+                        {
+                            if let Some(state) = app_handle.try_state::<AppState>() {
+                                state.sync.schedule();
+                            }
+                            let _ = app_handle.emit(
+                                "agent://session_title_updated",
+                                json!({
+                                    "session_id": session_id,
+                                    "title": generated,
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
+
             msg_type::RUN_FINISHED => {
                 let summary = env
                     .payload
@@ -751,36 +784,12 @@ async fn handle_conn<R: tauri::Runtime>(
                     .and_then(|x| x.as_str())
                     .unwrap_or("");
                 let memories_val = env.payload.get("memories").and_then(|x| x.as_array());
-                let title_update = env.payload.get("title").and_then(|value| {
-                    let generated = value.get("value")?.as_str()?;
-                    let expected = value.get("fallbackTitle")?.as_str()?;
-                    let generated = crate::commands::normalize_session_title(generated)?;
-                    Some((generated, expected.to_string()))
-                });
 
                 // 1. 更新会话摘要
                 if !summary.is_empty() {
                     let _ = db
                         .update_session_summary(session_id.clone(), summary.to_string())
                         .await;
-                }
-
-                // Only replace the exact fallback written for this run. A manual rename
-                // performed while the model was running must always win.
-                if let Some((generated, expected)) = title_update {
-                    if let Ok(Some(session)) = db.get_session(session_id.clone()).await {
-                        if session.title == expected {
-                            if db
-                                .update_session_title(session_id.clone(), generated)
-                                .await
-                                .is_ok()
-                            {
-                                if let Some(state) = app_handle.try_state::<AppState>() {
-                                    state.sync.schedule();
-                                }
-                            }
-                        }
-                    }
                 }
 
                 // 获取 Agent ID

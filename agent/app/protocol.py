@@ -22,6 +22,7 @@ class MsgType(str, Enum):
     RUN_CANCEL = "run_cancel"
     RUN_FINISHED = "run_finished"
     RUN_ERROR = "run_error"
+    SESSION_TITLE_UPDATE = "session_title_update"
     ASSISTANT_DELTA = "assistant_delta"
     MODEL_FALLBACK = "model_fallback"
     MEMORY_QUERY_REQUEST = "memory_query_request"

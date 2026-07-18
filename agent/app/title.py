@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 
 
 TITLE_MAX_CHARS = 40
+TITLE_MAX_TOKENS = 512
+TITLE_REQUEST_TIMEOUT_SECONDS = 45
 
 
 def normalize_session_title(value: object, max_chars: int = TITLE_MAX_CHARS) -> Optional[str]:
@@ -36,20 +38,35 @@ def generate_session_title(
     prompt = (
         "为下面这条用户消息生成一个简短的会话标题。\n"
         "要求：使用消息的主要语言；中文 4-12 个字，英文不超过 8 个单词；"
+        "不要回答或求解消息中的问题，只概括主题；"
         "只返回标题本身，不要引号、Markdown、前缀或解释。\n\n"
         f"用户消息：\n{source_text}"
     )
     try:
+        title_kwargs = {}
+        if llm_config:
+            endpoint = (llm_config.api_base or "").lower()
+            model_name = (llm_config.litellm_model or model).lower()
+            if "deepseek" in endpoint or "deepseek" in model_name:
+                title_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         response = completion(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             llm_config=llm_config,
-            max_tokens=64,
+            max_tokens=TITLE_MAX_TOKENS,
             temperature=0.2,
-            timeout=15,
+            timeout=TITLE_REQUEST_TIMEOUT_SECONDS,
+            **title_kwargs,
         )
         content = getattr(response.choices[0].message, "content", None)
-        return normalize_session_title(content)
+        title = normalize_session_title(content)
+        if title is None:
+            finish_reason = getattr(response.choices[0], "finish_reason", "unknown")
+            print(
+                f"[sidecar][title] Model returned no title (finish_reason={finish_reason})",
+                flush=True,
+            )
+        return title
     except Exception as error:
         print(f"[sidecar][title] Failed to generate session title: {error}", flush=True)
         return None

@@ -1070,6 +1070,24 @@ export function setupTauriEventListeners() {
   );
 
   listeners.push(
+    listen<{ session_id: string; title: string }>(
+      "agent://session_title_updated",
+      async (event) => {
+        const store = useAgentStore.getState();
+        if (
+          store.activeAgentId
+          && (
+            store.activeSessionId === event.payload.session_id
+            || store.sessions.some((session) => session.id === event.payload.session_id)
+          )
+        ) {
+          await store.loadSessions(store.activeAgentId);
+        }
+      }
+    )
+  );
+
+  listeners.push(
     listen<{ session_id: string; run_id: string }>(
       "agent://run_finished",
       async (event) => {

@@ -33,7 +33,8 @@ impl Envelope {
 
 /// 消息类型（方向在架构文档 §3.2 已定死）：
 /// Rust→Python: run_request / tool_result / approval_result / run_cancel / user_message
-/// Python→Rust: assistant_delta / model_fallback / tool_call_request / memory_query_request / run_finished / run_error
+/// Python→Rust: assistant_delta / model_fallback / tool_call_request / memory_query_request /
+/// session_title_update / run_finished / run_error
 /// 双向握手: hello / ready / ping / pong
 pub mod msg_type {
     pub const HELLO: &str = "hello";
@@ -45,6 +46,7 @@ pub mod msg_type {
     pub const RUN_CANCEL: &str = "run_cancel";
     pub const RUN_FINISHED: &str = "run_finished";
     pub const RUN_ERROR: &str = "run_error";
+    pub const SESSION_TITLE_UPDATE: &str = "session_title_update";
     pub const ASSISTANT_DELTA: &str = "assistant_delta";
     pub const MODEL_FALLBACK: &str = "model_fallback";
     pub const MEMORY_QUERY_REQUEST: &str = "memory_query_request";

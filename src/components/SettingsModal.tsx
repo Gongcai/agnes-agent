@@ -308,7 +308,7 @@ const MODEL_ROLE_OPTIONS: {
   { key: "summary_model", label: "对话总结模型", desc: "滚动压缩历史对话，建议选择便宜模型" },
   { key: "memory_model", label: "记忆更新模型", desc: "抽取需要长期保存的事实和偏好" },
   { key: "speech_model", label: "语音理解模型", desc: "预留语音转文本调用入口" },
-  { key: "quick_model", label: "快速模型", desc: "预留划线翻译、搜索和名词解释" },
+  { key: "quick_model", label: "快速模型", desc: "生成会话标题；预留划线翻译、搜索和名词解释" },
   { key: "embedding_model", label: "嵌入模型", desc: "生成本地记忆向量，维度由模型响应自动确定" },
 ];
 

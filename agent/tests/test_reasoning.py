@@ -8,7 +8,12 @@ from app import graph as graph_module
 from app.prompt import assemble_prompt, group_protocol_messages, translate_messages, count_tokens
 from app.graph import build_graph, get_available_tools
 from app.memory_extract import extract_memories
-from app.title import generate_session_title, normalize_session_title
+from app.title import (
+    TITLE_MAX_TOKENS,
+    TITLE_REQUEST_TIMEOUT_SECONDS,
+    generate_session_title,
+    normalize_session_title,
+)
 from app.main import (
     INTERNAL_EMBEDDING_KEY,
     attach_extracted_memory_embeddings,
@@ -90,15 +95,20 @@ def test_session_title_generation_uses_quick_model_and_cleans_output(monkeypatch
         )
 
     monkeypatch.setattr("app.title.completion", fake_completion)
-    config = LlmConfig(litellm_model="quick-model")
+    config = LlmConfig(
+        api_base="https://api.deepseek.com/v1",
+        model="deepseek-v4-flash",
+        litellm_model="deepseek-v4-flash",
+    )
 
     title = generate_session_title("日历同步为什么失败？", "quick-model", config)
 
     assert title == "排查日历同步"
     assert captured["model"] == "quick-model"
     assert captured["llm_config"] is config
-    assert captured["max_tokens"] == 64
-    assert captured["timeout"] == 15
+    assert captured["max_tokens"] == TITLE_MAX_TOKENS
+    assert captured["timeout"] == TITLE_REQUEST_TIMEOUT_SECONDS
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
 def test_session_title_normalization_rejects_empty_and_limits_length():

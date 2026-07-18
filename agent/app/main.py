@@ -18,7 +18,6 @@ from .memory_extract import extract_memories
 from .title import generate_session_title
 
 EMBEDDING_REQUEST_TIMEOUT_SECONDS = 30
-TITLE_RESULT_WAIT_SECONDS = 5
 
 
 def resolve_task_llm(
@@ -131,7 +130,6 @@ async def run_agent_graph(
         fallback_llm_configs = []
     task_llm_configs: Dict[str, Dict[str, Any]] = payload.get("context", {}).get("taskLlmConfigs") or {}
     title_request = payload.get("context", {}).get("sessionTitleRequest")
-    title_task: Optional[asyncio.Task[Optional[str]]] = None
     embedding_config_raw = task_llm_configs.get("embedding")
     embedding_model = None
     embedding_llm_config = None
@@ -230,23 +228,6 @@ async def run_agent_graph(
         llm_config,
     )
 
-    # Title generation is deliberately opt-in: never silently spend the main model
-    # or include the title request in the conversation context.
-    if isinstance(title_request, dict):
-        source_text = title_request.get("sourceText")
-        quick_raw = task_llm_configs.get("quick")
-        if isinstance(source_text, str) and source_text.strip() and isinstance(quick_raw, dict):
-            quick_model = quick_raw.get("litellmModel") or quick_raw.get("model")
-            if isinstance(quick_model, str) and quick_model:
-                title_task = asyncio.create_task(
-                    asyncio.to_thread(
-                        generate_session_title,
-                        source_text.strip(),
-                        quick_model,
-                        LlmConfig.from_dict(quick_raw),
-                    )
-                )
-
     graph_inputs = {
         "messages": messages,
         "system_prompt": system_prompt,
@@ -323,23 +304,7 @@ async def run_agent_graph(
         except Exception as mem_ex:
             print(f"[sidecar][memory] Failed to extract memories: {mem_ex}", flush=True)
 
-        generated_title = None
-        if title_task is not None:
-            try:
-                generated_title = await asyncio.wait_for(title_task, timeout=TITLE_RESULT_WAIT_SECONDS)
-            except asyncio.TimeoutError:
-                title_task.cancel()
-                print("[sidecar][title] Timed out waiting for quick model; keeping fallback title", flush=True)
-            except Exception as title_error:
-                print(f"[sidecar][title] Title task failed: {title_error}", flush=True)
-
         # 7. Run completed successfully -> send RUN_FINISHED
-        title_payload = None
-        if generated_title and isinstance(title_request, dict):
-            title_payload = {
-                "value": generated_title,
-                "fallbackTitle": title_request.get("fallbackTitle"),
-            }
         finished_envelope = make(
             MsgType.RUN_FINISHED,
             session_id=session_id,
@@ -347,15 +312,51 @@ async def run_agent_graph(
             payload={
                 "summary": new_summary,
                 "memories": extracted_memories,
-                "title": title_payload,
             }
         )
         await ws.send(finished_envelope.model_dump_json())
         print(f"[sidecar][run] Run finished successfully (id: {run_id})", flush=True)
+
+        # Generate the title after the main run so the same provider is not hit
+        # concurrently and a slow title never keeps the response spinner active.
+        try:
+            if isinstance(title_request, dict):
+                source_text = title_request.get("sourceText")
+                fallback_title = title_request.get("fallbackTitle")
+                quick_raw = task_llm_configs.get("quick")
+                if (
+                    isinstance(source_text, str)
+                    and source_text.strip()
+                    and isinstance(fallback_title, str)
+                    and isinstance(quick_raw, dict)
+                ):
+                    quick_model = quick_raw.get("litellmModel") or quick_raw.get("model")
+                    if isinstance(quick_model, str) and quick_model:
+                        generated_title = await asyncio.to_thread(
+                            generate_session_title,
+                            source_text.strip(),
+                            quick_model,
+                            LlmConfig.from_dict(quick_raw),
+                        )
+                        if generated_title:
+                            title_envelope = make(
+                                MsgType.SESSION_TITLE_UPDATE,
+                                session_id=session_id,
+                                run_id=run_id,
+                                payload={
+                                    "value": generated_title,
+                                    "fallbackTitle": fallback_title,
+                                },
+                            )
+                            await ws.send(title_envelope.model_dump_json())
+                            print(f"[sidecar][title] Session title updated (id: {run_id})", flush=True)
+        except asyncio.CancelledError:
+            print(f"[sidecar][title] Title update cancelled (id: {run_id})", flush=True)
+            return
+        except Exception as title_error:
+            print(f"[sidecar][title] Title update failed: {title_error}", flush=True)
         
     except asyncio.CancelledError:
-        if title_task is not None and not title_task.done():
-            title_task.cancel()
         print(f"[sidecar][run] Run task cancelled (id: {run_id})", flush=True)
         # 通知 Rust 取消，让其走 RUN_ERROR 清理路径（保存已累积内容、置状态、清映射）
         try:
@@ -370,8 +371,6 @@ async def run_agent_graph(
             pass
         raise
     except Exception as e:
-        if title_task is not None and not title_task.done():
-            title_task.cancel()
         traceback.print_exc()
         err_envelope = make(
             MsgType.RUN_ERROR,
