@@ -30,7 +30,18 @@ async function sha256Hex(value: string): Promise<string> {
 interface TestChangeOptions {
   changeId?: string;
   entityId?: string;
-  entityType?: "agent" | "session" | "message" | "explicit_memory" | "memory" | "workspace";
+  entityType?:
+    | "agent"
+    | "session"
+    | "message"
+    | "explicit_memory"
+    | "memory"
+    | "workspace"
+    | "calendar"
+    | "calendar_event"
+    | "event_exception"
+    | "task_list"
+    | "task";
   operation?: "upsert" | "delete";
   baseRevision?: number | null;
   deviceId?: string;
@@ -536,7 +547,41 @@ describe("bootstrap and ack", () => {
       entityId: "20000000-0000-4000-8000-000000000023",
       entityType: "session",
     });
-    await push(TOKEN_A, DEVICE_A, [session, workspace, agent]);
+    const calendar = makeChange({
+      changeId: "10000000-0000-4000-8000-000000000024",
+      entityId: "20000000-0000-4000-8000-000000000024",
+      entityType: "calendar",
+    });
+    const calendarEvent = makeChange({
+      changeId: "10000000-0000-4000-8000-000000000025",
+      entityId: "20000000-0000-4000-8000-000000000025",
+      entityType: "calendar_event",
+    });
+    const eventException = makeChange({
+      changeId: "10000000-0000-4000-8000-000000000026",
+      entityId: "20000000-0000-4000-8000-000000000026",
+      entityType: "event_exception",
+    });
+    const taskList = makeChange({
+      changeId: "10000000-0000-4000-8000-000000000027",
+      entityId: "20000000-0000-4000-8000-000000000027",
+      entityType: "task_list",
+    });
+    const task = makeChange({
+      changeId: "10000000-0000-4000-8000-000000000028",
+      entityId: "20000000-0000-4000-8000-000000000028",
+      entityType: "task",
+    });
+    await push(TOKEN_A, DEVICE_A, [
+      task,
+      eventException,
+      calendarEvent,
+      taskList,
+      calendar,
+      session,
+      workspace,
+      agent,
+    ]);
 
     const entityTypes: string[] = [];
     let cursor: string | null = null;
@@ -553,7 +598,16 @@ describe("bootstrap and ack", () => {
       cursor = page.nextCursor;
     } while (cursor);
 
-    expect(entityTypes).toEqual(["agent", "workspace", "session"]);
+    expect(entityTypes).toEqual([
+      "agent",
+      "workspace",
+      "session",
+      "calendar",
+      "calendar_event",
+      "event_exception",
+      "task_list",
+      "task",
+    ]);
   });
 
   it("uses a stable bootstrap high-water cursor", async () => {

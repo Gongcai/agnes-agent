@@ -1848,7 +1848,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     resp,
                 } => {
                     let _ = resp.send(repo::planner::create_calendar(
-                        &conn, &id, &name, color, &timezone,
+                        &mut conn, &id, &name, color, &timezone,
                     ));
                 }
                 DbCommand::ListCalendarEvents {
@@ -1879,7 +1879,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     resp,
                 } => {
                     let _ = resp.send(repo::planner::create_event(
-                        &conn,
+                        &mut conn,
                         &id,
                         &calendar_id,
                         &title,
@@ -1942,7 +1942,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     color,
                     resp,
                 } => {
-                    let _ = resp.send(repo::planner::create_task_list(&conn, &id, &name, color));
+                    let _ = resp.send(repo::planner::create_task_list(
+                        &mut conn, &id, &name, color,
+                    ));
                 }
                 DbCommand::ListTasks { task_list_id, resp } => {
                     let _ = resp.send(repo::planner::list_tasks(&conn, &task_list_id));
@@ -1951,7 +1953,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     let _ = resp.send(repo::planner::list_all_tasks(&conn));
                 }
                 DbCommand::CreateTask { task, resp } => {
-                    let _ = resp.send(repo::planner::create_task(&conn, task));
+                    let _ = resp.send(repo::planner::create_task(&mut conn, task));
                 }
                 DbCommand::CompleteTask {
                     id,
@@ -1967,10 +1969,10 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     ));
                 }
                 DbCommand::UpdateTask { id, changes, resp } => {
-                    let _ = resp.send(repo::planner::update_task(&conn, &id, changes));
+                    let _ = resp.send(repo::planner::update_task(&mut conn, &id, changes));
                 }
                 DbCommand::DeleteTask { id, resp } => {
-                    let _ = resp.send(repo::planner::delete_task(&conn, &id));
+                    let _ = resp.send(repo::planner::delete_task(&mut conn, &id));
                 }
                 DbCommand::ListNotifications { limit, resp } => {
                     let _ = resp.send(repo::notifications::list(&conn, limit));

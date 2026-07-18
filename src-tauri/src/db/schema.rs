@@ -186,6 +186,9 @@ CREATE TABLE IF NOT EXISTS event_exceptions (
   is_cancelled INTEGER NOT NULL DEFAULT 0 CHECK(is_cancelled IN (0, 1)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT,
   PRIMARY KEY(event_id, original_occurrence)
 );
 
@@ -235,6 +238,13 @@ CREATE INDEX IF NOT EXISTS idx_tasks_list_status_due
   ON tasks(task_list_id, status, due_at, sort_order) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_parent
   ON tasks(parent_id, sort_order) WHERE parent_id IS NOT NULL AND deleted_at IS NULL;
+
+-- Keeps a remote task's requested parent until that parent is present locally.
+-- The Planner payload is encrypted, so bootstrap cannot sort task rows by it.
+CREATE TABLE IF NOT EXISTS task_sync_parents (
+  task_id TEXT PRIMARY KEY,
+  parent_id TEXT
+);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
   id TEXT PRIMARY KEY,

@@ -5,8 +5,9 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Duration, LocalResult, NaiveDate, SecondsFormat, TimeZone, Utc};
 use chrono_tz::Tz as ChronoTz;
 use rrule::{RRule, RRuleSet, Tz as RRuleTz, Unvalidated};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::error::{AppError, AppResult};
 
@@ -58,6 +59,93 @@ pub struct TaskRow {
     pub recurrence_anchor: Option<String>,
     pub recurrence_source_id: Option<String>,
     pub sort_order: f64,
+}
+
+#[derive(Serialize)]
+struct CalendarSyncSource {
+    id: String,
+    name: String,
+    color: Option<String>,
+    timezone: String,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    origin_device_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CalendarEventSyncSource {
+    id: String,
+    calendar_id: String,
+    title: String,
+    description: Option<String>,
+    location: Option<String>,
+    starts_at: String,
+    ends_at: String,
+    timezone: String,
+    all_day: i64,
+    recurrence_rule: Option<String>,
+    recurrence_id: Option<String>,
+    status: String,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    origin_device_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct EventExceptionSyncSource {
+    id: String,
+    event_id: String,
+    original_occurrence: String,
+    replacement_event_id: Option<String>,
+    is_cancelled: i64,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    origin_device_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TaskListSyncSource {
+    id: String,
+    name: String,
+    color: Option<String>,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    origin_device_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TaskSyncSource {
+    id: String,
+    task_list_id: String,
+    parent_id: Option<String>,
+    title: String,
+    description: Option<String>,
+    status: String,
+    priority: i64,
+    starts_at: Option<String>,
+    due_date: Option<String>,
+    due_at: Option<String>,
+    due_timezone: Option<String>,
+    is_important: i64,
+    my_day_date: Option<String>,
+    completed_at: Option<String>,
+    recurrence_rule: Option<String>,
+    recurrence_anchor: Option<String>,
+    recurrence_source_id: Option<String>,
+    sort_order: f64,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    origin_device_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -172,6 +260,22 @@ fn now() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|v| v.as_secs().to_string())
         .unwrap_or_else(|_| "0".into())
+}
+
+pub(crate) fn event_exception_entity_id(event_id: &str, original_occurrence: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(event_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(original_occurrence.as_bytes());
+    format!("event_exception:{:x}", hasher.finalize())
+}
+
+fn recurring_task_id(source_id: &str, due_date: Option<&str>, due_at: Option<&str>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(source_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(due_date.or(due_at).unwrap_or_default().as_bytes());
+    format!("recurring_task:{:x}", hasher.finalize())
 }
 fn required(value: &str, label: &str) -> AppResult<String> {
     let value = value.trim();
@@ -485,7 +589,7 @@ fn load_exceptions(
          JOIN calendar_events master ON master.id=ee.event_id \
          LEFT JOIN calendar_events replacement \
            ON replacement.id=ee.replacement_event_id AND replacement.deleted_at IS NULL \
-         WHERE master.calendar_id=?1 AND master.deleted_at IS NULL",
+         WHERE master.calendar_id=?1 AND master.deleted_at IS NULL AND ee.deleted_at IS NULL",
     )?;
     let rows = statement.query_map([calendar_id], |row| {
         let replacement = match row.get::<_, Option<String>>(3)? {
@@ -552,6 +656,223 @@ fn generated_occurrence(
     Ok((canonical, original, original + duration))
 }
 
+fn get_calendar_sync_source(conn: &Connection, id: &str) -> AppResult<Option<CalendarSyncSource>> {
+    conn.query_row(
+        "SELECT id,name,color,timezone,created_at,updated_at,version,deleted_at,origin_device_id \
+         FROM calendars WHERE id=?1",
+        [id],
+        |row| {
+            Ok(CalendarSyncSource {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                timezone: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                version: row.get(6)?,
+                deleted_at: row.get(7)?,
+                origin_device_id: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn get_event_sync_source(
+    conn: &Connection,
+    id: &str,
+) -> AppResult<Option<CalendarEventSyncSource>> {
+    conn.query_row(
+        "SELECT id,calendar_id,title,description,location,starts_at,ends_at,timezone,all_day, \
+                recurrence_rule,recurrence_id,status,created_at,updated_at,version,deleted_at,origin_device_id \
+         FROM calendar_events WHERE id=?1",
+        [id],
+        |row| {
+            Ok(CalendarEventSyncSource {
+                id: row.get(0)?, calendar_id: row.get(1)?, title: row.get(2)?,
+                description: row.get(3)?, location: row.get(4)?, starts_at: row.get(5)?,
+                ends_at: row.get(6)?, timezone: row.get(7)?, all_day: row.get(8)?,
+                recurrence_rule: row.get(9)?, recurrence_id: row.get(10)?, status: row.get(11)?,
+                created_at: row.get(12)?, updated_at: row.get(13)?, version: row.get(14)?,
+                deleted_at: row.get(15)?, origin_device_id: row.get(16)?,
+            })
+        },
+    ).optional().map_err(Into::into)
+}
+
+fn get_exception_sync_source(
+    conn: &Connection,
+    event_id: &str,
+    original_occurrence: &str,
+) -> AppResult<Option<EventExceptionSyncSource>> {
+    conn.query_row(
+        "SELECT event_id,original_occurrence,replacement_event_id,is_cancelled,created_at,updated_at, \
+                version,deleted_at,origin_device_id \
+         FROM event_exceptions WHERE event_id=?1 AND original_occurrence=?2",
+        params![event_id, original_occurrence],
+        |row| {
+            let event_id: String = row.get(0)?;
+            let original_occurrence: String = row.get(1)?;
+            Ok(EventExceptionSyncSource {
+                id: event_exception_entity_id(&event_id, &original_occurrence),
+                event_id,
+                original_occurrence,
+                replacement_event_id: row.get(2)?,
+                is_cancelled: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                version: row.get(6)?,
+                deleted_at: row.get(7)?,
+                origin_device_id: row.get(8)?,
+            })
+        },
+    ).optional().map_err(Into::into)
+}
+
+fn get_task_list_sync_source(conn: &Connection, id: &str) -> AppResult<Option<TaskListSyncSource>> {
+    conn.query_row(
+        "SELECT id,name,color,created_at,updated_at,version,deleted_at,origin_device_id \
+         FROM task_lists WHERE id=?1",
+        [id],
+        |row| {
+            Ok(TaskListSyncSource {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                version: row.get(5)?,
+                deleted_at: row.get(6)?,
+                origin_device_id: row.get(7)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn get_task_sync_source(conn: &Connection, id: &str) -> AppResult<Option<TaskSyncSource>> {
+    conn.query_row(
+        "SELECT t.id,t.task_list_id,COALESCE(p.parent_id,t.parent_id),t.title,t.description,t.status, \
+                t.priority,t.starts_at,t.due_date,t.due_at,t.due_timezone,t.is_important,t.my_day_date, \
+                t.completed_at,t.recurrence_rule,t.recurrence_anchor,t.recurrence_source_id,t.sort_order, \
+                t.created_at,t.updated_at,t.version,t.deleted_at,t.origin_device_id \
+         FROM tasks t LEFT JOIN task_sync_parents p ON p.task_id=t.id WHERE t.id=?1",
+        [id],
+        |row| {
+            Ok(TaskSyncSource {
+                id: row.get(0)?, task_list_id: row.get(1)?, parent_id: row.get(2)?,
+                title: row.get(3)?, description: row.get(4)?, status: row.get(5)?, priority: row.get(6)?,
+                starts_at: row.get(7)?, due_date: row.get(8)?, due_at: row.get(9)?,
+                due_timezone: row.get(10)?, is_important: row.get(11)?, my_day_date: row.get(12)?,
+                completed_at: row.get(13)?, recurrence_rule: row.get(14)?,
+                recurrence_anchor: row.get(15)?, recurrence_source_id: row.get(16)?,
+                sort_order: row.get(17)?, created_at: row.get(18)?, updated_at: row.get(19)?,
+                version: row.get(20)?, deleted_at: row.get(21)?, origin_device_id: row.get(22)?,
+            })
+        },
+    ).optional().map_err(Into::into)
+}
+
+fn enqueue_calendar(conn: &Connection, id: &str) -> AppResult<()> {
+    let source = get_calendar_sync_source(conn, id)?.ok_or_else(|| {
+        AppError::Other(format!("calendar `{id}` disappeared during sync enqueue"))
+    })?;
+    let payload = serde_json::to_value(&source)?;
+    super::sync::enqueue_projection(
+        conn,
+        crate::sync::payload::SyncEntityType::Calendar,
+        &source.id,
+        source.version,
+        source.deleted_at.is_some(),
+        &payload,
+    )?;
+    Ok(())
+}
+
+fn enqueue_event(conn: &Connection, id: &str) -> AppResult<()> {
+    let source = get_event_sync_source(conn, id)?.ok_or_else(|| {
+        AppError::Other(format!(
+            "calendar event `{id}` disappeared during sync enqueue"
+        ))
+    })?;
+    let payload = serde_json::to_value(&source)?;
+    super::sync::enqueue_projection(
+        conn,
+        crate::sync::payload::SyncEntityType::CalendarEvent,
+        &source.id,
+        source.version,
+        source.deleted_at.is_some(),
+        &payload,
+    )?;
+    Ok(())
+}
+
+fn enqueue_exception(
+    conn: &Connection,
+    event_id: &str,
+    original_occurrence: &str,
+) -> AppResult<()> {
+    let source = get_exception_sync_source(conn, event_id, original_occurrence)?.ok_or_else(|| {
+        AppError::Other(format!("event exception `{event_id}` `{original_occurrence}` disappeared during sync enqueue"))
+    })?;
+    let payload = serde_json::to_value(&source)?;
+    super::sync::enqueue_projection(
+        conn,
+        crate::sync::payload::SyncEntityType::EventException,
+        &source.id,
+        source.version,
+        source.deleted_at.is_some(),
+        &payload,
+    )?;
+    Ok(())
+}
+
+fn enqueue_task_list(conn: &Connection, id: &str) -> AppResult<()> {
+    let source = get_task_list_sync_source(conn, id)?.ok_or_else(|| {
+        AppError::Other(format!("task list `{id}` disappeared during sync enqueue"))
+    })?;
+    let payload = serde_json::to_value(&source)?;
+    super::sync::enqueue_projection(
+        conn,
+        crate::sync::payload::SyncEntityType::TaskList,
+        &source.id,
+        source.version,
+        source.deleted_at.is_some(),
+        &payload,
+    )?;
+    Ok(())
+}
+
+fn enqueue_task(conn: &Connection, id: &str) -> AppResult<()> {
+    let source = get_task_sync_source(conn, id)?
+        .ok_or_else(|| AppError::Other(format!("task `{id}` disappeared during sync enqueue")))?;
+    let payload = serde_json::to_value(&source)?;
+    super::sync::enqueue_projection(
+        conn,
+        crate::sync::payload::SyncEntityType::Task,
+        &source.id,
+        source.version,
+        source.deleted_at.is_some(),
+        &payload,
+    )?;
+    Ok(())
+}
+
+fn set_task_sync_parent(
+    conn: &Connection,
+    task_id: &str,
+    parent_id: Option<&str>,
+) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO task_sync_parents (task_id,parent_id) VALUES (?1,?2) \
+         ON CONFLICT(task_id) DO UPDATE SET parent_id=excluded.parent_id",
+        params![task_id, parent_id],
+    )?;
+    Ok(())
+}
+
 pub fn list_calendars(conn: &Connection) -> AppResult<Vec<CalendarRow>> {
     let mut statement = conn.prepare("SELECT id, name, color, timezone FROM calendars WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE, id")?;
     let rows = statement.query_map([], |r| {
@@ -565,7 +886,7 @@ pub fn list_calendars(conn: &Connection) -> AppResult<Vec<CalendarRow>> {
     Ok(rows.collect::<Result<_, _>>()?)
 }
 pub fn create_calendar(
-    conn: &Connection,
+    conn: &mut Connection,
     id: &str,
     name: &str,
     color: Option<String>,
@@ -573,17 +894,22 @@ pub fn create_calendar(
 ) -> AppResult<()> {
     let timezone = parse_timezone(&required(timezone, "Timezone")?)?;
     let timestamp = now();
-    conn.execute(
-        "INSERT INTO calendars (id,name,color,timezone,created_at,updated_at) \
-         VALUES (?1,?2,?3,?4,?5,?5)",
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&transaction)?;
+    transaction.execute(
+        "INSERT INTO calendars (id,name,color,timezone,created_at,updated_at,version,origin_device_id) \
+         VALUES (?1,?2,?3,?4,?5,?5,1,?6)",
         params![
             id,
             required(name, "Calendar name")?,
             nullable(color),
             timezone.name(),
-            timestamp
+            timestamp,
+            device_id,
         ],
     )?;
+    enqueue_calendar(&transaction, id)?;
+    transaction.commit()?;
     Ok(())
 }
 pub fn list_events(
@@ -700,7 +1026,7 @@ pub fn list_events(
     Ok(output)
 }
 pub fn create_event(
-    conn: &Connection,
+    conn: &mut Connection,
     id: &str,
     calendar_id: &str,
     title: &str,
@@ -718,10 +1044,12 @@ pub fn create_event(
     let timezone = parse_timezone(&required(timezone, "Timezone")?)?;
     let recurrence_rule = recurrence(recurrence_rule, starts_at, timezone)?;
     let timestamp = now();
-    conn.execute(
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&transaction)?;
+    transaction.execute(
         "INSERT INTO calendar_events \
-         (id,calendar_id,title,starts_at,ends_at,timezone,all_day,recurrence_rule,created_at,updated_at) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
+         (id,calendar_id,title,starts_at,ends_at,timezone,all_day,recurrence_rule,created_at,updated_at,version,origin_device_id) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,1,?10)",
         params![
             id,
             calendar_id,
@@ -731,9 +1059,12 @@ pub fn create_event(
             timezone.name(),
             all_day as i64,
             recurrence_rule,
-            timestamp
+            timestamp,
+            device_id,
         ],
     )?;
+    enqueue_event(&transaction, id)?;
+    transaction.commit()?;
     Ok(())
 }
 
@@ -783,20 +1114,46 @@ pub fn update_event(conn: &mut Connection, id: &str, changes: EventUpdate) -> Ap
         || timezone != current_timezone
         || recurrence_rule != current.recurrence_rule;
     let timestamp = now();
-    let transaction = conn.transaction()?;
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&transaction)?;
+    let cleared = if schedule_changed {
+        let mut statement = transaction.prepare(
+            "SELECT original_occurrence,replacement_event_id FROM event_exceptions \
+             WHERE event_id=?1 AND deleted_at IS NULL",
+        )?;
+        let rows = statement
+            .query_map([id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    } else {
+        Vec::new()
+    };
     transaction.execute(
-        "UPDATE calendar_events SET title=?1,starts_at=?2,ends_at=?3,timezone=?4,all_day=?5,recurrence_rule=?6,updated_at=?7,version=version+1 WHERE id=?8 AND deleted_at IS NULL",
-        params![title, format_instant(starts_at), format_instant(ends_at), timezone.name(), all_day as i64, recurrence_rule, timestamp, id],
+        "UPDATE calendar_events SET title=?1,starts_at=?2,ends_at=?3,timezone=?4,all_day=?5,recurrence_rule=?6,updated_at=?7,version=version+1,origin_device_id=?8 WHERE id=?9 AND deleted_at IS NULL",
+        params![title, format_instant(starts_at), format_instant(ends_at), timezone.name(), all_day as i64, recurrence_rule, timestamp, device_id, id],
     )?;
     if schedule_changed {
         transaction.execute(
-            "UPDATE calendar_events SET deleted_at=?1,updated_at=?1,version=version+1 \
+            "UPDATE calendar_events SET deleted_at=?1,updated_at=?1,version=version+1,origin_device_id=?2 \
              WHERE id IN (SELECT replacement_event_id FROM event_exceptions \
-                          WHERE event_id=?2 AND replacement_event_id IS NOT NULL)",
-            params![timestamp, id],
+                          WHERE event_id=?3 AND replacement_event_id IS NOT NULL) AND deleted_at IS NULL",
+            params![timestamp, device_id, id],
         )?;
-        transaction.execute("DELETE FROM event_exceptions WHERE event_id=?1", [id])?;
+        transaction.execute(
+            "UPDATE event_exceptions SET deleted_at=?1,updated_at=?1,version=version+1,origin_device_id=?2 \
+             WHERE event_id=?3 AND deleted_at IS NULL",
+            params![timestamp, device_id, id],
+        )?;
+        for (original_occurrence, replacement_id) in &cleared {
+            if let Some(replacement_id) = replacement_id {
+                enqueue_event(&transaction, replacement_id)?;
+            }
+            enqueue_exception(&transaction, id, original_occurrence)?;
+        }
     }
+    enqueue_event(&transaction, id)?;
     transaction.commit()?;
     Ok(master_row(&StoredEvent {
         id: id.to_string(),
@@ -824,14 +1181,15 @@ pub fn update_occurrence(
             "Occurrence update must change at least one field".into(),
         ));
     }
-    let transaction = conn.transaction()?;
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&transaction)?;
     let master = get_event(&transaction, event_id)?;
     let (original_occurrence, generated_start, generated_end) =
         generated_occurrence(&master, original_occurrence)?;
     let existing_replacement_id = transaction
         .query_row(
             "SELECT replacement_event_id FROM event_exceptions \
-             WHERE event_id=?1 AND original_occurrence=?2",
+             WHERE event_id=?1 AND original_occurrence=?2 AND deleted_at IS NULL",
             params![event_id, original_occurrence],
             |row| row.get::<_, Option<String>>(0),
         )
@@ -906,13 +1264,13 @@ pub fn update_occurrence(
     let timestamp = now();
     transaction.execute(
         "INSERT INTO calendar_events \
-         (id,calendar_id,title,starts_at,ends_at,timezone,all_day,recurrence_rule,recurrence_id,status,created_at,updated_at,deleted_at) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9,?10,?10,NULL) \
+         (id,calendar_id,title,starts_at,ends_at,timezone,all_day,recurrence_rule,recurrence_id,status,created_at,updated_at,deleted_at,version,origin_device_id) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9,?10,?10,NULL,1,?11) \
          ON CONFLICT(id) DO UPDATE SET \
            calendar_id=excluded.calendar_id,title=excluded.title,starts_at=excluded.starts_at, \
            ends_at=excluded.ends_at,timezone=excluded.timezone,all_day=excluded.all_day, \
            recurrence_rule=NULL,recurrence_id=excluded.recurrence_id,status=excluded.status, \
-           updated_at=excluded.updated_at,deleted_at=NULL,version=calendar_events.version+1",
+           updated_at=excluded.updated_at,deleted_at=NULL,version=calendar_events.version+1,origin_device_id=excluded.origin_device_id",
         params![
             replacement_id,
             master.calendar_id,
@@ -923,17 +1281,21 @@ pub fn update_occurrence(
             all_day as i64,
             original_occurrence,
             status,
-            timestamp
+            timestamp,
+            device_id,
         ],
     )?;
     transaction.execute(
         "INSERT INTO event_exceptions \
-         (event_id,original_occurrence,replacement_event_id,is_cancelled,created_at,updated_at) \
-         VALUES (?1,?2,?3,0,?4,?4) \
+         (event_id,original_occurrence,replacement_event_id,is_cancelled,created_at,updated_at,version,deleted_at,origin_device_id) \
+         VALUES (?1,?2,?3,0,?4,?4,1,NULL,?5) \
          ON CONFLICT(event_id,original_occurrence) DO UPDATE SET \
-           replacement_event_id=excluded.replacement_event_id,is_cancelled=0,updated_at=excluded.updated_at",
-        params![event_id, original_occurrence, replacement_id, timestamp],
+           replacement_event_id=excluded.replacement_event_id,is_cancelled=0,updated_at=excluded.updated_at, \
+           deleted_at=NULL,version=event_exceptions.version+1,origin_device_id=excluded.origin_device_id",
+        params![event_id, original_occurrence, replacement_id, timestamp, device_id],
     )?;
+    enqueue_event(&transaction, replacement_id)?;
+    enqueue_exception(&transaction, event_id, &original_occurrence)?;
     transaction.commit()?;
     occurrence_row(
         &master,
@@ -960,18 +1322,37 @@ pub fn cancel_occurrence(
     event_id: &str,
     original_occurrence: &str,
 ) -> AppResult<()> {
-    let transaction = conn.transaction()?;
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&transaction)?;
     let master = get_event(&transaction, event_id)?;
     let (original_occurrence, _, _) = generated_occurrence(&master, original_occurrence)?;
+    let replacement_id = transaction
+        .query_row(
+            "SELECT replacement_event_id FROM event_exceptions WHERE event_id=?1 AND original_occurrence=?2 AND deleted_at IS NULL",
+            params![event_id, original_occurrence],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
     let timestamp = now();
+    if let Some(replacement_id) = &replacement_id {
+        transaction.execute(
+            "UPDATE calendar_events SET deleted_at=?1,updated_at=?1,version=version+1,origin_device_id=?2 \
+             WHERE id=?3 AND deleted_at IS NULL",
+            params![timestamp, device_id, replacement_id],
+        )?;
+        enqueue_event(&transaction, replacement_id)?;
+    }
     transaction.execute(
         "INSERT INTO event_exceptions \
-         (event_id,original_occurrence,replacement_event_id,is_cancelled,created_at,updated_at) \
-         VALUES (?1,?2,NULL,1,?3,?3) \
+         (event_id,original_occurrence,replacement_event_id,is_cancelled,created_at,updated_at,version,deleted_at,origin_device_id) \
+         VALUES (?1,?2,NULL,1,?3,?3,1,NULL,?4) \
          ON CONFLICT(event_id,original_occurrence) DO UPDATE SET \
-           is_cancelled=1,updated_at=excluded.updated_at",
-        params![event_id, original_occurrence, timestamp],
+           replacement_event_id=NULL,is_cancelled=1,updated_at=excluded.updated_at,deleted_at=NULL, \
+           version=event_exceptions.version+1,origin_device_id=excluded.origin_device_id",
+        params![event_id, original_occurrence, timestamp, device_id],
     )?;
+    enqueue_exception(&transaction, event_id, &original_occurrence)?;
     transaction.commit()?;
     Ok(())
 }
@@ -981,7 +1362,8 @@ pub fn restore_occurrence(
     event_id: &str,
     original_occurrence: &str,
 ) -> AppResult<()> {
-    let transaction = conn.transaction()?;
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&transaction)?;
     let master = get_event(&transaction, event_id)?;
     let (original_occurrence, _, _) = generated_occurrence(&master, original_occurrence)?;
     let replacement_id = transaction
@@ -996,21 +1378,27 @@ pub fn restore_occurrence(
     let timestamp = now();
     if let Some(replacement_id) = replacement_id {
         transaction.execute(
-            "UPDATE calendar_events SET deleted_at=?1,updated_at=?1,version=version+1 \
-             WHERE id=?2 AND deleted_at IS NULL",
-            params![timestamp, replacement_id],
+            "UPDATE calendar_events SET deleted_at=?1,updated_at=?1,version=version+1,origin_device_id=?2 \
+             WHERE id=?3 AND deleted_at IS NULL",
+            params![timestamp, device_id, replacement_id],
         )?;
+        enqueue_event(&transaction, &replacement_id)?;
     }
-    transaction.execute(
-        "DELETE FROM event_exceptions WHERE event_id=?1 AND original_occurrence=?2",
-        params![event_id, original_occurrence],
+    let restored = transaction.execute(
+        "UPDATE event_exceptions SET deleted_at=?1,updated_at=?1,version=version+1,origin_device_id=?2 \
+         WHERE event_id=?3 AND original_occurrence=?4 AND deleted_at IS NULL",
+        params![timestamp, device_id, event_id, original_occurrence],
     )?;
+    if restored > 0 {
+        enqueue_exception(&transaction, event_id, &original_occurrence)?;
+    }
     transaction.commit()?;
     Ok(())
 }
 
 pub fn delete_event(conn: &mut Connection, id: &str) -> AppResult<()> {
-    let transaction = conn.transaction()?;
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&transaction)?;
     let event = get_event(&transaction, id)?;
     if event.recurrence_id.is_some() {
         return Err(AppError::Other(
@@ -1018,19 +1406,42 @@ pub fn delete_event(conn: &mut Connection, id: &str) -> AppResult<()> {
         ));
     }
     let timestamp = now();
+    let exceptions = {
+        let mut statement = transaction.prepare(
+            "SELECT original_occurrence,replacement_event_id FROM event_exceptions \
+             WHERE event_id=?1 AND deleted_at IS NULL",
+        )?;
+        let rows = statement
+            .query_map([id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
     transaction.execute(
-        "UPDATE calendar_events SET deleted_at=?1,updated_at=?1,version=version+1 \
+        "UPDATE calendar_events SET deleted_at=?1,updated_at=?1,version=version+1,origin_device_id=?2 \
          WHERE id IN (SELECT replacement_event_id FROM event_exceptions \
-                      WHERE event_id=?2 AND replacement_event_id IS NOT NULL) \
+                      WHERE event_id=?3 AND replacement_event_id IS NOT NULL) \
            AND deleted_at IS NULL",
-        params![timestamp, id],
+        params![timestamp, device_id, id],
     )?;
-    transaction.execute("DELETE FROM event_exceptions WHERE event_id=?1", [id])?;
     transaction.execute(
-        "UPDATE calendar_events SET deleted_at=?1,updated_at=?1,version=version+1 \
-         WHERE id=?2 AND deleted_at IS NULL",
-        params![timestamp, id],
+        "UPDATE event_exceptions SET deleted_at=?1,updated_at=?1,version=version+1,origin_device_id=?2 \
+         WHERE event_id=?3 AND deleted_at IS NULL",
+        params![timestamp, device_id, id],
     )?;
+    transaction.execute(
+        "UPDATE calendar_events SET deleted_at=?1,updated_at=?1,version=version+1,origin_device_id=?2 \
+         WHERE id=?3 AND deleted_at IS NULL",
+        params![timestamp, device_id, id],
+    )?;
+    for (original_occurrence, replacement_id) in &exceptions {
+        if let Some(replacement_id) = replacement_id {
+            enqueue_event(&transaction, replacement_id)?;
+        }
+        enqueue_exception(&transaction, id, original_occurrence)?;
+    }
+    enqueue_event(&transaction, id)?;
     transaction.commit()?;
     Ok(())
 }
@@ -1050,21 +1461,27 @@ pub fn list_task_lists(conn: &Connection) -> AppResult<Vec<TaskListRow>> {
     Ok(rows.collect::<Result<_, _>>()?)
 }
 pub fn create_task_list(
-    conn: &Connection,
+    conn: &mut Connection,
     id: &str,
     name: &str,
     color: Option<String>,
 ) -> AppResult<()> {
     let timestamp = now();
-    conn.execute(
-        "INSERT INTO task_lists (id,name,color,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&transaction)?;
+    transaction.execute(
+        "INSERT INTO task_lists (id,name,color,created_at,updated_at,version,origin_device_id) \
+         VALUES (?1,?2,?3,?4,?4,1,?5)",
         params![
             id,
             required(name, "Task list name")?,
             nullable(color),
-            timestamp
+            timestamp,
+            device_id,
         ],
     )?;
+    enqueue_task_list(&transaction, id)?;
+    transaction.commit()?;
     Ok(())
 }
 
@@ -1092,10 +1509,10 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRow> {
 }
 
 const TASK_SELECT: &str =
-    "SELECT id,task_list_id,parent_id,title,description,status,priority,starts_at, \
-            due_date,due_at,due_timezone,is_important,my_day_date,completed_at, \
-            recurrence_rule,recurrence_anchor,recurrence_source_id,sort_order \
-     FROM tasks";
+    "SELECT t.id,t.task_list_id,COALESCE(p.parent_id,t.parent_id),t.title,t.description,t.status,t.priority,t.starts_at, \
+            t.due_date,t.due_at,t.due_timezone,t.is_important,t.my_day_date,t.completed_at, \
+            t.recurrence_rule,t.recurrence_anchor,t.recurrence_source_id,t.sort_order \
+     FROM tasks t LEFT JOIN task_sync_parents p ON p.task_id=t.id";
 
 fn get_task(conn: &Connection, id: &str) -> AppResult<TaskRow> {
     conn.query_row(
@@ -1127,7 +1544,7 @@ pub fn list_all_tasks(conn: &Connection) -> AppResult<Vec<TaskRow>> {
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-pub fn create_task(conn: &Connection, task: NewTask) -> AppResult<()> {
+pub fn create_task(conn: &mut Connection, task: NewTask) -> AppResult<()> {
     if !(0..=4).contains(&task.priority) {
         return Err(AppError::Other(
             "Task priority must be between 0 and 4".into(),
@@ -1141,16 +1558,20 @@ pub fn create_task(conn: &Connection, task: NewTask) -> AppResult<()> {
         task.recurrence_rule,
         None,
     )?;
+    let task_id = task.id.clone();
+    let parent_id = nullable(task.parent_id.clone());
     let timestamp = now();
-    conn.execute(
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&transaction)?;
+    transaction.execute(
         "INSERT INTO tasks \
          (id,task_list_id,parent_id,title,description,priority,due_date,due_at,due_timezone, \
-          is_important,my_day_date,recurrence_rule,recurrence_anchor,sort_order,created_at,updated_at) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15)",
+          is_important,my_day_date,recurrence_rule,recurrence_anchor,sort_order,created_at,updated_at,version,origin_device_id) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15,1,?16)",
         params![
-            task.id,
+            task_id,
             task.task_list_id,
-            nullable(task.parent_id),
+            parent_id,
             required(&task.title, "Task title")?,
             nullable(task.description),
             task.priority,
@@ -1162,9 +1583,13 @@ pub fn create_task(conn: &Connection, task: NewTask) -> AppResult<()> {
             schedule.recurrence_rule,
             schedule.recurrence_anchor,
             task.sort_order,
-            timestamp
+            timestamp,
+            device_id,
         ],
     )?;
+    set_task_sync_parent(&transaction, &task_id, parent_id.as_deref())?;
+    enqueue_task(&transaction, &task_id)?;
+    transaction.commit()?;
     Ok(())
 }
 
@@ -1225,9 +1650,10 @@ pub fn complete_task(
     conn: &mut Connection,
     id: &str,
     completed: bool,
-    next_task_id: &str,
+    _next_task_id: &str,
 ) -> AppResult<()> {
-    let transaction = conn.transaction()?;
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&transaction)?;
     let task = get_task(&transaction, id)?;
     if (task.status == "completed") == completed {
         return Ok(());
@@ -1235,12 +1661,13 @@ pub fn complete_task(
     let timestamp = now();
     let completed_at = completed.then_some(timestamp.as_str());
     let changed = transaction.execute(
-        "UPDATE tasks SET status=?1,completed_at=?2,updated_at=?3,version=version+1 \
-         WHERE id=?4 AND deleted_at IS NULL",
+        "UPDATE tasks SET status=?1,completed_at=?2,updated_at=?3,version=version+1,origin_device_id=?4 \
+         WHERE id=?5 AND deleted_at IS NULL",
         params![
             if completed { "completed" } else { "open" },
             completed_at,
             timestamp,
+            device_id,
             id
         ],
     )?;
@@ -1249,12 +1676,21 @@ pub fn complete_task(
     }
     if completed {
         if let Some((due_date, due_at)) = next_task_schedule(&task)? {
-            transaction.execute(
-                "INSERT OR IGNORE INTO tasks \
+            let next_task_id = recurring_task_id(&task.id, due_date.as_deref(), due_at.as_deref());
+            let inserted = transaction.execute(
+                "INSERT INTO tasks \
                  (id,task_list_id,parent_id,title,description,status,priority,starts_at,due_date,due_at, \
                   due_timezone,is_important,my_day_date,completed_at,recurrence_rule,recurrence_anchor, \
-                  recurrence_source_id,sort_order,created_at,updated_at) \
-                 VALUES (?1,?2,?3,?4,?5,'open',?6,?7,?8,?9,?10,?11,NULL,NULL,?12,?13,?14,?15,?16,?16)",
+                  recurrence_source_id,sort_order,created_at,updated_at,version,origin_device_id) \
+                 VALUES (?1,?2,?3,?4,?5,'open',?6,?7,?8,?9,?10,?11,NULL,NULL,?12,?13,?14,?15,?16,?16,1,?17) \
+                 ON CONFLICT(id) DO UPDATE SET task_list_id=excluded.task_list_id,parent_id=excluded.parent_id, \
+                   title=excluded.title,description=excluded.description,status='open',priority=excluded.priority, \
+                   starts_at=excluded.starts_at,due_date=excluded.due_date,due_at=excluded.due_at, \
+                   due_timezone=excluded.due_timezone,is_important=excluded.is_important,my_day_date=NULL, \
+                   completed_at=NULL,recurrence_rule=excluded.recurrence_rule, \
+                   recurrence_anchor=excluded.recurrence_anchor,recurrence_source_id=excluded.recurrence_source_id, \
+                   sort_order=excluded.sort_order,updated_at=excluded.updated_at,version=tasks.version+1, \
+                   deleted_at=NULL,origin_device_id=excluded.origin_device_id",
                 params![
                     next_task_id,
                     task.task_list_id,
@@ -1271,22 +1707,41 @@ pub fn complete_task(
                     task.recurrence_anchor,
                     task.id,
                     task.sort_order,
-                    timestamp
+                    timestamp,
+                    device_id,
                 ],
             )?;
+            if inserted > 0 {
+                set_task_sync_parent(&transaction, &next_task_id, task.parent_id.as_deref())?;
+                enqueue_task(&transaction, &next_task_id)?;
+            }
         }
     } else {
+        let generated_ids = {
+            let mut statement = transaction.prepare(
+                "SELECT id FROM tasks WHERE recurrence_source_id=?1 AND status='open' \
+                 AND version=1 AND deleted_at IS NULL",
+            )?;
+            let rows = statement
+                .query_map([id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
         transaction.execute(
-            "UPDATE tasks SET deleted_at=?1,updated_at=?1,version=version+1 \
-             WHERE recurrence_source_id=?2 AND status='open' AND version=1 AND deleted_at IS NULL",
-            params![timestamp, id],
+            "UPDATE tasks SET deleted_at=?1,updated_at=?1,version=version+1,origin_device_id=?2 \
+             WHERE recurrence_source_id=?3 AND status='open' AND version=1 AND deleted_at IS NULL",
+            params![timestamp, device_id, id],
         )?;
+        for generated_id in generated_ids {
+            enqueue_task(&transaction, &generated_id)?;
+        }
     }
+    enqueue_task(&transaction, id)?;
     transaction.commit()?;
     Ok(())
 }
 
-pub fn update_task(conn: &Connection, id: &str, changes: TaskUpdate) -> AppResult<TaskRow> {
+pub fn update_task(conn: &mut Connection, id: &str, changes: TaskUpdate) -> AppResult<TaskRow> {
     if changes.is_empty() {
         return Err(AppError::Other(
             "Task update must change at least one field".into(),
@@ -1325,11 +1780,13 @@ pub fn update_task(conn: &Connection, id: &str, changes: TaskUpdate) -> AppResul
     };
     let sort_order = changes.sort_order.unwrap_or(current.sort_order);
     let timestamp = now();
-    conn.execute(
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&transaction)?;
+    transaction.execute(
         "UPDATE tasks SET title=?1,description=?2,priority=?3,due_date=?4,due_at=?5, \
          due_timezone=?6,is_important=?7,my_day_date=?8,recurrence_rule=?9, \
-         recurrence_anchor=?10,sort_order=?11,updated_at=?12,version=version+1 \
-         WHERE id=?13 AND deleted_at IS NULL",
+         recurrence_anchor=?10,sort_order=?11,updated_at=?12,version=version+1,origin_device_id=?13 \
+         WHERE id=?14 AND deleted_at IS NULL",
         params![
             title,
             description,
@@ -1343,9 +1800,12 @@ pub fn update_task(conn: &Connection, id: &str, changes: TaskUpdate) -> AppResul
             schedule.recurrence_anchor,
             sort_order,
             timestamp,
+            device_id,
             id
         ],
     )?;
+    enqueue_task(&transaction, id)?;
+    transaction.commit()?;
     Ok(TaskRow {
         id: id.to_string(),
         task_list_id: current.task_list_id,
@@ -1368,16 +1828,30 @@ pub fn update_task(conn: &Connection, id: &str, changes: TaskUpdate) -> AppResul
     })
 }
 
-pub fn delete_task(conn: &Connection, id: &str) -> AppResult<()> {
+pub fn delete_task(conn: &mut Connection, id: &str) -> AppResult<()> {
     let timestamp = now();
-    let changed = conn.execute(
-        "UPDATE tasks SET deleted_at=?1,updated_at=?1,version=version+1 \
-         WHERE (id=?2 OR parent_id=?2) AND deleted_at IS NULL",
-        params![timestamp, id],
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&transaction)?;
+    let task_ids = {
+        let mut statement = transaction
+            .prepare("SELECT id FROM tasks WHERE (id=?1 OR parent_id=?1) AND deleted_at IS NULL")?;
+        let rows = statement
+            .query_map([id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    let changed = transaction.execute(
+        "UPDATE tasks SET deleted_at=?1,updated_at=?1,version=version+1,origin_device_id=?2 \
+         WHERE (id=?3 OR parent_id=?3) AND deleted_at IS NULL",
+        params![timestamp, device_id, id],
     )?;
     if changed == 0 {
         return Err(AppError::Other("Task does not exist".into()));
     }
+    for task_id in task_ids {
+        enqueue_task(&transaction, &task_id)?;
+    }
+    transaction.commit()?;
     Ok(())
 }
 
@@ -1386,7 +1860,7 @@ mod tests {
     use super::*;
 
     fn create_test_task(
-        conn: &Connection,
+        conn: &mut Connection,
         id: &str,
         task_list_id: &str,
         due_date: Option<&str>,
@@ -1417,9 +1891,9 @@ mod tests {
     fn updates_events_and_tasks_without_overwriting_omitted_fields() {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::db::migrations::apply(&mut conn).unwrap();
-        create_calendar(&conn, "calendar-1", "Personal", None, "Asia/Shanghai").unwrap();
+        create_calendar(&mut conn, "calendar-1", "Personal", None, "Asia/Shanghai").unwrap();
         create_event(
-            &conn,
+            &mut conn,
             "event-1",
             "calendar-1",
             "Planning",
@@ -1463,9 +1937,9 @@ mod tests {
         )
         .is_err());
 
-        create_task_list(&conn, "task-list-1", "Work", None).unwrap();
+        create_task_list(&mut conn, "task-list-1", "Work", None).unwrap();
         create_task(
-            &conn,
+            &mut conn,
             NewTask {
                 id: "task-1".into(),
                 task_list_id: "task-list-1".into(),
@@ -1485,7 +1959,7 @@ mod tests {
         .unwrap();
 
         let task = update_task(
-            &conn,
+            &mut conn,
             "task-1",
             TaskUpdate {
                 title: None,
@@ -1511,8 +1985,8 @@ mod tests {
     fn completes_reopens_and_completes_a_task_again() {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::db::migrations::apply(&mut conn).unwrap();
-        create_task_list(&conn, "list-1", "Work", None).unwrap();
-        create_test_task(&conn, "task-1", "list-1", None, None, None).unwrap();
+        create_task_list(&mut conn, "list-1", "Work", None).unwrap();
+        create_test_task(&mut conn, "task-1", "list-1", None, None, None).unwrap();
 
         complete_task(&mut conn, "task-1", true, "unused-next-1").unwrap();
         complete_task(&mut conn, "task-1", false, "unused-next-2").unwrap();
@@ -1535,10 +2009,10 @@ mod tests {
     fn validates_task_dates_times_and_recurrence_requirements() {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::db::migrations::apply(&mut conn).unwrap();
-        create_task_list(&conn, "list-1", "Work", None).unwrap();
+        create_task_list(&mut conn, "list-1", "Work", None).unwrap();
 
         assert!(create_task(
-            &conn,
+            &mut conn,
             NewTask {
                 id: "invalid-schedule".into(),
                 task_list_id: "list-1".into(),
@@ -1557,7 +2031,7 @@ mod tests {
         )
         .is_err());
         assert!(create_task(
-            &conn,
+            &mut conn,
             NewTask {
                 id: "invalid-my-day".into(),
                 task_list_id: "list-1".into(),
@@ -1576,7 +2050,7 @@ mod tests {
         )
         .is_err());
         assert!(create_test_task(
-            &conn,
+            &mut conn,
             "invalid-recurrence",
             "list-1",
             None,
@@ -1590,9 +2064,9 @@ mod tests {
     fn creates_and_reconciles_recurring_task_instances() {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::db::migrations::apply(&mut conn).unwrap();
-        create_task_list(&conn, "list-1", "Work", None).unwrap();
+        create_task_list(&mut conn, "list-1", "Work", None).unwrap();
         create_test_task(
-            &conn,
+            &mut conn,
             "task-1",
             "list-1",
             Some("2026-07-17"),
@@ -1602,17 +2076,18 @@ mod tests {
         .unwrap();
 
         complete_task(&mut conn, "task-1", true, "task-2").unwrap();
-        let generated = get_task(&conn, "task-2").unwrap();
+        let generated_id = recurring_task_id("task-1", Some("2026-07-18"), None);
+        let generated = get_task(&conn, &generated_id).unwrap();
         assert_eq!(generated.due_date.as_deref(), Some("2026-07-18"));
         assert_eq!(generated.recurrence_source_id.as_deref(), Some("task-1"));
 
         complete_task(&mut conn, "task-1", false, "unused-next").unwrap();
-        assert!(get_task(&conn, "task-2").is_err());
+        assert!(get_task(&conn, &generated_id).is_err());
 
         complete_task(&mut conn, "task-1", true, "task-2-edited").unwrap();
         update_task(
-            &conn,
-            "task-2-edited",
+            &mut conn,
+            &generated_id,
             TaskUpdate {
                 title: Some("Edited generated task".into()),
                 description: None,
@@ -1629,7 +2104,7 @@ mod tests {
         .unwrap();
         complete_task(&mut conn, "task-1", false, "unused-next").unwrap();
         assert_eq!(
-            get_task(&conn, "task-2-edited").unwrap().title,
+            get_task(&conn, &generated_id).unwrap().title,
             "Edited generated task"
         );
     }
@@ -1638,10 +2113,10 @@ mod tests {
     fn stops_recurring_tasks_at_count_and_lists_then_deletes_them() {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::db::migrations::apply(&mut conn).unwrap();
-        create_task_list(&conn, "list-1", "Work", None).unwrap();
-        create_task_list(&conn, "list-2", "Personal", None).unwrap();
+        create_task_list(&mut conn, "list-1", "Work", None).unwrap();
+        create_task_list(&mut conn, "list-2", "Personal", None).unwrap();
         create_test_task(
-            &conn,
+            &mut conn,
             "task-1",
             "list-1",
             Some("2026-07-17"),
@@ -1649,15 +2124,17 @@ mod tests {
             Some("RRULE:FREQ=DAILY;COUNT=3"),
         )
         .unwrap();
-        create_test_task(&conn, "other-task", "list-2", None, None, None).unwrap();
+        create_test_task(&mut conn, "other-task", "list-2", None, None, None).unwrap();
 
         complete_task(&mut conn, "task-1", true, "task-2").unwrap();
-        complete_task(&mut conn, "task-2", true, "task-3").unwrap();
-        complete_task(&mut conn, "task-3", true, "task-after-count").unwrap();
+        let task_2 = recurring_task_id("task-1", Some("2026-07-18"), None);
+        complete_task(&mut conn, &task_2, true, "task-3").unwrap();
+        let task_3 = recurring_task_id(&task_2, Some("2026-07-19"), None);
+        complete_task(&mut conn, &task_3, true, "task-after-count").unwrap();
 
-        assert!(get_task(&conn, "task-after-count").is_err());
         assert_eq!(list_all_tasks(&conn).unwrap().len(), 4);
-        delete_task(&conn, "other-task").unwrap();
+        assert_eq!(list_all_tasks(&conn).unwrap().len(), 4);
+        delete_task(&mut conn, "other-task").unwrap();
         assert_eq!(list_all_tasks(&conn).unwrap().len(), 3);
     }
 
@@ -1665,9 +2142,16 @@ mod tests {
     fn expands_recurring_events_in_their_iana_timezone() {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::db::migrations::apply(&mut conn).unwrap();
-        create_calendar(&conn, "calendar-1", "Personal", None, "America/New_York").unwrap();
+        create_calendar(
+            &mut conn,
+            "calendar-1",
+            "Personal",
+            None,
+            "America/New_York",
+        )
+        .unwrap();
         create_event(
-            &conn,
+            &mut conn,
             "event-1",
             "calendar-1",
             "Daily standup",
@@ -1703,16 +2187,16 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::db::migrations::apply(&mut conn).unwrap();
         assert!(create_calendar(
-            &conn,
+            &mut conn,
             "invalid-calendar",
             "Invalid",
             None,
             "Mars/Olympus_Mons",
         )
         .is_err());
-        create_calendar(&conn, "calendar-1", "Work", None, "UTC").unwrap();
+        create_calendar(&mut conn, "calendar-1", "Work", None, "UTC").unwrap();
         create_event(
-            &conn,
+            &mut conn,
             "event-1",
             "calendar-1",
             "Focus time",
@@ -1813,9 +2297,9 @@ mod tests {
     fn rejects_invalid_rules_and_clears_stale_exceptions_when_schedule_changes() {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::db::migrations::apply(&mut conn).unwrap();
-        create_calendar(&conn, "calendar-1", "Work", None, "UTC").unwrap();
+        create_calendar(&mut conn, "calendar-1", "Work", None, "UTC").unwrap();
         assert!(create_event(
-            &conn,
+            &mut conn,
             "invalid-event",
             "calendar-1",
             "Invalid",
@@ -1827,7 +2311,7 @@ mod tests {
         )
         .is_err());
         create_event(
-            &conn,
+            &mut conn,
             "event-1",
             "calendar-1",
             "Focus time",
@@ -1855,7 +2339,7 @@ mod tests {
         .unwrap();
         let preserved_exception_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM event_exceptions WHERE event_id='event-1'",
+                "SELECT COUNT(*) FROM event_exceptions WHERE event_id='event-1' AND deleted_at IS NULL",
                 [],
                 |row| row.get(0),
             )
@@ -1877,7 +2361,7 @@ mod tests {
         .unwrap();
         let exception_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM event_exceptions WHERE event_id='event-1'",
+                "SELECT COUNT(*) FROM event_exceptions WHERE event_id='event-1' AND deleted_at IS NULL",
                 [],
                 |row| row.get(0),
             )
@@ -1892,7 +2376,7 @@ mod tests {
         .is_err());
 
         create_event(
-            &conn,
+            &mut conn,
             "dense-event",
             "calendar-1",
             "Heartbeat",
@@ -1913,5 +2397,61 @@ mod tests {
 
         delete_event(&mut conn, "event-1").unwrap();
         assert!(get_event(&conn, "event-1").is_err());
+    }
+
+    #[test]
+    fn planner_writes_enqueue_versioned_entities_but_never_notifications() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::apply(&mut conn).unwrap();
+        create_calendar(&mut conn, "calendar-1", "Work", None, "UTC").unwrap();
+        create_event(
+            &mut conn,
+            "event-1",
+            "calendar-1",
+            "Planning",
+            "2026-07-20T01:00:00Z",
+            "2026-07-20T02:00:00Z",
+            "UTC",
+            false,
+            Some("RRULE:FREQ=DAILY;COUNT=2".into()),
+        )
+        .unwrap();
+        cancel_occurrence(&mut conn, "event-1", "2026-07-21T01:00:00Z").unwrap();
+        create_task_list(&mut conn, "task-list-1", "Work", None).unwrap();
+        create_test_task(
+            &mut conn,
+            "task-1",
+            "task-list-1",
+            Some("2026-07-20"),
+            None,
+            None,
+        )
+        .unwrap();
+        complete_task(&mut conn, "task-1", true, "ignored").unwrap();
+
+        let entities = {
+            let mut statement = conn
+                .prepare("SELECT DISTINCT entity_type FROM sync_outbox ORDER BY entity_type")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let notification_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notifications", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            entities,
+            vec![
+                "calendar".to_string(),
+                "calendar_event".to_string(),
+                "event_exception".to_string(),
+                "task".to_string(),
+                "task_list".to_string(),
+            ]
+        );
+        assert_eq!(notification_count, 0);
     }
 }

@@ -102,6 +102,11 @@ const SYNC_ENTITY_LABELS: Record<string, string> = {
   message: "消息",
   explicit_memory: "必注入记忆",
   memory: "结构化记忆",
+  calendar: "日历",
+  calendar_event: "日历事件",
+  event_exception: "事件例外",
+  task_list: "待办列表",
+  task: "待办",
 };
 
 function conflictPayloadPreview(

@@ -20,6 +20,11 @@ export const entityTypeSchema = z.enum([
   "explicit_memory",
   "memory",
   "workspace",
+  "calendar",
+  "calendar_event",
+  "event_exception",
+  "task_list",
+  "task",
 ]);
 
 export const operationSchema = z.enum(["upsert", "delete"]);

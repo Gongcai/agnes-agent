@@ -171,6 +171,42 @@ fn ensure_planner_task_metadata(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
+fn ensure_planner_sync_metadata(conn: &Connection) -> AppResult<()> {
+    for table in ["calendars", "calendar_events", "task_lists", "tasks"] {
+        ensure_column(conn, table, "version", "INTEGER NOT NULL DEFAULT 1")?;
+        ensure_column(conn, table, "deleted_at", "TEXT")?;
+        ensure_column(conn, table, "origin_device_id", "TEXT")?;
+        conn.execute(
+            &format!("UPDATE {table} SET version = 1 WHERE version IS NULL"),
+            [],
+        )?;
+    }
+    ensure_column(
+        conn,
+        "event_exceptions",
+        "version",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    ensure_column(conn, "event_exceptions", "deleted_at", "TEXT")?;
+    ensure_column(conn, "event_exceptions", "origin_device_id", "TEXT")?;
+    conn.execute(
+        "UPDATE event_exceptions SET version = 1 WHERE version IS NULL",
+        [],
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS task_sync_parents (
+           task_id TEXT PRIMARY KEY,
+           parent_id TEXT
+         );",
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO task_sync_parents (task_id, parent_id) \
+         SELECT id, parent_id FROM tasks",
+        [],
+    )?;
+    Ok(())
+}
+
 fn rename_legacy_document_tables(conn: &Connection) -> AppResult<()> {
     if !table_exists(conn, "documents") || has_column(conn, "documents", "collection_id") {
         return Ok(());
@@ -366,6 +402,7 @@ fn migrate_legacy_documents(conn: &mut Connection) -> AppResult<()> {
 pub fn apply(conn: &mut Connection) -> AppResult<()> {
     conn.execute_batch(crate::db::schema::SCHEMA)?;
     ensure_planner_task_metadata(conn)?;
+    ensure_planner_sync_metadata(conn)?;
     rename_legacy_document_tables(conn)?;
     ensure_knowledge_embedding_metadata(conn)?;
     conn.execute_batch(crate::db::schema::KNOWLEDGE_SCHEMA)?;

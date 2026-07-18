@@ -245,6 +245,103 @@ struct MemoryPayload {
     _origin_device_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CalendarPayload {
+    id: String,
+    name: String,
+    color: Option<String>,
+    timezone: String,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    #[serde(rename = "origin_device_id")]
+    _origin_device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CalendarEventPayload {
+    id: String,
+    calendar_id: String,
+    title: String,
+    description: Option<String>,
+    location: Option<String>,
+    starts_at: String,
+    ends_at: String,
+    timezone: String,
+    all_day: i64,
+    recurrence_rule: Option<String>,
+    recurrence_id: Option<String>,
+    status: String,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    #[serde(rename = "origin_device_id")]
+    _origin_device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventExceptionPayload {
+    id: String,
+    event_id: String,
+    original_occurrence: String,
+    replacement_event_id: Option<String>,
+    is_cancelled: i64,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    #[serde(rename = "origin_device_id")]
+    _origin_device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskListPayload {
+    id: String,
+    name: String,
+    color: Option<String>,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    #[serde(rename = "origin_device_id")]
+    _origin_device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskPayload {
+    id: String,
+    task_list_id: String,
+    parent_id: Option<String>,
+    title: String,
+    description: Option<String>,
+    status: String,
+    priority: i64,
+    starts_at: Option<String>,
+    due_date: Option<String>,
+    due_at: Option<String>,
+    due_timezone: Option<String>,
+    is_important: i64,
+    my_day_date: Option<String>,
+    completed_at: Option<String>,
+    recurrence_rule: Option<String>,
+    recurrence_anchor: Option<String>,
+    recurrence_source_id: Option<String>,
+    sort_order: f64,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    #[serde(rename = "origin_device_id")]
+    _origin_device_id: Option<String>,
+}
+
 pub fn device_id(conn: &Connection) -> AppResult<String> {
     conn.query_row(
         "SELECT device_id FROM sync_runtime_state WHERE singleton = 1",
@@ -745,7 +842,17 @@ fn validate_remote_entity(entity: &RemoteEntityInput) -> AppResult<()> {
         || entity.key_version.is_some()
         || !matches!(
             entity.entity_type.as_str(),
-            "agent" | "workspace" | "session" | "message" | "explicit_memory" | "memory"
+            "agent"
+                | "workspace"
+                | "session"
+                | "message"
+                | "explicit_memory"
+                | "memory"
+                | "calendar"
+                | "calendar_event"
+                | "event_exception"
+                | "task_list"
+                | "task"
         )
     {
         return Err(AppError::Other(format!(
@@ -867,6 +974,15 @@ fn apply_remote_business_row(tx: &Transaction<'_>, entity: &RemoteEntityInput) -
             apply_remote_explicit_memory(tx, entity, serde_json::from_value(payload)?)
         }
         "memory" => apply_remote_memory(tx, entity, serde_json::from_value(payload)?),
+        "calendar" => apply_remote_calendar(tx, entity, serde_json::from_value(payload)?),
+        "calendar_event" => {
+            apply_remote_calendar_event(tx, entity, serde_json::from_value(payload)?)
+        }
+        "event_exception" => {
+            apply_remote_event_exception(tx, entity, serde_json::from_value(payload)?)
+        }
+        "task_list" => apply_remote_task_list(tx, entity, serde_json::from_value(payload)?),
+        "task" => apply_remote_task(tx, entity, serde_json::from_value(payload)?),
         other => Err(AppError::Other(format!(
             "remote entity type `{other}` is not enabled yet"
         ))),
@@ -1201,6 +1317,278 @@ fn apply_remote_memory(
     Ok(())
 }
 
+fn apply_remote_calendar(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    payload: CalendarPayload,
+) -> AppResult<()> {
+    validate_payload_identity(
+        entity,
+        &payload.id,
+        payload.version,
+        payload.deleted_at.as_deref(),
+    )?;
+    if payload.name.trim().is_empty() || payload.timezone.parse::<chrono_tz::Tz>().is_err() {
+        return Err(AppError::Other(format!(
+            "invalid calendar payload for `{}`",
+            entity.entity_id
+        )));
+    }
+    tx.execute(
+        "INSERT INTO calendars (id,name,color,timezone,provider_account_id,created_at,updated_at,version,deleted_at,origin_device_id) \
+         VALUES (?1,?2,?3,?4,NULL,?5,?6,?7,NULL,?8) \
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name,color=excluded.color,timezone=excluded.timezone, \
+         created_at=excluded.created_at,updated_at=excluded.updated_at,version=excluded.version, \
+         deleted_at=NULL,origin_device_id=excluded.origin_device_id",
+        params![payload.id, payload.name, payload.color, payload.timezone, payload.created_at,
+                payload.updated_at, payload.version, entity.origin_device_id],
+    )?;
+    Ok(())
+}
+
+fn apply_remote_calendar_event(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    payload: CalendarEventPayload,
+) -> AppResult<()> {
+    validate_payload_identity(
+        entity,
+        &payload.id,
+        payload.version,
+        payload.deleted_at.as_deref(),
+    )?;
+    if payload.title.trim().is_empty()
+        || !is_valid_entity_id(&payload.calendar_id)
+        || !matches!(payload.all_day, 0 | 1)
+        || !matches!(
+            payload.status.as_str(),
+            "confirmed" | "tentative" | "cancelled"
+        )
+        || payload.timezone.parse::<chrono_tz::Tz>().is_err()
+        || payload
+            .recurrence_id
+            .as_deref()
+            .is_some_and(|id| id.trim().is_empty())
+    {
+        return Err(AppError::Other(format!(
+            "invalid calendar event payload for `{}`",
+            entity.entity_id
+        )));
+    }
+    let starts_at = chrono::DateTime::parse_from_rfc3339(&payload.starts_at).map_err(|_| {
+        AppError::Other(format!(
+            "invalid calendar event start for `{}`",
+            entity.entity_id
+        ))
+    })?;
+    let ends_at = chrono::DateTime::parse_from_rfc3339(&payload.ends_at).map_err(|_| {
+        AppError::Other(format!(
+            "invalid calendar event end for `{}`",
+            entity.entity_id
+        ))
+    })?;
+    if ends_at <= starts_at
+        || payload
+            .recurrence_rule
+            .as_deref()
+            .is_some_and(|rule| !rule.starts_with("RRULE:"))
+    {
+        return Err(AppError::Other(format!(
+            "invalid calendar event schedule for `{}`",
+            entity.entity_id
+        )));
+    }
+    tx.execute(
+        "INSERT INTO calendar_events (id,calendar_id,title,description,location,starts_at,ends_at,timezone,all_day, \
+         recurrence_rule,recurrence_id,status,created_at,updated_at,version,deleted_at,origin_device_id) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,NULL,?16) \
+         ON CONFLICT(id) DO UPDATE SET calendar_id=excluded.calendar_id,title=excluded.title, \
+         description=excluded.description,location=excluded.location,starts_at=excluded.starts_at,ends_at=excluded.ends_at, \
+         timezone=excluded.timezone,all_day=excluded.all_day,recurrence_rule=excluded.recurrence_rule, \
+         recurrence_id=excluded.recurrence_id,status=excluded.status,created_at=excluded.created_at, \
+         updated_at=excluded.updated_at,version=excluded.version,deleted_at=NULL,origin_device_id=excluded.origin_device_id",
+        params![payload.id, payload.calendar_id, payload.title, payload.description, payload.location,
+                payload.starts_at, payload.ends_at, payload.timezone, payload.all_day, payload.recurrence_rule,
+                payload.recurrence_id, payload.status, payload.created_at, payload.updated_at, payload.version,
+                entity.origin_device_id],
+    )?;
+    Ok(())
+}
+
+fn apply_remote_event_exception(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    payload: EventExceptionPayload,
+) -> AppResult<()> {
+    validate_payload_identity(
+        entity,
+        &payload.id,
+        payload.version,
+        payload.deleted_at.as_deref(),
+    )?;
+    if payload.id
+        != super::planner::event_exception_entity_id(
+            &payload.event_id,
+            &payload.original_occurrence,
+        )
+        || !is_valid_entity_id(&payload.event_id)
+        || chrono::DateTime::parse_from_rfc3339(&payload.original_occurrence).is_err()
+        || !matches!(payload.is_cancelled, 0 | 1)
+        || (payload.is_cancelled == 1 && payload.replacement_event_id.is_some())
+        || payload
+            .replacement_event_id
+            .as_deref()
+            .is_some_and(|id| !is_valid_entity_id(id))
+    {
+        return Err(AppError::Other(format!(
+            "invalid event exception payload for `{}`",
+            entity.entity_id
+        )));
+    }
+    tx.execute(
+        "INSERT INTO event_exceptions (event_id,original_occurrence,replacement_event_id,is_cancelled,created_at,updated_at, \
+         version,deleted_at,origin_device_id) VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,?8) \
+         ON CONFLICT(event_id,original_occurrence) DO UPDATE SET replacement_event_id=excluded.replacement_event_id, \
+         is_cancelled=excluded.is_cancelled,created_at=excluded.created_at,updated_at=excluded.updated_at, \
+         version=excluded.version,deleted_at=NULL,origin_device_id=excluded.origin_device_id",
+        params![payload.event_id, payload.original_occurrence, payload.replacement_event_id, payload.is_cancelled,
+                payload.created_at, payload.updated_at, payload.version, entity.origin_device_id],
+    )?;
+    Ok(())
+}
+
+fn apply_remote_task_list(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    payload: TaskListPayload,
+) -> AppResult<()> {
+    validate_payload_identity(
+        entity,
+        &payload.id,
+        payload.version,
+        payload.deleted_at.as_deref(),
+    )?;
+    if payload.name.trim().is_empty() {
+        return Err(AppError::Other(format!(
+            "invalid task list payload for `{}`",
+            entity.entity_id
+        )));
+    }
+    tx.execute(
+        "INSERT INTO task_lists (id,name,color,provider_account_id,created_at,updated_at,version,deleted_at,origin_device_id) \
+         VALUES (?1,?2,?3,NULL,?4,?5,?6,NULL,?7) \
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name,color=excluded.color,created_at=excluded.created_at, \
+         updated_at=excluded.updated_at,version=excluded.version,deleted_at=NULL,origin_device_id=excluded.origin_device_id",
+        params![payload.id, payload.name, payload.color, payload.created_at, payload.updated_at,
+                payload.version, entity.origin_device_id],
+    )?;
+    Ok(())
+}
+
+fn task_parent_exists(tx: &Transaction<'_>, parent_id: &str) -> AppResult<bool> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1)",
+        [parent_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn reconcile_remote_task_parents(tx: &Transaction<'_>) -> AppResult<()> {
+    tx.execute(
+        "UPDATE tasks SET parent_id=(SELECT parent_id FROM task_sync_parents p WHERE p.task_id=tasks.id) \
+         WHERE EXISTS (SELECT 1 FROM task_sync_parents p JOIN tasks parent ON parent.id=p.parent_id \
+                       WHERE p.task_id=tasks.id)",
+        [],
+    )?;
+    Ok(())
+}
+
+fn apply_remote_task(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    payload: TaskPayload,
+) -> AppResult<()> {
+    validate_payload_identity(
+        entity,
+        &payload.id,
+        payload.version,
+        payload.deleted_at.as_deref(),
+    )?;
+    if payload.title.trim().is_empty()
+        || !is_valid_entity_id(&payload.task_list_id)
+        || payload
+            .parent_id
+            .as_deref()
+            .is_some_and(|id| !is_valid_entity_id(id) || id == payload.id)
+        || payload
+            .recurrence_source_id
+            .as_deref()
+            .is_some_and(|id| !is_valid_entity_id(id) || id == payload.id)
+        || !matches!(payload.status.as_str(), "open" | "completed" | "cancelled")
+        || !(0..=4).contains(&payload.priority)
+        || !matches!(payload.is_important, 0 | 1)
+        || !payload.sort_order.is_finite()
+        || (payload.due_date.is_some() && payload.due_at.is_some())
+    {
+        return Err(AppError::Other(format!(
+            "invalid task payload for `{}`",
+            entity.entity_id
+        )));
+    }
+    if payload
+        .due_at
+        .as_deref()
+        .is_some_and(|value| chrono::DateTime::parse_from_rfc3339(value).is_err())
+        || payload
+            .due_date
+            .as_deref()
+            .is_some_and(|value| chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err())
+        || payload
+            .my_day_date
+            .as_deref()
+            .is_some_and(|value| chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err())
+        || payload
+            .due_timezone
+            .as_deref()
+            .is_some_and(|value| value.parse::<chrono_tz::Tz>().is_err())
+    {
+        return Err(AppError::Other(format!(
+            "invalid task schedule for `{}`",
+            entity.entity_id
+        )));
+    }
+    let persisted_parent = match payload.parent_id.as_deref() {
+        Some(parent_id) if task_parent_exists(tx, parent_id)? => Some(parent_id),
+        _ => None,
+    };
+    tx.execute(
+        "INSERT INTO tasks (id,task_list_id,parent_id,title,description,status,priority,starts_at,due_date,due_at, \
+         due_timezone,is_important,my_day_date,completed_at,recurrence_rule,recurrence_anchor,recurrence_source_id, \
+         sort_order,created_at,updated_at,version,deleted_at,origin_device_id) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,NULL,?22) \
+         ON CONFLICT(id) DO UPDATE SET task_list_id=excluded.task_list_id,parent_id=excluded.parent_id, \
+         title=excluded.title,description=excluded.description,status=excluded.status,priority=excluded.priority, \
+         starts_at=excluded.starts_at,due_date=excluded.due_date,due_at=excluded.due_at,due_timezone=excluded.due_timezone, \
+         is_important=excluded.is_important,my_day_date=excluded.my_day_date,completed_at=excluded.completed_at, \
+         recurrence_rule=excluded.recurrence_rule,recurrence_anchor=excluded.recurrence_anchor, \
+         recurrence_source_id=excluded.recurrence_source_id,sort_order=excluded.sort_order,created_at=excluded.created_at, \
+         updated_at=excluded.updated_at,version=excluded.version,deleted_at=NULL,origin_device_id=excluded.origin_device_id",
+        params![payload.id, payload.task_list_id, persisted_parent, payload.title, payload.description, payload.status,
+                payload.priority, payload.starts_at, payload.due_date, payload.due_at, payload.due_timezone,
+                payload.is_important, payload.my_day_date, payload.completed_at, payload.recurrence_rule,
+                payload.recurrence_anchor, payload.recurrence_source_id, payload.sort_order, payload.created_at,
+                payload.updated_at, payload.version, entity.origin_device_id],
+    )?;
+    tx.execute(
+        "INSERT INTO task_sync_parents (task_id,parent_id) VALUES (?1,?2) \
+         ON CONFLICT(task_id) DO UPDATE SET parent_id=excluded.parent_id",
+        params![entity.entity_id, payload.parent_id],
+    )?;
+    reconcile_remote_task_parents(tx)?;
+    Ok(())
+}
+
 fn apply_remote_delete(tx: &Transaction<'_>, entity: &RemoteEntityInput) -> AppResult<()> {
     let deleted_at = entity.updated_at.to_string();
     match entity.entity_type.as_str() {
@@ -1321,6 +1709,53 @@ fn apply_remote_delete(tx: &Transaction<'_>, entity: &RemoteEntityInput) -> AppR
             if let Some(embedding_id) = embedding_id {
                 super::memory::delete_embedding_by_id(tx, &embedding_id)?;
             }
+        }
+        "calendar" => {
+            tx.execute(
+                "UPDATE calendars SET deleted_at=?1,updated_at=?1,version=MAX(version+1,?2),origin_device_id=?3 \
+                 WHERE id=?4",
+                params![deleted_at, entity.revision, entity.origin_device_id, entity.entity_id],
+            )?;
+        }
+        "calendar_event" => {
+            tx.execute(
+                "UPDATE calendar_events SET deleted_at=?1,updated_at=?1,version=MAX(version+1,?2),origin_device_id=?3 \
+                 WHERE id=?4",
+                params![deleted_at, entity.revision, entity.origin_device_id, entity.entity_id],
+            )?;
+        }
+        "event_exception" => {
+            let payload = tx
+                .query_row(
+                    "SELECT base_payload FROM sync_entity_state WHERE entity_type='event_exception' AND entity_id=?1",
+                    [&entity.entity_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten()
+                .map(|raw| serde_json::from_str::<EventExceptionPayload>(&raw))
+                .transpose()?;
+            if let Some(payload) = payload {
+                tx.execute(
+                    "UPDATE event_exceptions SET deleted_at=?1,updated_at=?1,version=MAX(version+1,?2), \
+                     origin_device_id=?3 WHERE event_id=?4 AND original_occurrence=?5",
+                    params![deleted_at, entity.revision, entity.origin_device_id, payload.event_id, payload.original_occurrence],
+                )?;
+            }
+        }
+        "task_list" => {
+            tx.execute(
+                "UPDATE task_lists SET deleted_at=?1,updated_at=?1,version=MAX(version+1,?2),origin_device_id=?3 \
+                 WHERE id=?4",
+                params![deleted_at, entity.revision, entity.origin_device_id, entity.entity_id],
+            )?;
+        }
+        "task" => {
+            tx.execute(
+                "UPDATE tasks SET deleted_at=?1,updated_at=?1,version=MAX(version+1,?2),origin_device_id=?3 \
+                 WHERE id=?4",
+                params![deleted_at, entity.revision, entity.origin_device_id, entity.entity_id],
+            )?;
         }
         other => {
             return Err(AppError::Other(format!(
@@ -1569,7 +2004,15 @@ fn try_auto_resolve_conflict(
         || conflict.remote_deleted
         || !matches!(
             conflict.entity_type.as_str(),
-            "agent" | "session" | "workspace" | "message" | "explicit_memory"
+            "agent"
+                | "session"
+                | "workspace"
+                | "message"
+                | "explicit_memory"
+                | "calendar"
+                | "calendar_event"
+                | "task_list"
+                | "task"
         )
     {
         return Ok(false);
@@ -1932,6 +2375,11 @@ fn parse_sync_entity_type(value: &str) -> AppResult<SyncEntityType> {
         "message" => Ok(SyncEntityType::Message),
         "explicit_memory" => Ok(SyncEntityType::ExplicitMemory),
         "memory" => Ok(SyncEntityType::Memory),
+        "calendar" => Ok(SyncEntityType::Calendar),
+        "calendar_event" => Ok(SyncEntityType::CalendarEvent),
+        "event_exception" => Ok(SyncEntityType::EventException),
+        "task_list" => Ok(SyncEntityType::TaskList),
+        "task" => Ok(SyncEntityType::Task),
         _ => Err(AppError::Other(format!(
             "unsupported conflict entity type `{value}`"
         ))),
@@ -2199,6 +2647,98 @@ mod tests {
         })
     }
 
+    fn calendar_payload(id: &str) -> Value {
+        json!({
+            "id": id,
+            "name": "Remote calendar",
+            "color": "#0ea5e9",
+            "timezone": "Asia/Shanghai",
+            "created_at": "1",
+            "updated_at": "1",
+            "version": 1,
+            "deleted_at": null,
+            "origin_device_id": REMOTE_DEVICE
+        })
+    }
+
+    fn calendar_event_payload(id: &str, calendar_id: &str) -> Value {
+        json!({
+            "id": id,
+            "calendar_id": calendar_id,
+            "title": "Remote planning",
+            "description": null,
+            "location": null,
+            "starts_at": "2026-07-20T01:00:00Z",
+            "ends_at": "2026-07-20T02:00:00Z",
+            "timezone": "Asia/Shanghai",
+            "all_day": 0,
+            "recurrence_rule": "RRULE:FREQ=DAILY;COUNT=2",
+            "recurrence_id": null,
+            "status": "confirmed",
+            "created_at": "1",
+            "updated_at": "1",
+            "version": 1,
+            "deleted_at": null,
+            "origin_device_id": REMOTE_DEVICE
+        })
+    }
+
+    fn event_exception_payload(id: &str, event_id: &str, original_occurrence: &str) -> Value {
+        json!({
+            "id": id,
+            "event_id": event_id,
+            "original_occurrence": original_occurrence,
+            "replacement_event_id": null,
+            "is_cancelled": 1,
+            "created_at": "1",
+            "updated_at": "1",
+            "version": 1,
+            "deleted_at": null,
+            "origin_device_id": REMOTE_DEVICE
+        })
+    }
+
+    fn task_list_payload(id: &str) -> Value {
+        json!({
+            "id": id,
+            "name": "Remote tasks",
+            "color": "#22c55e",
+            "created_at": "1",
+            "updated_at": "1",
+            "version": 1,
+            "deleted_at": null,
+            "origin_device_id": REMOTE_DEVICE
+        })
+    }
+
+    fn task_payload(id: &str, task_list_id: &str, parent_id: Option<&str>) -> Value {
+        json!({
+            "id": id,
+            "task_list_id": task_list_id,
+            "parent_id": parent_id,
+            "title": format!("Task {id}"),
+            "description": null,
+            "status": "open",
+            "priority": 2,
+            "starts_at": null,
+            "due_date": "2026-07-20",
+            "due_at": null,
+            "due_timezone": "Asia/Shanghai",
+            "is_important": 0,
+            "my_day_date": null,
+            "completed_at": null,
+            "recurrence_rule": null,
+            "recurrence_anchor": null,
+            "recurrence_source_id": null,
+            "sort_order": 0.0,
+            "created_at": "1",
+            "updated_at": "1",
+            "version": 1,
+            "deleted_at": null,
+            "origin_device_id": REMOTE_DEVICE
+        })
+    }
+
     fn remote(
         entity_type: &str,
         entity_id: &str,
@@ -2298,6 +2838,120 @@ mod tests {
             .unwrap();
         assert_eq!(binding_count, 0);
         assert_eq!(outbox_count, 0);
+    }
+
+    #[test]
+    fn planner_bootstrap_applies_without_echo_and_reconciles_deferred_task_parents() {
+        let mut conn = setup();
+        let exception_id = super::super::planner::event_exception_entity_id(
+            "calendar-event-1",
+            "2026-07-20T01:00:00Z",
+        );
+        apply_bootstrap_page(
+            &mut conn,
+            "required",
+            &[
+                remote(
+                    "calendar",
+                    "calendar-1",
+                    1,
+                    1,
+                    calendar_payload("calendar-1"),
+                ),
+                remote(
+                    "calendar_event",
+                    "calendar-event-1",
+                    1,
+                    2,
+                    calendar_event_payload("calendar-event-1", "calendar-1"),
+                ),
+                remote(
+                    "event_exception",
+                    &exception_id,
+                    1,
+                    3,
+                    event_exception_payload(
+                        &exception_id,
+                        "calendar-event-1",
+                        "2026-07-20T01:00:00Z",
+                    ),
+                ),
+                remote(
+                    "task_list",
+                    "task-list-1",
+                    1,
+                    4,
+                    task_list_payload("task-list-1"),
+                ),
+                remote(
+                    "task",
+                    "task-child-1",
+                    1,
+                    5,
+                    task_payload("task-child-1", "task-list-1", Some("task-parent-1")),
+                ),
+                remote(
+                    "task",
+                    "task-parent-1",
+                    1,
+                    6,
+                    task_payload("task-parent-1", "task-list-1", None),
+                ),
+            ],
+            6,
+            None,
+            false,
+            2_000,
+        )
+        .unwrap();
+
+        let state: String = conn
+            .query_row(
+                "SELECT bootstrap_state FROM sync_runtime_state WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let child_parent: Option<String> = conn
+            .query_row(
+                "SELECT parent_id FROM tasks WHERE id='task-child-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let outbox_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_outbox", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(state, "complete");
+        assert_eq!(child_parent.as_deref(), Some("task-parent-1"));
+        assert_eq!(outbox_count, 0);
+
+        let deleted_exception = RemoteEntityInput {
+            protocol_version: 1,
+            entity_type: "event_exception".into(),
+            entity_id: exception_id,
+            revision: 2,
+            hlc: "1000-0007-remote02".into(),
+            deleted: true,
+            payload_schema_version: 1,
+            payload_encoding: "json".into(),
+            payload: None,
+            payload_hash: sha256_hex(&[]),
+            key_version: None,
+            origin_device_id: REMOTE_DEVICE.into(),
+            server_seq: 7,
+            updated_at: 2_007,
+        };
+        apply_pull_page(&mut conn, 6, &[deleted_exception], 7, false, 2_007).unwrap();
+        let deleted: bool = conn
+            .query_row(
+                "SELECT deleted_at IS NOT NULL FROM event_exceptions \
+                 WHERE event_id='calendar-event-1' AND original_occurrence='2026-07-20T01:00:00Z'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(deleted);
     }
 
     #[test]

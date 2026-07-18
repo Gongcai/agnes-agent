@@ -91,6 +91,11 @@ const BOOTSTRAP_ENTITY_ORDER_SQL = `CASE entity_type
   WHEN 'message' THEN 3
   WHEN 'explicit_memory' THEN 4
   WHEN 'memory' THEN 5
+  WHEN 'calendar' THEN 6
+  WHEN 'calendar_event' THEN 7
+  WHEN 'event_exception' THEN 8
+  WHEN 'task_list' THEN 9
+  WHEN 'task' THEN 10
   ELSE 99 END`;
 
 function bootstrapEntityOrder(entityType: string): number {
@@ -107,6 +112,16 @@ function bootstrapEntityOrder(entityType: string): number {
       return 4;
     case "memory":
       return 5;
+    case "calendar":
+      return 6;
+    case "calendar_event":
+      return 7;
+    case "event_exception":
+      return 8;
+    case "task_list":
+      return 9;
+    case "task":
+      return 10;
     default:
       return -1;
   }
