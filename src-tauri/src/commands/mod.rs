@@ -3034,6 +3034,15 @@ pub async fn upload_storage_file(
 }
 
 #[tauri::command]
+pub async fn trash_storage_files(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    file_ids: Vec<String>,
+) -> AppResult<usize> {
+    state.storage.trash_files(account_id, file_ids).await
+}
+
+#[tauri::command]
 pub async fn refresh_storage_quota(
     state: tauri::State<'_, AppState>,
     account_id: String,

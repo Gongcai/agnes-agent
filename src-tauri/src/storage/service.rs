@@ -464,6 +464,35 @@ impl StorageService {
             .await
     }
 
+    pub async fn trash_files(&self, account_id: String, file_ids: Vec<String>) -> AppResult<usize> {
+        let mut unique_ids = file_ids
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        unique_ids.sort();
+        unique_ids.dedup();
+        if unique_ids.is_empty() || unique_ids.len() > 100 {
+            return Err(AppError::Other(
+                "Moving to trash requires between 1 and 100 file IDs".into(),
+            ));
+        }
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let manager = session.file_management().ok_or_else(|| {
+            AppError::Other("Storage provider does not support moving files to trash".into())
+        })?;
+        match manager.trash_files(unique_ids.clone()).await {
+            Ok(()) => {
+                self.update_provider_status(&row, None).await;
+                Ok(unique_ids.len())
+            }
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                Err(provider_error(error))
+            }
+        }
+    }
+
     pub async fn authorize_account(
         &self,
         provider_id: String,
@@ -1150,8 +1179,8 @@ mod tests {
         StorageCapabilities, UploadFileChunkRequest, UploadedFileChunk,
     };
     use crate::storage::ports::{
-        FileSourceProvider, FileUploadProvider, ProviderAuthorizationResult,
-        ProviderCredentialAccess, ProviderFactory, QuotaProvider,
+        FileManagementProvider, FileSourceProvider, FileUploadProvider,
+        ProviderAuthorizationResult, ProviderCredentialAccess, ProviderFactory, QuotaProvider,
     };
 
     struct FakeDrive;
@@ -1245,6 +1274,14 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl FileManagementProvider for FakeDrive {
+        async fn trash_files(&self, file_ids: Vec<String>) -> ProviderResult<()> {
+            assert_eq!(file_ids, vec!["remote-1"]);
+            Ok(())
+        }
+    }
+
     impl ProviderSession for FakeDrive {
         fn file_source(&self) -> Option<&dyn FileSourceProvider> {
             Some(self)
@@ -1255,6 +1292,10 @@ mod tests {
         }
 
         fn file_upload(&self) -> Option<&dyn FileUploadProvider> {
+            Some(self)
+        }
+
+        fn file_management(&self) -> Option<&dyn FileManagementProvider> {
             Some(self)
         }
     }
@@ -1274,6 +1315,7 @@ mod tests {
                     browse_files: true,
                     read_files: true,
                     write_files: true,
+                    delete_files: true,
                     quota: true,
                     user_authorization: true,
                     ..StorageCapabilities::default()
@@ -1403,6 +1445,16 @@ mod tests {
         assert!(transfers
             .iter()
             .any(|transfer| transfer.operation == "file_upload"));
+        assert_eq!(
+            service
+                .trash_files(
+                    "account-1".into(),
+                    vec!["remote-1".into(), "remote-1".into()]
+                )
+                .await
+                .unwrap(),
+            1
+        );
         let quota = service.refresh_quota("account-1".into()).await.unwrap();
         assert_eq!(quota.total_bytes, Some(1024));
         service.remove_account("account-1".into()).await.unwrap();

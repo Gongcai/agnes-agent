@@ -22,7 +22,7 @@ use super::domain::{
     StorageProviderAccount, UploadFileChunkRequest, UploadedFileChunk,
 };
 use super::ports::{
-    FileSourceProvider, FileUploadProvider, ProviderAuthorizationChallenge,
+    FileManagementProvider, FileSourceProvider, FileUploadProvider, ProviderAuthorizationChallenge,
     ProviderAuthorizationResult, ProviderAuthorizationStep, ProviderCredentialAccess,
     ProviderFactory, ProviderSession, QuotaProvider,
 };
@@ -70,6 +70,7 @@ impl ProviderFactory for QuarkDriveFactory {
                 browse_files: true,
                 read_files: true,
                 write_files: true,
+                delete_files: true,
                 range_download: true,
                 resumable_upload: true,
                 quota: true,
@@ -618,6 +619,30 @@ impl FileUploadProvider for QuarkDriveSession {
     }
 }
 
+#[async_trait]
+impl FileManagementProvider for QuarkDriveSession {
+    async fn trash_files(&self, file_ids: Vec<String>) -> ProviderResult<()> {
+        if file_ids.is_empty() || file_ids.len() > 100 {
+            return Err(invalid_request("夸克网盘一次最多可移入回收站 100 个项目"));
+        }
+        for file_id in &file_ids {
+            validate_id(file_id, "文件 ID")?;
+        }
+        self.api(
+            Method::POST,
+            "file/delete",
+            Vec::new(),
+            Some(json!({
+                "action_type": 2,
+                "filelist": file_ids,
+                "exclude_fids": []
+            })),
+        )
+        .await?;
+        Ok(())
+    }
+}
+
 impl ProviderSession for QuarkDriveSession {
     fn file_source(&self) -> Option<&dyn FileSourceProvider> {
         Some(self)
@@ -628,6 +653,10 @@ impl ProviderSession for QuarkDriveSession {
     }
 
     fn file_upload(&self) -> Option<&dyn FileUploadProvider> {
+        Some(self)
+    }
+
+    fn file_management(&self) -> Option<&dyn FileManagementProvider> {
         Some(self)
     }
 }

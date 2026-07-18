@@ -69,6 +69,11 @@ pub trait FileUploadProvider: Send + Sync {
 }
 
 #[async_trait]
+pub trait FileManagementProvider: Send + Sync {
+    async fn trash_files(&self, file_ids: Vec<String>) -> ProviderResult<()>;
+}
+
+#[async_trait]
 pub trait QuotaProvider: Send + Sync {
     async fn quota(&self) -> ProviderResult<ProviderQuota>;
 }
@@ -103,6 +108,10 @@ pub trait ProviderSession: Send + Sync {
     }
 
     fn file_upload(&self) -> Option<&dyn FileUploadProvider> {
+        None
+    }
+
+    fn file_management(&self) -> Option<&dyn FileManagementProvider> {
         None
     }
 

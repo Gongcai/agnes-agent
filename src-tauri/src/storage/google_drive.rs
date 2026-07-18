@@ -34,8 +34,9 @@ use super::domain::{
     UploadedObjectChunk,
 };
 use super::ports::{
-    FileSourceProvider, FileUploadProvider, ObjectStorageProvider, ProviderAuthorizationResult,
-    ProviderCredentialAccess, ProviderFactory, ProviderSession, QuotaProvider,
+    FileManagementProvider, FileSourceProvider, FileUploadProvider, ObjectStorageProvider,
+    ProviderAuthorizationResult, ProviderCredentialAccess, ProviderFactory, ProviderSession,
+    QuotaProvider,
 };
 
 const PROVIDER_ID: &str = "google_drive";
@@ -86,6 +87,7 @@ impl ProviderFactory for GoogleDriveFactory {
                 browse_files: true,
                 read_files: true,
                 write_files: true,
+                delete_files: true,
                 object_storage: true,
                 range_download: true,
                 resumable_upload: true,
@@ -443,6 +445,35 @@ impl FileUploadProvider for GoogleDriveSession {
 }
 
 #[async_trait]
+impl FileManagementProvider for GoogleDriveSession {
+    async fn trash_files(&self, file_ids: Vec<String>) -> ProviderResult<()> {
+        if file_ids.is_empty() || file_ids.len() > 100 {
+            return Err(invalid_request(
+                "Google Drive can move between 1 and 100 items to trash at once",
+            ));
+        }
+        self.require_scope(DRIVE_SCOPE).await?;
+        for file_id in file_ids {
+            validate_opaque_id(&file_id, "file ID")?;
+            self.send_authorized(
+                Method::PATCH,
+                &format!("{DRIVE_API}/files/{}", path_segment(&file_id)),
+                &[
+                    ("fields".into(), "id,trashed".into()),
+                    ("supportsAllDrives".into(), "true".into()),
+                ],
+                HeaderMap::new(),
+                RequestBody::Json(json!({"trashed": true})),
+                true,
+                &[],
+            )
+            .await?;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl ObjectStorageProvider for GoogleDriveSession {
     async fn stat_object(
         &self,
@@ -588,6 +619,10 @@ impl ProviderSession for GoogleDriveSession {
         Some(self)
     }
 
+    fn file_management(&self) -> Option<&dyn FileManagementProvider> {
+        Some(self)
+    }
+
     fn object_storage(&self) -> Option<&dyn ObjectStorageProvider> {
         Some(self)
     }
@@ -650,7 +685,7 @@ impl GoogleDriveSession {
         } else {
             Err(ProviderError::new(
                 ProviderErrorCategory::Permission,
-                "Google Drive upload permission is missing; reconnect the account to grant the new scope",
+                "Google Drive file modification permission is missing; reconnect the account to grant the required scope",
             ))
         }
     }

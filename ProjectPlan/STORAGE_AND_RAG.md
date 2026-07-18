@@ -289,6 +289,12 @@ pub trait FileSourceProvider: Send + Sync {
 }
 
 #[async_trait]
+pub trait FileManagementProvider: Send + Sync {
+    /// Move user-visible files to the provider trash; never permanently delete them.
+    async fn trash_files(&self, file_ids: Vec<String>) -> ProviderResult<()>;
+}
+
+#[async_trait]
 pub trait QuotaProvider: Send + Sync {
     async fn quota(&self) -> ProviderResult<ProviderQuota>;
 }
@@ -304,13 +310,14 @@ pub trait ProviderFactory: Send + Sync {
 }
 ```
 
-`ProviderSession` 分别暴露可选的 `file_source()`、`quota_source()` 与 `object_storage()` 窄端口。开放字符串 Provider ID 经过统一校验后注册到 `StorageProviderRegistry`，descriptor 在注册时冻结，新增 WebDAV/S3 等实现不需要扩充核心枚举或修改业务 `match`。`StorageService` 是 renderer、知识库、书架和后续 `ArtifactReplicationService` 的统一应用入口，负责账户状态、Keyring 写后校验、adapter 连接、配额缓存和归一化错误；传给 factory 的 `ProviderCredentialAccess` 已绑定当前 account ID，adapter 无法借此读取其他账户凭证。Provider 只负责远端 API，不得自建业务队列或复制同步策略。
+`ProviderSession` 分别暴露可选的 `file_source()`、`file_upload()`、`file_management()`、`quota_source()` 与 `object_storage()` 窄端口。文件管理端口当前只提供可恢复的 `trash_files`，业务层不暴露永久删除。开放字符串 Provider ID 经过统一校验后注册到 `StorageProviderRegistry`，descriptor 在注册时冻结，新增 WebDAV/S3 等实现不需要扩充核心枚举或修改业务 `match`。`StorageService` 是 renderer、知识库、书架和后续 `ArtifactReplicationService` 的统一应用入口，负责账户状态、Keyring 写后校验、adapter 连接、配额缓存和归一化错误；传给 factory 的 `ProviderCredentialAccess` 已绑定当前 account ID，adapter 无法借此读取其他账户凭证。Provider 只负责远端 API，不得自建业务队列或复制同步策略。
 
 `StorageCapabilities` 至少声明：
 
 - 是否支持 Range download；
 - 是否支持 resumable/multipart upload；
 - 是否支持条件写和稳定 revision/etag；
+- 是否支持将用户文件移入可恢复的回收站；
 - 单对象限制和建议分片大小；
 - 是否需要每设备用户授权；
 - 是否可由 Worker 代理。
@@ -347,7 +354,7 @@ storage_transfer_jobs                      # 本机传输执行状态
 ### 7.4 Google Drive Provider
 
 - 作为浏览器只读能力完成后的首批高优先级 Provider，与夸克网盘共用账户、文件浏览、导入、传输队列和错误状态模型。
-- 只使用 Google Drive 官方 API 和 OAuth 2.0 + PKCE。仅浏览模式可使用 `drive.readonly`；当前网盘工作区需要在用户已存在的任意当前目录上传文件，因此显式申请完整 `drive`，并同时申请隔离的 `drive.appdata`。`drive.file` 只可靠授权应用创建或经 Google Picker 授权的文件，不能冒充任意目录写入能力。adapter 即使持有完整 scope 也不暴露删除、移动或覆盖已有用户文件端口。
+- 只使用 Google Drive 官方 API 和 OAuth 2.0 + PKCE。当前网盘工作区需要浏览、上传和将用户文件移入回收站，因此显式申请完整 `drive`，并同时申请隔离的 `drive.appdata`；授权流程校验两项 scope，旧的 `drive.readonly` 凭证需要重新授权。`drive.file` 只可靠授权应用创建或经 Google Picker 授权的文件，不能覆盖本工作区的任意目录能力。adapter 不暴露永久删除端口，文件管理仅调用 Drive `files.update` 将 `trashed` 设为 `true`。
 - 使用 resumable upload 上传大型加密制品，使用 Range download 续传。
 - Drive 中使用随机文件名，明文标题、MIME 和目录归属在客户端加密 manifest 中保存。
 - D1 记录加密 file ID、Drive revision/modified time、密文 Hash 和 size，不记录 access/refresh token。
@@ -360,7 +367,7 @@ storage_transfer_jobs                      # 本机传输执行状态
 - 作为浏览器只读能力完成后的首批高优先级 Provider，解决 Linux 缺少官方客户端时的文件浏览、下载和上传需求。
 - 当前实现为 Rust `quark_drive` community adapter，参考 `lich0821/QuarkPan` 并持续对照仍在维护的 `luxiaosen8/quark-pan-uploader` 重实现 HTTP API 语义；业务层只依赖 `FileSourceProvider / FileUploadProvider / QuotaProvider`，不依赖逆向接口的数据结构，也不把夸克伪装成应用加密对象存储。
 - 新账户必须由用户显式启用，可粘贴文本 Cookie、导入浏览器/QuarkPan Cookie JSON，或使用夸克二维码登录；最终 Cookie 只进入账户级 OS Keyring，SQLite、D1 和日志不保存明文。连接时先调用容量接口验证 Cookie，失效后仅将该账户标记为 `auth_required`。
-- 当前支持目录分页、文件详情、下载链接、Range 下载、容量查询，以及预上传、MD5/SHA1 更新、4 MiB 分片 OSS 上传、合并和 finish。移动、删除、知识库/书架导入和跨设备凭证同步留待后续迭代。
+- 当前支持目录分页、文件详情、下载链接、Range 下载、容量查询，以及预上传、MD5/SHA1 更新、4 MiB 分片 OSS 上传、合并、finish 和将文件移入回收站（`action_type=2`）。永久删除、移动到任意目录、知识库/书架导入和跨设备凭证同步留待后续迭代。
 - Provider 明确标记为 `community`，UI 提示接口变更、风控和服务条款风险；任何夸克故障不得阻断本地文件、R2、Drive 或其他功能。
 
 WebDAV 和通用 S3 可作为比逆向网盘 API 更稳定的后续 Provider。
@@ -590,10 +597,11 @@ tasks
 - [x] 通用下载服务使用同目录临时文件和原子替换，校验远端声明大小，并将运行/完成/失败进度写入统一传输队列；
 - [x] 新增可选 `FileUploadProvider` 窄端口；Google Drive 支持当前目录多文件 resumable upload，旧只读 token 会要求重新授权，不影响未来只读夸克 adapter；
 - [x] 文件列表拦截默认右键菜单：文件可下载，文件夹可打开或递归批量下载；递归下载限制深度/条目数并处理重复、不安全本地名称；
-- [x] Google Drive `appDataFolder` 实现加密制品所需的 stat、Range download、resumable upload、断点 offset 和删除端口；上层 artifact manifest/加密编排仍在 Phase B；
+- [x] Google Drive `appDataFolder` 实现加密制品所需的 stat、Range download、resumable upload、断点 offset 和对象清理端口；用户文件管理另通过 `FileManagementProvider` 安全地移入回收站，上层 artifact manifest/加密编排仍在 Phase B；
 - [ ] 将网盘文件直接导入知识库和书架，并完成真实 Google 账户授权、目录、导出、下载和 token 刷新验收；
 - [x] 夸克以可替换的 Rust community adapter 实现 Cookie 授权、文件浏览、下载、Range 下载、配额和分片上传；Cookie 只存 Keyring，Provider 失效时只影响对应账户。
-- [ ] 补齐夸克移动/删除、知识库和书架导入，并扩展统一契约测试覆盖授权丢失、接口字段变化、限流、断点恢复和 Provider 切换。
+- [x] 夸克文件移入回收站；
+- [ ] 补齐夸克移动、知识库和书架导入，并扩展统一契约测试覆盖授权丢失、接口字段变化、限流、断点恢复和 Provider 切换。
 
 ### Phase E：R2 Provider
 

@@ -33,6 +33,7 @@ interface ProviderDescriptor {
     browse_files: boolean;
     read_files: boolean;
     write_files: boolean;
+    delete_files: boolean;
     object_storage: boolean;
     user_authorization: boolean;
   };
@@ -164,6 +165,7 @@ export function DriveWorkspace() {
   const [quarkQrImage, setQuarkQrImage] = useState<string | null>(null);
   const [quarkQrStatus, setQuarkQrStatus] = useState<string | null>(null);
   const [quarkQrLoading, setQuarkQrLoading] = useState(false);
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
   const fileRequestId = useRef(0);
 
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? null;
@@ -190,6 +192,8 @@ export function DriveWorkspace() {
     }),
     [files],
   );
+  const selectedFileCount = selectedFileIds.size;
+  const allFilesSelected = sortedFiles.length > 0 && sortedFiles.every((item) => selectedFileIds.has(item.id));
 
   const loadShell = async () => {
     setLoading(true);
@@ -257,7 +261,12 @@ export function DriveWorkspace() {
     setFolderPath([{ id: null, name: "根目录" }]);
     setFiles([]);
     setNextPageToken(null);
+    setSelectedFileIds(new Set());
   }, [selectedAccountId]);
+
+  useEffect(() => {
+    setSelectedFileIds(new Set());
+  }, [currentFolder.id]);
 
   useEffect(() => {
     if (view === "files") void loadFiles(false);
@@ -564,17 +573,59 @@ export function DriveWorkspace() {
     }
   };
 
+  const setFileSelected = (fileId: string, selected: boolean) => {
+    setSelectedFileIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(fileId);
+      else next.delete(fileId);
+      return next;
+    });
+  };
+
+  const toggleAllFiles = (selected: boolean) => {
+    setSelectedFileIds(selected ? new Set(sortedFiles.map((item) => item.id)) : new Set());
+  };
+
+  const moveFilesToTrash = async (fileIds: string[]) => {
+    if (!selectedAccount || !selectedProvider?.capabilities.delete_files || fileIds.length === 0) return;
+    const count = fileIds.length;
+    if (!window.confirm(`将 ${count} 个项目移入回收站？可以在网盘网页端恢复。`)) return;
+    try {
+      setLoading(true);
+      setError(null);
+      await invoke("trash_storage_files", {
+        accountId: selectedAccount.id,
+        fileIds,
+      });
+      setSelectedFileIds(new Set());
+      setFileContextMenu(null);
+      await loadShell();
+      await loadFiles(false);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const openFileContextMenu = (event: React.MouseEvent, item: RemoteFileItem) => {
     event.preventDefault();
     event.stopPropagation();
-    const menuWidth = 176;
-    const menuHeight = item.kind === "folder" ? 82 : 44;
+    if (!selectedFileIds.has(item.id)) setSelectedFileIds(new Set([item.id]));
+    const menuWidth = 196;
+    const menuHeight = item.kind === "folder" ? 132 : 94;
     setFileContextMenu({
       item,
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
       y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
     });
   };
+
+  const contextFileIds = fileContextMenu
+    ? selectedFileIds.has(fileContextMenu.item.id)
+      ? [...selectedFileIds]
+      : [fileContextMenu.item.id]
+    : [];
 
   return (
     <main className="flex h-full min-w-0 flex-1 flex-col bg-[#FAF9F5]">
@@ -736,12 +787,46 @@ export function DriveWorkspace() {
                     className="min-h-0 flex-1 overflow-auto border-y border-stone-200 bg-white/40"
                     onContextMenu={(event) => event.preventDefault()}
                   >
+                    <div className="sticky top-0 z-10 grid grid-cols-[28px_minmax(0,1fr)_74px_28px] items-center gap-3 border-b border-stone-200 bg-[#FAF9F5]/95 px-3 py-2 text-[11px] font-medium text-stone-400 backdrop-blur-sm sm:grid-cols-[28px_minmax(0,1fr)_90px_130px_28px] sm:gap-4">
+                      <input
+                        type="checkbox"
+                        aria-label="全选当前目录"
+                        checked={allFilesSelected}
+                        ref={(element) => {
+                          if (element) element.indeterminate = !allFilesSelected && selectedFileCount > 0;
+                        }}
+                        onChange={(event) => toggleAllFiles(event.target.checked)}
+                        disabled={loading || sortedFiles.length === 0}
+                        className="h-3.5 w-3.5 accent-emerald-700"
+                      />
+                      <span>{selectedFileCount > 0 ? `已选 ${selectedFileCount} 项` : "名称"}</span>
+                      <span>大小</span>
+                      <span className="hidden sm:block">修改时间</span>
+                      {selectedFileCount > 0 && selectedProvider?.capabilities.delete_files ? (
+                        <button
+                          onClick={() => void moveFilesToTrash([...selectedFileIds])}
+                          disabled={loading}
+                          className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
+                          title="将选中项目移入回收站"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      ) : <span />}
+                    </div>
                     {sortedFiles.map((item) => (
                       <div
                         key={item.id}
                         onContextMenu={(event) => openFileContextMenu(event, item)}
-                        className="grid w-full grid-cols-[minmax(0,1fr)_74px_28px] items-center gap-3 border-b border-stone-100 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-white sm:grid-cols-[minmax(0,1fr)_90px_130px_28px] sm:gap-4"
+                        className={`grid w-full grid-cols-[28px_minmax(0,1fr)_74px_28px] items-center gap-3 border-b border-stone-100 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-white sm:grid-cols-[28px_minmax(0,1fr)_90px_130px_28px] sm:gap-4 ${selectedFileIds.has(item.id) ? "bg-emerald-50/60" : ""}`}
                       >
+                        <input
+                          type="checkbox"
+                          aria-label={`选择 ${item.name}`}
+                          checked={selectedFileIds.has(item.id)}
+                          onChange={(event) => setFileSelected(item.id, event.target.checked)}
+                          onClick={(event) => event.stopPropagation()}
+                          className="h-3.5 w-3.5 accent-emerald-700"
+                        />
                         <button
                           onClick={() => {
                             openFolder(item);
@@ -838,7 +923,7 @@ export function DriveWorkspace() {
             }}
           />
           <div
-            className="fixed z-50 w-44 overflow-hidden rounded-xl border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl"
+            className="fixed z-50 w-52 overflow-hidden rounded-xl border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl"
             style={{ left: fileContextMenu.x, top: fileContextMenu.y }}
           >
             {fileContextMenu.item.kind === "folder" ? (
@@ -880,6 +965,19 @@ export function DriveWorkspace() {
                 <Download className="h-3.5 w-3.5" />
                 下载
               </button>
+            )}
+            {selectedProvider?.capabilities.delete_files && (
+              <>
+                <div className="my-1 border-t border-stone-100" />
+                <button
+                  onClick={() => void moveFilesToTrash(contextFileIds)}
+                  disabled={loading || contextFileIds.length === 0}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-rose-700 transition-colors hover:bg-rose-50 disabled:text-stone-300"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  移入回收站{contextFileIds.length > 1 ? `（${contextFileIds.length} 项）` : ""}
+                </button>
+              </>
             )}
           </div>
         </>
