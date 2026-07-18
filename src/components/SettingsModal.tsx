@@ -3646,11 +3646,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 /// 通用设置标签页：会话打开模式等应用级行为配置。
 const GeneralTab: React.FC = () => {
   const [openMode, setOpenMode] = useState<string>("last");
+  const [translationLanguage, setTranslationLanguage] = useState<"中文" | "English">("中文");
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    invoke<string | null>("get_setting", { key: "ui:session_open_mode" })
-      .then((v) => setOpenMode(v ?? "last"))
+    Promise.all([
+      invoke<string | null>("get_setting", { key: "ui:session_open_mode" }),
+      invoke<string | null>("get_setting", { key: "ui:translation_target_language" }),
+    ])
+      .then(([openModeValue, languageValue]) => {
+        setOpenMode(openModeValue ?? "last");
+        if (languageValue === "中文" || languageValue === "English") setTranslationLanguage(languageValue);
+      })
       .catch(console.error)
       .finally(() => setLoaded(true));
   }, []);
@@ -3668,6 +3675,15 @@ const GeneralTab: React.FC = () => {
     { value: "last", label: "回到上次对话", desc: "打开时恢复上次选中的智能体与会话" },
     { value: "new", label: "自动新建会话", desc: "打开时为上次选中的智能体自动创建新会话" },
   ];
+
+  const updateTranslationLanguage = async (language: "中文" | "English") => {
+    setTranslationLanguage(language);
+    try {
+      await invoke("set_setting", { key: "ui:translation_target_language", value: language });
+    } catch (e) {
+      console.error("保存翻译目标语言失败", e);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-xl">
@@ -3700,6 +3716,20 @@ const GeneralTab: React.FC = () => {
           ))}
         </div>
         <p className="mt-2 text-[10px] text-stone-400">下次启动应用时生效。</p>
+      </div>
+
+      <div>
+        <label htmlFor="translation-target-language" className="font-semibold text-stone-500 block mb-2">翻译目标语言</label>
+        <select
+          id="translation-target-language"
+          value={translationLanguage}
+          disabled={!loaded}
+          onChange={(event) => void updateTranslationLanguage(event.target.value as "中文" | "English")}
+          className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-xs text-stone-700 outline-none focus:border-[#8CA38A] disabled:opacity-50"
+        >
+          <option value="中文">中文</option>
+          <option value="English">English</option>
+        </select>
       </div>
     </div>
   );

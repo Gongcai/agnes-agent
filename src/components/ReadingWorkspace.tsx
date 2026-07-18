@@ -7,15 +7,21 @@ import {
   BookOpen,
   ChevronLeft,
   ChevronRight,
+  Copy,
   FileUp,
   Highlighter,
+  Languages,
   LoaderCircle,
-  Menu,
   MessageCircleMore,
   PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Quote,
   Send,
   ShieldAlert,
   Sparkles,
+  SlidersHorizontal,
   X,
 } from "lucide-react";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -55,9 +61,10 @@ interface PendingSelection {
   contextAfter: string;
 }
 
-interface ReadingWorkspaceProps {
-  isSidebarOpen: boolean;
-  onToggleSidebar: () => void;
+interface SelectionMenu {
+  selection: PendingSelection;
+  x: number;
+  y: number;
 }
 
 const HIGHLIGHT_STYLES: Record<string, Record<string, string>> = {
@@ -90,18 +97,33 @@ function readingQuestion(book: ReadingBook, question: string, selection: Pending
   return `[阅读划线 · ${attribution}]\n\n划线内容：\n${selection.quote}\n\n前文：\n${selection.contextBefore || "（无）"}\n\n后文：\n${selection.contextAfter || "（无）"}\n\n我的问题：\n${question}`;
 }
 
+function translationRequest(book: ReadingBook, selection: PendingSelection, language: string): string {
+  const attribution = book.author ? `《${book.title}》(${book.author})` : `《${book.title}》`;
+  return `[阅读翻译 · ${attribution}]\n\n请将以下文本翻译成${language}。只输出译文，保留原文的段落结构和必要的专有名词。\n\n原文：\n${selection.quote}`;
+}
+
 const EpubPane: React.FC<{
   book: ReadingBook;
   highlights: ReadingHighlight[];
+  highlightMode: boolean;
   onProgress: (cfi: string) => void;
-  onSelectPassage: (selection: PendingSelection) => void;
-}> = ({ book, highlights, onProgress, onSelectPassage }) => {
+  onToggleHighlightMode: () => void;
+  onCreateHighlight: (selection: PendingSelection) => void;
+  onOpenSelectionMenu: (selection: PendingSelection, x: number, y: number) => void;
+}> = ({ book, highlights, highlightMode, onProgress, onToggleHighlightMode, onCreateHighlight, onOpenSelectionMenu }) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const bookRef = useRef<Book | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
+  const highlightModeRef = useRef(highlightMode);
+  const createHighlightRef = useRef(onCreateHighlight);
+  const openSelectionMenuRef = useRef(onOpenSelectionMenu);
   const [toc, setToc] = useState<NavItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { highlightModeRef.current = highlightMode; }, [highlightMode]);
+  useEffect(() => { createHighlightRef.current = onCreateHighlight; }, [onCreateHighlight]);
+  useEffect(() => { openSelectionMenuRef.current = onOpenSelectionMenu; }, [onOpenSelectionMenu]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -155,19 +177,48 @@ const EpubPane: React.FC<{
           const cfi = location?.start?.cfi;
           if (cfi) onProgress(cfi);
         });
-        rendered.on("rendered", applyHighlights);
+        rendered.on("rendered", (_section: unknown, view: { contents?: Contents }) => {
+          applyHighlights();
+          const contents = view.contents;
+          if (!contents) return;
+          const handleContextMenu = (event: MouseEvent) => {
+            const selection = contents.window.getSelection();
+            const quote = selection?.toString().replace(/\s+/g, " ").trim() ?? "";
+            const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+            if (!quote || !range || range.collapsed) return;
+            event.preventDefault();
+            const nearby = nearbyParagraphs(selection!);
+            const selected = {
+              cfiRange: contents.cfiFromRange(range),
+              quote,
+              contextBefore: nearby.before,
+              contextAfter: nearby.after,
+            };
+            const frame = contents.document.defaultView?.frameElement;
+            const frameRect = frame instanceof HTMLElement ? frame.getBoundingClientRect() : null;
+            openSelectionMenuRef.current(
+              selected,
+              (frameRect?.left ?? 0) + event.clientX,
+              (frameRect?.top ?? 0) + event.clientY,
+            );
+          };
+          contents.document.addEventListener("contextmenu", handleContextMenu);
+        });
         rendered.on("selected", (cfiRange: string, contents: Contents) => {
           const selection = contents.window.getSelection();
           const quote = selection?.toString().replace(/\s+/g, " ").trim() ?? "";
           if (!quote) return;
           const nearby = selection ? nearbyParagraphs(selection) : { before: "", after: "" };
-          onSelectPassage({
+          const passage = {
             cfiRange,
             quote,
             contextBefore: nearby.before,
             contextAfter: nearby.after,
-          });
-          selection?.removeAllRanges();
+          };
+          if (highlightModeRef.current) {
+            createHighlightRef.current(passage);
+            selection?.removeAllRanges();
+          }
         });
         await rendered.display(book.progress_cfi || undefined);
         if (!disposed) {
@@ -228,6 +279,14 @@ const EpubPane: React.FC<{
             {toc.map((item) => <option key={item.id} value={item.href}>{item.label}</option>)}
           </select>
         )}
+        <button
+          onClick={onToggleHighlightMode}
+          className={`rounded p-1 ${highlightMode ? "bg-amber-100 text-amber-700" : "text-stone-500 hover:bg-stone-100"}`}
+          title={highlightMode ? "退出划线模式" : "进入划线模式"}
+          aria-pressed={highlightMode}
+        >
+          <Highlighter className="h-4 w-4" />
+        </button>
         <button onClick={() => renditionRef.current?.prev().catch(console.error)} className="rounded p-1 text-stone-500 hover:bg-stone-100" title="上一页">
           <ChevronLeft className="h-4 w-4" />
         </button>
@@ -242,7 +301,9 @@ const EpubPane: React.FC<{
   );
 };
 
-export const ReadingWorkspace: React.FC<ReadingWorkspaceProps> = ({ isSidebarOpen, onToggleSidebar }) => {
+const TRANSLATION_LANGUAGE_SETTING = "ui:translation_target_language";
+
+export const ReadingWorkspace: React.FC = () => {
   const activeAgentId = useAgentStore((state) => state.activeAgentId);
   const activeSessionId = useAgentStore((state) => state.activeSessionId);
   const messages = useAgentStore((state) => state.messages);
@@ -252,12 +313,18 @@ export const ReadingWorkspace: React.FC<ReadingWorkspaceProps> = ({ isSidebarOpe
   const [books, setBooks] = useState<ReadingBook[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
   const [highlights, setHighlights] = useState<ReadingHighlight[]>([]);
-  const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null);
+  const [quotedSelection, setQuotedSelection] = useState<PendingSelection | null>(null);
+  const [selectionMenu, setSelectionMenu] = useState<SelectionMenu | null>(null);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showConsent, setShowConsent] = useState(false);
   const [readingSessionId, setReadingSessionId] = useState<string | null>(null);
+  const [isBookShelfOpen, setIsBookShelfOpen] = useState(true);
+  const [isDiscussionOpen, setIsDiscussionOpen] = useState(true);
+  const [isDiscussionOptionsOpen, setIsDiscussionOptionsOpen] = useState(false);
+  const [highlightMode, setHighlightMode] = useState(false);
+  const [translationLanguage, setTranslationLanguage] = useState("中文");
   const messageEndRef = useRef<HTMLDivElement>(null);
 
   const selectedBook = useMemo(
@@ -271,7 +338,14 @@ export const ReadingWorkspace: React.FC<ReadingWorkspaceProps> = ({ isSidebarOpe
     setSelectedBookId((current) => current && next.some((book) => book.id === current) ? current : next[0]?.id ?? null);
   };
 
-  useEffect(() => { void loadBooks().catch((reason) => setError(String(reason))); }, []);
+  useEffect(() => {
+    void loadBooks().catch((reason) => setError(String(reason)));
+    void invoke<string | null>("get_setting", { key: TRANSLATION_LANGUAGE_SETTING })
+      .then((value) => {
+        if (value === "中文" || value === "English") setTranslationLanguage(value);
+      })
+      .catch(console.error);
+  }, []);
 
   useEffect(() => {
     if (!selectedBook) { setHighlights([]); return; }
@@ -311,6 +385,7 @@ export const ReadingWorkspace: React.FC<ReadingWorkspaceProps> = ({ isSidebarOpe
       const book = await invoke<ReadingBook>("import_reading_book", { agentId: activeAgentId, path });
       await loadBooks();
       setSelectedBookId(book.id);
+      setIsBookShelfOpen(true);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -328,14 +403,14 @@ export const ReadingWorkspace: React.FC<ReadingWorkspaceProps> = ({ isSidebarOpe
     }
   };
 
-  const saveHighlight = async () => {
-    if (!selectedBook || !pendingSelection) return;
+  const createHighlight = async (selection: PendingSelection) => {
+    if (!selectedBook) return;
     try {
       const highlight = await invoke<ReadingHighlight>("create_reading_highlight", {
         bookId: selectedBook.id,
-        payload: { ...pendingSelection, color: "yellow" },
+        payload: { ...selection, color: "yellow" },
       });
-      setHighlights((current) => [...current, highlight]);
+      setHighlights((current) => current.some((item) => item.cfi_range === highlight.cfi_range) ? current : [...current, highlight]);
     } catch (reason) {
       setError(String(reason));
     }
@@ -354,8 +429,9 @@ export const ReadingWorkspace: React.FC<ReadingWorkspaceProps> = ({ isSidebarOpe
         });
         setBooks((current) => current.map((book) => book.id === next.id ? next : book));
       }
-      const text = readingQuestion(selectedBook, question.trim(), pendingSelection);
+      const text = readingQuestion(selectedBook, question.trim(), quotedSelection);
       setQuestion("");
+      setQuotedSelection(null);
       setShowConsent(false);
       await sendMessage(readingSessionId, text);
     } catch (reason) {
@@ -371,90 +447,145 @@ export const ReadingWorkspace: React.FC<ReadingWorkspaceProps> = ({ isSidebarOpe
     }
   };
 
+  const openSelectionMenu = (selection: PendingSelection, x: number, y: number) => {
+    setSelectionMenu({
+      selection,
+      x: Math.min(Math.max(x, 8), window.innerWidth - 196),
+      y: Math.min(Math.max(y, 8), window.innerHeight - 152),
+    });
+  };
+
+  const copySelection = async () => {
+    if (!selectionMenu) return;
+    try {
+      await navigator.clipboard.writeText(selectionMenu.selection.quote);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setSelectionMenu(null);
+    }
+  };
+
+  const translateSelection = async () => {
+    if (!selectedBook || !readingSessionId || !selectionMenu || isStreaming) return;
+    try {
+      const text = translationRequest(selectedBook, selectionMenu.selection, translationLanguage);
+      setSelectionMenu(null);
+      setQuotedSelection(null);
+      await sendMessage(readingSessionId, text);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  };
+
+  const conversationReady = readingSessionId !== null && readingSessionId === activeSessionId;
+
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-[#faf9f5] lg:flex-row">
-      <section className="flex h-36 shrink-0 flex-col border-b border-stone-200 bg-white/55 lg:h-auto lg:w-60 lg:border-b-0 lg:border-r">
-        <header className="flex h-14 items-center justify-between border-b border-stone-200 px-4">
-          <div className="flex items-center gap-2 text-sm font-semibold text-stone-800"><BookMarked className="h-4 w-4 text-emerald-700" />阅读</div>
-          <button onClick={onToggleSidebar} className="rounded p-1 text-stone-500 hover:bg-stone-100" title={isSidebarOpen ? "收起侧边栏" : "展开侧边栏"}>
-            {isSidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
-          </button>
-        </header>
-        <div className="flex items-center gap-2 border-b border-stone-200 p-3">
-          <button onClick={() => void importBook()} disabled={!activeAgentId || loading} className="flex flex-1 items-center justify-center gap-2 rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50">
-            {loading ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FileUp className="h-3.5 w-3.5" />} 导入 EPUB
-          </button>
-        </div>
-        <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto p-2 lg:block lg:overflow-y-auto">
-          {books.map((book) => (
-            <button key={book.id} onClick={() => { setSelectedBookId(book.id); setPendingSelection(null); setShowConsent(false); }} className={`min-w-36 rounded-lg px-3 py-2.5 text-left lg:mb-1 lg:w-full ${book.id === selectedBookId ? "bg-emerald-50 text-emerald-900" : "text-stone-600 hover:bg-stone-100"}`}>
-              <span className="block truncate text-xs font-semibold">{book.title}</span>
-              <span className="mt-0.5 block truncate text-[10px] text-stone-400">{book.author || "未知作者"}</span>
+      {isBookShelfOpen && (
+        <section className="flex h-36 shrink-0 flex-col border-b border-stone-200 bg-white/55 lg:h-auto lg:w-56 lg:border-b-0 lg:border-r">
+          <header className="flex h-12 items-center border-b border-stone-200 px-4">
+            <div className="flex items-center gap-2 text-sm font-semibold text-stone-800"><BookMarked className="h-4 w-4 text-emerald-700" />书架</div>
+          </header>
+          <div className="border-b border-stone-200 p-3">
+            <button onClick={() => void importBook()} disabled={!activeAgentId || loading} className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50">
+              {loading ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FileUp className="h-3.5 w-3.5" />} 导入 EPUB
             </button>
-          ))}
-          {!books.length && <p className="px-4 py-10 text-center text-xs leading-relaxed text-stone-400">导入 EPUB 后，可边阅读边与 AI 讨论划线内容。</p>}
-        </div>
-      </section>
+          </div>
+          <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto p-2 lg:block lg:overflow-y-auto">
+            {books.map((book) => (
+              <button key={book.id} onClick={() => { setSelectedBookId(book.id); setQuotedSelection(null); setSelectionMenu(null); setShowConsent(false); }} className={`min-w-36 rounded-md px-3 py-2.5 text-left lg:mb-1 lg:w-full ${book.id === selectedBookId ? "bg-emerald-50 text-emerald-900" : "text-stone-600 hover:bg-stone-100"}`}>
+                <span className="block truncate text-xs font-semibold">{book.title}</span>
+                <span className="mt-0.5 block truncate text-[10px] text-stone-400">{book.author || "未知作者"}</span>
+              </button>
+            ))}
+            {!books.length && <p className="px-4 py-10 text-center text-xs text-stone-400">没有书籍</p>}
+          </div>
+        </section>
+      )}
+
+      <button onClick={() => setIsBookShelfOpen((open) => !open)} className="hidden w-8 shrink-0 items-start justify-center border-r border-stone-200 bg-white pt-4 text-stone-400 hover:bg-stone-50 hover:text-stone-700 lg:flex" title={isBookShelfOpen ? "收起书架" : "展开书架"}>
+        {isBookShelfOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
+      </button>
 
       {selectedBook ? (
-        <>
-          <div className="relative flex min-h-64 min-w-0 flex-1 lg:min-h-0">
-            <EpubPane
-              book={selectedBook}
-              highlights={highlights}
-              onProgress={(cfi) => {
-                setBooks((current) => current.map((book) => book.id === selectedBook.id ? { ...book, progress_cfi: cfi } : book));
-                void invoke("update_reading_book_progress", { bookId: selectedBook.id, cfi }).catch(console.error);
-              }}
-              onSelectPassage={setPendingSelection}
-            />
-            {pendingSelection && (
-              <div className="absolute bottom-4 left-1/2 z-20 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 py-2 shadow-lg">
-                <Highlighter className="h-4 w-4 shrink-0 text-amber-600" />
-                <span className="max-w-48 truncate text-xs text-stone-600">已选 {pendingSelection.quote.length} 个字符</span>
-                <button onClick={() => void saveHighlight()} className="rounded-md bg-amber-100 px-2 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-200">保存高亮</button>
-                <button onClick={() => setQuestion((current) => current || "请分析这段文字。") } className="rounded-md bg-emerald-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-800">讨论</button>
-                <button onClick={() => setPendingSelection(null)} className="rounded p-1 text-stone-400 hover:bg-stone-100" title="取消选择"><X className="h-3.5 w-3.5" /></button>
-              </div>
-            )}
-          </div>
+        <div className="relative flex min-h-64 min-w-0 flex-1 flex-col lg:min-h-0 lg:flex-row" onClick={() => setSelectionMenu(null)}>
+          <EpubPane
+            book={selectedBook}
+            highlights={highlights}
+            highlightMode={highlightMode}
+            onToggleHighlightMode={() => setHighlightMode((enabled) => !enabled)}
+            onProgress={(cfi) => {
+              setBooks((current) => current.map((book) => book.id === selectedBook.id ? { ...book, progress_cfi: cfi } : book));
+              void invoke("update_reading_book_progress", { bookId: selectedBook.id, cfi }).catch(console.error);
+            }}
+            onCreateHighlight={(selection) => void createHighlight(selection)}
+            onOpenSelectionMenu={openSelectionMenu}
+          />
 
-          <aside className="flex h-[42%] min-h-64 w-full shrink-0 flex-col border-t border-stone-200 bg-white/75 lg:h-auto lg:w-[min(36vw,430px)] lg:min-w-80 lg:border-l lg:border-t-0">
-            <header className="border-b border-stone-200 px-4 py-3">
-              <div className="flex items-center gap-2 text-sm font-semibold text-stone-800"><MessageCircleMore className="h-4 w-4 text-emerald-700" />阅读讨论</div>
-              <label className="mt-2 flex cursor-pointer items-center gap-2 text-[11px] text-stone-500">
-                <input type="checkbox" checked={selectedBook.model_knows_content} onChange={(event) => void updateBook("update_reading_book_mode", { modelKnowsContent: event.target.checked })} className="accent-emerald-700" />
-                AI 已知这本书，仅发送划线与附近段落
-              </label>
-              {!selectedBook.model_knows_content && selectedBook.content_context_decided && (
-                <label className="mt-1.5 flex cursor-pointer items-center gap-2 text-[11px] text-stone-500">
-                  <input type="checkbox" checked={selectedBook.content_context_allowed} onChange={(event) => void updateBook("set_reading_book_content_context_allowed", { allowed: event.target.checked })} className="accent-emerald-700" />
-                  允许当前模型检索本书相关片段
-                </label>
-              )}
-            </header>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5">
-              {readingSessionId === activeSessionId && messages.map((message) => (
-                <div key={message.id} className={message.role === "user" ? "ml-6" : "mr-3"}>
-                  <div className={`rounded-lg px-3 py-2 text-sm ${message.role === "user" ? "bg-emerald-50 text-stone-800" : "border border-stone-200 bg-white text-stone-700"}`}>
-                    {message.parts.filter((part) => part.kind === "text").map((part) => (
-                      <MarkdownMessage key={part.id} content={part.content} streaming={isStreaming && message.status !== "complete"} />
-                    ))}
-                  </div>
+          {isDiscussionOpen ? (
+            <aside className="flex h-[42%] min-h-64 w-full shrink-0 flex-col border-t border-stone-200 bg-white lg:h-auto lg:w-[min(32vw,400px)] lg:min-w-80 lg:border-l lg:border-t-0">
+              <header className="border-b border-stone-200">
+                <div className="flex h-12 items-center gap-2 px-4">
+                  <MessageCircleMore className="h-4 w-4 text-emerald-700" />
+                  <span className="min-w-0 flex-1 text-sm font-semibold text-stone-800">阅读讨论</span>
+                  <button onClick={() => setIsDiscussionOptionsOpen((open) => !open)} className={`rounded p-1 ${isDiscussionOptionsOpen ? "bg-stone-100 text-stone-700" : "text-stone-400 hover:bg-stone-100 hover:text-stone-700"}`} title="讨论设置"><SlidersHorizontal className="h-4 w-4" /></button>
+                  <button onClick={() => setIsDiscussionOpen(false)} className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700" title="收起讨论"><PanelRightClose className="h-4 w-4" /></button>
                 </div>
-              ))}
-              {(!readingSessionId || readingSessionId !== activeSessionId || !messages.length) && <p className="py-12 text-center text-xs leading-relaxed text-stone-400">选中正文后可保存高亮，或直接提问。</p>}
-              <div ref={messageEndRef} />
-            </div>
-            <div className="border-t border-stone-200 p-3">
-              {pendingSelection && <div className="mb-2 rounded-md bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-800">将引用当前划线及前后段落。</div>}
-              <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); ask(); } }} placeholder="问问这本书..." className="h-20 w-full resize-none rounded-md border border-stone-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" />
-              <button onClick={ask} disabled={!question.trim() || isStreaming || !readingSessionId || readingSessionId !== activeSessionId} className="mt-2 flex w-full items-center justify-center gap-2 rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"><Send className="h-3.5 w-3.5" />发送</button>
-            </div>
-          </aside>
-        </>
+                {isDiscussionOptionsOpen && (
+                  <div className="border-t border-stone-100 px-4 py-3">
+                    <label className="flex cursor-pointer items-center gap-2 text-[11px] text-stone-500">
+                      <input type="checkbox" checked={selectedBook.model_knows_content} onChange={(event) => void updateBook("update_reading_book_mode", { modelKnowsContent: event.target.checked })} className="accent-emerald-700" />
+                      AI 已知这本书
+                    </label>
+                    {!selectedBook.model_knows_content && selectedBook.content_context_decided && (
+                      <label className="mt-2 flex cursor-pointer items-center gap-2 text-[11px] text-stone-500">
+                        <input type="checkbox" checked={selectedBook.content_context_allowed} onChange={(event) => void updateBook("set_reading_book_content_context_allowed", { allowed: event.target.checked })} className="accent-emerald-700" />
+                        允许检索本书片段
+                      </label>
+                    )}
+                  </div>
+                )}
+              </header>
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5">
+                {conversationReady && messages.map((message) => (
+                  <div key={message.id} className={message.role === "user" ? "ml-6" : "mr-3"}>
+                    <div className={`rounded-md px-3 py-2 text-sm ${message.role === "user" ? "bg-emerald-50 text-stone-800" : "border border-stone-200 bg-white text-stone-700"}`}>
+                      {message.parts.filter((part) => part.kind === "text").map((part) => (
+                        <MarkdownMessage key={part.id} content={part.content} streaming={isStreaming && message.status !== "complete"} />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                {(!conversationReady || !messages.length) && <p className="py-12 text-center text-xs text-stone-400">暂无讨论</p>}
+                <div ref={messageEndRef} />
+              </div>
+              <div className="border-t border-stone-200 p-3">
+                {quotedSelection && (
+                  <div className="mb-2 flex items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-2.5 py-2 text-[11px] text-stone-600">
+                    <Quote className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
+                    <span className="min-w-0 flex-1 truncate">{quotedSelection.quote}</span>
+                    <button onClick={() => setQuotedSelection(null)} className="rounded p-0.5 text-stone-400 hover:bg-stone-200 hover:text-stone-700" title="移除引用"><X className="h-3.5 w-3.5" /></button>
+                  </div>
+                )}
+                <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); ask(); } }} placeholder="问问这本书..." className="h-20 w-full resize-none rounded-md border border-stone-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" />
+                <button onClick={ask} disabled={!question.trim() || isStreaming || !conversationReady} className="mt-2 flex w-full items-center justify-center gap-2 rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"><Send className="h-3.5 w-3.5" />发送</button>
+              </div>
+            </aside>
+          ) : (
+            <button onClick={() => setIsDiscussionOpen(true)} className="hidden w-9 shrink-0 items-start justify-center border-l border-stone-200 bg-white pt-4 text-stone-400 hover:bg-stone-50 hover:text-stone-700 lg:flex" title="展开讨论"><PanelRightOpen className="h-4 w-4" /></button>
+          )}
+        </div>
       ) : (
-        <div className="grid flex-1 place-items-center text-sm text-stone-400"><div className="text-center"><Sparkles className="mx-auto mb-3 h-6 w-6 text-emerald-700" />从书架导入一本 EPUB 开始阅读。</div></div>
+        <div className="grid flex-1 place-items-center text-sm text-stone-400"><Sparkles className="h-6 w-6 text-emerald-700" /></div>
+      )}
+
+      {selectionMenu && (
+        <div className="fixed z-50 w-48 overflow-hidden rounded-md border border-stone-200 bg-white p-1 shadow-lg" style={{ left: selectionMenu.x, top: selectionMenu.y }} onClick={(event) => event.stopPropagation()}>
+          <button onClick={() => void copySelection()} className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-xs text-stone-700 hover:bg-stone-100"><Copy className="h-3.5 w-3.5 text-stone-500" />复制</button>
+          <button onClick={() => { setQuotedSelection(selectionMenu.selection); setSelectionMenu(null); setIsDiscussionOpen(true); }} className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-xs text-stone-700 hover:bg-stone-100"><Quote className="h-3.5 w-3.5 text-stone-500" />引用</button>
+          <button onClick={() => void translateSelection()} disabled={!conversationReady || isStreaming} className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-xs text-stone-700 hover:bg-stone-100 disabled:opacity-40"><Languages className="h-3.5 w-3.5 text-stone-500" />翻译</button>
+        </div>
       )}
 
       {showConsent && selectedBook && (
@@ -469,7 +600,7 @@ export const ReadingWorkspace: React.FC<ReadingWorkspaceProps> = ({ isSidebarOpe
           </div>
         </div>
       )}
-      {error && <div className="fixed bottom-4 left-1/2 z-50 max-w-xl -translate-x-1/2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 shadow">{error}</div>}
+      {error && <div className="fixed bottom-4 left-1/2 z-[60] max-w-xl -translate-x-1/2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 shadow">{error}</div>}
     </main>
   );
 };

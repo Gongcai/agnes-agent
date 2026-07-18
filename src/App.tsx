@@ -96,10 +96,7 @@ export default function App() {
       )}
       {activeFeature === "reading" && (
         <Suspense fallback={<main className="grid min-w-0 flex-1 place-items-center text-sm text-stone-400">加载阅读器...</main>}>
-          <ReadingWorkspace
-            isSidebarOpen={isSidebarOpen}
-            onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
-          />
+          <ReadingWorkspace />
         </Suspense>
       )}
       {(activeFeature === "calendar" || activeFeature === "tasks") && (
