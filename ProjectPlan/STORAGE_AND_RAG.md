@@ -581,15 +581,18 @@ tasks
 - [x] 定稿接口隔离的 `FileSourceProvider / ObjectStorageProvider / ProviderFactory`、开放注册表、能力声明和归一化错误；
 - [x] 将逻辑账户、本机授权 binding 与传输任务分表；凭证通过 `ProviderCredentialStore` 只进 OS Keyring；
 - [x] 实现 `StorageService` 与通用 IPC，统一处理账户门禁、adapter 连接、目录分页、配额缓存和传输队列读取；
-- [x] 实现网盘工作区的账户、目录、配额、错误和传输视图；首个真实 adapter 可连接前保持 feature flag 关闭，不展示空入口；
+- [x] 实现网盘工作区的账户、目录、配额、错误和传输视图；Google Drive adapter 注册后开放功能入口；
 - [x] 使用假 Provider 契约测试验证新增服务商只需注册 factory 并实现所需窄端口；任一 adapter 缺失或失效不影响本地功能。
 
 ### Phase D：Google Drive 与夸克 Provider
 
-- Google Drive 创建 OAuth Desktop Client，完成 PKCE、分级 scope、Keyring token 轮换、文件浏览、resumable upload、Range download、revision 与限流重试；
-- Google Drive 接入加密制品副本和 Docs/Sheets/Slides 源文件导出；
-- 夸克以 `quarkpan` 或同类兼容层实现文件浏览、下载、Range/续传能力探测，以及知识库和书架导入；Cookie/token 只存 Keyring；
-- 使用统一契约测试覆盖授权丢失、接口字段变化、限流、断点恢复和 Provider 切换；夸克 adapter 失效时给出明确错误且不影响其他功能。
+- [x] Google Drive 仅接受 Desktop OAuth Client JSON，以本地回环地址、随机 state 和 S256 PKCE 完成授权；client 配置、refresh/access token 作为账户级凭证只存 Keyring；
+- [x] Google Drive 实现 token 到期/401 单飞刷新、鉴权失效状态、限流与 5xx 有界退避、文件/配额浏览、revision 校验、Range download 和 Docs/Sheets/Slides 导出；
+- [x] 通用下载服务使用同目录临时文件和原子替换，校验远端声明大小，并将运行/完成/失败进度写入统一传输队列；
+- [x] Google Drive `appDataFolder` 实现加密制品所需的 stat、Range download、resumable upload、断点 offset 和删除端口；上层 artifact manifest/加密编排仍在 Phase B；
+- [ ] 将网盘文件直接导入知识库和书架，并完成真实 Google 账户授权、目录、导出、下载和 token 刷新验收；
+- [ ] 夸克以 `quarkpan` 或同类兼容层实现文件浏览、下载、Range/续传能力探测，以及知识库和书架导入；Cookie/token 只存 Keyring；
+- [ ] 扩展统一契约测试覆盖授权丢失、接口字段变化、限流、断点恢复和 Provider 切换；夸克 adapter 失效时给出明确错误且不影响其他功能。
 
 ### Phase E：R2 Provider
 
@@ -604,8 +607,8 @@ tasks
 - [x] 建立子功能视图宿主和功能注册表；当前只开放已实现的聊天入口，不展示空白功能页；
 - [x] 增加知识库页面路由：collection、文档导入、显式向量索引、索引状态和本地混合检索结果可用；
 - [x] 增加日历、待办页面路由；
-- [x] 增加网盘页面路由和按需加载；在首个真实 Provider 可连接前继续隐藏侧边栏入口；
-- 网盘页显示 Provider 账户、配额、同步队列、副本和错误；
+- [x] 增加网盘页面路由和按需加载；Google Drive 官方 adapter 注册后开放侧边栏入口；
+- [x] 网盘页显示 Provider 账户、配额、传输队列、错误、Google OAuth 连接与本地下载；
 - 知识库页显示源文件、抽取/分块/向量进度和设备覆盖状态。
 
 ### Phase G：日历、待办与外部适配器
@@ -643,6 +646,6 @@ tasks
 当前不需要用户继续在 Cloudflare 控制台操作。
 
 - R2 实现开始时：由 Wrangler 创建 bucket 和 Worker binding，不要手动创建或粘贴 R2 API Token。
-- Google Drive 实现开始时：需用户在 Google Cloud Console 创建项目、启用 Drive API、配置 OAuth consent screen 和 Desktop Client ID；到该阶段再提供逐步操作。
+- Google Drive：项目、Drive API、OAuth consent screen 和 Desktop Client 已配置。首次连接在“网盘 → 连接 Google Drive”选择下载的 JSON；授权成功后 client 配置与 token 进入 OS Keyring，原 JSON 不复制进仓库或 SQLite。
 - Google Calendar / Tasks 开始时：在同一 Google Cloud 项目按最小权限增加对应 API 和 scope。
 - 夸克接入前：由用户明确接受社区逆向 adapter 的失效、风控和条款风险，不在核心应用中隐式启用。

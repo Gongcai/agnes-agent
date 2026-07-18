@@ -22,6 +22,7 @@ src-tauri/target/*
 *.local
 .dev.vars
 .wrangler
+client_secret_*.apps.googleusercontent.com.json
 
 # os
 .DS_Store

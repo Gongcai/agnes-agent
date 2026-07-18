@@ -189,6 +189,12 @@ pub struct StorageProviderAccount {
     pub config: serde_json::Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderAuthorizationRequest {
+    #[serde(default)]
+    pub input: serde_json::Value,
+}
+
 impl StorageProviderAccount {
     pub fn validate(&self) -> ProviderResult<()> {
         validate_account_id(&self.id)?;
@@ -319,6 +325,7 @@ pub struct ObjectUploadSession {
 pub struct UploadObjectChunkRequest {
     pub session_id: String,
     pub offset: u64,
+    pub total_size: u64,
     pub bytes: Vec<u8>,
 }
 

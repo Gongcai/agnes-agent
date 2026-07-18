@@ -2930,6 +2930,21 @@ pub async fn list_storage_accounts(
 }
 
 #[tauri::command]
+pub async fn authorize_storage_provider(
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+    input: serde_json::Value,
+) -> AppResult<String> {
+    state
+        .storage
+        .authorize_account(
+            provider_id,
+            crate::storage::ProviderAuthorizationRequest { input },
+        )
+        .await
+}
+
+#[tauri::command]
 pub async fn list_storage_files(
     state: tauri::State<'_, AppState>,
     account_id: String,
@@ -2947,6 +2962,20 @@ pub async fn list_storage_files(
                 page_size: page_size.unwrap_or(100),
             },
         )
+        .await
+}
+
+#[tauri::command]
+pub async fn download_storage_file(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    file_id: String,
+    expected_revision: Option<String>,
+    destination: String,
+) -> AppResult<()> {
+    state
+        .storage
+        .download_file(account_id, file_id, expected_revision, destination)
         .await
 }
 

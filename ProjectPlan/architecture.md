@@ -178,7 +178,7 @@ Python 本轮内只做：prompt 拼装 / 模型调用 / 工具决策 / 记忆抽
     BundledBinLauncher → 发布态加载 externalBin（agentd 二进制）
   ```
 - `tools/`：`ToolExecutor` + 每工具模块（shell/file/git/ssh/memory_search/browser），统一 trait；MCP 外部工具 V0.5 以同类 trait 接入。
-- `storage/`：网盘领域 DTO、`FileSourceProvider / ObjectStorageProvider / ProviderFactory` 窄端口、Keyring 凭证 adapter、开放注册表与 `StorageService`。业务层和 renderer 不直接依赖任何网盘 SDK 类型。
+- `storage/`：网盘领域 DTO、`FileSourceProvider / ObjectStorageProvider / ProviderFactory` 窄端口、Keyring 凭证 adapter、开放注册表与 `StorageService`。`google_drive` 只依赖这些应用端口，实现 Desktop OAuth + PKCE、Drive v3 文件源及 `appDataFolder` 对象存储；业务层和 renderer 不依赖 Google API 类型。
 - `memory/`：实现 `memory_search`（sqlite-vec cosine 向量 + 字符串包含匹配，RRF 融合）；负责 `USER.md`/`MEMORY.md` 读写（DB 为真相源，见 §8）。
 - `state.rs`：Tauri `State` 托管 `DbActor` 句柄 / `AgentManager` / `Config`。
 

@@ -1,15 +1,20 @@
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use serde::Serialize;
+use tokio::io::AsyncWriteExt;
 use zeroize::Zeroizing;
 
-use crate::db::repo::storage::{StorageAccountRow, StorageTransferJobRow, UpsertStorageAccount};
+use crate::db::repo::storage::{
+    NewStorageTransferJob, StorageAccountRow, StorageTransferJobRow, StorageTransferProgress,
+    UpsertStorageAccount,
+};
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 
 use super::domain::{
-    ListFilesRequest, ProviderDescriptor, ProviderError, ProviderQuota, RemoteFilePage,
-    StorageProviderAccount,
+    ListFilesRequest, ProviderAuthorizationRequest, ProviderDescriptor, ProviderError,
+    ProviderQuota, RemoteFilePage, StorageProviderAccount,
 };
 use super::ports::{ProviderCredentialStore, ProviderSession};
 use super::registry::StorageProviderRegistry;
@@ -71,14 +76,20 @@ impl StorageService {
         account_id: String,
         request: ListFilesRequest,
     ) -> AppResult<RemoteFilePage> {
-        let session = self.connect_account(&account_id).await?;
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
         let file_source = session.file_source().ok_or_else(|| {
             AppError::Other("Storage provider does not support file browsing".into())
         })?;
-        file_source
-            .list_files(request.normalized())
-            .await
-            .map_err(provider_error)
+        match file_source.list_files(request.normalized()).await {
+            Ok(page) => {
+                self.update_provider_status(&row, None).await;
+                Ok(page)
+            }
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                Err(provider_error(error))
+            }
+        }
     }
 
     pub async fn refresh_quota(&self, account_id: String) -> AppResult<ProviderQuota> {
@@ -86,7 +97,13 @@ impl StorageService {
         let quota_source = session.quota_source().ok_or_else(|| {
             AppError::Other("Storage provider does not expose account quota".into())
         })?;
-        let quota = quota_source.quota().await.map_err(provider_error)?;
+        let quota = match quota_source.quota().await {
+            Ok(quota) => quota,
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                return Err(provider_error(error));
+            }
+        };
         self.db
             .update_storage_binding(
                 row.id,
@@ -101,6 +118,106 @@ impl StorageService {
         Ok(quota)
     }
 
+    pub async fn download_file(
+        &self,
+        account_id: String,
+        file_id: String,
+        expected_revision: Option<String>,
+        destination: String,
+    ) -> AppResult<()> {
+        let destination = std::path::PathBuf::from(destination);
+        validate_download_destination(&destination)?;
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let file_source = session.file_source().ok_or_else(|| {
+            AppError::Other("Storage provider does not support file downloads".into())
+        })?;
+        let remote_file = match file_source.get_file(&file_id).await {
+            Ok(file) => file,
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                return Err(provider_error(error));
+            }
+        };
+        if !remote_file.downloadable {
+            return Err(AppError::Other(
+                "The selected storage item cannot be downloaded".into(),
+            ));
+        }
+
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let bytes_total = remote_file.size.and_then(|value| i64::try_from(value).ok());
+        self.db
+            .insert_storage_transfer_job(NewStorageTransferJob {
+                id: job_id.clone(),
+                account_id: row.id.clone(),
+                operation: "file_download".into(),
+                remote_item_id: Some(file_id.clone()),
+                display_name: remote_file.name,
+                destination_kind: Some("local_file".into()),
+                destination_id: Some(destination.to_string_lossy().to_string()),
+                bytes_total,
+            })
+            .await?;
+        self.update_transfer(&job_id, "running", 0, bytes_total, None)
+            .await?;
+
+        let result = self
+            .stream_file_to_destination(
+                file_source,
+                super::domain::DownloadFileRequest {
+                    file_id,
+                    range_start: None,
+                    range_end_inclusive: None,
+                    expected_revision,
+                },
+                &destination,
+                &job_id,
+                bytes_total,
+            )
+            .await;
+        match result {
+            Ok(bytes_transferred) => {
+                self.update_transfer(
+                    &job_id,
+                    "completed",
+                    bytes_transferred,
+                    bytes_total.or(Some(bytes_transferred)),
+                    None,
+                )
+                .await?;
+                self.update_provider_status(&row, None).await;
+                Ok(())
+            }
+            Err(DownloadFailure::Provider(error)) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                let app_error = provider_error(error.clone());
+                let _ = self
+                    .update_transfer(
+                        &job_id,
+                        "failed",
+                        0,
+                        bytes_total,
+                        Some((error.category.as_str(), error.message.as_str())),
+                    )
+                    .await;
+                Err(app_error)
+            }
+            Err(DownloadFailure::Local(error)) => {
+                let message = error.to_string();
+                let _ = self
+                    .update_transfer(
+                        &job_id,
+                        "failed",
+                        0,
+                        bytes_total,
+                        Some(("local_io", message.as_str())),
+                    )
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
     pub async fn list_transfers(
         &self,
         account_id: Option<String>,
@@ -111,7 +228,36 @@ impl StorageService {
             .await
     }
 
-    #[allow(dead_code)]
+    pub async fn authorize_account(
+        &self,
+        provider_id: String,
+        request: ProviderAuthorizationRequest,
+    ) -> AppResult<String> {
+        let factory = self
+            .registry
+            .factory(&provider_id)
+            .map_err(provider_error)?;
+        let descriptor = self
+            .registry
+            .descriptor(&provider_id)
+            .map_err(provider_error)?;
+        if !descriptor.capabilities.user_authorization {
+            return Err(AppError::Other(
+                "Storage provider does not support interactive authorization".into(),
+            ));
+        }
+        let authorized = factory.authorize(request).await.map_err(provider_error)?;
+        if authorized.account.provider_id != provider_id {
+            return Err(AppError::Other(
+                "Storage provider authorization returned a mismatched provider ID".into(),
+            ));
+        }
+        let account_id = authorized.account.id.clone();
+        self.save_connected_account(authorized.account, authorized.credential)
+            .await?;
+        Ok(account_id)
+    }
+
     pub async fn save_connected_account(
         &self,
         account: StorageProviderAccount,
@@ -192,12 +338,6 @@ impl StorageService {
         Ok(())
     }
 
-    async fn connect_account(&self, account_id: &str) -> AppResult<Arc<dyn ProviderSession>> {
-        self.connect_account_with_row(account_id)
-            .await
-            .map(|(_, session)| session)
-    }
-
     async fn connect_account_with_row(
         &self,
         account_id: &str,
@@ -234,11 +374,176 @@ impl StorageService {
             ScopedProviderCredentialAccess::new(row.id.clone(), self.credentials.clone())
                 .map_err(provider_error)?,
         );
-        let session = factory
-            .connect(&account, credential_access)
-            .await
-            .map_err(provider_error)?;
+        let session = match factory.connect(&account, credential_access).await {
+            Ok(session) => session,
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                return Err(provider_error(error));
+            }
+        };
         Ok((row, session))
+    }
+
+    async fn update_provider_status(&self, row: &StorageAccountRow, error: Option<&ProviderError>) {
+        let auth_state = if error.is_some_and(|error| {
+            error.category == super::domain::ProviderErrorCategory::Authentication
+        }) {
+            "auth_required"
+        } else {
+            row.auth_state.as_str()
+        };
+        let normalized_error = error.map(|error| {
+            (
+                error.category.as_str().to_string(),
+                error.message.chars().take(2048).collect::<String>(),
+            )
+        });
+        let _ = self
+            .db
+            .update_storage_binding(
+                row.id.clone(),
+                auth_state.into(),
+                row.enabled,
+                row.capabilities_json.clone(),
+                row.quota_used_bytes,
+                row.quota_total_bytes,
+                normalized_error,
+            )
+            .await;
+    }
+
+    async fn stream_file_to_destination(
+        &self,
+        file_source: &dyn super::ports::FileSourceProvider,
+        request: super::domain::DownloadFileRequest,
+        destination: &std::path::Path,
+        job_id: &str,
+        bytes_total: Option<i64>,
+    ) -> Result<i64, DownloadFailure> {
+        let parent = destination.parent().ok_or_else(|| {
+            DownloadFailure::Local(AppError::Other("Invalid download destination".into()))
+        })?;
+        let temporary = parent.join(format!(".agnes-download-{}.partial", uuid::Uuid::new_v4()));
+        let result = async {
+            let mut output = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .await
+                .map_err(AppError::from)?;
+            let mut stream = file_source
+                .download_file(request)
+                .await
+                .map_err(DownloadFailure::Provider)?;
+            let mut transferred = 0_i64;
+            let mut last_reported = 0_i64;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(DownloadFailure::Provider)?;
+                output.write_all(&chunk).await.map_err(AppError::from)?;
+                let chunk_size = i64::try_from(chunk.len()).map_err(|_| {
+                    AppError::Other("Downloaded storage file exceeds the local size range".into())
+                })?;
+                transferred = transferred.checked_add(chunk_size).ok_or_else(|| {
+                    AppError::Other("Downloaded storage file exceeds the local size range".into())
+                })?;
+                if transferred - last_reported >= 1024 * 1024 {
+                    self.update_transfer(job_id, "running", transferred, bytes_total, None)
+                        .await?;
+                    last_reported = transferred;
+                }
+            }
+            if bytes_total.is_some_and(|expected| transferred != expected) {
+                return Err(DownloadFailure::Provider(ProviderError::new(
+                    super::domain::ProviderErrorCategory::InvalidResponse,
+                    "Storage provider download ended before the declared file size",
+                )));
+            }
+            output.flush().await.map_err(AppError::from)?;
+            output.sync_all().await.map_err(AppError::from)?;
+            drop(output);
+            install_download(&temporary, destination).await?;
+            Ok::<_, DownloadFailure>(transferred)
+        }
+        .await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&temporary).await;
+        }
+        result
+    }
+
+    async fn update_transfer(
+        &self,
+        job_id: &str,
+        status: &str,
+        bytes_transferred: i64,
+        bytes_total: Option<i64>,
+        error: Option<(&str, &str)>,
+    ) -> AppResult<()> {
+        self.db
+            .update_storage_transfer_job(
+                job_id.to_string(),
+                StorageTransferProgress {
+                    status: status.into(),
+                    bytes_transferred,
+                    bytes_total,
+                    error_category: error.map(|value| value.0.to_string()),
+                    error_message: error.map(|value| value.1.chars().take(2048).collect()),
+                },
+            )
+            .await
+    }
+}
+
+enum DownloadFailure {
+    Provider(ProviderError),
+    Local(AppError),
+}
+
+impl From<AppError> for DownloadFailure {
+    fn from(error: AppError) -> Self {
+        Self::Local(error)
+    }
+}
+
+fn validate_download_destination(path: &std::path::Path) -> AppResult<()> {
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(AppError::Other(
+            "Download destination must be an absolute file path".into(),
+        ));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::Other("Invalid download destination".into()))?;
+    if !parent.is_dir() {
+        return Err(AppError::Other(
+            "Download destination directory does not exist".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn install_download(
+    temporary: &std::path::Path,
+    destination: &std::path::Path,
+) -> AppResult<()> {
+    if !destination.exists() {
+        tokio::fs::rename(temporary, destination).await?;
+        return Ok(());
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| AppError::Other("Invalid download destination".into()))?;
+    let backup = parent.join(format!(".agnes-download-{}.backup", uuid::Uuid::new_v4()));
+    tokio::fs::rename(destination, &backup).await?;
+    match tokio::fs::rename(temporary, destination).await {
+        Ok(()) => {
+            let _ = tokio::fs::remove_file(backup).await;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = tokio::fs::rename(&backup, destination).await;
+            Err(error.into())
+        }
     }
 }
 
@@ -279,7 +584,8 @@ mod tests {
         ProviderStability, RemoteFileItem, RemoteFileKind, StorageCapabilities,
     };
     use crate::storage::ports::{
-        FileSourceProvider, ProviderCredentialAccess, ProviderFactory, QuotaProvider,
+        FileSourceProvider, ProviderAuthorizationResult, ProviderCredentialAccess, ProviderFactory,
+        QuotaProvider,
     };
 
     struct FakeDrive;
@@ -312,7 +618,7 @@ mod tests {
             &self,
             _request: DownloadFileRequest,
         ) -> ProviderResult<ProviderByteStream> {
-            Ok(Box::pin(stream::empty()))
+            Ok(Box::pin(stream::iter(vec![Ok(vec![b'x'; 128])])))
         }
     }
 
@@ -359,6 +665,22 @@ mod tests {
             }
         }
 
+        async fn authorize(
+            &self,
+            _request: ProviderAuthorizationRequest,
+        ) -> ProviderResult<ProviderAuthorizationResult> {
+            Ok(ProviderAuthorizationResult {
+                account: StorageProviderAccount {
+                    id: "account-1".into(),
+                    provider_id: "future_drive".into(),
+                    display_name: "Personal".into(),
+                    account_subject: None,
+                    config: serde_json::json!({}),
+                },
+                credential: Zeroizing::new("credential".into()),
+            })
+        }
+
         async fn connect(
             &self,
             _account: &StorageProviderAccount,
@@ -380,19 +702,16 @@ mod tests {
             Arc::new(InMemorySecretStore::default()),
         ));
         let service = StorageService::new(db, registry, credential_store);
-        service
-            .save_connected_account(
-                StorageProviderAccount {
-                    id: "account-1".into(),
-                    provider_id: "future_drive".into(),
-                    display_name: "Personal".into(),
-                    account_subject: None,
-                    config: serde_json::json!({}),
+        let account_id = service
+            .authorize_account(
+                "future_drive".into(),
+                ProviderAuthorizationRequest {
+                    input: serde_json::json!({}),
                 },
-                Zeroizing::new("credential".into()),
             )
             .await
             .unwrap();
+        assert_eq!(account_id, "account-1");
 
         let accounts = service.list_accounts().await.unwrap();
         assert_eq!(accounts.len(), 1);
@@ -410,12 +729,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(files.items[0].name, "Notes.md");
+        let destination = std::env::temp_dir().join(format!(
+            "agnes-storage-service-download-{}.md",
+            uuid::Uuid::new_v4()
+        ));
+        service
+            .download_file(
+                "account-1".into(),
+                "remote-1".into(),
+                Some("revision-1".into()),
+                destination.to_string_lossy().to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), vec![b'x'; 128]);
+        let transfers = service
+            .list_transfers(Some("account-1".into()), 10)
+            .await
+            .unwrap();
+        assert_eq!(transfers.len(), 1);
+        assert_eq!(transfers[0].status, "completed");
         let quota = service.refresh_quota("account-1".into()).await.unwrap();
         assert_eq!(quota.total_bytes, Some(1024));
         service.remove_account("account-1".into()).await.unwrap();
         assert!(service.list_accounts().await.unwrap().is_empty());
 
         drop(service);
+        let _ = std::fs::remove_file(destination);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn completed_download_replaces_the_destination_without_leaving_partials() {
+        let directory =
+            std::env::temp_dir().join(format!("agnes-storage-download-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let destination = directory.join("notes.txt");
+        let temporary = directory.join("notes.partial");
+        std::fs::write(&destination, b"old").unwrap();
+        std::fs::write(&temporary, b"new").unwrap();
+
+        install_download(&temporary, &destination).await.unwrap();
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new");
+        assert!(!temporary.exists());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        assert!(validate_download_destination(&destination).is_ok());
+        assert!(validate_download_destination(std::path::Path::new("relative.txt")).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -5,10 +5,16 @@ use zeroize::Zeroizing;
 
 use super::domain::{
     BeginObjectUploadRequest, DownloadFileRequest, DownloadObjectRequest, ListFilesRequest,
-    ObjectUploadSession, ProviderByteStream, ProviderDescriptor, ProviderQuota, ProviderResult,
-    RemoteFileItem, RemoteFilePage, RemoteObjectLocator, RemoteObjectState, StorageProviderAccount,
-    UploadObjectChunkRequest, UploadedObjectChunk,
+    ObjectUploadSession, ProviderAuthorizationRequest, ProviderByteStream, ProviderDescriptor,
+    ProviderError, ProviderQuota, ProviderResult, RemoteFileItem, RemoteFilePage,
+    RemoteObjectLocator, RemoteObjectState, StorageProviderAccount, UploadObjectChunkRequest,
+    UploadedObjectChunk,
 };
+
+pub struct ProviderAuthorizationResult {
+    pub account: StorageProviderAccount,
+    pub credential: Zeroizing<String>,
+}
 
 #[async_trait]
 pub trait ProviderCredentialStore: Send + Sync {
@@ -76,6 +82,13 @@ pub trait ProviderSession: Send + Sync {
 #[async_trait]
 pub trait ProviderFactory: Send + Sync {
     fn descriptor(&self) -> ProviderDescriptor;
+
+    async fn authorize(
+        &self,
+        _request: ProviderAuthorizationRequest,
+    ) -> ProviderResult<ProviderAuthorizationResult> {
+        Err(ProviderError::unsupported("interactive authorization"))
+    }
 
     async fn connect(
         &self,

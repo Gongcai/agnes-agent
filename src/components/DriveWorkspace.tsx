@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   AlertCircle,
   ChevronRight,
   Cloud,
+  Download,
   File,
   Folder,
   HardDrive,
   LoaderCircle,
+  Plus,
   RefreshCw,
   Trash2,
 } from "lucide-react";
@@ -119,6 +122,7 @@ export function DriveWorkspace() {
   const [view, setView] = useState<DriveView>("files");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authorizationMessage, setAuthorizationMessage] = useState<string | null>(null);
   const fileRequestId = useRef(0);
 
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? null;
@@ -232,6 +236,32 @@ export function DriveWorkspace() {
     }
   };
 
+  const connectGoogleDrive = async () => {
+    try {
+      const selected = await open({
+        title: "选择 Google Desktop OAuth 客户端文件",
+        directory: false,
+        multiple: false,
+        filters: [{ name: "Google OAuth Client", extensions: ["json"] }],
+      });
+      if (typeof selected !== "string") return;
+      setLoading(true);
+      setError(null);
+      setAuthorizationMessage("请在系统浏览器中完成 Google 授权");
+      const accountId = await invoke<string>("authorize_storage_provider", {
+        providerId: "google_drive",
+        input: { client_credentials_path: selected },
+      });
+      await loadShell();
+      setSelectedAccountId(accountId);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setAuthorizationMessage(null);
+      setLoading(false);
+    }
+  };
+
   const removeAccount = async () => {
     if (!selectedAccount) return;
     if (!window.confirm(`移除网盘账户「${selectedAccount.display_name}」？本地传输记录会保留。`)) return;
@@ -239,6 +269,30 @@ export function DriveWorkspace() {
     setError(null);
     try {
       await invoke("remove_storage_account", { accountId: selectedAccount.id });
+      await loadShell();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const downloadFile = async (item: RemoteFileItem) => {
+    if (!selectedAccount || !item.downloadable) return;
+    try {
+      const destination = await save({
+        title: "保存网盘文件",
+        defaultPath: item.name,
+      });
+      if (typeof destination !== "string") return;
+      setLoading(true);
+      setError(null);
+      await invoke("download_storage_file", {
+        accountId: selectedAccount.id,
+        fileId: item.id,
+        expectedRevision: item.revision,
+        destination,
+      });
       await loadShell();
     } catch (reason) {
       setError(String(reason));
@@ -274,6 +328,19 @@ export function DriveWorkspace() {
         </div>
       </header>
 
+      {(error || authorizationMessage || accountIssue) && (
+        <div className={`mx-5 mt-3 flex shrink-0 items-start gap-2 rounded-md border px-3 py-2 text-xs ${
+          error || accountIssue
+            ? "border-rose-200 bg-rose-50 text-rose-700"
+            : "border-amber-200 bg-amber-50 text-amber-700"
+        }`}>
+          {authorizationMessage && !error && !accountIssue
+            ? <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+            : <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+          <span>{error ?? authorizationMessage ?? accountIssue}</span>
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-64 shrink-0 flex-col border-r border-stone-200 bg-white/30 p-3">
           <div className="mb-2 px-2 text-[10px] font-bold uppercase tracking-wider text-stone-400">
@@ -304,6 +371,14 @@ export function DriveWorkspace() {
               <div className="px-3 py-8 text-center text-xs text-stone-400">暂无已连接账户</div>
             )}
           </div>
+          <button
+            onClick={() => void connectGoogleDrive()}
+            disabled={loading}
+            className="mt-auto flex h-9 w-full items-center justify-center gap-2 rounded-md border border-stone-200 bg-white text-xs font-medium text-stone-600 hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            连接 Google Drive
+          </button>
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col">
@@ -352,13 +427,6 @@ export function DriveWorkspace() {
                 </div>
               </div>
 
-              {(error || accountIssue) && (
-                <div className="mx-5 mt-3 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span>{error ?? accountIssue}</span>
-                </div>
-              )}
-
               {view === "files" ? (
                 <div className="flex min-h-0 flex-1 flex-col px-5 py-4">
                   <div className="mb-3 flex h-8 items-center gap-1 overflow-x-auto text-xs text-stone-500">
@@ -376,23 +444,35 @@ export function DriveWorkspace() {
                   </div>
                   <div className="min-h-0 flex-1 overflow-auto border-y border-stone-200 bg-white/40">
                     {sortedFiles.map((item) => (
-                      <button
+                      <div
                         key={item.id}
-                        onClick={() => {
-                          if (item.kind === "folder") {
-                            setFolderPath((path) => [...path, { id: item.id, name: item.name }]);
-                          }
-                        }}
-                        disabled={item.kind !== "folder"}
-                        className="grid w-full grid-cols-[minmax(0,1fr)_90px] items-center gap-3 border-b border-stone-100 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-white disabled:cursor-default sm:grid-cols-[minmax(0,1fr)_110px_150px] sm:gap-4"
+                        className="grid w-full grid-cols-[minmax(0,1fr)_74px_28px] items-center gap-3 border-b border-stone-100 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-white sm:grid-cols-[minmax(0,1fr)_90px_130px_28px] sm:gap-4"
                       >
-                        <span className="flex min-w-0 items-center gap-2 text-stone-700">
+                        <button
+                          onClick={() => {
+                            if (item.kind === "folder") {
+                              setFolderPath((path) => [...path, { id: item.id, name: item.name }]);
+                            }
+                          }}
+                          disabled={item.kind !== "folder"}
+                          className="flex min-w-0 items-center gap-2 text-left text-stone-700 disabled:cursor-default"
+                        >
                           {item.kind === "folder" ? <Folder className="h-4 w-4 shrink-0 text-amber-500" /> : <File className="h-4 w-4 shrink-0 text-stone-400" />}
                           <span className="truncate">{item.name}</span>
-                        </span>
+                        </button>
                         <span className="text-stone-400">{item.kind === "folder" ? "--" : formatStorageBytes(item.size)}</span>
                         <span className="hidden truncate text-stone-400 sm:block">{formatTimestamp(item.modified_at)}</span>
-                      </button>
+                        {item.downloadable ? (
+                          <button
+                            onClick={() => void downloadFile(item)}
+                            disabled={loading}
+                            className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-800 disabled:opacity-40"
+                            title="下载到本地"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </button>
+                        ) : <span className="h-7 w-7" />}
+                      </div>
                     ))}
                     {!loading && sortedFiles.length === 0 && (
                       <div className="grid h-full min-h-48 place-items-center text-xs text-stone-400">
@@ -448,7 +528,7 @@ export function DriveWorkspace() {
             <div className="grid flex-1 place-items-center text-sm text-stone-400">
               <div className="text-center">
                 <Cloud className="mx-auto mb-3 h-8 w-8 text-stone-300" />
-                <p>连接 Provider 后在此管理文件和传输任务</p>
+                <p>{authorizationMessage ?? "连接 Provider 后在此管理文件和传输任务"}</p>
               </div>
             </div>
           )}

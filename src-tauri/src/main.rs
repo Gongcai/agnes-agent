@@ -75,6 +75,11 @@ fn main() {
             notifications.clone().start_background();
             let mcp = Arc::new(mcp::McpManager::new(db.clone(), secrets.clone()));
             let storage_registry = Arc::new(storage::StorageProviderRegistry::new());
+            storage_registry
+                .register(Arc::new(
+                    storage::GoogleDriveFactory::new().expect("无法初始化 Google Drive Provider"),
+                ))
+                .expect("无法注册 Google Drive Provider");
             let storage_credentials = Arc::new(storage::KeyringProviderCredentialStore::new(
                 secrets.clone(),
             ));
@@ -175,7 +180,9 @@ fn main() {
             commands::search_knowledge_hybrid,
             commands::list_storage_provider_catalog,
             commands::list_storage_accounts,
+            commands::authorize_storage_provider,
             commands::list_storage_files,
+            commands::download_storage_file,
             commands::refresh_storage_quota,
             commands::list_storage_transfers,
             commands::remove_storage_account,
