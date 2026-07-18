@@ -22,6 +22,8 @@ MODEL_CONTEXT_LIMITS: Dict[str, int] = {
 }
 
 DEFAULT_CONTEXT_LIMIT = 8192
+MODEL_REQUEST_TIMEOUT_SECONDS = 90
+DEFAULT_MAX_OUTPUT_TOKENS = 2048
 
 # Ensure litellm throws errors immediately rather than trying fallback options invisibly
 litellm.drop_params = True
@@ -142,6 +144,8 @@ def completion(
         messages=messages,
         tools=tools,
         stream=stream,
+        timeout=MODEL_REQUEST_TIMEOUT_SECONDS,
+        max_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
         **extra_kwargs,
         **kwargs,
     )

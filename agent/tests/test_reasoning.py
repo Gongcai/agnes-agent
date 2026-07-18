@@ -1,7 +1,10 @@
 """Unit tests for the Python reasoning sidecar (prompt, graph, models, memory_extract)."""
 from __future__ import annotations
+import asyncio
 import json
+from types import SimpleNamespace
 import pytest
+from app import graph as graph_module
 from app.prompt import assemble_prompt, group_protocol_messages, translate_messages, count_tokens
 from app.graph import build_graph, get_available_tools
 from app.memory_extract import extract_memories
@@ -12,7 +15,64 @@ from app.main import (
     prepare_memory_tool_arguments,
     resolve_task_llm,
 )
-from app.models import LlmConfig, embed_texts
+from app.models import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    LlmConfig,
+    MODEL_REQUEST_TIMEOUT_SECONDS,
+    completion,
+    embed_texts,
+)
+
+
+def test_completion_applies_a_bounded_request_timeout(monkeypatch):
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr("app.models.litellm.completion", fake_completion)
+
+    completion("test-model", [{"role": "user", "content": "Hi"}])
+
+    assert captured["timeout"] == MODEL_REQUEST_TIMEOUT_SECONDS
+    assert captured["max_tokens"] == DEFAULT_MAX_OUTPUT_TOKENS
+
+
+def test_thought_only_model_response_gets_a_visible_fallback(monkeypatch):
+    thought_only_chunk = SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(content=None, reasoning_content="working", reasoning=None, tool_calls=None)
+        )]
+    )
+    monkeypatch.setattr(graph_module, "completion", lambda **_kwargs: iter([thought_only_chunk]))
+
+    emitted = []
+
+    async def emit(content):
+        emitted.append(content)
+
+    state = {
+        "messages": [{"role": "user", "content": "Hi"}],
+        "system_prompt": "",
+        "model": "test-model",
+        "tool_policy": {
+            "shell": {"enabled": False},
+            "file": {"enabled": False},
+            "git": {"enabled": False},
+            "memory": {"enabled": False},
+            "planner": {"enabled": False},
+        },
+        "llm_config": None,
+    }
+
+    async def run():
+        return await graph_module.call_llm_node(state, {"configurable": {"send_delta_fn": emit}})
+
+    result = asyncio.run(run())
+
+    assert result["messages"][-1]["content"] == "（模型未返回正文，请重试或关闭思考模式后再试。）"
+    assert emitted[-1] == "（模型未返回正文，请重试或关闭思考模式后再试。）"
 
 def test_count_tokens():
     assert count_tokens("Hello world") > 0

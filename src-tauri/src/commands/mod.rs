@@ -3081,7 +3081,7 @@ pub async fn get_secret_store_status(
     })
 }
 
-/// 测试模型提供商配置是否有效（V0.1 仅检查是否存在及 API Key 已配置）。
+/// Test that a model provider can authenticate without exposing its credential.
 #[tauri::command]
 pub async fn test_provider(
     state: tauri::State<'_, AppState>,
@@ -3094,25 +3094,56 @@ pub async fn test_provider(
             message: format!("Provider `{}` not found", provider_id),
         }),
         Some(p) => {
-            // 对于 ollama 无需 API Key
-            if p.kind == "ollama" {
-                return Ok(TestProviderResult {
-                    success: true,
-                    message: "Ollama provider configured (no API key required)".into(),
-                });
-            }
             let api_key = state
                 .secrets
                 .get(&provider_api_key_secret_id(&provider_id))
                 .await?;
-            match api_key {
-                Some(k) if !k.is_empty() => Ok(TestProviderResult {
-                    success: true,
-                    message: format!("Provider `{}` configured with API key", p.name),
-                }),
-                _ => Ok(TestProviderResult {
+            if p.kind != "ollama" && api_key.as_deref().is_none_or(str::is_empty) {
+                return Ok(TestProviderResult {
                     success: false,
                     message: format!("Provider `{}` has no API key configured", p.name),
+                });
+            }
+
+            let base = p.api_base.as_deref().unwrap_or(match p.kind.as_str() {
+                "openai" => "https://api.openai.com/v1",
+                "ollama" => "http://127.0.0.1:11434",
+                _ => {
+                    return Ok(TestProviderResult {
+                        success: true,
+                        message: format!("Provider `{}` has a configured credential", p.name),
+                    });
+                }
+            });
+            let endpoint = if p.kind == "ollama" {
+                format!("{}/api/tags", base.trim_end_matches('/'))
+            } else {
+                format!("{}/models", base.trim_end_matches('/'))
+            };
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .map_err(|error| AppError::Other(format!("创建连接测试客户端失败: {error}")))?;
+            let mut request = client.get(&endpoint);
+            if let Some(key) = api_key.filter(|key| !key.is_empty()) {
+                request = request.bearer_auth(key);
+            }
+            match request.send().await {
+                Ok(response) if response.status().is_success() => Ok(TestProviderResult {
+                    success: true,
+                    message: format!("Provider `{}` connection verified", p.name),
+                }),
+                Ok(response) => Ok(TestProviderResult {
+                    success: false,
+                    message: format!(
+                        "Provider `{}` rejected the connection (HTTP {})",
+                        p.name,
+                        response.status()
+                    ),
+                }),
+                Err(error) => Ok(TestProviderResult {
+                    success: false,
+                    message: format!("Provider `{}` connection failed: {error}", p.name),
                 }),
             }
         }

@@ -528,11 +528,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       await invoke("send_message", { sessionId, text });
     } catch (e) {
       console.error("Failed to send message", e);
-      // Remove assistant pending placeholder and reset streaming on immediate error
+      // The backend may have persisted a failed assistant message with its
+      // diagnostic text. Reload it instead of leaving a blank placeholder.
       set({
         isStreaming: false,
         messages: get().messages.filter(m => m.id !== tempAssistantMsg.id),
       });
+      if (get().activeSessionId === sessionId) {
+        await get().loadMessages(sessionId, true);
+      }
     }
   },
 

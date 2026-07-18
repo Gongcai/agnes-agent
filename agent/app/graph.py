@@ -512,6 +512,12 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
                         
     # Format accumulated tool calls list
     pending_tool_calls = list(tool_calls_accumulator.values())
+
+    # Some reasoning models can exhaust their default output budget before
+    # emitting public text. Do not complete an empty assistant bubble.
+    if not full_text and not pending_tool_calls:
+        full_text = "（模型未返回正文，请重试或关闭思考模式后再试。）"
+        await emit(full_text)
     
     # Clean up empty IDs in tool calls (sometimes LLM streams id only in first chunk)
     for tc in pending_tool_calls:

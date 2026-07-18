@@ -178,7 +178,9 @@ const EpubPane: React.FC<{
           if (cfi) onProgress(cfi);
         });
         const attachContextMenu = (target: Contents | { contents?: Contents }) => {
-          const contents = "document" in target ? target : target.contents;
+          // EPUB.js runs this hook twice: first with an IframeView and later
+          // with its Contents. Both expose `document`, so prefer `contents`.
+          const contents = (target as { contents?: Contents }).contents ?? target as Contents;
           if (!contents) return;
           if (hookedContents.has(contents)) return;
           hookedContents.add(contents);
@@ -188,13 +190,15 @@ const EpubPane: React.FC<{
             const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
             if (!quote || !range || range.collapsed) return;
             event.preventDefault();
+            event.stopPropagation();
             const nearby = nearbyParagraphs(selection!);
-            const selected = {
-              cfiRange: contents.cfiFromRange(range),
-              quote,
-              contextBefore: nearby.before,
-              contextAfter: nearby.after,
-            };
+            let cfiRange: string;
+            try {
+              cfiRange = contents.cfiFromRange(range);
+            } catch {
+              return;
+            }
+            const selected = { cfiRange, quote, contextBefore: nearby.before, contextAfter: nearby.after };
             const frame = contents.document.defaultView?.frameElement;
             const frameRect = frame instanceof HTMLElement ? frame.getBoundingClientRect() : null;
             openSelectionMenuRef.current(
@@ -206,7 +210,10 @@ const EpubPane: React.FC<{
           contents.document.addEventListener("contextmenu", handleContextMenu, true);
         };
         rendered.hooks.content.register(attachContextMenu);
-        rendered.on("rendered", applyHighlights);
+        rendered.on("rendered", (_section: unknown, view: { contents?: Contents }) => {
+          attachContextMenu(view);
+          applyHighlights();
+        });
         rendered.on("selected", (cfiRange: string, contents: Contents) => {
           const selection = contents.window.getSelection();
           const quote = selection?.toString().replace(/\s+/g, " ").trim() ?? "";
@@ -593,11 +600,14 @@ export const ReadingWorkspace: React.FC = () => {
       )}
 
       {selectionMenu && (
-        <div className="fixed z-50 w-48 overflow-hidden rounded-md border border-stone-200 bg-white p-1 shadow-lg" style={{ left: selectionMenu.x, top: selectionMenu.y }} onClick={(event) => event.stopPropagation()}>
-          <button onClick={() => void copySelection()} className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-xs text-stone-700 hover:bg-stone-100"><Copy className="h-3.5 w-3.5 text-stone-500" />复制</button>
-          <button onClick={() => { setQuotedSelection(selectionMenu.selection); setSelectionMenu(null); setIsDiscussionOpen(true); }} className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-xs text-stone-700 hover:bg-stone-100"><Quote className="h-3.5 w-3.5 text-stone-500" />引用</button>
-          <button onClick={() => void translateSelection()} disabled={!conversationReady || isStreaming} className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-xs text-stone-700 hover:bg-stone-100 disabled:opacity-40"><Languages className="h-3.5 w-3.5 text-stone-500" />翻译</button>
-        </div>
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setSelectionMenu(null)} onContextMenu={(event) => { event.preventDefault(); setSelectionMenu(null); }} />
+          <div className="fixed z-50 w-40 overflow-hidden rounded-xl border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl" style={{ left: selectionMenu.x, top: selectionMenu.y }}>
+            <button onClick={() => void copySelection()} className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-stone-100"><Copy className="h-3.5 w-3.5 text-stone-500" />复制</button>
+            <button onClick={() => { setQuotedSelection(selectionMenu.selection); setSelectionMenu(null); setIsDiscussionOpen(true); }} className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-stone-100"><Quote className="h-3.5 w-3.5 text-stone-500" />引用</button>
+            <button onClick={() => void translateSelection()} disabled={!conversationReady || isStreaming} className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"><Languages className="h-3.5 w-3.5 text-stone-500" />翻译</button>
+          </div>
+        </>
       )}
 
       {showConsent && selectedBook && (
