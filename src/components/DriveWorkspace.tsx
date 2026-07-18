@@ -286,13 +286,11 @@ export function DriveWorkspace() {
   }, [fileContextMenu]);
 
   useEffect(() => {
-    if (view !== "transfers") {
-      transferSpeedSamples.current.clear();
-      setTransferSpeeds({});
-      return;
-    }
     let cancelled = false;
+    let polling = false;
     const refreshTransfers = async () => {
+      if (polling) return;
+      polling = true;
       try {
         const next = await invoke<TransferJob[]>("list_storage_transfers", {
           accountId: null,
@@ -305,10 +303,12 @@ export function DriveWorkspace() {
             const activeIds = new Set(next.map((job) => job.id));
             for (const job of next) {
               const previous = transferSpeedSamples.current.get(job.id);
-              if (previous) {
+              if (previous && job.status === "running") {
                 const elapsed = (timestamp - previous.timestamp) / 1000;
                 const delta = job.bytes_transferred - previous.bytes;
                 if (elapsed > 0 && delta >= 0) speeds[job.id] = delta / elapsed;
+              } else if (job.status !== "running") {
+                delete speeds[job.id];
               }
               transferSpeedSamples.current.set(job.id, {
                 timestamp,
@@ -327,15 +327,18 @@ export function DriveWorkspace() {
         }
       } catch (reason) {
         if (!cancelled) setError(String(reason));
+      } finally {
+        polling = false;
       }
     };
     void refreshTransfers();
-    const timer = window.setInterval(() => void refreshTransfers(), 1000);
+    const timer = window.setInterval(() => void refreshTransfers(), 750);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      transferSpeedSamples.current.clear();
     };
-  }, [view]);
+  }, []);
 
   useEffect(() => {
     if (!showQuarkAuthorization || quarkAuthorizationMode !== "qr" || !quarkQrChallengeId) return;
@@ -537,6 +540,7 @@ export function DriveWorkspace() {
         defaultPath,
       });
       if (typeof destination !== "string") return;
+      setView("transfers");
       setLoading(true);
       setError(null);
       await invoke("download_storage_file", {
@@ -568,6 +572,7 @@ export function DriveWorkspace() {
         multiple: false,
       });
       if (typeof destinationDirectory !== "string") return;
+      setView("transfers");
       setLoading(true);
       setError(null);
       await invoke("download_storage_folder", {
@@ -594,6 +599,7 @@ export function DriveWorkspace() {
       });
       const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
       if (paths.length === 0) return;
+      setView("transfers");
       setLoading(true);
       setError(null);
       for (const source of paths) {
@@ -923,20 +929,41 @@ export function DriveWorkspace() {
                           <div className="min-w-0">
                             <div className="truncate font-medium text-stone-700">{job.display_name}</div>
                             <div className="mt-1 text-[10px] text-stone-400">{OPERATION_LABELS[job.operation] ?? job.operation}</div>
+                            <div className="mt-2 flex items-center justify-between gap-3 text-[10px] text-stone-400">
+                              <span className="truncate">
+                                {formatStorageBytes(job.bytes_transferred)}
+                                {job.bytes_total !== null ? ` / ${formatStorageBytes(job.bytes_total)}` : ""}
+                              </span>
+                              {progress !== null && <span className="shrink-0">{Math.round(progress)}%</span>}
+                            </div>
                             {progress !== null ? (
-                              <div className="mt-2 h-1 overflow-hidden rounded bg-stone-100">
-                                <div className="h-full bg-[#8CA38A]" style={{ width: `${progress}%` }} />
+                              <div
+                                className="mt-1.5 h-1 overflow-hidden rounded bg-stone-100"
+                                role="progressbar"
+                                aria-label={`${job.display_name} 传输进度`}
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-valuenow={Math.round(progress)}
+                              >
+                                <div
+                                  className="h-full bg-[#D97757] transition-[width] duration-500 ease-out"
+                                  style={{ width: progress > 0 ? `max(2px, ${progress}%)` : "0%" }}
+                                />
                               </div>
                             ) : job.status === "running" ? (
-                              <div className="mt-2 h-1 overflow-hidden rounded bg-stone-100">
-                                <div className="h-full w-1/3 animate-pulse bg-[#8CA38A]" />
+                              <div
+                                className="mt-1.5 h-1 overflow-hidden rounded bg-stone-100"
+                                role="progressbar"
+                                aria-label={`${job.display_name} 正在传输`}
+                              >
+                                <div className="h-full w-1/3 animate-pulse bg-[#D97757]" />
                               </div>
                             ) : null}
                           </div>
                           <div className="text-right text-stone-500">
                             <div>{TRANSFER_STATUS_LABELS[job.status] ?? job.status}</div>
                             {job.status === "running" && (
-                              <div className="mt-1 text-[10px] text-stone-400">{formatTransferSpeed(speed)}</div>
+                              <div className="mt-1 text-[10px] text-stone-400">速度 {formatTransferSpeed(speed)}</div>
                             )}
                           </div>
                           <span className="col-span-2 truncate text-stone-400 sm:col-span-1">{job.error_message ?? formatTimestamp(job.updated_at)}</span>
