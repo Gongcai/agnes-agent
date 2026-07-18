@@ -246,7 +246,8 @@ pub fn create_conversation(
     }
     tx.execute(
         "INSERT INTO reading_book_conversations (book_id, agent_id, session_id, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?4)",
+         VALUES (?1, ?2, ?3, ?4, ?4) \
+         ON CONFLICT(book_id, agent_id) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at",
         params![book_id, agent_id, session_id, timestamp],
     )?;
     tx.commit()?;
@@ -477,5 +478,52 @@ mod tests {
         .unwrap();
         assert_eq!(highlight.quote, "A selected passage");
         assert_eq!(list_highlights(&conn, "book").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn new_conversation_replaces_current_link_without_deleting_old_session() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        seed(&conn);
+        insert_book(
+            &mut conn,
+            &NewReadingBook {
+                id: "book".into(),
+                collection_id: "collection".into(),
+                document_id: "document".into(),
+                local_path: "/tmp/book.epub".into(),
+                title: "Book".into(),
+                author: None,
+                source_hash: "hash".into(),
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, title) VALUES ('session-1', 'agent', 'First')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, title) VALUES ('session-2', 'agent', 'Second')",
+            [],
+        )
+        .unwrap();
+
+        create_conversation(&mut conn, "book", "agent", "session-1").unwrap();
+        create_conversation(&mut conn, "book", "agent", "session-2").unwrap();
+
+        assert_eq!(
+            get_conversation_session(&conn, "book", "agent")
+                .unwrap()
+                .as_deref(),
+            Some("session-2")
+        );
+        let old_session_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = 'session-1')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(old_session_exists);
     }
 }

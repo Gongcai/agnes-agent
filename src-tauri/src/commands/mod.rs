@@ -2163,6 +2163,56 @@ pub async fn open_reading_book_conversation(
     Ok(session_id)
 }
 
+/// Create a fresh discussion session for a book while keeping the previous
+/// session available in the normal session list.
+#[tauri::command]
+pub async fn new_reading_book_conversation(
+    state: tauri::State<'_, AppState>,
+    book_id: String,
+    agent_id: String,
+) -> AppResult<String> {
+    state
+        .db
+        .grant_reading_book_agent_access(book_id.clone(), agent_id.clone())
+        .await?;
+    let book = state
+        .db
+        .list_reading_books()
+        .await?
+        .into_iter()
+        .find(|book| book.id == book_id)
+        .ok_or_else(|| AppError::Other("Reading book not found".into()))?;
+    let session_id = uuid::Uuid::new_v4().to_string();
+    state
+        .db
+        .insert_session(NewSession {
+            id: session_id.clone(),
+            agent_id: agent_id.clone(),
+            title: format!("阅读 · {}", book.title),
+            context_limit: None,
+            compress_threshold: None,
+            recency_window: None,
+            reserved_output_tokens: None,
+            summarizer_model: None,
+            model: None,
+            thinking_mode: None,
+            thinking_budget: None,
+            permission_mode: "auto".into(),
+            workspace_id: None,
+            origin_device_id: None,
+        })
+        .await?;
+    if let Err(error) = state
+        .db
+        .create_reading_conversation(book_id, agent_id, session_id.clone())
+        .await
+    {
+        let _ = state.db.delete_session(session_id.clone()).await;
+        return Err(error);
+    }
+    Ok(session_id)
+}
+
 #[tauri::command]
 pub async fn update_reading_book_mode(
     state: tauri::State<'_, AppState>,

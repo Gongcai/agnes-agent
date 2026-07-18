@@ -126,6 +126,7 @@ fn main() {
             commands::list_reading_books,
             commands::import_reading_book,
             commands::open_reading_book_conversation,
+            commands::new_reading_book_conversation,
             commands::update_reading_book_mode,
             commands::set_reading_book_content_context_allowed,
             commands::update_reading_book_progress,

@@ -18,6 +18,7 @@ import {
   MessageCircleMore,
   PanelRightClose,
   PanelRightOpen,
+  Plus,
   Quote,
   Send,
   ShieldAlert,
@@ -187,21 +188,26 @@ const EpubPane: React.FC<{
           if (hookedContents.has(contents)) return;
           hookedContents.add(contents);
           let openedOnMouseDownAt = 0;
-          const openMenuForEvent = (event: MouseEvent, coordinatesAreGlobal = false) => {
+          let lastSelection: PendingSelection | null = null;
+          const readSelection = (): PendingSelection | null => {
             const selection = contents.window.getSelection();
             const quote = selection?.toString().replace(/\s+/g, " ").trim() ?? "";
             const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-            if (!quote || !range || range.collapsed) return false;
-            event.preventDefault();
-            event.stopImmediatePropagation();
+            if (!selection || !quote || !range || range.collapsed) return null;
             const nearby = nearbyParagraphs(selection!);
             let cfiRange: string;
             try {
               cfiRange = contents.cfiFromRange(range);
             } catch {
-              return false;
+              return null;
             }
-            const selected = { cfiRange, quote, contextBefore: nearby.before, contextAfter: nearby.after };
+            return { cfiRange, quote, contextBefore: nearby.before, contextAfter: nearby.after };
+          };
+          const openMenuForEvent = (event: MouseEvent, coordinatesAreGlobal = false) => {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            const selected = readSelection() ?? lastSelection;
+            if (!selected) return false;
             const frame = contents.document.defaultView?.frameElement;
             const frameRect = frame instanceof HTMLElement ? frame.getBoundingClientRect() : null;
             openSelectionMenuRef.current(
@@ -211,11 +217,16 @@ const EpubPane: React.FC<{
             );
             return true;
           };
+          const rememberSelection = () => {
+            const selected = readSelection();
+            if (selected) lastSelection = selected;
+          };
           const handleMouseDown = (event: MouseEvent) => {
             if (event.button !== 2) return;
             if (openMenuForEvent(event)) openedOnMouseDownAt = Date.now();
           };
           const handleContextMenu = (event: MouseEvent) => {
+            // Prevent WebKit's native menu even when it briefly clears the selection.
             if (Date.now() - openedOnMouseDownAt < 750) {
               event.preventDefault();
               event.stopImmediatePropagation();
@@ -223,8 +234,17 @@ const EpubPane: React.FC<{
             }
             openMenuForEvent(event);
           };
+          const documentTarget = contents.document;
+          documentTarget.addEventListener("selectionchange", rememberSelection, true);
+          documentTarget.addEventListener("mouseup", rememberSelection, true);
           contents.window.addEventListener("mousedown", handleMouseDown, true);
           contents.window.addEventListener("contextmenu", handleContextMenu, true);
+          // WebKit dispatches iframe context menus on the document rather than
+          // reliably forwarding them to the iframe window.
+          documentTarget.addEventListener("mousedown", handleMouseDown, true);
+          documentTarget.addEventListener("contextmenu", handleContextMenu, true);
+          documentTarget.documentElement?.addEventListener("contextmenu", handleContextMenu, true);
+          documentTarget.body?.addEventListener("contextmenu", handleContextMenu, true);
           const frame = contents.document.defaultView?.frameElement;
           if (frame instanceof HTMLElement) {
             frame.addEventListener("contextmenu", (event) => {
@@ -345,6 +365,7 @@ export const ReadingWorkspace: React.FC = () => {
   const messages = useAgentStore((state) => state.messages);
   const isStreaming = useAgentStore((state) => state.isStreaming);
   const sessions = useAgentStore((state) => state.sessions);
+  const loadSessions = useAgentStore((state) => state.loadSessions);
   const sendMessage = useAgentStore((state) => state.sendMessage);
   const setActiveSessionId = useAgentStore((state) => state.setActiveSessionId);
   const setSessionLlm = useAgentStore((state) => state.setSessionLlm);
@@ -557,6 +578,32 @@ export const ReadingWorkspace: React.FC = () => {
                 <div className="flex h-12 items-center gap-2 px-4">
                   <MessageCircleMore className="h-4 w-4 text-emerald-700" />
                   <span className="min-w-0 flex-1 text-sm font-semibold text-stone-800">阅读讨论</span>
+                  <button
+                    onClick={() => {
+                      if (!selectedBook || !activeAgentId || isStreaming) return;
+                      setLoading(true);
+                      setError(null);
+                      void invoke<string>("new_reading_book_conversation", {
+                        bookId: selectedBook.id,
+                        agentId: activeAgentId,
+                      })
+                        .then(async (sessionId) => {
+                          setQuotedSelection(null);
+                          setSelectionMenu(null);
+                          setQuestion("");
+                          await setActiveSessionId(sessionId);
+                          await loadSessions(activeAgentId);
+                          setReadingSessionId(sessionId);
+                        })
+                        .catch((reason) => setError(String(reason)))
+                        .finally(() => setLoading(false));
+                    }}
+                    disabled={!conversationReady || isStreaming || loading}
+                    className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700 disabled:opacity-40"
+                    title="新建讨论"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
                   <button onClick={() => setIsDiscussionOptionsOpen((open) => !open)} className={`rounded p-1 ${isDiscussionOptionsOpen ? "bg-stone-100 text-stone-700" : "text-stone-400 hover:bg-stone-100 hover:text-stone-700"}`} title="讨论设置"><SlidersHorizontal className="h-4 w-4" /></button>
                   <button onClick={() => setIsDiscussionOpen(false)} className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700" title="收起讨论"><PanelRightClose className="h-4 w-4" /></button>
                 </div>
