@@ -391,7 +391,8 @@ impl FileSourceProvider for QuarkDriveSession {
         if request
             .expected_revision
             .as_deref()
-            .is_some_and(|expected| file.revision.as_deref() != Some(expected))
+            .zip(file.revision.as_deref())
+            .is_some_and(|(expected, current)| expected != current)
         {
             return Err(ProviderError::new(
                 ProviderErrorCategory::Conflict,
@@ -1288,9 +1289,9 @@ fn remote_file_item(value: &Value, parent_id: Option<&str>) -> ProviderResult<Re
         .unwrap_or(false);
     let size = find_number(value, &["size", "file_size"]);
     let modified = value_string(value, &["updated_at", "modified_at", "update_time"]);
-    let revision = modified
-        .clone()
-        .or_else(|| value_string(value, &["sha1", "md5"]));
+    // Quark does not expose a stable revision on every endpoint. Only hashes are safe for
+    // optimistic validation; timestamps are kept as display metadata, never as revisions.
+    let revision = value_string(value, &["sha1", "md5"]);
     Ok(RemoteFileItem {
         id,
         parent_id: parent_id.map(ToOwned::to_owned),
@@ -1656,6 +1657,19 @@ mod tests {
         .unwrap();
         assert_eq!(numeric_folder.kind, RemoteFileKind::Folder);
         assert!(!numeric_folder.downloadable);
+
+        let timestamp_only_file = remote_file_item(
+            &json!({
+                "fid": "file-2",
+                "file_name": "timestamped.bin",
+                "dir": false,
+                "updated_at": 123456
+            }),
+            Some("0"),
+        )
+        .unwrap();
+        assert_eq!(timestamp_only_file.modified_at.as_deref(), Some("123456"));
+        assert_eq!(timestamp_only_file.revision, None);
 
         assert_eq!(
             api_value_error(&json!({"message": "cookie login expired"})).category,
