@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2 } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -254,7 +254,7 @@ const EMPTY_FORM: ProviderFormValues = {
   is_default: false,
 };
 
-type ModelRoleField = keyof ModelRoleAssignments;
+type ModelRoleField = Exclude<keyof ModelRoleAssignments, "fallback_models">;
 
 const MODEL_ROLE_OPTIONS: {
   key: ModelRoleField;
@@ -2585,6 +2585,109 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <span className="block text-[9px] leading-relaxed text-stone-400">{role.desc}</span>
                       </label>
                     ))}
+                  </div>
+
+                  <div className="border-t border-stone-200/70 pt-3">
+                    <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                      <div className="min-w-0">
+                        <span className="text-[11px] font-semibold text-stone-700">故障备用模型</span>
+                        <p className="mt-0.5 text-[9px] text-stone-400">
+                          仅在当前模型尚未输出正文、思考或工具调用时，按顺序尝试下一个模型。
+                        </p>
+                      </div>
+                      <select
+                        value=""
+                        disabled={modelRoleForm.fallback_models.length >= 5}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          if (!value || modelRoleForm.fallback_models.includes(value)) return;
+                          setModelRoleForm((current) => ({
+                            ...current,
+                            fallback_models: [...current.fallback_models, value],
+                          }));
+                        }}
+                        className="w-full rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-[10px] font-mono text-stone-600 outline-none disabled:opacity-40 sm:w-56 sm:shrink-0"
+                      >
+                        <option value="">添加备用模型...</option>
+                        {providers.map((provider) => {
+                          const models = provider.models.filter((model) => modelSupportsRole(model, "main_model"));
+                          if (models.length === 0) return null;
+                          return (
+                            <optgroup key={provider.id} label={provider.name}>
+                              {models.map((model) => {
+                                const value = `${provider.id}/${model.id}`;
+                                return (
+                                  <option
+                                    key={value}
+                                    value={value}
+                                    disabled={modelRoleForm.fallback_models.includes(value)}
+                                  >
+                                    {model.id}
+                                  </option>
+                                );
+                              })}
+                            </optgroup>
+                          );
+                        })}
+                      </select>
+                    </div>
+                    {modelRoleForm.fallback_models.length === 0 ? (
+                      <p className="py-3 text-center text-[10px] text-stone-400">未配置备用模型</p>
+                    ) : (
+                      <div className="mt-2 divide-y divide-stone-200 border-y border-stone-200">
+                        {modelRoleForm.fallback_models.map((modelRef, index) => {
+                          const [providerId, ...modelParts] = modelRef.split("/");
+                          const providerName = providers.find((provider) => provider.id === providerId)?.name || providerId;
+                          return (
+                            <div key={modelRef} className="flex h-10 items-center gap-2 px-2">
+                              <span className="w-5 text-center text-[10px] tabular-nums text-stone-400">{index + 1}</span>
+                              <span className="min-w-0 flex-1 truncate text-[10px] text-stone-600">
+                                <span className="font-semibold text-stone-700">{providerName}</span>
+                                <span className="mx-1 text-stone-300">/</span>
+                                <span className="font-mono">{modelParts.join("/")}</span>
+                              </span>
+                              <button
+                                type="button"
+                                disabled={index === 0}
+                                title="提高优先级"
+                                onClick={() => setModelRoleForm((current) => {
+                                  const next = [...current.fallback_models];
+                                  [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                                  return { ...current, fallback_models: next };
+                                })}
+                                className="flex h-7 w-7 items-center justify-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-700 disabled:opacity-25"
+                              >
+                                <ArrowUp className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={index === modelRoleForm.fallback_models.length - 1}
+                                title="降低优先级"
+                                onClick={() => setModelRoleForm((current) => {
+                                  const next = [...current.fallback_models];
+                                  [next[index], next[index + 1]] = [next[index + 1], next[index]];
+                                  return { ...current, fallback_models: next };
+                                })}
+                                className="flex h-7 w-7 items-center justify-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-700 disabled:opacity-25"
+                              >
+                                <ArrowDown className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                title="移除备用模型"
+                                onClick={() => setModelRoleForm((current) => ({
+                                  ...current,
+                                  fallback_models: current.fallback_models.filter((value) => value !== modelRef),
+                                }))}
+                                className="flex h-7 w-7 items-center justify-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-600"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   <p className="text-[10px] text-stone-400 border-t border-stone-200/60 pt-3">

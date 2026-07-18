@@ -7,6 +7,7 @@ use crate::db::DbActorHandle;
 use crate::error::AppResult;
 
 pub const MODEL_ROLES_SETTING_KEY: &str = "models:role_assignments";
+pub const MAX_FALLBACK_MODELS: usize = 5;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -56,6 +57,8 @@ pub struct ModelRoleAssignments {
     pub speech_model: Option<String>,
     pub quick_model: Option<String>,
     pub embedding_model: Option<String>,
+    #[serde(default)]
+    pub fallback_models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +98,20 @@ impl ModelRole {
 }
 
 impl ModelRoleAssignments {
+    pub fn normalize_fallback_models(&mut self) -> Result<(), String> {
+        if self.fallback_models.len() > MAX_FALLBACK_MODELS {
+            return Err(format!("备用模型最多配置 {MAX_FALLBACK_MODELS} 个"));
+        }
+        let mut seen = HashSet::new();
+        self.fallback_models = self
+            .fallback_models
+            .drain(..)
+            .map(|selection| selection.trim().to_string())
+            .filter(|selection| !selection.is_empty() && seen.insert(selection.clone()))
+            .collect();
+        Ok(())
+    }
+
     pub fn selections(&self) -> [(ModelRole, Option<&str>); 7] {
         [
             (ModelRole::Main, self.main_model.as_deref()),
@@ -125,6 +142,8 @@ impl ModelRoleAssignments {
                 *selection = None;
             }
         }
+        self.fallback_models
+            .retain(|selection| !selection.starts_with(&prefix));
     }
 
     pub fn retain_valid_provider_models(&mut self, provider_id: &str, models: &[ModelDescriptor]) {
@@ -150,6 +169,15 @@ impl ModelRoleAssignments {
                 *selection = None;
             }
         }
+        self.fallback_models.retain(|selection| {
+            let Some(model_id) = selection.strip_prefix(&prefix) else {
+                return true;
+            };
+            models
+                .iter()
+                .find(|model| model.id == model_id)
+                .is_some_and(|model| model.capabilities.supports_text_generation())
+        });
     }
 }
 
@@ -422,6 +450,74 @@ mod tests {
 
         roles.clear_provider("ollama");
         assert!(roles.image_model.is_none());
+    }
+
+    #[test]
+    fn provider_changes_prune_invalid_fallback_models() {
+        let mut roles = ModelRoleAssignments {
+            fallback_models: vec![
+                "openai/gpt-4o".into(),
+                "openai/text-embedding-3-small".into(),
+                "ollama/qwen".into(),
+            ],
+            ..Default::default()
+        };
+        roles.retain_valid_provider_models(
+            "openai",
+            &[
+                ModelDescriptor {
+                    id: "gpt-4o".into(),
+                    capabilities: infer_model_capabilities("gpt-4o", "openai"),
+                },
+                ModelDescriptor {
+                    id: "text-embedding-3-small".into(),
+                    capabilities: infer_model_capabilities("text-embedding-3-small", "openai"),
+                },
+            ],
+        );
+        assert_eq!(roles.fallback_models, vec!["openai/gpt-4o", "ollama/qwen"]);
+        roles.clear_provider("ollama");
+        assert_eq!(roles.fallback_models, vec!["openai/gpt-4o"]);
+    }
+
+    #[test]
+    fn fallback_models_are_bounded_trimmed_and_deduplicated() {
+        let mut roles = ModelRoleAssignments {
+            fallback_models: vec![
+                " openai/gpt-4o ".into(),
+                "openai/gpt-4o".into(),
+                "".into(),
+                "ollama/qwen".into(),
+            ],
+            ..Default::default()
+        };
+        roles.normalize_fallback_models().unwrap();
+        assert_eq!(roles.fallback_models, vec!["openai/gpt-4o", "ollama/qwen"]);
+
+        roles.fallback_models = (0..=MAX_FALLBACK_MODELS)
+            .map(|index| format!("provider/model-{index}"))
+            .collect();
+        assert!(roles.normalize_fallback_models().is_err());
+    }
+
+    #[test]
+    fn legacy_role_assignments_default_to_an_empty_fallback_chain() {
+        let roles: ModelRoleAssignments = serde_json::from_str(
+            r#"{
+                "main_model":"openai/gpt-4o",
+                "image_model":null,
+                "summary_model":"openai/gpt-4o-mini",
+                "memory_model":null,
+                "speech_model":null,
+                "quick_model":null,
+                "embedding_model":null
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(roles.main_model.as_deref(), Some("openai/gpt-4o"));
+        assert_eq!(roles.summary_model.as_deref(), Some("openai/gpt-4o-mini"));
+        assert!(roles.fallback_models.is_empty());
     }
 
     #[test]

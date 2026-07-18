@@ -229,6 +229,100 @@ async fn handle_conn<R: tauri::Runtime>(
                 }
             }
 
+            msg_type::MODEL_FALLBACK => {
+                let from_model: String = env
+                    .payload
+                    .get("fromModel")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("主模型")
+                    .chars()
+                    .take(160)
+                    .collect();
+                let to_model: String = env
+                    .payload
+                    .get("toModel")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("备用模型")
+                    .chars()
+                    .take(160)
+                    .collect();
+                let category: String = env
+                    .payload
+                    .get("category")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown")
+                    .chars()
+                    .take(64)
+                    .collect();
+                let reason: String = env
+                    .payload
+                    .get("reason")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("模型请求失败")
+                    .chars()
+                    .take(160)
+                    .collect();
+                let content = format!("{from_model} 请求失败（{reason}），已切换至 {to_model}");
+
+                let part = {
+                    let mut runs = active_runs.lock().await;
+                    if !runs.contains_key(&run_id) {
+                        if let Some(id) = manager.peek_run(&run_id) {
+                            runs.insert(
+                                run_id.clone(),
+                                ActiveRun {
+                                    assistant_message_id: id,
+                                    session_id: session_id.clone(),
+                                    accumulated_text: String::new(),
+                                    accumulated_thought: String::new(),
+                                    current_ordinal: 0,
+                                    in_thought: false,
+                                },
+                            );
+                        }
+                    }
+                    runs.get_mut(&run_id).map(|run| {
+                        let part = NewMessagePart {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            message_id: run.assistant_message_id.clone(),
+                            kind: "model_fallback".into(),
+                            ordinal: run.current_ordinal,
+                            mime_type: None,
+                            tool_call_id: None,
+                            content: content.clone(),
+                            metadata: Some(
+                                json!({
+                                    "from_model": from_model.clone(),
+                                    "to_model": to_model.clone(),
+                                    "category": category.clone(),
+                                })
+                                .to_string(),
+                            ),
+                        };
+                        run.current_ordinal += 1;
+                        part
+                    })
+                };
+                if let Some(part) = part {
+                    let assistant_message_id = part.message_id.clone();
+                    let _ = db.insert_message_parts(vec![part]).await;
+                    let _ = db
+                        .update_message_model(assistant_message_id, to_model.clone())
+                        .await;
+                }
+                let _ = app_handle.emit(
+                    "agent://model_fallback",
+                    json!({
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "from_model": from_model,
+                        "to_model": to_model,
+                        "category": category,
+                        "content": content,
+                    }),
+                );
+            }
+
             msg_type::ASSISTANT_DELTA => {
                 let content = env
                     .payload
@@ -823,13 +917,17 @@ async fn handle_conn<R: tauri::Runtime>(
                 // 取 ActiveRun（若有）；否则用 peek_run 兜底定位 assistant_msg_id
                 // （AI 首个输出即工具调用且取消时，可能从未产生 ASSISTANT_DELTA，ActiveRun 不存在）
                 let mut runs = active_runs.lock().await;
-                let (assistant_msg_id, mut parts_to_insert) =
+                let (assistant_msg_id, mut parts_to_insert, next_ordinal) =
                     if let Some(mut run) = runs.remove(&run_id) {
                         let mut parts = Vec::new();
                         drain_accumulated(&mut run, &mut parts);
-                        (Some(run.assistant_message_id.clone()), parts)
+                        (
+                            Some(run.assistant_message_id.clone()),
+                            parts,
+                            run.current_ordinal,
+                        )
                     } else {
-                        (manager.peek_run(&run_id), Vec::new())
+                        (manager.peek_run(&run_id), Vec::new(), 0)
                     };
                 drop(runs);
 
@@ -838,7 +936,7 @@ async fn handle_conn<R: tauri::Runtime>(
                         id: uuid::Uuid::new_v4().to_string(),
                         message_id: id.clone(),
                         kind: "text".into(),
-                        ordinal: 0,
+                        ordinal: next_ordinal,
                         mime_type: None,
                         tool_call_id: None,
                         content: if is_cancelled {

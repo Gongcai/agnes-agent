@@ -7,12 +7,12 @@ use zeroize::Zeroize;
 
 use crate::agent::protocol::{msg_type, Envelope};
 use crate::db::repo::agents::{AgentRow, AgentUpdate, NewAgent};
-use crate::db::repo::messages::{NewMessage, NewMessagePart};
+use crate::db::repo::messages::NewMessagePart;
 use crate::db::repo::sessions::NewSession;
 use crate::error::{AppError, AppResult};
 use crate::model_registry::{
     descriptor_from_api, load_model_roles, normalize_model_catalog, parse_model_catalog,
-    save_model_roles, ModelDescriptor, ModelRoleAssignments,
+    save_model_roles, ModelDescriptor, ModelRole, ModelRoleAssignments,
 };
 use crate::secrets::{provider_api_key_secret_id, SecretStore, SYNC_CREDENTIAL_SECRET_ID};
 use crate::state::AppState;
@@ -93,7 +93,7 @@ pub struct ToolCallDto {
 #[derive(Serialize)]
 pub struct MessagePartDto {
     pub id: String,
-    pub kind: String, // "text" | "thought" | "tool_call" | "tool_result"
+    pub kind: String, // "text" | "thought" | "tool_call" | "tool_result" | "model_fallback"
     pub content: String,
     pub tool_call: Option<ToolCallDto>,
 }
@@ -799,6 +799,15 @@ pub async fn get_debug_prompt(
         resolve_workspace_prompt_context(&state.db, session_id.as_deref()).await?;
 
     let task_llm_configs = resolve_task_llm_configs(&state, &model_roles).await?;
+    let fallback_llm_configs = resolve_fallback_llm_configs(
+        &state,
+        &model_roles,
+        &agent_model_str,
+        &effective_thinking_mode,
+        effective_thinking_budget,
+        effective_max_tokens,
+    )
+    .await?;
     let parsed_tool_policy =
         serde_json::from_str::<ToolPolicy>(&agent.tool_policy).unwrap_or_default();
     let tool_policy_json = serde_json::to_value(&parsed_tool_policy)?;
@@ -814,6 +823,7 @@ pub async fn get_debug_prompt(
             },
             "mcpTools": mcp_tools,
             "llmConfig": {
+                "modelRef": agent_model_str,
                 "provider": provider_kind,
                 "apiBase": api_base,
                 "apiKey": api_key,
@@ -825,6 +835,7 @@ pub async fn get_debug_prompt(
                     "budget": effective_thinking_budget
                 }
             },
+            "fallbackLlmConfigs": fallback_llm_configs,
             "taskLlmConfigs": task_llm_configs,
             "settings": { "user_context_limit": serde_json::Value::Null },
             "currentDateTime": chrono::Local::now().to_rfc3339(),
@@ -1237,6 +1248,7 @@ struct ResolvedLlm {
     thinking_budget: i64,
     max_tokens: i64,
     task_llm_configs: serde_json::Value,
+    fallback_llm_configs: serde_json::Value,
 }
 
 /// Resolve a routed model reference into the same provider configuration used by the main model.
@@ -1294,6 +1306,34 @@ async fn resolve_task_llm_configs(
         }
     }
     Ok(serde_json::Value::Object(configs))
+}
+
+async fn resolve_fallback_llm_configs(
+    state: &AppState,
+    roles: &ModelRoleAssignments,
+    effective_model: &str,
+    thinking_mode: &str,
+    thinking_budget: i64,
+    max_tokens: i64,
+) -> AppResult<serde_json::Value> {
+    let mut configs = Vec::new();
+    for model_ref in &roles.fallback_models {
+        if model_ref == effective_model {
+            continue;
+        }
+        let Some(mut config) = resolve_routed_llm_config(state, Some(model_ref)).await? else {
+            continue;
+        };
+        if let Some(object) = config.as_object_mut() {
+            object.insert("maxTokens".into(), json!(max_tokens));
+            object.insert(
+                "thinking".into(),
+                json!({ "mode": thinking_mode, "budget": thinking_budget }),
+            );
+        }
+        configs.push(config);
+    }
+    Ok(serde_json::Value::Array(configs))
 }
 
 async fn resolve_workspace_prompt_context(
@@ -1400,6 +1440,15 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         .clamp(128, 32_768);
 
     let task_llm_configs = resolve_task_llm_configs(state, &model_roles).await?;
+    let fallback_llm_configs = resolve_fallback_llm_configs(
+        state,
+        &model_roles,
+        &effective_model,
+        &thinking_mode,
+        thinking_budget,
+        max_tokens,
+    )
+    .await?;
     Ok(ResolvedLlm {
         agent,
         session_context_limit: session.context_limit,
@@ -1414,6 +1463,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         thinking_budget,
         max_tokens,
         task_llm_configs,
+        fallback_llm_configs,
     })
 }
 
@@ -1550,6 +1600,7 @@ async fn start_agent_run(
             },
             "mcpTools": mcp_tools,
             "llmConfig": {
+                "modelRef": cfg.effective_model,
                 "provider": cfg.provider_kind,
                 "apiBase": cfg.api_base,
                 "apiKey": cfg.api_key,
@@ -1561,6 +1612,7 @@ async fn start_agent_run(
                     "budget": cfg.thinking_budget
                 }
             },
+            "fallbackLlmConfigs": cfg.fallback_llm_configs,
             "taskLlmConfigs": cfg.task_llm_configs,
             "settings": {
                 "user_context_limit": cfg.session_context_limit
@@ -3236,8 +3288,9 @@ pub async fn get_model_roles(state: tauri::State<'_, AppState>) -> AppResult<Mod
 #[tauri::command]
 pub async fn set_model_roles(
     state: tauri::State<'_, AppState>,
-    roles: ModelRoleAssignments,
+    mut roles: ModelRoleAssignments,
 ) -> AppResult<()> {
+    roles.normalize_fallback_models().map_err(AppError::Other)?;
     let providers = state.db.list_model_providers().await?;
     for (role, selection) in roles.selections() {
         let Some(selection) = selection.filter(|value| !value.is_empty()) else {
@@ -3259,6 +3312,25 @@ pub async fn set_model_roles(
             return Err(AppError::Other(format!(
                 "模型 `{selection}` 不满足{}所需的能力标签",
                 role.label()
+            )));
+        }
+    }
+    for selection in &roles.fallback_models {
+        let (provider_id, model_id) = selection
+            .split_once('/')
+            .ok_or_else(|| AppError::Other(format!("备用模型引用格式无效: {selection}")))?;
+        let provider = providers
+            .iter()
+            .find(|provider| provider.id == provider_id)
+            .ok_or_else(|| AppError::Other(format!("模型服务商 `{provider_id}` 不存在")))?;
+        let models = parse_model_catalog(provider.models_json.as_deref(), &provider.kind);
+        let model = models
+            .iter()
+            .find(|model| model.id == model_id)
+            .ok_or_else(|| AppError::Other(format!("模型 `{selection}` 不存在")))?;
+        if !ModelRole::Main.accepts(&model.capabilities) {
+            return Err(AppError::Other(format!(
+                "模型 `{selection}` 不满足备用主模型所需的文本生成能力"
             )));
         }
     }

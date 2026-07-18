@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 import litellm
 
@@ -27,6 +27,69 @@ DEFAULT_MAX_OUTPUT_TOKENS = 2048
 
 # Ensure litellm throws errors immediately rather than trying fallback options invisibly
 litellm.drop_params = True
+
+
+@dataclass(frozen=True)
+class LlmFailure:
+    category: str
+    retryable_with_fallback: bool
+    display_reason: str
+
+
+class EmptyModelResponseError(RuntimeError):
+    """Raised when a provider completes without text, reasoning, or tool calls."""
+
+
+def classify_llm_error(error: BaseException) -> LlmFailure:
+    """Classify whether a zero-output failure may move to the next configured model."""
+    class_name = error.__class__.__name__.lower()
+    message = str(error).lower()
+
+    if isinstance(error, EmptyModelResponseError):
+        return LlmFailure("empty_response", True, "未返回任何内容")
+    if "authentication" in class_name or "permissiondenied" in class_name:
+        return LlmFailure("authentication", False, "认证或权限失败")
+    if "contentpolicy" in class_name or "content policy" in message:
+        return LlmFailure("content_policy", False, "内容策略拒绝")
+    if "contextwindow" in class_name or any(
+        marker in message
+        for marker in ("context length", "context window", "maximum context", "too many tokens")
+    ):
+        return LlmFailure("context_limit", False, "上下文超过模型限制")
+    if "ratelimit" in class_name or "rate limit" in message or "status code: 429" in message:
+        return LlmFailure("rate_limit", True, "服务限流")
+    if isinstance(error, TimeoutError) or "timeout" in class_name or "timed out" in message:
+        return LlmFailure("timeout", True, "请求超时")
+    if "badrequest" in class_name and any(
+        marker in message
+        for marker in (
+            "does not support tool",
+            "tools are not supported",
+            "tool use is not supported",
+            "function calling is not supported",
+            "unsupported parameter: tools",
+        )
+    ):
+        return LlmFailure("unsupported_capability", True, "模型不支持当前工具能力")
+    if "notfound" in class_name or "model not found" in message:
+        return LlmFailure("model_unavailable", True, "模型不可用")
+    if isinstance(error, (ConnectionError, OSError)) or any(
+        marker in class_name
+        for marker in ("apiconnection", "serviceunavailable", "internalserver")
+    ) or any(
+        marker in message
+        for marker in (
+            "status code: 500",
+            "status code: 502",
+            "status code: 503",
+            "status code: 504",
+            "status code: 529",
+        )
+    ):
+        return LlmFailure("service_unavailable", True, "服务暂时不可用")
+    if "badrequest" in class_name:
+        return LlmFailure("invalid_request", False, "请求参数不被模型接受")
+    return LlmFailure("unknown", False, "未知模型错误")
 
 
 @dataclass

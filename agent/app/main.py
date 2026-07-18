@@ -124,6 +124,9 @@ async def run_agent_graph(
         return
 
     llm_config_raw: Optional[Dict[str, Any]] = payload.get("context", {}).get("llmConfig")
+    fallback_llm_configs = payload.get("context", {}).get("fallbackLlmConfigs") or []
+    if not isinstance(fallback_llm_configs, list):
+        fallback_llm_configs = []
     task_llm_configs: Dict[str, Dict[str, Any]] = payload.get("context", {}).get("taskLlmConfigs") or {}
     embedding_config_raw = task_llm_configs.get("embedding")
     embedding_model = None
@@ -142,6 +145,16 @@ async def run_agent_graph(
             payload={"content": content}
         )
         await ws.send(delta_envelope.model_dump_json())
+
+    async def notify_model_fallback(details: Dict[str, Any]) -> None:
+        """Record a zero-output failover without adding it to model conversation history."""
+        fallback_envelope = make(
+            MsgType.MODEL_FALLBACK,
+            session_id=session_id,
+            run_id=run_id,
+            payload=details,
+        )
+        await ws.send(fallback_envelope.model_dump_json())
 
     async def execute_tool(tool_call_id: str, tool_name: str, arguments: Dict[str, Any]) -> str:
         """Send tool request to Rust and wait for the execution result."""
@@ -222,12 +235,18 @@ async def run_agent_graph(
         "pending_tool_calls": [],
         "finished": False,
         "llm_config": llm_config_raw,  # Raw dict, parsed in graph nodes
+        "fallback_configs": fallback_llm_configs,
+        "active_llm_index": 0,
+        "active_llm_config": llm_config_raw,
+        "active_model": agent_model,
+        "fallback_locked": False,
     }
     
     config = {
         "configurable": {
             "send_delta_fn": send_delta,
-            "execute_tool_fn": execute_tool
+            "execute_tool_fn": execute_tool,
+            "notify_fallback_fn": notify_model_fallback,
         }
     }
 
@@ -235,6 +254,18 @@ async def run_agent_graph(
     try:
         graph = build_graph()
         output_state = await graph.ainvoke(graph_inputs, config=config)
+
+        active_config_raw = output_state.get("active_llm_config") or llm_config_raw
+        active_model = output_state.get("active_model") or agent_model
+        active_llm_config = (
+            LlmConfig.from_dict(active_config_raw) if active_config_raw else llm_config
+        )
+        if not task_llm_configs.get("summary"):
+            summary_model = active_model
+            summary_llm_config = active_llm_config
+        if not task_llm_configs.get("memory"):
+            memory_model = active_model
+            memory_llm_config = active_llm_config
         
         # 5. Extract rolling conversation summary (if budget was exceeded)
         new_summary = payload.get("context", {}).get("summary") or ""

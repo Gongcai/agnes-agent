@@ -5,7 +5,12 @@ from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
 
-from .models import LlmConfig, completion
+from .models import (
+    EmptyModelResponseError,
+    LlmConfig,
+    classify_llm_error,
+    completion,
+)
 
 class AgentState(TypedDict):
     messages: List[Dict[str, Any]]
@@ -16,6 +21,11 @@ class AgentState(TypedDict):
     pending_tool_calls: List[Dict[str, Any]]
     finished: bool
     llm_config: Optional[Dict[str, Any]]  # Raw dict from ContextSnapshot, parsed in nodes
+    fallback_configs: List[Dict[str, Any]]
+    active_llm_index: int
+    active_llm_config: Optional[Dict[str, Any]]
+    active_model: str
+    fallback_locked: bool
 
 def get_available_tools(
     tool_policy: Dict[str, Any],
@@ -479,6 +489,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
     # Retrieve communication callbacks from LangGraph config
     configurable = config.get("configurable", {})
     send_delta_fn = configurable.get("send_delta_fn")
+    notify_fallback_fn = configurable.get("notify_fallback_fn")
     
     # Consolidate messages for LLM call
     messages = []
@@ -496,90 +507,137 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
     )
     tools_arg = available_tools if available_tools else None
     
-    # Build LlmConfig from state
-    raw_llm_config = state.get("llm_config")
-    llm_config = LlmConfig.from_dict(raw_llm_config) if raw_llm_config else None
-
-    # Invoke LiteLLM
-    response = completion(
-        model=state["model"],
-        messages=messages,
-        tools=tools_arg,
-        stream=True,
-        llm_config=llm_config,
-    )
-    
-    full_text = ""
-    full_reasoning = ""
-    tool_calls_accumulator = {}
-    reasoning_started = False
-    reasoning_closed = False
-
     async def emit(content: str) -> None:
         if send_delta_fn:
             await send_delta_fn(content)
 
-    # Stream tokens and accumulate tool calls
-    for chunk in response:
-        if not chunk.choices:
+    primary_raw = state.get("llm_config")
+    candidates: List[tuple[str, Optional[Dict[str, Any]]]] = [(state["model"], primary_raw)]
+    for raw in state.get("fallback_configs", []):
+        if not isinstance(raw, dict):
             continue
-        delta = chunk.choices[0].delta
+        model = raw.get("litellmModel") or raw.get("model")
+        if isinstance(model, str) and model:
+            candidates.append((model, raw))
 
-        # 思维链内容（DeepSeek reasoning_content / OpenAI o-series reasoning）
-        # 用 <thought>...</thought> 包裹，Rust 与前端据此分流到 thought 片段
-        reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-        if reasoning_text:
-            if not reasoning_started:
-                reasoning_started = True
-                await emit("<thought>")
-            full_reasoning += reasoning_text
-            await emit(reasoning_text)
+    active_index = min(max(int(state.get("active_llm_index", 0)), 0), len(candidates) - 1)
+    fallback_locked = bool(state.get("fallback_locked", False))
+    full_text = ""
+    full_reasoning = ""
+    pending_tool_calls: List[Dict[str, Any]] = []
+    selected_model = candidates[active_index][0]
+    selected_raw = candidates[active_index][1]
+    attempt_had_activity = False
 
-        # 从思维链切换到正文：闭合 <thought> 标签
-        if delta.content and reasoning_started and not reasoning_closed:
-            reasoning_closed = True
-            await emit("</thought>")
+    while active_index < len(candidates):
+        selected_model, selected_raw = candidates[active_index]
+        llm_config = LlmConfig.from_dict(selected_raw) if selected_raw else None
+        full_text = ""
+        full_reasoning = ""
+        tool_calls_accumulator: Dict[int, Dict[str, Any]] = {}
+        reasoning_started = False
+        reasoning_closed = False
+        attempt_had_activity = False
 
-        # Stream text delta if callback is present
-        if delta.content:
-            full_text += delta.content
-            await emit(delta.content)
+        try:
+            response = completion(
+                model=selected_model,
+                messages=messages,
+                tools=tools_arg,
+                stream=True,
+                llm_config=llm_config,
+            )
 
-        # Accumulate streaming tool call args
-        if delta.tool_calls:
-            for tc in delta.tool_calls:
-                index = tc.index
-                if index not in tool_calls_accumulator:
-                    tool_calls_accumulator[index] = {
-                        "id": tc.id or "",
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name or "",
-                            "arguments": tc.function.arguments or ""
-                        }
+            for chunk in response:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                reasoning_text = (
+                    getattr(delta, "reasoning_content", None)
+                    or getattr(delta, "reasoning", None)
+                )
+                if reasoning_text:
+                    attempt_had_activity = True
+                    if not reasoning_started:
+                        reasoning_started = True
+                        await emit("<thought>")
+                    full_reasoning += reasoning_text
+                    await emit(reasoning_text)
+
+                if delta.content:
+                    attempt_had_activity = True
+                    if reasoning_started and not reasoning_closed:
+                        reasoning_closed = True
+                        await emit("</thought>")
+                    full_text += delta.content
+                    await emit(delta.content)
+
+                if delta.tool_calls:
+                    attempt_had_activity = True
+                    for tc in delta.tool_calls:
+                        index = tc.index
+                        if index not in tool_calls_accumulator:
+                            tool_calls_accumulator[index] = {
+                                "id": tc.id or "",
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name or "",
+                                    "arguments": tc.function.arguments or "",
+                                },
+                            }
+                        else:
+                            if tc.id:
+                                tool_calls_accumulator[index]["id"] = tc.id
+                            if tc.function.name:
+                                tool_calls_accumulator[index]["function"]["name"] += tc.function.name
+                            if tc.function.arguments:
+                                tool_calls_accumulator[index]["function"]["arguments"] += tc.function.arguments
+
+            if reasoning_started and not reasoning_closed:
+                reasoning_closed = True
+                await emit("</thought>")
+
+            pending_tool_calls = list(tool_calls_accumulator.values())
+            if not full_text and not full_reasoning and not pending_tool_calls:
+                raise EmptyModelResponseError("model returned an empty stream")
+            break
+        except Exception as error:
+            failure = classify_llm_error(error)
+            has_next = active_index + 1 < len(candidates)
+            can_fallback = (
+                not fallback_locked
+                and not attempt_had_activity
+                and failure.retryable_with_fallback
+                and has_next
+            )
+            if not can_fallback:
+                if isinstance(error, EmptyModelResponseError):
+                    full_text = "（模型未返回正文，请重试或关闭思考模式后再试。）"
+                    await emit(full_text)
+                    pending_tool_calls = []
+                    break
+                raise
+
+            next_index = active_index + 1
+            next_model, next_raw = candidates[next_index]
+            if notify_fallback_fn:
+                await notify_fallback_fn(
+                    {
+                        "fromModel": (selected_raw or {}).get("modelRef") or selected_model,
+                        "toModel": (next_raw or {}).get("modelRef") or next_model,
+                        "category": failure.category,
+                        "reason": failure.display_reason,
+                        "attempt": next_index,
                     }
-                else:
-                    if tc.id:
-                        tool_calls_accumulator[index]["id"] = tc.id
-                    if tc.function.name:
-                        tool_calls_accumulator[index]["function"]["name"] += tc.function.name
-                    if tc.function.arguments:
-                        tool_calls_accumulator[index]["function"]["arguments"] += tc.function.arguments
+                )
+            active_index = next_index
 
-    # 流结束时若仍处于思维链中（无正文跟进），闭合标签
-    if reasoning_started and not reasoning_closed:
-        reasoning_closed = True
-        await emit("</thought>")
-                        
-    # Format accumulated tool calls list
-    pending_tool_calls = list(tool_calls_accumulator.values())
-
-    # Some reasoning models can exhaust their default output budget before
-    # emitting public text. Do not complete an empty assistant bubble.
+    # Reasoning-only responses are visible activity and therefore cannot be retried,
+    # but still need public text so the completed message is not blank.
     if not full_text and not pending_tool_calls:
         full_text = "（模型未返回正文，请重试或关闭思考模式后再试。）"
         await emit(full_text)
-    
+
     # Clean up empty IDs in tool calls (sometimes LLM streams id only in first chunk)
     for tc in pending_tool_calls:
         if not tc["id"]:
@@ -600,7 +658,11 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
     return {
         "messages": new_messages,
         "pending_tool_calls": pending_tool_calls,
-        "finished": len(pending_tool_calls) == 0
+        "finished": len(pending_tool_calls) == 0,
+        "active_llm_index": active_index,
+        "active_llm_config": selected_raw,
+        "active_model": selected_model,
+        "fallback_locked": fallback_locked or attempt_had_activity or bool(full_text),
     }
 
 async def execute_tools_node(state: AgentState, config: RunnableConfig) -> Dict[str, Any]:

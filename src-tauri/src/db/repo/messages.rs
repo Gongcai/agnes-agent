@@ -235,6 +235,17 @@ pub fn update_status(conn: &mut Connection, id: &str, status: &str) -> AppResult
     Ok(())
 }
 
+/// Update the actual model selected for an in-flight assistant response.
+pub fn update_model(conn: &Connection, id: &str, model: &str) -> AppResult<()> {
+    conn.execute(
+        "UPDATE messages SET model = ?1, updated_at = ?2 \
+         WHERE id = ?3 AND role = 'assistant' AND status IN ('pending', 'streaming') \
+         AND deleted_at IS NULL",
+        params![model, now(), id],
+    )?;
+    Ok(())
+}
+
 /// Finish an interrupted pending response with a visible error instead of an
 /// empty assistant bubble. This state is local-only until a later successful
 /// completion is explicitly synced.
@@ -696,6 +707,47 @@ mod tests {
         for private in ["Private reasoning", "private/model", "private metadata"] {
             assert!(!payload.contains(private));
         }
+    }
+
+    #[test]
+    fn fallback_updates_only_an_in_flight_assistant_model() {
+        let mut conn = setup();
+        insert(
+            &conn,
+            &NewMessage {
+                id: "message-fallback".into(),
+                session_id: "session-1".into(),
+                role: "assistant".into(),
+                seq: 1,
+                status: "pending".into(),
+                model: Some("primary/model".into()),
+                token_count: None,
+                metadata: None,
+                parent_id: None,
+                selected_child_id: None,
+            },
+        )
+        .unwrap();
+        update_model(&conn, "message-fallback", "backup/model").unwrap();
+        assert_eq!(
+            get(&conn, "message-fallback")
+                .unwrap()
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("backup/model")
+        );
+
+        update_status(&mut conn, "message-fallback", "complete").unwrap();
+        update_model(&conn, "message-fallback", "ignored/model").unwrap();
+        assert_eq!(
+            get(&conn, "message-fallback")
+                .unwrap()
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("backup/model")
+        );
     }
 
     #[test]

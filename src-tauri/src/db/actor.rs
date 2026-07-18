@@ -409,6 +409,11 @@ pub enum DbCommand {
         status: String,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    UpdateMessageModel {
+        id: String,
+        model: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     FailPendingAssistant {
         id: String,
         message: String,
@@ -1497,6 +1502,13 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn update_message_model(&self, id: String, model: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateMessageModel { id, model, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn fail_pending_assistant(&self, id: String, message: String) -> AppResult<bool> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::FailPendingAssistant { id, message, resp })?;
@@ -2450,6 +2462,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::UpdateMessageStatus { id, status, resp } => {
                     let _ = resp.send(repo::messages::update_status(&mut conn, &id, &status));
+                }
+                DbCommand::UpdateMessageModel { id, model, resp } => {
+                    let _ = resp.send(repo::messages::update_model(&conn, &id, &model));
                 }
                 DbCommand::FailPendingAssistant { id, message, resp } => {
                     let _ = resp.send(repo::messages::fail_pending_assistant(

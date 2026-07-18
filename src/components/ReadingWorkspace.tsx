@@ -22,6 +22,7 @@ import {
   PanelRightOpen,
   Plus,
   Quote,
+  RefreshCw,
   Send,
   ShieldAlert,
   SlidersHorizontal,
@@ -836,6 +837,14 @@ export const ReadingWorkspace: React.FC = () => {
                     <div className={`rounded-md px-3 py-2 text-sm ${message.role === "user" ? "bg-emerald-50 text-stone-800" : "border border-stone-200 bg-white text-stone-700"}`}>
                       <div className="space-y-2.5">
                         {message.parts.map((part) => {
+                          if (part.kind === "model_fallback") {
+                            return (
+                              <div key={part._renderKey ?? part.id} className="flex items-center gap-2 border-y border-amber-200 bg-amber-50/60 px-2.5 py-2 text-[10px] text-amber-800">
+                                <RefreshCw className="h-3.5 w-3.5 shrink-0" />
+                                <span>{part.content}</span>
+                              </div>
+                            );
+                          }
                           if (part.kind === "thought") {
                             return (
                               <details key={part._renderKey ?? part.id} open className="group rounded-r-md border-l-2 border-emerald-600 bg-stone-50 px-2.5 py-2">

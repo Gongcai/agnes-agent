@@ -401,6 +401,17 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       if (part.kind === "tool_result") return null;
                       // tool_call 片段若无关联工具数据，也不当作正文渲染
                       if (part.kind === "tool_call" && !part.tool_call) return null;
+                      if (part.kind === "model_fallback") {
+                        return (
+                          <div
+                            key={part._renderKey ?? part.id}
+                            className="flex items-center gap-2 border-y border-amber-200 bg-amber-50/60 px-3 py-2 text-[11px] text-amber-800"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5 shrink-0" />
+                            <span>{part.content}</span>
+                          </div>
+                        );
+                      }
                       // 1. Thought Process (reasoning)
                       if (part.kind === "thought") {
                         return (

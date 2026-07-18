@@ -14,7 +14,7 @@ interface Props {
   onClose: () => void;
 }
 
-const COMMON_TAG_KINDS = ["text", "thought", "tool_call", "tool_result"];
+const COMMON_TAG_KINDS = ["text", "thought", "tool_call", "tool_result", "model_fallback"];
 
 /// 修改记忆弹窗：按顺序编辑某条 AI 消息的片段。
 /// text 段=纯文本框；其它 kind 段=可折叠「标签行」（标签名=kind，展开编辑 content）。

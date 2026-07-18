@@ -24,6 +24,7 @@ export interface ModelRoleAssignments {
   speech_model: string | null;
   quick_model: string | null;
   embedding_model: string | null;
+  fallback_models: string[];
 }
 
 const EMPTY_MODEL_ROLES: ModelRoleAssignments = {
@@ -34,6 +35,7 @@ const EMPTY_MODEL_ROLES: ModelRoleAssignments = {
   speech_model: null,
   quick_model: null,
   embedding_model: null,
+  fallback_models: [],
 };
 
 export interface ToolCall {
@@ -69,7 +71,7 @@ interface ToolCallEventPayload {
 
 export interface MessagePart {
   id: string;
-  kind: "text" | "thought" | "tool_call" | "tool_result";
+  kind: "text" | "thought" | "tool_call" | "tool_result" | "model_fallback";
   content: string;
   tool_call?: ToolCall;
   /** Stable React key retained when a live temporary part is replaced by its DB row. */
@@ -296,6 +298,7 @@ interface AgentState {
 
   // Local Mutations (typically called by Tauri event listeners)
   appendStreamingDelta: (content: string) => void;
+  addModelFallbackNotice: (sessionId: string, content: string) => void;
   upsertLocalToolCall: (sessionId: string, toolCall: ToolCall) => void;
   updateLocalToolCallStatus: (toolCallId: string, status: ToolCall["status"], output?: string) => void;
   setStreamingState: (isStreaming: boolean) => void;
@@ -831,6 +834,35 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set({ messages: updatedMessages });
   },
 
+  addModelFallbackNotice: (sessionId: string, content: string) => {
+    const { messages } = get();
+    let messageIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (
+        message.session_id === sessionId
+        && message.role === "assistant"
+        && (message.status === "pending" || message.status === "streaming")
+      ) {
+        messageIndex = index;
+        break;
+      }
+    }
+    if (messageIndex < 0) return;
+    const updatedMessages = [...messages];
+    const message = { ...updatedMessages[messageIndex], status: "streaming" };
+    message.parts = [
+      ...message.parts,
+      {
+        id: `p_fallback_${Date.now()}_${message.parts.length}`,
+        kind: "model_fallback",
+        content,
+      },
+    ];
+    updatedMessages[messageIndex] = message;
+    set({ messages: updatedMessages });
+  },
+
   upsertLocalToolCall: (sessionId: string, toolCall: ToolCall) => {
     const { activeSessionId, messages } = get();
     if (activeSessionId !== sessionId || messages.length === 0) return;
@@ -977,6 +1009,19 @@ export function setupTauriEventListeners() {
           event.payload.run_id,
           event.payload.content,
         );
+      }
+    )
+  );
+
+  listeners.push(
+    listen<{ session_id: string; run_id: string; content: string }>(
+      "agent://model_fallback",
+      (event) => {
+        flushBufferedDelta();
+        const store = useAgentStore.getState();
+        if (store.activeSessionId === event.payload.session_id) {
+          store.addModelFallbackNotice(event.payload.session_id, event.payload.content);
+        }
       }
     )
   );

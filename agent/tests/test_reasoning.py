@@ -19,6 +19,7 @@ from app.models import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     LlmConfig,
     MODEL_REQUEST_TIMEOUT_SECONDS,
+    classify_llm_error,
     completion,
     embed_texts,
 )
@@ -98,6 +99,243 @@ def test_thought_only_model_response_gets_a_visible_fallback(monkeypatch):
 
     assert result["messages"][-1]["content"] == "（模型未返回正文，请重试或关闭思考模式后再试。）"
     assert emitted[-1] == "（模型未返回正文，请重试或关闭思考模式后再试。）"
+
+
+def _text_chunk(content: str):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                content=content,
+                reasoning_content=None,
+                reasoning=None,
+                tool_calls=None,
+            )
+        )]
+    )
+
+
+def _fallback_test_state():
+    return {
+        "messages": [{"role": "user", "content": "Hi"}],
+        "system_prompt": "",
+        "model": "primary-model",
+        "tool_policy": {
+            "shell": {"enabled": False},
+            "file": {"enabled": False},
+            "git": {"enabled": False},
+            "memory": {"enabled": False},
+            "planner": {"enabled": False},
+        },
+        "llm_config": {"modelRef": "primary/model", "model": "primary-model"},
+        "fallback_configs": [
+            {
+                "modelRef": "backup/model",
+                "model": "backup-model",
+                "litellmModel": "backup-model",
+            }
+        ],
+        "active_llm_index": 0,
+        "fallback_locked": False,
+    }
+
+
+def test_zero_output_timeout_uses_configured_fallback(monkeypatch):
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs["model"])
+        if len(calls) == 1:
+            raise TimeoutError("primary timed out")
+        return iter([_text_chunk("backup answer")])
+
+    monkeypatch.setattr(graph_module, "completion", fake_completion)
+    emitted = []
+    fallback_events = []
+
+    async def emit(value):
+        emitted.append(value)
+
+    async def notify(value):
+        fallback_events.append(value)
+
+    async def run():
+        return await graph_module.call_llm_node(
+            _fallback_test_state(),
+            {
+                "configurable": {
+                    "send_delta_fn": emit,
+                    "notify_fallback_fn": notify,
+                }
+            },
+        )
+
+    result = asyncio.run(run())
+    assert calls == ["primary-model", "backup-model"]
+    assert emitted == ["backup answer"]
+    assert result["messages"][-1]["content"] == "backup answer"
+    assert result["active_llm_index"] == 1
+    assert result["active_llm_config"]["modelRef"] == "backup/model"
+    assert fallback_events == [{
+        "fromModel": "primary/model",
+        "toModel": "backup/model",
+        "category": "timeout",
+        "reason": "请求超时",
+        "attempt": 1,
+    }]
+
+
+def test_tool_loop_stays_on_selected_fallback_model(monkeypatch):
+    calls = []
+    tool_delta = SimpleNamespace(
+        index=0,
+        id="tc-1",
+        function=SimpleNamespace(name="web_search", arguments='{"query":"news"}'),
+    )
+    tool_chunk = SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                content=None,
+                reasoning_content=None,
+                reasoning=None,
+                tool_calls=[tool_delta],
+            )
+        )]
+    )
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs["model"])
+        if calls == ["primary-model"]:
+            raise TimeoutError("primary timed out")
+        if calls == ["primary-model", "backup-model"]:
+            return iter([tool_chunk])
+        return iter([_text_chunk("answer after tool")])
+
+    monkeypatch.setattr(graph_module, "completion", fake_completion)
+    state = {
+        **_fallback_test_state(),
+        "dynamic_tools": [],
+        "pending_tool_calls": [],
+        "finished": False,
+        "active_llm_config": {"modelRef": "primary/model", "model": "primary-model"},
+        "active_model": "primary-model",
+    }
+    fallback_events = []
+    tool_calls = []
+
+    async def notify(value):
+        fallback_events.append(value)
+
+    async def execute_tool(tool_call_id, tool_name, arguments):
+        tool_calls.append((tool_call_id, tool_name, arguments))
+        return '{"results":[]}'
+
+    async def run():
+        graph = graph_module.build_graph()
+        return await graph.ainvoke(
+            state,
+            config={
+                "configurable": {
+                    "notify_fallback_fn": notify,
+                    "execute_tool_fn": execute_tool,
+                }
+            },
+        )
+
+    result = asyncio.run(run())
+    assert calls == ["primary-model", "backup-model", "backup-model"]
+    assert len(fallback_events) == 1
+    assert tool_calls == [("tc-1", "web_search", {"query": "news"})]
+    assert result["messages"][-1]["content"] == "answer after tool"
+    assert result["active_llm_index"] == 1
+    assert result["active_model"] == "backup-model"
+
+
+def test_partial_text_locks_model_and_prevents_fallback(monkeypatch):
+    def partial_stream():
+        yield _text_chunk("partial")
+        raise TimeoutError("stream timed out")
+
+    monkeypatch.setattr(graph_module, "completion", lambda **_kwargs: partial_stream())
+    emitted = []
+    fallback_events = []
+
+    async def emit(value):
+        emitted.append(value)
+
+    async def notify(value):
+        fallback_events.append(value)
+
+    async def run():
+        await graph_module.call_llm_node(
+            _fallback_test_state(),
+            {
+                "configurable": {
+                    "send_delta_fn": emit,
+                    "notify_fallback_fn": notify,
+                }
+            },
+        )
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(run())
+    assert emitted == ["partial"]
+    assert fallback_events == []
+
+
+def test_partial_tool_call_locks_model_and_prevents_fallback(monkeypatch):
+    tool_delta = SimpleNamespace(
+        index=0,
+        id="tc-1",
+        function=SimpleNamespace(name="web_search", arguments='{"query":'),
+    )
+    tool_chunk = SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                content=None,
+                reasoning_content=None,
+                reasoning=None,
+                tool_calls=[tool_delta],
+            )
+        )]
+    )
+
+    def partial_stream():
+        yield tool_chunk
+        raise TimeoutError("stream timed out")
+
+    monkeypatch.setattr(graph_module, "completion", lambda **_kwargs: partial_stream())
+    fallback_events = []
+
+    async def notify(value):
+        fallback_events.append(value)
+
+    async def run():
+        await graph_module.call_llm_node(
+            _fallback_test_state(),
+            {"configurable": {"notify_fallback_fn": notify}},
+        )
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(run())
+    assert fallback_events == []
+
+
+def test_authentication_errors_never_fallback():
+    class AuthenticationError(Exception):
+        pass
+
+    failure = classify_llm_error(AuthenticationError("bad key"))
+    assert failure.category == "authentication"
+    assert not failure.retryable_with_fallback
+
+    class BadRequestError(Exception):
+        pass
+
+    unsupported = classify_llm_error(
+        BadRequestError("This model does not support tool calling")
+    )
+    assert unsupported.category == "unsupported_capability"
+    assert unsupported.retryable_with_fallback
 
 def test_count_tokens():
     assert count_tokens("Hello world") > 0
