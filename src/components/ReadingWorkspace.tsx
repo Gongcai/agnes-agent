@@ -3,6 +3,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import ePub, { type Book, type Contents, type NavItem, type Rendition } from "epubjs";
 import {
+  ArrowLeft,
   BookMarked,
   BookOpen,
   ChevronLeft,
@@ -13,14 +14,11 @@ import {
   Languages,
   LoaderCircle,
   MessageCircleMore,
-  PanelLeftClose,
-  PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
   Quote,
   Send,
   ShieldAlert,
-  Sparkles,
   SlidersHorizontal,
   X,
 } from "lucide-react";
@@ -107,10 +105,11 @@ const EpubPane: React.FC<{
   highlights: ReadingHighlight[];
   highlightMode: boolean;
   onProgress: (cfi: string) => void;
+  onBackToShelf: () => void;
   onToggleHighlightMode: () => void;
   onCreateHighlight: (selection: PendingSelection) => void;
   onOpenSelectionMenu: (selection: PendingSelection, x: number, y: number) => void;
-}> = ({ book, highlights, highlightMode, onProgress, onToggleHighlightMode, onCreateHighlight, onOpenSelectionMenu }) => {
+}> = ({ book, highlights, highlightMode, onProgress, onBackToShelf, onToggleHighlightMode, onCreateHighlight, onOpenSelectionMenu }) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const bookRef = useRef<Book | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
@@ -266,6 +265,7 @@ const EpubPane: React.FC<{
   return (
     <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[#fbfaf6]">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-stone-200 bg-white/70 px-4">
+        <button onClick={onBackToShelf} className="rounded p-1 text-stone-500 hover:bg-stone-100" title="返回书架"><ArrowLeft className="h-4 w-4" /></button>
         <BookOpen className="h-4 w-4 text-emerald-700" />
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-stone-800">{book.title}</span>
         {toc.length > 0 && (
@@ -320,7 +320,6 @@ export const ReadingWorkspace: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [showConsent, setShowConsent] = useState(false);
   const [readingSessionId, setReadingSessionId] = useState<string | null>(null);
-  const [isBookShelfOpen, setIsBookShelfOpen] = useState(true);
   const [isDiscussionOpen, setIsDiscussionOpen] = useState(true);
   const [isDiscussionOptionsOpen, setIsDiscussionOptionsOpen] = useState(false);
   const [highlightMode, setHighlightMode] = useState(false);
@@ -335,7 +334,7 @@ export const ReadingWorkspace: React.FC = () => {
   const loadBooks = async () => {
     const next = await invoke<ReadingBook[]>("list_reading_books");
     setBooks(next);
-    setSelectedBookId((current) => current && next.some((book) => book.id === current) ? current : next[0]?.id ?? null);
+    setSelectedBookId((current) => current && next.some((book) => book.id === current) ? current : null);
   };
 
   useEffect(() => {
@@ -385,7 +384,7 @@ export const ReadingWorkspace: React.FC = () => {
       const book = await invoke<ReadingBook>("import_reading_book", { agentId: activeAgentId, path });
       await loadBooks();
       setSelectedBookId(book.id);
-      setIsBookShelfOpen(true);
+      setIsDiscussionOpen(true);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -479,41 +478,30 @@ export const ReadingWorkspace: React.FC = () => {
   };
 
   const conversationReady = readingSessionId !== null && readingSessionId === activeSessionId;
+  const openBook = (bookId: string) => {
+    setSelectedBookId(bookId);
+    setQuotedSelection(null);
+    setSelectionMenu(null);
+    setShowConsent(false);
+    setIsDiscussionOpen(true);
+  };
+  const returnToShelf = () => {
+    setSelectedBookId(null);
+    setQuotedSelection(null);
+    setSelectionMenu(null);
+    setQuestion("");
+    setShowConsent(false);
+  };
 
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-[#faf9f5] lg:flex-row">
-      {isBookShelfOpen && (
-        <section className="flex h-36 shrink-0 flex-col border-b border-stone-200 bg-white/55 lg:h-auto lg:w-56 lg:border-b-0 lg:border-r">
-          <header className="flex h-12 items-center border-b border-stone-200 px-4">
-            <div className="flex items-center gap-2 text-sm font-semibold text-stone-800"><BookMarked className="h-4 w-4 text-emerald-700" />书架</div>
-          </header>
-          <div className="border-b border-stone-200 p-3">
-            <button onClick={() => void importBook()} disabled={!activeAgentId || loading} className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50">
-              {loading ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FileUp className="h-3.5 w-3.5" />} 导入 EPUB
-            </button>
-          </div>
-          <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto p-2 lg:block lg:overflow-y-auto">
-            {books.map((book) => (
-              <button key={book.id} onClick={() => { setSelectedBookId(book.id); setQuotedSelection(null); setSelectionMenu(null); setShowConsent(false); }} className={`min-w-36 rounded-md px-3 py-2.5 text-left lg:mb-1 lg:w-full ${book.id === selectedBookId ? "bg-emerald-50 text-emerald-900" : "text-stone-600 hover:bg-stone-100"}`}>
-                <span className="block truncate text-xs font-semibold">{book.title}</span>
-                <span className="mt-0.5 block truncate text-[10px] text-stone-400">{book.author || "未知作者"}</span>
-              </button>
-            ))}
-            {!books.length && <p className="px-4 py-10 text-center text-xs text-stone-400">没有书籍</p>}
-          </div>
-        </section>
-      )}
-
-      <button onClick={() => setIsBookShelfOpen((open) => !open)} className="hidden w-8 shrink-0 items-start justify-center border-r border-stone-200 bg-white pt-4 text-stone-400 hover:bg-stone-50 hover:text-stone-700 lg:flex" title={isBookShelfOpen ? "收起书架" : "展开书架"}>
-        {isBookShelfOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
-      </button>
-
       {selectedBook ? (
         <div className="relative flex min-h-64 min-w-0 flex-1 flex-col lg:min-h-0 lg:flex-row" onClick={() => setSelectionMenu(null)}>
           <EpubPane
             book={selectedBook}
             highlights={highlights}
             highlightMode={highlightMode}
+            onBackToShelf={returnToShelf}
             onToggleHighlightMode={() => setHighlightMode((enabled) => !enabled)}
             onProgress={(cfi) => {
               setBooks((current) => current.map((book) => book.id === selectedBook.id ? { ...book, progress_cfi: cfi } : book));
@@ -577,7 +565,27 @@ export const ReadingWorkspace: React.FC = () => {
           )}
         </div>
       ) : (
-        <div className="grid flex-1 place-items-center text-sm text-stone-400"><Sparkles className="h-6 w-6 text-emerald-700" /></div>
+        <section className="flex min-w-0 flex-1 flex-col bg-[#fbfaf6]">
+          <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white/70 px-5">
+            <div className="flex items-center gap-2 text-sm font-semibold text-stone-800"><BookMarked className="h-4 w-4 text-emerald-700" />书架</div>
+            <button onClick={() => void importBook()} disabled={!activeAgentId || loading} className="flex items-center gap-2 rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50">
+              {loading ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FileUp className="h-3.5 w-3.5" />} 导入 EPUB
+            </button>
+          </header>
+          {books.length ? (
+            <div className="grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 overflow-y-auto p-5">
+              {books.map((book) => (
+                <button key={book.id} onClick={() => openBook(book.id)} className="min-h-28 rounded-md border border-stone-200 bg-white p-4 text-left text-stone-600 hover:border-emerald-300 hover:bg-emerald-50/50 hover:text-emerald-950">
+                  <BookOpen className="mb-5 h-5 w-5 text-emerald-700" />
+                  <span className="block truncate text-sm font-semibold">{book.title}</span>
+                  <span className="mt-1 block truncate text-[11px] text-stone-400">{book.author || "未知作者"}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="grid flex-1 place-items-center"><BookMarked className="h-7 w-7 text-stone-300" /></div>
+          )}
+        </section>
       )}
 
       {selectionMenu && (
