@@ -7,6 +7,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::agent::protocol::Envelope;
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
+use crate::mcp::McpManager;
 
 /// Agent 运行时：拥有 Python sidecar 子进程与 WS Server 端口/token。
 struct AgentRuntime {
@@ -60,6 +61,7 @@ impl AgentManager {
         self: &Arc<Self>,
         db: DbActorHandle,
         app_handle: tauri::AppHandle,
+        mcp: Arc<McpManager>,
     ) -> AppResult<()> {
         if self.running.swap(true, Ordering::SeqCst) {
             return Ok(());
@@ -90,9 +92,15 @@ impl AgentManager {
         let token_for_ws = token.clone();
         let manager_clone = self.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) =
-                crate::agent::ws_server::run(listener, token_for_ws, db, app_handle, manager_clone)
-                    .await
+            if let Err(e) = crate::agent::ws_server::run(
+                listener,
+                token_for_ws,
+                db,
+                app_handle,
+                manager_clone,
+                mcp,
+            )
+            .await
             {
                 eprintln!("[agent][ws] 运行错误：{e}");
             }

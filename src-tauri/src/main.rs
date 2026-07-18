@@ -5,6 +5,7 @@ mod commands;
 mod db;
 mod embeddings;
 mod error;
+mod mcp;
 mod memory;
 mod model_registry;
 mod notifications;
@@ -70,11 +71,12 @@ fn main() {
                 app.handle().clone(),
             ));
             notifications.clone().start_background();
+            let mcp = Arc::new(mcp::McpManager::new(db.clone(), secrets.clone()));
 
             // 2) 启动 AgentManager：Rust 起 WS Server + 拉起 Python sidecar。
             //    非致命：失败仅日志，不阻断 UI 启动。
             let agent = Arc::new(agent::AgentManager::new());
-            if let Err(e) = agent.start(db.clone(), app.handle().clone()) {
+            if let Err(e) = agent.start(db.clone(), app.handle().clone(), mcp.clone()) {
                 eprintln!("[agent] 启动失败（非致命）：{e}");
             }
 
@@ -89,6 +91,7 @@ fn main() {
                 data_dir,
                 db,
                 agent,
+                mcp,
                 secrets,
                 sync,
                 notifications,
@@ -183,6 +186,10 @@ fn main() {
             commands::fetch_provider_models,
             commands::get_setting,
             commands::set_setting,
+            mcp::list_mcp_servers,
+            mcp::upsert_mcp_server,
+            mcp::delete_mcp_server,
+            mcp::test_mcp_server,
             commands::get_sync_status,
             commands::list_sync_conflicts,
             commands::resolve_sync_conflict,

@@ -45,10 +45,12 @@ import {
   type SyncStatus,
 } from "../lib/ipc";
 
+type SettingsTab = "general" | "agents" | "memory" | "llm" | "mcp" | "audit" | "debug";
+
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  initialTab?: "general" | "agents" | "memory" | "llm" | "audit" | "debug";
+  initialTab?: SettingsTab;
 }
 
 interface AuditLog {
@@ -192,6 +194,56 @@ interface SecretStoreStatus {
   error: string | null;
 }
 
+interface McpEnvConfig {
+  name: string;
+  hasValue: boolean;
+}
+
+type McpServerTransport =
+  | { type: "stdio"; command: string; args: string[]; env: McpEnvConfig[] }
+  | { type: "streamable_http"; url: string; has_bearer_token: boolean };
+
+interface McpServer {
+  id: string;
+  name: string;
+  enabled: boolean;
+  transport: McpServerTransport;
+}
+
+interface McpTestResult {
+  serverName: string;
+  toolCount: number;
+  tools: string[];
+}
+
+interface McpFormValues {
+  id: string | null;
+  name: string;
+  enabled: boolean;
+  transportType: "stdio" | "streamable_http";
+  command: string;
+  argsText: string;
+  env: Array<{ name: string; value: string; hasValue: boolean }>;
+  url: string;
+  bearerToken: string;
+  hasBearerToken: boolean;
+  clearBearerToken: boolean;
+}
+
+const EMPTY_MCP_FORM: McpFormValues = {
+  id: null,
+  name: "",
+  enabled: true,
+  transportType: "stdio",
+  command: "",
+  argsText: "",
+  env: [],
+  url: "",
+  bearerToken: "",
+  hasBearerToken: false,
+  clearBearerToken: false,
+};
+
 const EMPTY_FORM: ProviderFormValues = {
   name: "",
   kind: "openai",
@@ -264,6 +316,7 @@ interface AgentFormValues {
     memory: AgentToolToggle;
     planner: AgentToolToggle;
     web: AgentToolToggle & { search_provider: WebSearchProvider; timeout_sec?: number };
+    mcp: AgentToolToggle & { server_ids: string[] };
     network: { allow: boolean; [key: string]: unknown };
     sandbox: {
       landlock: boolean;
@@ -304,6 +357,7 @@ const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
   memory: { enabled: true, approval: "on_write" },
   planner: { enabled: true, approval: "always" },
   web: { enabled: true, approval: "never", search_provider: "auto", timeout_sec: 15 },
+  mcp: { enabled: false, approval: "always", server_ids: [] },
   network: { allow: true },
   sandbox: { landlock: true, bwrap: "auto", rlimits: true },
 };
@@ -347,12 +401,12 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
   try {
     const obj = JSON.parse(json);
     if (obj && typeof obj === "object") {
-      const knownKeys = new Set(["shell", "file", "git", "memory", "planner", "web", "network", "sandbox"]);
+      const knownKeys = new Set(["shell", "file", "git", "memory", "planner", "web", "mcp", "network", "sandbox"]);
       Object.entries(obj).forEach(([key, value]) => {
         if (!knownKeys.has(key)) base[key] = value;
       });
     }
-    (["shell", "file", "git", "memory", "planner", "web"] as const).forEach((k) => {
+    (["shell", "file", "git", "memory", "planner", "web", "mcp"] as const).forEach((k) => {
       const t = obj?.[k];
       if (t && typeof t === "object") {
         const legacyDefaults: Record<typeof k, ApprovalTier> = {
@@ -362,6 +416,7 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
           memory: "on_write",
           planner: "always",
           web: "never",
+          mcp: "always",
         };
         const rawApproval = t.approval;
         let approval = legacyDefaults[k];
@@ -379,6 +434,12 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
       ...base.web,
       search_provider: searchProvider,
       timeout_sec: typeof obj?.web?.timeout_sec === "number" ? obj.web.timeout_sec : 15,
+    };
+    base.mcp = {
+      ...base.mcp,
+      server_ids: Array.isArray(obj?.mcp?.server_ids)
+        ? obj.mcp.server_ids.filter((id: unknown): id is string => typeof id === "string")
+        : [],
     };
     const network = obj?.network;
     base.network = {
@@ -423,7 +484,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     upsertAgent,
     deleteAgent,
   } = useAgentStore();
-  const [activeTab, setActiveTab] = useState<"general" | "agents" | "memory" | "llm" | "audit" | "debug">(initialTab);
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   
   // Memory MD state
   const [userMdText, setUserMdText] = useState("");
@@ -455,6 +516,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isSavingModelRoles, setIsSavingModelRoles] = useState(false);
   const [modelRoleMessage, setModelRoleMessage] = useState<{ success: boolean; text: string } | null>(null);
   const [secretStoreStatus, setSecretStoreStatus] = useState<SecretStoreStatus | null>(null);
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [mcpForm, setMcpForm] = useState<McpFormValues>(EMPTY_MCP_FORM);
+  const [editingMcpId, setEditingMcpId] = useState<string | null>(null);
+  const [isSavingMcp, setIsSavingMcp] = useState(false);
+  const [testingMcpId, setTestingMcpId] = useState<string | null>(null);
+  const [mcpMessage, setMcpMessage] = useState<{ success: boolean; text: string } | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncStatusError, setSyncStatusError] = useState<string | null>(null);
   const [isSyncingNow, setIsSyncingNow] = useState(false);
@@ -557,7 +624,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   // Render capability and approval controls for one tool group.
-  const renderToolToggle = (key: "shell" | "file" | "git" | "memory" | "planner" | "web", label: string) => (
+  const renderToolToggle = (key: "shell" | "file" | "git" | "memory" | "planner" | "web" | "mcp", label: string) => (
     <div className="flex items-center justify-between py-1.5 border-b border-stone-100 last:border-0">
       <span className="text-xs text-stone-700">{label}</span>
       <div className="flex items-center gap-2">
@@ -786,6 +853,155 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         });
     }
   }, [activeTab, loadProviders, loadModelRoles]);
+
+  const loadMcpServers = React.useCallback(() => {
+    return invoke<McpServer[]>("list_mcp_servers")
+      .then(setMcpServers)
+      .catch((error) => {
+        setMcpMessage({ success: false, text: String(error) });
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen || (activeTab !== "mcp" && activeTab !== "agents")) return;
+    void loadMcpServers();
+    if (activeTab === "mcp") {
+      invoke<SecretStoreStatus>("get_secret_store_status")
+        .then(setSecretStoreStatus)
+        .catch((error) => {
+          setSecretStoreStatus({ available: false, backend: "OS Keyring", error: String(error) });
+        });
+    }
+  }, [activeTab, isOpen, loadMcpServers]);
+
+  const openNewMcpServer = () => {
+    setMcpForm(EMPTY_MCP_FORM);
+    setEditingMcpId("new");
+    setMcpMessage(null);
+  };
+
+  const openEditMcpServer = (server: McpServer) => {
+    const transport = server.transport;
+    setMcpForm({
+      ...EMPTY_MCP_FORM,
+      id: server.id,
+      name: server.name,
+      enabled: server.enabled,
+      transportType: transport.type,
+      command: transport.type === "stdio" ? transport.command : "",
+      argsText: transport.type === "stdio" ? transport.args.join("\n") : "",
+      env: transport.type === "stdio"
+        ? transport.env.map((item) => ({ ...item, value: "" }))
+        : [],
+      url: transport.type === "streamable_http" ? transport.url : "",
+      hasBearerToken: transport.type === "streamable_http" && transport.has_bearer_token,
+      bearerToken: "",
+      clearBearerToken: false,
+    });
+    setEditingMcpId(server.id);
+    setMcpMessage(null);
+  };
+
+  const mcpInputFromForm = (form: McpFormValues) => ({
+    id: form.id,
+    name: form.name.trim(),
+    enabled: form.enabled,
+    transport: form.transportType === "stdio"
+      ? {
+          type: "stdio" as const,
+          command: form.command.trim(),
+          args: form.argsText.split("\n").map((arg) => arg.trim()).filter(Boolean),
+          env: form.env
+            .map((item) => ({
+              name: item.name.trim(),
+              value: item.value.length > 0 ? item.value : undefined,
+            }))
+            .filter((item) => item.name.length > 0),
+        }
+      : {
+          type: "streamable_http" as const,
+          url: form.url.trim(),
+          bearer_token: form.clearBearerToken
+            ? ""
+            : form.bearerToken.length > 0
+              ? form.bearerToken
+              : undefined,
+        },
+  });
+
+  const saveMcpServer = async () => {
+    setIsSavingMcp(true);
+    setMcpMessage(null);
+    try {
+      await invoke<string>("upsert_mcp_server", { server: mcpInputFromForm(mcpForm) });
+      setEditingMcpId(null);
+      setMcpForm(EMPTY_MCP_FORM);
+      await loadMcpServers();
+      setMcpMessage({ success: true, text: "MCP Server 已保存" });
+    } catch (error) {
+      setMcpMessage({ success: false, text: String(error) });
+    } finally {
+      setIsSavingMcp(false);
+    }
+  };
+
+  const deleteMcpServer = async (server: McpServer) => {
+    if (!window.confirm(`确定删除 MCP Server「${server.name}」及其本机凭证吗？`)) return;
+    try {
+      await invoke("delete_mcp_server", { serverId: server.id });
+      if (editingMcpId === server.id) setEditingMcpId(null);
+      await loadMcpServers();
+      setMcpMessage({ success: true, text: "MCP Server 已删除" });
+    } catch (error) {
+      setMcpMessage({ success: false, text: String(error) });
+    }
+  };
+
+  const testMcpServer = async (server: McpServer) => {
+    setTestingMcpId(server.id);
+    setMcpMessage(null);
+    try {
+      const result = await invoke<McpTestResult>("test_mcp_server", { serverId: server.id });
+      const preview = result.tools.slice(0, 6).join("、");
+      setMcpMessage({
+        success: true,
+        text: `${result.serverName} 连接成功，共 ${result.toolCount} 个工具${preview ? `：${preview}` : ""}`,
+      });
+    } catch (error) {
+      setMcpMessage({ success: false, text: String(error) });
+    } finally {
+      setTestingMcpId(null);
+    }
+  };
+
+  const toggleMcpServer = async (server: McpServer) => {
+    const form: McpFormValues = server.transport.type === "stdio"
+      ? {
+          ...EMPTY_MCP_FORM,
+          id: server.id,
+          name: server.name,
+          enabled: !server.enabled,
+          transportType: "stdio",
+          command: server.transport.command,
+          argsText: server.transport.args.join("\n"),
+          env: server.transport.env.map((item) => ({ ...item, value: "" })),
+        }
+      : {
+          ...EMPTY_MCP_FORM,
+          id: server.id,
+          name: server.name,
+          enabled: !server.enabled,
+          transportType: "streamable_http",
+          url: server.transport.url,
+          hasBearerToken: server.transport.has_bearer_token,
+        };
+    try {
+      await invoke<string>("upsert_mcp_server", { server: mcpInputFromForm(form) });
+      await loadMcpServers();
+    } catch (error) {
+      setMcpMessage({ success: false, text: String(error) });
+    }
+  };
 
   useEffect(() => {
     if (!isOpen || activeTab !== "llm") return;
@@ -1533,6 +1749,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>模型与同步 (LLM)</span>
             </button>
             <button
+              onClick={() => setActiveTab("mcp")}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                activeTab === "mcp"
+                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
+                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+              }`}
+            >
+              <Server className="h-4 w-4 text-stone-500" />
+              <span>MCP 外部工具</span>
+            </button>
+            <button
               onClick={() => setActiveTab("audit")}
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "audit"
@@ -1826,6 +2053,57 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {renderToolToggle("memory", "长期记忆")}
                           {renderToolToggle("planner", "日历与待办")}
                           {renderToolToggle("web", "联网搜索与网页读取")}
+                          {renderToolToggle("mcp", "MCP 外部工具")}
+                          {agentForm.toolPolicy.mcp.enabled && (
+                            <div className="border-b border-stone-100 py-2">
+                              <div className="mb-1.5 flex items-center justify-between">
+                                <span className="text-[10px] font-semibold text-stone-500">允许使用的 Server</span>
+                                <span className="text-[9px] tabular-nums text-stone-400">
+                                  {agentForm.toolPolicy.mcp.server_ids.length} / {mcpServers.filter((server) => server.enabled).length}
+                                </span>
+                              </div>
+                              {mcpServers.filter((server) => server.enabled).length === 0 ? (
+                                <p className="text-[10px] text-stone-400">请先在 MCP 外部工具页面配置并启用 Server。</p>
+                              ) : (
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  {mcpServers.filter((server) => server.enabled).map((server) => {
+                                    const selected = agentForm.toolPolicy.mcp.server_ids.includes(server.id);
+                                    return (
+                                      <label
+                                        key={server.id}
+                                        className={`flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1.5 text-[10px] ${
+                                          selected
+                                            ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                                            : "border-stone-200 bg-white text-stone-500"
+                                        }`}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={selected}
+                                          onChange={() =>
+                                            setAgentForm((form) => ({
+                                              ...form,
+                                              toolPolicy: {
+                                                ...form.toolPolicy,
+                                                mcp: {
+                                                  ...form.toolPolicy.mcp,
+                                                  server_ids: selected
+                                                    ? form.toolPolicy.mcp.server_ids.filter((id) => id !== server.id)
+                                                    : [...form.toolPolicy.mcp.server_ids, server.id],
+                                                },
+                                              },
+                                            }))
+                                          }
+                                          className="h-3.5 w-3.5 accent-indigo-600"
+                                        />
+                                        <span className="truncate">{server.name}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )}
                           <div className="flex items-center justify-between gap-3 py-1.5 border-b border-stone-100">
                             <span className="text-xs text-stone-700">搜索来源</span>
                             <select
@@ -3387,7 +3665,323 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             )}
 
-            {/* 4. AUDIT TAB */}
+            {/* 4. MCP TAB */}
+            {activeTab === "mcp" && (
+              <div className="space-y-5">
+                <div className="flex items-start justify-between border-b border-stone-200 pb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-stone-850">MCP Server</h3>
+                    <p className="mt-0.5 text-[11px] text-stone-400">
+                      接入本机 stdio 或 Streamable HTTP Server，工具需在角色卡中单独授权。
+                    </p>
+                  </div>
+                  {editingMcpId === null && (
+                    <button
+                      type="button"
+                      onClick={openNewMcpServer}
+                      className="flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      新建 Server
+                    </button>
+                  )}
+                </div>
+
+                <div
+                  className={`flex items-center gap-2 border-y px-3 py-2 text-[11px] ${
+                    secretStoreStatus?.available
+                      ? "border-emerald-200 bg-emerald-50/60 text-emerald-700"
+                      : "border-rose-200 bg-rose-50/60 text-rose-700"
+                  }`}
+                  title={secretStoreStatus?.error || undefined}
+                >
+                  <Key className="h-3.5 w-3.5 shrink-0" />
+                  {secretStoreStatus?.available
+                    ? "环境变量值与 Bearer Token 仅保存在本机系统密钥环"
+                    : secretStoreStatus?.error || "正在检查系统密钥环"}
+                </div>
+
+                {mcpMessage && (
+                  <div className={`border px-3 py-2 text-[11px] ${
+                    mcpMessage.success
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "border-rose-200 bg-rose-50 text-rose-700"
+                  }`}>
+                    {mcpMessage.text}
+                  </div>
+                )}
+
+                {editingMcpId !== null ? (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-[1fr_auto] gap-3">
+                      <label className="space-y-1">
+                        <span className="text-[11px] font-semibold text-stone-600">名称</span>
+                        <input
+                          value={mcpForm.name}
+                          onChange={(event) => setMcpForm((form) => ({ ...form, name: event.target.value }))}
+                          placeholder="例如：Notion、Filesystem、公司知识库"
+                          className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-indigo-300"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="block text-[11px] font-semibold text-stone-600">状态</span>
+                        <button
+                          type="button"
+                          onClick={() => setMcpForm((form) => ({ ...form, enabled: !form.enabled }))}
+                          className={`h-[34px] rounded-md border px-3 text-[11px] font-semibold ${
+                            mcpForm.enabled
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                              : "border-stone-200 bg-stone-100 text-stone-500"
+                          }`}
+                        >
+                          {mcpForm.enabled ? "已启用" : "已停用"}
+                        </button>
+                      </label>
+                    </div>
+
+                    <div>
+                      <span className="mb-1.5 block text-[11px] font-semibold text-stone-600">连接方式</span>
+                      <div className="inline-flex rounded-md border border-stone-200 bg-stone-50 p-0.5">
+                        {([
+                          ["stdio", "本机 stdio"],
+                          ["streamable_http", "Streamable HTTP"],
+                        ] as const).map(([value, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => setMcpForm((form) => ({ ...form, transportType: value }))}
+                            className={`rounded px-3 py-1.5 text-[10px] font-semibold ${
+                              mcpForm.transportType === value
+                                ? "bg-white text-stone-800 shadow-sm"
+                                : "text-stone-500 hover:text-stone-800"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {mcpForm.transportType === "stdio" ? (
+                      <div className="space-y-3 border-y border-stone-200 py-4">
+                        <label className="block space-y-1">
+                          <span className="text-[11px] font-semibold text-stone-600">Command</span>
+                          <input
+                            value={mcpForm.command}
+                            onChange={(event) => setMcpForm((form) => ({ ...form, command: event.target.value }))}
+                            placeholder="npx、uvx 或可执行文件绝对路径"
+                            className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 font-mono text-xs outline-none focus:ring-1 focus:ring-indigo-300"
+                          />
+                        </label>
+                        <label className="block space-y-1">
+                          <span className="text-[11px] font-semibold text-stone-600">Arguments</span>
+                          <textarea
+                            value={mcpForm.argsText}
+                            onChange={(event) => setMcpForm((form) => ({ ...form, argsText: event.target.value }))}
+                            placeholder={"每行一个参数，例如：\n-y\n@modelcontextprotocol/server-filesystem\n/home/user/Documents"}
+                            rows={4}
+                            className="w-full resize-y rounded-md border border-stone-200 bg-white px-3 py-2 font-mono text-[11px] leading-relaxed outline-none focus:ring-1 focus:ring-indigo-300"
+                          />
+                        </label>
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-semibold text-stone-600">Secret 环境变量</span>
+                            <button
+                              type="button"
+                              onClick={() => setMcpForm((form) => ({
+                                ...form,
+                                env: [...form.env, { name: "", value: "", hasValue: false }],
+                              }))}
+                              className="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-semibold text-indigo-600 hover:bg-indigo-50"
+                            >
+                              <Plus className="h-3 w-3" />
+                              添加变量
+                            </button>
+                          </div>
+                          {mcpForm.env.length === 0 ? (
+                            <p className="text-[10px] text-stone-400">未配置额外环境变量。子进程仅继承 PATH、HOME、语言和临时目录。</p>
+                          ) : (
+                            <div className="space-y-1.5">
+                              {mcpForm.env.map((item, index) => (
+                                <div key={`${index}-${item.name}`} className="grid grid-cols-[180px_1fr_32px] gap-2">
+                                  <input
+                                    value={item.name}
+                                    onChange={(event) => setMcpForm((form) => ({
+                                      ...form,
+                                      env: form.env.map((entry, entryIndex) =>
+                                        entryIndex === index ? { ...entry, name: event.target.value } : entry
+                                      ),
+                                    }))}
+                                    placeholder="API_TOKEN"
+                                    className="rounded-md border border-stone-200 px-2.5 py-2 font-mono text-[11px] outline-none focus:ring-1 focus:ring-indigo-300"
+                                  />
+                                  <input
+                                    type="password"
+                                    value={item.value}
+                                    onChange={(event) => setMcpForm((form) => ({
+                                      ...form,
+                                      env: form.env.map((entry, entryIndex) =>
+                                        entryIndex === index ? { ...entry, value: event.target.value } : entry
+                                      ),
+                                    }))}
+                                    placeholder={item.hasValue ? "已保存在密钥环，留空则不修改" : "输入变量值"}
+                                    className="rounded-md border border-stone-200 px-2.5 py-2 text-[11px] outline-none focus:ring-1 focus:ring-indigo-300"
+                                  />
+                                  <button
+                                    type="button"
+                                    title="移除环境变量"
+                                    onClick={() => setMcpForm((form) => ({
+                                      ...form,
+                                      env: form.env.filter((_, entryIndex) => entryIndex !== index),
+                                    }))}
+                                    className="flex h-8 w-8 items-center justify-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-600"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 border-y border-stone-200 py-4">
+                        <label className="block space-y-1">
+                          <span className="text-[11px] font-semibold text-stone-600">Server URL</span>
+                          <input
+                            value={mcpForm.url}
+                            onChange={(event) => setMcpForm((form) => ({ ...form, url: event.target.value }))}
+                            placeholder="https://example.com/mcp"
+                            className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 font-mono text-xs outline-none focus:ring-1 focus:ring-indigo-300"
+                          />
+                        </label>
+                        <label className="block space-y-1">
+                          <span className="flex items-center justify-between text-[11px] font-semibold text-stone-600">
+                            Bearer Token
+                            {mcpForm.hasBearerToken && !mcpForm.clearBearerToken && (
+                              <button
+                                type="button"
+                                onClick={() => setMcpForm((form) => ({ ...form, clearBearerToken: true, bearerToken: "" }))}
+                                className="text-[10px] font-medium text-rose-600 hover:underline"
+                              >
+                                清除已保存 Token
+                              </button>
+                            )}
+                          </span>
+                          <input
+                            type="password"
+                            value={mcpForm.bearerToken}
+                            onChange={(event) => setMcpForm((form) => ({
+                              ...form,
+                              bearerToken: event.target.value,
+                              clearBearerToken: false,
+                            }))}
+                            placeholder={
+                              mcpForm.clearBearerToken
+                                ? "保存后清除 Token"
+                                : mcpForm.hasBearerToken
+                                  ? "已保存在密钥环，留空则不修改"
+                                  : "可选"
+                            }
+                            className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-indigo-300"
+                          />
+                        </label>
+                      </div>
+                    )}
+
+                    <div className="flex justify-end gap-2 border-t border-stone-200 pt-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingMcpId(null);
+                          setMcpForm(EMPTY_MCP_FORM);
+                        }}
+                        className="rounded-md px-3 py-1.5 text-xs font-semibold text-stone-500 hover:bg-stone-100"
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        onClick={saveMcpServer}
+                        disabled={isSavingMcp || !mcpForm.name.trim()}
+                        className="flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-40"
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                        {isSavingMcp ? "保存中..." : "保存"}
+                      </button>
+                    </div>
+                  </div>
+                ) : mcpServers.length === 0 ? (
+                  <div className="py-16 text-center text-xs text-stone-400">尚未配置 MCP Server</div>
+                ) : (
+                  <div className="divide-y divide-stone-200 border-y border-stone-200">
+                    {mcpServers.map((server) => (
+                      <div key={server.id} className="flex min-h-16 items-center gap-3 px-2 py-3">
+                        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border ${
+                          server.enabled
+                            ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                            : "border-stone-200 bg-stone-100 text-stone-400"
+                        }`}>
+                          <Server className="h-4 w-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-xs font-semibold text-stone-800">{server.name}</span>
+                            <span className="rounded border border-stone-200 bg-stone-50 px-1.5 py-0.5 font-mono text-[9px] text-stone-500">
+                              {server.transport.type === "stdio" ? "stdio" : "HTTP"}
+                            </span>
+                          </div>
+                          <p className="mt-0.5 truncate font-mono text-[9px] text-stone-400">
+                            {server.transport.type === "stdio"
+                              ? [server.transport.command, ...server.transport.args].join(" ")
+                              : server.transport.url}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void toggleMcpServer(server)}
+                          title={server.enabled ? "停用 Server" : "启用 Server"}
+                          className={`rounded-md border px-2 py-1 text-[10px] font-semibold ${
+                            server.enabled
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                              : "border-stone-200 bg-stone-100 text-stone-500"
+                          }`}
+                        >
+                          {server.enabled ? "已启用" : "已停用"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void testMcpServer(server)}
+                          disabled={testingMcpId === server.id}
+                          title="测试连接并读取工具列表"
+                          className="flex h-8 w-8 items-center justify-center rounded-md text-stone-400 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-40"
+                        >
+                          <Zap className={`h-3.5 w-3.5 ${testingMcpId === server.id ? "animate-pulse" : ""}`} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openEditMcpServer(server)}
+                          title="编辑 Server"
+                          className="flex h-8 w-8 items-center justify-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-800"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deleteMcpServer(server)}
+                          title="删除 Server"
+                          className="flex h-8 w-8 items-center justify-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-700"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 5. AUDIT TAB */}
             {activeTab === "audit" && (
               <div className="space-y-4">
                 <div className="flex justify-between items-center border-b border-stone-200 pb-3">

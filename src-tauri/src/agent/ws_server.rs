@@ -16,6 +16,7 @@ use crate::db::repo::messages::NewMessagePart;
 use crate::db::repo::tools::NewToolCall;
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
+use crate::mcp::McpManager;
 use crate::state::AppState;
 use crate::tools::{PermissionMode, ToolExecutor, ToolPolicy};
 
@@ -99,6 +100,7 @@ pub async fn run<R: tauri::Runtime>(
     db: DbActorHandle,
     app_handle: tauri::AppHandle<R>,
     manager: Arc<AgentManager>,
+    mcp: Arc<McpManager>,
 ) -> AppResult<()> {
     std_listener
         .set_nonblocking(true)
@@ -121,10 +123,13 @@ pub async fn run<R: tauri::Runtime>(
         let db = db.clone();
         let app_handle = app_handle.clone();
         let manager = manager.clone();
+        let mcp = mcp.clone();
         let active_runs = active_runs.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, token, db, app_handle, manager, active_runs).await {
+            if let Err(e) =
+                handle_conn(stream, token, db, app_handle, manager, mcp, active_runs).await
+            {
                 eprintln!("[agent][ws] conn error: {e}");
             }
         });
@@ -138,6 +143,7 @@ async fn handle_conn<R: tauri::Runtime>(
     db: DbActorHandle,
     app_handle: tauri::AppHandle<R>,
     manager: Arc<AgentManager>,
+    mcp: Arc<McpManager>,
     active_runs: Arc<tokio::sync::Mutex<HashMap<String, ActiveRun>>>,
 ) -> AppResult<()> {
     let ws = accept_async(stream)
@@ -162,7 +168,7 @@ async fn handle_conn<R: tauri::Runtime>(
         }
     });
 
-    let tool_executor = ToolExecutor::new(db.clone());
+    let tool_executor = ToolExecutor::new(db.clone(), mcp);
 
     // 读取循环
     while let Some(msg) = ws_read.next().await {
@@ -927,13 +933,25 @@ mod tests {
         let app = tauri::test::mock_app();
         let app_handle = app.handle().clone();
         let manager = Arc::new(AgentManager::new());
+        let mcp = Arc::new(crate::mcp::McpManager::new(
+            db.clone(),
+            Arc::new(crate::secrets::InMemorySecretStore::default()),
+        ));
 
         // 真实 Rust WS Server
         let srv_token = token.clone();
         let db_clone = db.clone();
         let manager_clone = manager.clone();
         tokio::spawn(async move {
-            let _ = run(listener, srv_token, db_clone, app_handle, manager_clone).await;
+            let _ = run(
+                listener,
+                srv_token,
+                db_clone,
+                app_handle,
+                manager_clone,
+                mcp,
+            )
+            .await;
         });
 
         // 真实 Python sidecar（WS Client）

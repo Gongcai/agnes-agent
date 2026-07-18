@@ -18,6 +18,8 @@ pub struct ToolPolicy {
     #[serde(default)]
     pub web: WebPolicy,
     #[serde(default)]
+    pub mcp: McpPolicy,
+    #[serde(default)]
     pub sandbox: SandboxPolicy,
     #[serde(default)]
     pub network: NetworkPolicy,
@@ -136,6 +138,14 @@ pub struct WebPolicy {
     pub timeout_sec: u32,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct McpPolicy {
+    pub enabled: bool,
+    pub server_ids: Vec<String>,
+    pub approval: ApprovalTier,
+}
+
 impl Default for MemoryPolicy {
     fn default() -> Self {
         Self {
@@ -161,6 +171,16 @@ impl Default for WebPolicy {
             approval: ApprovalTier::Never,
             search_provider: "auto".into(),
             timeout_sec: 15,
+        }
+    }
+}
+
+impl Default for McpPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server_ids: Vec::new(),
+            approval: ApprovalTier::Always,
         }
     }
 }
@@ -385,6 +405,9 @@ impl ToolPolicy {
 
     /// Return the approval tier for a tool. Unknown tools fail closed.
     pub fn approval_for(&self, tool: &str) -> ApprovalTier {
+        if tool.starts_with("mcp__") {
+            return self.mcp.approval;
+        }
         match tool {
             "shell" => self.shell.approval,
             "file_read" | "list_files" | "grep" => ApprovalTier::Never,
@@ -444,6 +467,8 @@ mod tests {
         assert_eq!(value["planner"]["approval"], "always");
         assert_eq!(value["web"]["approval"], "never");
         assert_eq!(value["web"]["search_provider"], "auto");
+        assert_eq!(value["mcp"]["enabled"], false);
+        assert_eq!(value["mcp"]["approval"], "always");
         assert_eq!(value["git"]["timeout_sec"], 30);
         assert_eq!(value["network"]["allow"], true);
         assert_eq!(value["sandbox"]["bwrap"], "auto");

@@ -17,6 +17,7 @@ use crate::model_registry::{
 use crate::secrets::{provider_api_key_secret_id, SecretStore, SYNC_CREDENTIAL_SECRET_ID};
 use crate::state::AppState;
 use crate::sync::auth::SyncCredential;
+use crate::tools::ToolPolicy;
 
 fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
@@ -798,6 +799,10 @@ pub async fn get_debug_prompt(
         resolve_workspace_prompt_context(&state.db, session_id.as_deref()).await?;
 
     let task_llm_configs = resolve_task_llm_configs(&state, &model_roles).await?;
+    let parsed_tool_policy =
+        serde_json::from_str::<ToolPolicy>(&agent.tool_policy).unwrap_or_default();
+    let tool_policy_json = serde_json::to_value(&parsed_tool_policy)?;
+    let mcp_tools = state.mcp.dynamic_tools(&parsed_tool_policy).await;
     let snapshot = json!({
         "input": "",
         "context": {
@@ -805,8 +810,9 @@ pub async fn get_debug_prompt(
                 "persona": agent.persona,
                 "systemPrompt": agent.system_prompt,
                 "model": agent_model_str,
-                "toolPolicy": serde_json::from_str::<serde_json::Value>(&agent.tool_policy).unwrap_or(json!({}))
+                "toolPolicy": tool_policy_json
             },
+            "mcpTools": mcp_tools,
             "llmConfig": {
                 "provider": provider_kind,
                 "apiBase": api_base,
@@ -1528,6 +1534,10 @@ async fn start_agent_run(
         }
     };
 
+    let parsed_tool_policy =
+        serde_json::from_str::<ToolPolicy>(&cfg.agent.tool_policy).unwrap_or_default();
+    let tool_policy_json = serde_json::to_value(&parsed_tool_policy)?;
+    let mcp_tools = state.mcp.dynamic_tools(&parsed_tool_policy).await;
     let run_id = uuid::Uuid::new_v4().to_string();
     let context_snapshot = json!({
         "input": "",
@@ -1536,8 +1546,9 @@ async fn start_agent_run(
                 "persona": cfg.agent.persona,
                 "systemPrompt": cfg.agent.system_prompt,
                 "model": cfg.effective_model,
-                "toolPolicy": serde_json::from_str::<serde_json::Value>(&cfg.agent.tool_policy).unwrap_or(json!({}))
+                "toolPolicy": tool_policy_json
             },
+            "mcpTools": mcp_tools,
             "llmConfig": {
                 "provider": cfg.provider_kind,
                 "apiBase": cfg.api_base,

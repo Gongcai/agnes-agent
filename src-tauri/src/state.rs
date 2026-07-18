@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::agent::AgentManager;
 use crate::db::DbActorHandle;
+use crate::mcp::McpManager;
 use crate::notifications::NotificationService;
 use crate::secrets::SecretStore;
 use crate::sync::engine::SyncService;
@@ -12,6 +13,7 @@ pub struct AppState {
     pub data_dir: PathBuf,
     pub db: DbActorHandle,
     pub agent: Arc<AgentManager>,
+    pub mcp: Arc<McpManager>,
     pub secrets: Arc<dyn SecretStore>,
     pub sync: Arc<SyncService>,
     pub notifications: Arc<NotificationService>,

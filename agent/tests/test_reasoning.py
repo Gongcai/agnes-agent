@@ -438,6 +438,22 @@ def test_get_available_tools():
     assert "calendar_event_create" not in planner_disabled_names
     assert "task_update" not in planner_disabled_names
 
+    external = {
+        "type": "function",
+        "function": {
+            "name": "mcp__server_123__lookup_456",
+            "description": "External lookup",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    assert external not in get_available_tools({}, [external])
+    assert external in get_available_tools({"mcp": {"enabled": True}}, [external])
+    invalid = {
+        "type": "function",
+        "function": {"name": "shell", "parameters": {"type": "object"}},
+    }
+    assert invalid not in get_available_tools({"mcp": {"enabled": True}}, [invalid])
+
 
 def test_planner_tools_expose_stable_ids_and_update_fields():
     tools = {

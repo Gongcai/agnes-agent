@@ -180,7 +180,7 @@ System Prompt
 | V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 已完成：摘要、抽取、结构化字段、AI 创建/更新、记忆决策提示词、`MEMORY.md` 专用工具、动态维度 sqlite-vec + RRF 混合检索；已使用 Qwen3-Embedding-8B 完成真实服务端到端验证，手动向量化、覆盖率统计与检索链路均可用 |
 | V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | Phase 0-4 已完成：密文传输、SPAKE2 新设备配对、两阶段密钥轮换、Recovery Bundle 多版本恢复和线上日志审计均已完成；Worker `7316feb3-48b1-4635-8363-a83e78e7dc33` 已部署，production D1 五张相关表均为空。本轮未上传业务数据 |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 暂缓：先稳定桌面客户端与本地 Agent 能力，再启动 Android 客户端 |
-| V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；内置 `web_search/web_fetch`、DuckDuckGo→Bing 无密钥回退、安全正文提取与来源提示词已完成；MCP、正式搜索 API Provider 和浏览器操作待后续补齐 |
+| V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 进行中：工具、审批、Linux 沙箱、审计、模型路由、内置 `web_search/web_fetch` 与安全正文提取已完成；MCP Client 已支持 stdio/Streamable HTTP、Keyring 凭证、按角色授权、动态 schema、高风险审批和连接测试。正式搜索 API Provider、浏览器操作与 diff review 待后续补齐 |
 | V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + R2/Google Drive Provider | 进行中：侧边栏导航、图标轨和会话折叠已完成；知识库正式 schema、旧表迁移、权限隔离、UTF-8 文本导入/分块、FTS5 + sqlite-vec 分区、显式向量化、RRF 混合检索和安全 Agent 上下文注入已完成；加密制品与 Provider 待实现 |
 | V0.7 | 本地日历 + 待办 | 已完成：本地域模型、Local Provider、受审批约束的 Agent 工具、完整桌面工作区、本地统一通知服务和 D1 E2EE 同步均已完成。日历支持月/周/日/议程、多日历叠加、当天议程、待办图层及重复 occurrence 例外；待办支持五类智能视图、自定义列表、重要/我的一天、日期或精确时间、步骤和完成后生成下一重复实例；通知中心覆盖 AI 回复/许可、任务到期和日历事件。Google Calendar / Google Tasks / CalDAV 不纳入默认路线图，未来仅按实际需求作为可选扩展评估。 |
 | V0.8 | Read With AI | 已完成本地优先 v1：EPUB 2/3 导入与原样渲染、阅读进度、CFI 划线、用户级书架、按书籍 × Agent 隔离的连续讨论、已知书籍模式，以及未知书籍首次书内检索授权。原始 EPUB 的加密大对象与跨设备同步留待 V0.6 数据层完成后接入。 |

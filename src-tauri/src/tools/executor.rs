@@ -3,21 +3,24 @@
 /// 职责：插入审计初志 → 解析 workspace cwd → 合并有效 policy → 派发到 BuiltinTool。
 /// 各工具的物理执行逻辑在 `builtin/*` 模块中。
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::db::repo::tools::NewToolCall;
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
+use crate::mcp::McpManager;
 use crate::tools::builtin::{builtin_tools, ToolCtx};
 use crate::tools::policy::ToolPolicy;
 use crate::tools::PermissionMode;
 
 pub struct ToolExecutor {
     db: DbActorHandle,
+    mcp: Arc<McpManager>,
 }
 
 impl ToolExecutor {
-    pub fn new(db: DbActorHandle) -> Self {
-        Self { db }
+    pub fn new(db: DbActorHandle, mcp: Arc<McpManager>) -> Self {
+        Self { db, mcp }
     }
 
     /// 执行工具调用：审计入志 → workspace cwd → 有效 policy → 派发。
@@ -90,7 +93,45 @@ impl ToolExecutor {
         let sandbox =
             crate::tools::sandbox::PolicySandbox::new(&effective_policy, workspace_cwd.as_deref());
 
-        // D. 派发到内置工具
+        // D. Dispatch MCP tools through the same audit boundary.
+        if tool.starts_with("mcp__") {
+            self.db
+                .update_tool_call_running(tool_call_id.to_string(), "mcp".into())
+                .await?;
+            let result = self.mcp.call_tool(tool, arguments, &effective_policy).await;
+            match result {
+                Ok(value) => {
+                    let output = serde_json::to_string(&value)?;
+                    self.db
+                        .update_tool_call_complete(
+                            tool_call_id.to_string(),
+                            "succeeded".into(),
+                            Some(output.clone()),
+                            Some(0),
+                            Some(output),
+                            None,
+                        )
+                        .await?;
+                    return Ok(value);
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    self.db
+                        .update_tool_call_complete(
+                            tool_call_id.to_string(),
+                            "failed".into(),
+                            Some(message.clone()),
+                            Some(-1),
+                            None,
+                            Some(message),
+                        )
+                        .await?;
+                    return Err(error);
+                }
+            }
+        }
+
+        // E. 派发到内置工具
         let ctx = ToolCtx {
             db: &self.db,
             session_id,
@@ -162,7 +203,11 @@ mod tests {
             let _ = fs::remove_file(&db_path);
         }
         let db = spawn_db_actor(db_path.clone());
-        let executor = ToolExecutor::new(db.clone());
+        let mcp = std::sync::Arc::new(crate::mcp::McpManager::new(
+            db.clone(),
+            std::sync::Arc::new(crate::secrets::InMemorySecretStore::default()),
+        ));
+        let executor = ToolExecutor::new(db.clone(), mcp);
 
         db.insert_agent(new_agent("test-agent", "Test Agent"))
             .await
@@ -226,6 +271,7 @@ mod tests {
             memory: Default::default(),
             planner: Default::default(),
             web: Default::default(),
+            mcp: Default::default(),
             sandbox: Default::default(),
             network: Default::default(),
         };

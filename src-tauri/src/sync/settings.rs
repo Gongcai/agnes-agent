@@ -10,7 +10,7 @@ pub fn classify(key: &str) -> SettingClass {
     if key.starts_with("provider:") && key.ends_with(":api_key") {
         return SettingClass::Secret;
     }
-    if key.starts_with("ui:") || key == "models:role_assignments" {
+    if key.starts_with("ui:") || key == "models:role_assignments" || key == "mcp:servers:v1" {
         return SettingClass::DeviceLocal;
     }
     SettingClass::Unknown
@@ -33,6 +33,7 @@ mod tests {
         );
         assert_eq!(classify("agent:agnes:memory_md"), SettingClass::Unknown);
         assert_eq!(classify("provider:openai:api_key"), SettingClass::Secret);
+        assert_eq!(classify("mcp:servers:v1"), SettingClass::DeviceLocal);
         assert_eq!(classify("unclassified:value"), SettingClass::Unknown);
         assert!(renderer_access_allowed("ui:last_session_id"));
         assert!(!renderer_access_allowed("provider:openai:api_key"));

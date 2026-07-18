@@ -12,11 +12,15 @@ class AgentState(TypedDict):
     system_prompt: str
     model: str
     tool_policy: Dict[str, Any]
+    dynamic_tools: List[Dict[str, Any]]
     pending_tool_calls: List[Dict[str, Any]]
     finished: bool
     llm_config: Optional[Dict[str, Any]]  # Raw dict from ContextSnapshot, parsed in nodes
 
-def get_available_tools(tool_policy: Dict[str, Any]) -> List[Dict[str, Any]]:
+def get_available_tools(
+    tool_policy: Dict[str, Any],
+    dynamic_tools: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """Determine tools to expose to the LLM based on permissions policy."""
     tools = []
     
@@ -455,6 +459,19 @@ def get_available_tools(tool_policy: Dict[str, Any]) -> List[Dict[str, Any]]:
             },
         ])
 
+    if tool_policy.get("mcp", {}).get("enabled", False):
+        for tool in (dynamic_tools or [])[:128]:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            parameters = function.get("parameters") if isinstance(function, dict) else None
+            if (
+                tool.get("type") == "function"
+                and isinstance(name, str)
+                and name.startswith("mcp__")
+                and isinstance(parameters, dict)
+            ):
+                tools.append(tool)
+
     return tools
 
 async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, Any]:
@@ -473,7 +490,10 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
     messages.extend(state["messages"])
     
     # Check what tools are permitted
-    available_tools = get_available_tools(state.get("tool_policy", {}))
+    available_tools = get_available_tools(
+        state.get("tool_policy", {}),
+        state.get("dynamic_tools", []),
+    )
     tools_arg = available_tools if available_tools else None
     
     # Build LlmConfig from state

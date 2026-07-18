@@ -37,10 +37,11 @@ def build_debug_prompt_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Build the same prompt components and tool schemas used by an LLM call."""
     system_prompt, messages, discarded = assemble_prompt(payload)
     tool_policy = payload.get("context", {}).get("agent", {}).get("toolPolicy") or {}
+    dynamic_tools = payload.get("context", {}).get("mcpTools") or []
     return {
         "system_prompt": system_prompt,
         "messages": messages,
-        "tools": get_available_tools(tool_policy),
+        "tools": get_available_tools(tool_policy, dynamic_tools),
         "discarded_messages": discarded,
     }
 
@@ -217,6 +218,7 @@ async def run_agent_graph(
         "system_prompt": system_prompt,
         "model": agent_model,
         "tool_policy": payload.get("context", {}).get("agent", {}).get("toolPolicy") or {},
+        "dynamic_tools": payload.get("context", {}).get("mcpTools") or [],
         "pending_tool_calls": [],
         "finished": False,
         "llm_config": llm_config_raw,  # Raw dict, parsed in graph nodes
