@@ -242,6 +242,12 @@ async def run_agent_graph(
         "active_llm_config": llm_config_raw,
         "active_model": agent_model,
         "fallback_locked": False,
+        "token_usage": {
+            "input_tokens": 0,
+            "cached_tokens": 0,
+            "output_tokens": 0,
+            "context_tokens": 0,
+        },
     }
     
     config = {
@@ -312,6 +318,7 @@ async def run_agent_graph(
             payload={
                 "summary": new_summary,
                 "memories": extracted_memories,
+                "usage": output_state.get("token_usage") or {},
             }
         )
         await ws.send(finished_envelope.model_dump_json())

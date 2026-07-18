@@ -24,6 +24,7 @@ MODEL_CONTEXT_LIMITS: Dict[str, int] = {
 DEFAULT_CONTEXT_LIMIT = 8192
 MODEL_REQUEST_TIMEOUT_SECONDS = 90
 DEFAULT_MAX_OUTPUT_TOKENS = 2048
+MAX_OUTPUT_TOKENS = 1_048_576
 
 # Ensure litellm throws errors immediately rather than trying fallback options invisibly
 litellm.drop_params = True
@@ -123,7 +124,7 @@ class LlmConfig:
             max_tokens=max(
                 128,
                 min(
-                    32768,
+                    MAX_OUTPUT_TOKENS,
                     int(d.get("maxTokens", DEFAULT_MAX_OUTPUT_TOKENS) or DEFAULT_MAX_OUTPUT_TOKENS),
                 ),
             ),

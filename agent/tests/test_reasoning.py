@@ -50,7 +50,8 @@ def test_llm_config_parses_and_clamps_max_tokens():
     assert LlmConfig.from_dict({}).max_tokens == DEFAULT_MAX_OUTPUT_TOKENS
     assert LlmConfig.from_dict({"maxTokens": 8192}).max_tokens == 8192
     assert LlmConfig.from_dict({"maxTokens": 1}).max_tokens == 128
-    assert LlmConfig.from_dict({"maxTokens": 100_000}).max_tokens == 32768
+    assert LlmConfig.from_dict({"maxTokens": 100_000}).max_tokens == 100_000
+    assert LlmConfig.from_dict({"maxTokens": 2_000_000}).max_tokens == 1_048_576
 
 
 def test_completion_uses_configured_max_tokens(monkeypatch):
@@ -105,7 +106,9 @@ def test_session_title_generation_uses_quick_model_and_cleans_output(monkeypatch
 
     assert title == "排查日历同步"
     assert captured["model"] == "quick-model"
-    assert captured["llm_config"] is config
+    assert captured["llm_config"] is not config
+    assert captured["llm_config"].thinking_mode == "off"
+    assert captured["llm_config"].thinking_budget == 0
     assert captured["max_tokens"] == TITLE_MAX_TOKENS
     assert captured["timeout"] == TITLE_REQUEST_TIMEOUT_SECONDS
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
@@ -164,6 +167,34 @@ def _text_chunk(content: str):
             )
         )]
     )
+
+
+def _usage_chunk(usage):
+    return SimpleNamespace(choices=[], usage=usage)
+
+
+def test_usage_normalization_supports_openai_and_anthropic_cache_fields():
+    openai_usage = SimpleNamespace(
+        prompt_tokens=120,
+        completion_tokens=30,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=80),
+    )
+    anthropic_usage = {
+        "input_tokens": 90,
+        "output_tokens": 20,
+        "cache_read_input_tokens": 60,
+    }
+
+    assert graph_module._read_usage(openai_usage) == {
+        "input_tokens": 120,
+        "cached_tokens": 80,
+        "output_tokens": 30,
+    }
+    assert graph_module._read_usage(anthropic_usage) == {
+        "input_tokens": 90,
+        "cached_tokens": 60,
+        "output_tokens": 20,
+    }
 
 
 def _fallback_test_state():
@@ -300,6 +331,81 @@ def test_tool_loop_stays_on_selected_fallback_model(monkeypatch):
     assert result["messages"][-1]["content"] == "answer after tool"
     assert result["active_llm_index"] == 1
     assert result["active_model"] == "backup-model"
+
+
+def test_tool_loop_accumulates_usage_but_keeps_latest_context_size(monkeypatch):
+    calls = 0
+    tool_delta = SimpleNamespace(
+        index=0,
+        id="tc-usage",
+        function=SimpleNamespace(name="web_search", arguments='{"query":"usage"}'),
+    )
+    tool_chunk = SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                content=None,
+                reasoning_content=None,
+                reasoning=None,
+                tool_calls=[tool_delta],
+            )
+        )]
+    )
+
+    def fake_completion(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return iter([
+                tool_chunk,
+                _usage_chunk({
+                    "prompt_tokens": 100,
+                    "completion_tokens": 10,
+                    "prompt_tokens_details": {"cached_tokens": 30},
+                }),
+            ])
+        return iter([
+            _text_chunk("done"),
+            _usage_chunk({
+                "prompt_tokens": 140,
+                "completion_tokens": 20,
+                "prompt_tokens_details": {"cached_tokens": 50},
+            }),
+        ])
+
+    monkeypatch.setattr(graph_module, "completion", fake_completion)
+    state = {
+        **_fallback_test_state(),
+        "fallback_configs": [],
+        "dynamic_tools": [],
+        "pending_tool_calls": [],
+        "finished": False,
+        "active_llm_config": {"modelRef": "primary/model", "model": "primary-model"},
+        "active_model": "primary-model",
+        "token_usage": {
+            "input_tokens": 0,
+            "cached_tokens": 0,
+            "output_tokens": 0,
+            "context_tokens": 0,
+        },
+    }
+
+    async def execute_tool(*_args):
+        return '{"results":[]}'
+
+    async def run():
+        graph = graph_module.build_graph()
+        return await graph.ainvoke(
+            state,
+            config={"configurable": {"execute_tool_fn": execute_tool}},
+        )
+
+    result = asyncio.run(run())
+    assert result["token_usage"] == {
+        "input_tokens": 240,
+        "cached_tokens": 80,
+        "output_tokens": 30,
+        "context_tokens": 160,
+    }
 
 
 def test_partial_text_locks_model_and_prevents_fallback(monkeypatch):
@@ -552,6 +658,36 @@ def test_assemble_prompt_and_budgeting():
     assert len(messages) > 0
     assert messages[-1]["role"] == "user"
     assert messages[-1]["content"] == "Latest user question"
+
+
+def test_compress_threshold_changes_the_retained_history_budget():
+    recent_messages = [
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "parts": [{"kind": "text", "content": f"history-{index} " * 180}],
+        }
+        for index in range(8)
+    ]
+
+    def assemble(threshold):
+        return assemble_prompt({
+            "input": "latest",
+            "context": {
+                "agent": {"model": "gpt-4o", "toolPolicy": {"memory": {"enabled": False}}},
+                "llmConfig": {"maxTokens": 128},
+                "settings": {
+                    "user_context_limit": 8_000,
+                    "compress_threshold": threshold,
+                },
+                "recentMessages": recent_messages,
+            },
+        })
+
+    _, high_threshold_messages, high_threshold_discarded = assemble(0.9)
+    _, low_threshold_messages, low_threshold_discarded = assemble(0.25)
+
+    assert len(low_threshold_discarded) > len(high_threshold_discarded)
+    assert len(low_threshold_messages) < len(high_threshold_messages)
 
 
 def test_memory_instructions_follow_memory_capability():

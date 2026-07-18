@@ -14,6 +14,7 @@ export interface ModelCapabilities {
 export interface ModelDescriptor {
   id: string;
   capabilities: ModelCapabilities;
+  context_window: number | null;
 }
 
 export interface ModelRoleAssignments {
@@ -90,6 +91,10 @@ export interface Message {
   version_index: number;
   version_count: number;
   is_leaf: boolean;
+  input_tokens: number;
+  cached_tokens: number;
+  output_tokens: number;
+  context_tokens: number;
   /** 流式暂存：当前是否处于 <thought> 思维链中。仅用于直播渲染，不落库。 */
   _streamingInThought?: boolean;
   /** Stable React key retained across the run-finished DB reconciliation. */
@@ -168,6 +173,8 @@ export interface Session {
   thinking_mode: string;
   thinking_budget: number;
   max_tokens: number;
+  context_limit: number | null;
+  compress_threshold: number;
   permission_mode: PermissionMode;
   workspace_id: string | null;
 }
@@ -253,6 +260,7 @@ interface AgentState {
   setActiveAgentId: (agentId: string) => Promise<void>;
   setActiveSessionId: (sessionId: string) => Promise<void>;
   setSessionLlm: (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number, maxTokens: number) => Promise<void>;
+  setSessionCompressThreshold: (sessionId: string, compressThreshold: number) => Promise<void>;
   setSessionPermissionMode: (sessionId: string, permissionMode: PermissionMode) => Promise<void>;
   switchVersion: (messageId: string, direction: "prev" | "next") => Promise<void>;
   createBranch: (messageId: string) => Promise<void>;
@@ -507,6 +515,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       version_index: 0,
       version_count: 1,
       is_leaf: false,
+      input_tokens: 0,
+      cached_tokens: 0,
+      output_tokens: 0,
+      context_tokens: 0,
     };
 
     const tempAssistantMsg: Message = {
@@ -521,6 +533,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       version_index: 0,
       version_count: 1,
       is_leaf: true,
+      input_tokens: 0,
+      cached_tokens: 0,
+      output_tokens: 0,
+      context_tokens: 0,
     };
 
     set({
@@ -601,6 +617,17 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       console.error("设置会话模型/思考失败", e);
       throw e;
     }
+  },
+
+  setSessionCompressThreshold: async (sessionId, compressThreshold) => {
+    await invoke("set_session_compress_threshold", { sessionId, compressThreshold });
+    set({
+      sessions: get().sessions.map((session) =>
+        session.id === sessionId
+          ? { ...session, compress_threshold: compressThreshold }
+          : session
+      ),
+    });
   },
 
   setSessionPermissionMode: async (sessionId: string, permissionMode: PermissionMode) => {

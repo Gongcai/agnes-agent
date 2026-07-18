@@ -216,6 +216,27 @@ pub fn update_llm(
     Ok(())
 }
 
+pub fn update_compress_threshold(
+    conn: &mut Connection,
+    id: &str,
+    compress_threshold: f64,
+) -> AppResult<()> {
+    let now_str = now();
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
+    let changed = tx.execute(
+        "UPDATE sessions SET compress_threshold = ?1, updated_at = ?2, \
+         version = version + 1, origin_device_id = ?3 \
+         WHERE id = ?4 AND deleted_at IS NULL",
+        params![compress_threshold, now_str, device_id, id],
+    )?;
+    if changed > 0 {
+        enqueue_current(&tx, id)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// Update the session-level tool permission mode.
 pub fn update_permission_mode(conn: &Connection, id: &str, permission_mode: &str) -> AppResult<()> {
     let now_str = now();
@@ -390,6 +411,17 @@ mod tests {
         assert!(!initial_payload.contains("permission_mode"));
         assert!(initial_payload.contains("workspace_id"));
         assert!(initial_payload.contains("local-workspace"));
+    }
+
+    #[test]
+    fn compress_threshold_is_persisted() {
+        let mut conn = setup();
+        insert(&mut conn, &new_session(None)).unwrap();
+
+        update_compress_threshold(&mut conn, "session-1", 0.7).unwrap();
+
+        let session = get(&conn, "session-1").unwrap().unwrap();
+        assert!((session.compress_threshold - 0.7).abs() < f64::EPSILON);
     }
 
     #[test]

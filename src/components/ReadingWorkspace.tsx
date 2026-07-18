@@ -462,10 +462,12 @@ export const ReadingWorkspace: React.FC = () => {
   const messages = useAgentStore((state) => state.messages);
   const isStreaming = useAgentStore((state) => state.isStreaming);
   const sessions = useAgentStore((state) => state.sessions);
+  const providers = useAgentStore((state) => state.providers);
   const loadSessions = useAgentStore((state) => state.loadSessions);
   const sendMessage = useAgentStore((state) => state.sendMessage);
   const setActiveSessionId = useAgentStore((state) => state.setActiveSessionId);
   const setSessionLlm = useAgentStore((state) => state.setSessionLlm);
+  const setSessionCompressThreshold = useAgentStore((state) => state.setSessionCompressThreshold);
   const [books, setBooks] = useState<ReadingBook[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
   const [highlights, setHighlights] = useState<ReadingHighlight[]>([]);
@@ -490,6 +492,21 @@ export const ReadingWorkspace: React.FC = () => {
   );
   const readingSession = sessions.find((session) => session.id === readingSessionId);
   const readingMaxTokens = readingSession?.max_tokens ?? 2048;
+  const readingModelRef = readingSession?.model ?? "";
+  const readingModelSeparator = readingModelRef.indexOf("/");
+  const readingProviderId = readingModelSeparator >= 0 ? readingModelRef.slice(0, readingModelSeparator) : "";
+  const readingModelId = readingModelSeparator >= 0 ? readingModelRef.slice(readingModelSeparator + 1) : readingModelRef;
+  const readingModelDescriptor = providers
+    .find((provider) => provider.id === readingProviderId)
+    ?.models.find((model) => model.id === readingModelId);
+  const readingContextLimit = readingSession?.context_limit ?? readingModelDescriptor?.context_window ?? 8192;
+  const readingCompressThreshold = readingSession?.compress_threshold ?? 0.85;
+  const latestReadingAssistant = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant" && message.status === "complete");
+  const readingContextTokens = latestReadingAssistant?.context_tokens ?? 0;
+  const readingContextPercent = Math.min(100, (readingContextTokens / Math.max(1, readingContextLimit)) * 100);
+  const readingSummaryTrigger = Math.floor(readingContextLimit * readingCompressThreshold);
 
   const loadBooks = async () => {
     const next = await invoke<ReadingBook[]>("list_reading_books");
@@ -722,6 +739,18 @@ export const ReadingWorkspace: React.FC = () => {
                 <div className="flex h-12 items-center gap-2 px-4">
                   <MessageCircleMore className="h-4 w-4 text-emerald-700" />
                   <span className="min-w-0 flex-1 text-sm font-semibold text-stone-800">阅读讨论</span>
+                  <div
+                    className="hidden items-center gap-1.5 sm:flex"
+                    title={`上下文 ${readingContextTokens.toLocaleString()} / ${readingContextLimit.toLocaleString()} Token；总结阈值 ${readingSummaryTrigger.toLocaleString()} Token`}
+                  >
+                    <div className="h-1.5 w-14 overflow-hidden rounded-full bg-stone-200">
+                      <div
+                        className={`h-full rounded-full ${readingContextPercent >= readingCompressThreshold * 100 ? "bg-amber-500" : "bg-emerald-600"}`}
+                        style={{ width: `${readingContextPercent}%` }}
+                      />
+                    </div>
+                    <span className="font-mono text-[9px] tabular-nums text-stone-400">{readingContextPercent.toFixed(0)}%</span>
+                  </div>
                   <button
                     onClick={() => setIsConversationHistoryOpen((open) => !open)}
                     disabled={!conversationReady || loading}
@@ -805,7 +834,7 @@ export const ReadingWorkspace: React.FC = () => {
                         key={`${readingSessionId}-${readingMaxTokens}`}
                         type="number"
                         min={128}
-                        max={32768}
+                        max={1048576}
                         step={256}
                         defaultValue={readingMaxTokens}
                         onKeyDown={(event) => {
@@ -813,7 +842,7 @@ export const ReadingWorkspace: React.FC = () => {
                         }}
                         onBlur={(event) => {
                           if (!readingSessionId || !readingSession) return;
-                          const value = Math.min(32768, Math.max(128, Number(event.currentTarget.value) || 2048));
+                          const value = Math.min(1048576, Math.max(128, Number(event.currentTarget.value) || 2048));
                           event.currentTarget.value = String(value);
                           if (value !== readingMaxTokens) {
                             void setSessionLlm(
@@ -827,6 +856,32 @@ export const ReadingWorkspace: React.FC = () => {
                         }}
                         className="h-7 w-24 rounded-md border border-stone-200 bg-stone-50 px-2 text-right font-mono text-[10px] text-stone-700 outline-none focus:border-emerald-400"
                       />
+                    </label>
+                    <label className="mt-3 flex items-center gap-2 border-t border-stone-100 pt-3 text-[11px] text-stone-500">
+                      <span className="min-w-0 flex-1">自动总结阈值</span>
+                      <input
+                        key={`${readingSessionId}-${readingCompressThreshold}`}
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        defaultValue={readingCompressThreshold}
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                        onBlur={(event) => {
+                          if (!readingSessionId) return;
+                          const value = Math.min(1, Math.max(0, Number(event.currentTarget.value) || 0));
+                          event.currentTarget.value = String(value);
+                          if (value !== readingCompressThreshold) {
+                            void setSessionCompressThreshold(readingSessionId, value).catch((reason) => setError(String(reason)));
+                          }
+                        }}
+                        className="h-7 w-20 rounded-md border border-stone-200 bg-stone-50 px-2 text-right font-mono text-[10px] text-stone-700 outline-none focus:border-emerald-400"
+                        aria-label="自动总结阈值"
+                      />
+                      <span className="shrink-0 text-[9px] text-stone-400">触发 {readingSummaryTrigger.toLocaleString()}</span>
                     </label>
                   </div>
                 )}
@@ -867,6 +922,11 @@ export const ReadingWorkspace: React.FC = () => {
                           );
                         })}
                       </div>
+                      {message.role === "assistant" && (
+                        <div className="mt-2 border-t border-stone-100 pt-1.5 text-right font-mono text-[9px] tabular-nums text-stone-400">
+                          输入 {message.input_tokens ?? 0} · 缓存 {message.cached_tokens ?? 0} · 输出 {message.output_tokens ?? 0}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}

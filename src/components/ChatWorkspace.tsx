@@ -223,7 +223,7 @@ const ToolCallCard: React.FC<{
 });
 
 interface ChatWorkspaceProps {
-  onOpenSettings: (tab: "agents" | "memory" | "llm" | "audit" | "debug") => void;
+  onOpenSettings: (tab: "agents" | "memory" | "llm" | "tokens" | "audit" | "debug") => void;
 }
 
 export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
@@ -275,12 +275,24 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     const pid = idx >= 0 ? effectiveModel.slice(0, idx) : "";
     const name = idx >= 0 ? effectiveModel.slice(idx + 1) : effectiveModel;
     const provider = providers.find((p) => p.id === pid);
-    return { name, providerName: provider?.name ?? "" };
+    return {
+      name,
+      providerName: provider?.name ?? "",
+      descriptor: provider?.models.find((model) => model.id === name),
+    };
   })();
 
   // 当前生效的思考模式（会话级优先，回退角色卡）
   const currentThinkingMode = activeSession?.thinking_mode || activeAgent?.thinking_mode || "off";
   const currentMaxTokens = activeSession?.max_tokens ?? 2048;
+  const contextLimit = activeSession?.context_limit ?? currentModel?.descriptor?.context_window ?? 8192;
+  const currentCompressThreshold = activeSession?.compress_threshold ?? 0.85;
+  const latestAssistant = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant" && message.status === "complete");
+  const contextTokens = latestAssistant?.context_tokens ?? 0;
+  const contextPercent = Math.min(100, (contextTokens / Math.max(1, contextLimit)) * 100);
+  const summaryTriggerTokens = Math.floor(contextLimit * currentCompressThreshold);
   const currentPermissionMode = activeSession?.permission_mode || "auto";
 
   // 持久化会话级模型/思考配置
@@ -328,6 +340,21 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          <div
+            className="flex items-center gap-2 rounded-lg border border-stone-200 bg-white/70 px-2.5 py-1"
+            title={`上下文 ${contextTokens.toLocaleString()} / ${contextLimit.toLocaleString()} Token；总结阈值 ${summaryTriggerTokens.toLocaleString()} Token`}
+          >
+            <span className="text-[10px] text-stone-500">上下文</span>
+            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-stone-200" aria-label="当前上下文占用">
+              <div
+                className={`h-full rounded-full transition-all ${contextPercent >= currentCompressThreshold * 100 ? "bg-amber-500" : "bg-[#8CA38A]"}`}
+                style={{ width: `${contextPercent}%` }}
+              />
+            </div>
+            <span className="min-w-[34px] text-right font-mono text-[10px] tabular-nums text-stone-500">
+              {contextPercent.toFixed(0)}%
+            </span>
+          </div>
           <button
             onClick={() => onOpenSettings("audit")}
             className="flex items-center gap-1.5 text-[11px] text-stone-600 hover:text-stone-900 bg-white px-2.5 py-1 rounded-lg border border-stone-200 shadow-sm transition-colors"
@@ -455,69 +482,77 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   </div>
                 )}
 
-                {/* 悬浮操作栏 */}
-                <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 mt-1">
-                  <button
-                    onClick={() => {
-                      const text = message.parts.map((p) => p.content).join("");
-                      navigator.clipboard?.writeText(text).catch(console.error);
-                    }}
-                    className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60"
-                    title="复制消息"
-                  >
-                    <Copy className="h-3 w-3" />
-                  </button>
-                  {isUser && (
+                {/* Message actions and usage. Usage remains visible so a completed
+                    response can be audited without hovering the message. */}
+                <div className="mt-1 flex min-h-5 items-center gap-1">
+                  <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                     <button
                       onClick={() => {
-                        setEditingMsgId(message.id);
-                        setEditingText(message.parts.map((p) => p.content).join(""));
+                        const text = message.parts.map((p) => p.content).join("");
+                        navigator.clipboard?.writeText(text).catch(console.error);
                       }}
-                      className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60"
-                      title="编辑并重发"
+                      className="rounded p-1 text-stone-400 hover:bg-stone-200/60 hover:text-stone-700"
+                      title="复制消息"
                     >
-                      <Pencil className="h-3 w-3" />
+                      <Copy className="h-3 w-3" />
                     </button>
-                  )}
-                  {!isUser && (
+                    {isUser && (
+                      <button
+                        onClick={() => {
+                          setEditingMsgId(message.id);
+                          setEditingText(message.parts.map((p) => p.content).join(""));
+                        }}
+                        className="rounded p-1 text-stone-400 hover:bg-stone-200/60 hover:text-stone-700"
+                        title="编辑并重发"
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </button>
+                    )}
+                    {!isUser && (
+                      <button
+                        onClick={() => regenerateMessage(message.id).catch(console.error)}
+                        disabled={isStreaming}
+                        className="rounded p-1 text-stone-400 hover:bg-stone-200/60 hover:text-stone-700 disabled:opacity-30"
+                        title="单条重新生成"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                      </button>
+                    )}
+                    {!isUser && (
+                      <button
+                        onClick={() => setMemoryEditMsgId(message.id)}
+                        disabled={message.status !== "complete"}
+                        className="rounded p-1 text-stone-400 hover:bg-stone-200/60 hover:text-stone-700 disabled:opacity-30"
+                        title="修改记忆"
+                      >
+                        <Brain className="h-3 w-3" />
+                      </button>
+                    )}
                     <button
-                      onClick={() => regenerateMessage(message.id).catch(console.error)}
-                      disabled={isStreaming}
-                      className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60 disabled:opacity-30"
-                      title="单条重新生成"
+                      onClick={() => createBranch(message.id).catch(console.error)}
+                      className="rounded p-1 text-stone-400 hover:bg-stone-200/60 hover:text-stone-700"
+                      title="从此处创建分支"
                     >
-                      <RefreshCw className="h-3 w-3" />
+                      <GitBranch className="h-3 w-3" />
                     </button>
-                  )}
-                  {!isUser && (
                     <button
-                      onClick={() => setMemoryEditMsgId(message.id)}
-                      disabled={message.status !== "complete"}
-                      className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60 disabled:opacity-30"
-                      title="修改记忆"
+                      onClick={() => {
+                        if (window.confirm("删除这条消息？")) {
+                          deleteMessage(message.id).catch(console.error);
+                        }
+                      }}
+                      disabled={!message.is_leaf || isStreaming || message.status === "pending" || message.status === "streaming"}
+                      className="rounded p-1 text-stone-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-stone-400"
+                      title={message.is_leaf ? "删除消息" : "仅可删除末梢消息"}
                     >
-                      <Brain className="h-3 w-3" />
+                      <Trash2 className="h-3 w-3" />
                     </button>
+                  </div>
+                  {!isUser && (
+                    <span className="ml-auto whitespace-nowrap font-mono text-[9px] tabular-nums text-stone-400">
+                      输入 {message.input_tokens ?? 0} · 缓存 {message.cached_tokens ?? 0} · 输出 {message.output_tokens ?? 0}
+                    </span>
                   )}
-                  <button
-                    onClick={() => createBranch(message.id).catch(console.error)}
-                    className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60"
-                    title="从此处创建分支"
-                  >
-                    <GitBranch className="h-3 w-3" />
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (window.confirm("删除这条消息？")) {
-                        deleteMessage(message.id).catch(console.error);
-                      }
-                    }}
-                    disabled={!message.is_leaf || isStreaming || message.status === "pending" || message.status === "streaming"}
-                    className="p-1 rounded text-stone-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-stone-400"
-                    title={message.is_leaf ? "删除消息" : "仅可删除末梢消息"}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
                 </div>
 
                 {message.version_count > 1 && (
@@ -771,7 +806,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           id="session-max-tokens"
                           type="number"
                           min={128}
-                          max={32768}
+                          max={1048576}
                           step={256}
                           defaultValue={currentMaxTokens}
                           onClick={(event) => event.stopPropagation()}
@@ -779,7 +814,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                             if (event.key === "Enter") event.currentTarget.blur();
                           }}
                           onBlur={(event) => {
-                            const value = Math.min(32768, Math.max(128, Number(event.currentTarget.value) || 2048));
+                            const value = Math.min(1048576, Math.max(128, Number(event.currentTarget.value) || 2048));
                             event.currentTarget.value = String(value);
                             if (value !== currentMaxTokens) {
                               applySessionLlm(effectiveModel, currentThinkingMode, 0, value);
@@ -788,6 +823,36 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           className="h-7 w-24 rounded-md border border-stone-200 bg-stone-50 px-2 text-right font-mono text-[10px] text-stone-700 outline-none focus:border-emerald-400"
                           aria-label="最大输出 Token"
                         />
+                      </div>
+                      <div className="mt-2 flex items-center gap-2 border-t border-stone-100 px-1 pt-2">
+                        <label htmlFor="session-compress-threshold" className="min-w-0 flex-1 text-[10px] font-semibold text-stone-500">
+                          自动总结阈值
+                        </label>
+                        <input
+                          key={`${activeSessionId}-${currentCompressThreshold}`}
+                          id="session-compress-threshold"
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          defaultValue={currentCompressThreshold}
+                          onClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") event.currentTarget.blur();
+                          }}
+                          onBlur={(event) => {
+                            const value = Math.min(1, Math.max(0, Number(event.currentTarget.value) || 0));
+                            event.currentTarget.value = String(value);
+                            if (value !== currentCompressThreshold && activeSessionId) {
+                              useAgentStore.getState().setSessionCompressThreshold(activeSessionId, value).catch(console.error);
+                            }
+                          }}
+                          className="h-7 w-20 rounded-md border border-stone-200 bg-stone-50 px-2 text-right font-mono text-[10px] text-stone-700 outline-none focus:border-emerald-400"
+                          aria-label="自动总结阈值"
+                        />
+                        <span className="shrink-0 text-[9px] text-stone-400">
+                          触发 {summaryTriggerTokens.toLocaleString()}
+                        </span>
                       </div>
                     </div>
                   </>

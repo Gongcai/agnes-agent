@@ -423,9 +423,19 @@ def assemble_prompt(
     model_name = agent.get("model") or "gpt-4o"
     model_limit = get_max_context_tokens(model_name)
     user_limit = settings.get("user_context_limit")
-    
-    context_limit = min(model_limit, user_limit) if user_limit else model_limit
-    usable_budget = context_limit - reserved_tokens - count_tokens(system_prompt, model_name)
+    context_limit = int(user_limit) if isinstance(user_limit, (int, float)) and user_limit > 0 else model_limit
+    threshold = settings.get("compress_threshold", 0.85)
+    threshold = float(threshold) if isinstance(threshold, (int, float)) else 0.85
+    threshold = min(1.0, max(0.0, threshold))
+    configured_output = context.get("llmConfig", {}).get("maxTokens")
+    if isinstance(configured_output, (int, float)) and configured_output > 0:
+        reserved_tokens = int(configured_output)
+    system_tokens = count_tokens(system_prompt, model_name)
+    summary_trigger_tokens = int(context_limit * threshold)
+    usable_budget = max(
+        0,
+        min(summary_trigger_tokens, max(0, context_limit - reserved_tokens)) - system_tokens,
+    )
     
     # 8. Add conversation summary if present
     messages: List[Dict[str, Any]] = []

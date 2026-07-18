@@ -19,6 +19,8 @@ use crate::state::AppState;
 use crate::sync::auth::SyncCredential;
 use crate::tools::ToolPolicy;
 
+const MAX_OUTPUT_TOKENS: i64 = 1_048_576;
+
 fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -57,6 +59,8 @@ pub struct SessionDto {
     pub thinking_mode: String,
     pub thinking_budget: i64,
     pub max_tokens: i64,
+    pub context_limit: Option<i64>,
+    pub compress_threshold: f64,
     pub permission_mode: String,
     pub workspace_id: Option<String>,
 }
@@ -111,6 +115,47 @@ pub struct MessageDto {
     pub version_index: usize,
     pub version_count: usize,
     pub is_leaf: bool,
+    pub input_tokens: i64,
+    pub cached_tokens: i64,
+    pub output_tokens: i64,
+    pub context_tokens: i64,
+}
+
+#[derive(Serialize)]
+pub struct TokenUsageStatsDto {
+    pub input_tokens: i64,
+    pub cached_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+}
+
+fn usage_from_metadata(metadata: Option<&str>) -> (i64, i64, i64, i64) {
+    let usage = metadata
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .and_then(|value| value.get("usage").cloned())
+        .unwrap_or_default();
+    (
+        usage
+            .get("input_tokens")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
+            .max(0),
+        usage
+            .get("cached_tokens")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
+            .max(0),
+        usage
+            .get("output_tokens")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
+            .max(0),
+        usage
+            .get("context_tokens")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
+            .max(0),
+    )
 }
 
 /// 健康检查：验证 React ↔ Rust IPC 通道。
@@ -301,6 +346,8 @@ pub async fn list_sessions(
             thinking_mode: r.thinking_mode.unwrap_or_default(),
             thinking_budget: r.thinking_budget.unwrap_or(0),
             max_tokens: r.reserved_output_tokens.unwrap_or(2048),
+            context_limit: r.context_limit,
+            compress_threshold: r.compress_threshold,
             permission_mode: r.permission_mode,
             workspace_id: r.workspace_id,
         })
@@ -382,10 +429,10 @@ pub async fn set_session_llm(
     thinking_budget: i64,
     max_tokens: i64,
 ) -> AppResult<()> {
-    if !(128..=32_768).contains(&max_tokens) {
-        return Err(AppError::Other(
-            "max_tokens 必须在 128 到 32768 之间".into(),
-        ));
+    if !(128..=MAX_OUTPUT_TOKENS).contains(&max_tokens) {
+        return Err(AppError::Other(format!(
+            "max_tokens 必须在 128 到 {MAX_OUTPUT_TOKENS} 之间"
+        )));
     }
     state
         .db
@@ -396,6 +443,24 @@ pub async fn set_session_llm(
             thinking_budget,
             max_tokens,
         )
+        .await?;
+    state.sync.schedule();
+    Ok(())
+}
+
+/// Set the session threshold that triggers rolling conversation summarization.
+#[tauri::command]
+pub async fn set_session_compress_threshold(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    compress_threshold: f64,
+) -> AppResult<()> {
+    if !compress_threshold.is_finite() || !(0.0..=1.0).contains(&compress_threshold) {
+        return Err(AppError::Other("总结阈值必须是 0 到 1 之间的数值".into()));
+    }
+    state
+        .db
+        .update_session_compress_threshold(session_id, compress_threshold)
         .await?;
     state.sync.schedule();
     Ok(())
@@ -695,7 +760,7 @@ pub async fn get_debug_prompt(
         .as_ref()
         .and_then(|session| session.reserved_output_tokens)
         .unwrap_or(2048)
-        .clamp(128, 32_768);
+        .clamp(128, MAX_OUTPUT_TOKENS);
 
     // 复用 send_message 的 LLM 配置解析逻辑
     let agent_model_str = effective_model;
@@ -930,6 +995,8 @@ pub async fn list_messages(
 
     for am in path.messages {
         let msg = am.message;
+        let (input_tokens, cached_tokens, output_tokens, context_tokens) =
+            usage_from_metadata(msg.metadata.as_deref());
         let mut parts_dto = Vec::new();
         for p in am.parts {
             let mut tool_call_dto = None;
@@ -980,10 +1047,29 @@ pub async fn list_messages(
             version_index: am.version_index,
             version_count: am.version_count,
             is_leaf: am.is_leaf,
+            input_tokens,
+            cached_tokens,
+            output_tokens,
+            context_tokens,
         });
     }
 
     Ok(msgs_dto)
+}
+
+#[tauri::command]
+pub async fn get_token_usage_stats(
+    state: tauri::State<'_, AppState>,
+    agent_id: Option<String>,
+) -> AppResult<TokenUsageStatsDto> {
+    let (input_tokens, cached_tokens, output_tokens) =
+        state.db.token_usage_totals(agent_id).await?;
+    Ok(TokenUsageStatsDto {
+        input_tokens,
+        cached_tokens,
+        output_tokens,
+        total_tokens: input_tokens + output_tokens,
+    })
 }
 
 /// 切换某消息的版本（prev/next 同级）。同级共享 parent_id；切换即把父的
@@ -1239,6 +1325,7 @@ pub async fn cancel_run(state: tauri::State<'_, AppState>, session_id: String) -
 struct ResolvedLlm {
     agent: AgentRow,
     session_context_limit: Option<i64>,
+    compress_threshold: f64,
     session_summary: Option<String>,
     effective_model: String,
     model_name: String,
@@ -1465,6 +1552,15 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         "google" => format!("gemini/{}", model_name),
         _ => model_name.clone(),
     };
+    let model_context_limit = provider
+        .as_ref()
+        .and_then(|provider| {
+            parse_model_catalog(provider.models_json.as_deref(), &provider.kind)
+                .into_iter()
+                .find(|model| model.id == model_name)
+        })
+        .and_then(|model| model.context_window)
+        .and_then(|value| i64::try_from(value).ok());
     let thinking_mode = {
         let m = session
             .thinking_mode
@@ -1484,7 +1580,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
     let max_tokens = session
         .reserved_output_tokens
         .unwrap_or(2048)
-        .clamp(128, 32_768);
+        .clamp(128, MAX_OUTPUT_TOKENS);
 
     let task_llm_configs = resolve_task_llm_configs(state, &model_roles).await?;
     let fallback_llm_configs = resolve_fallback_llm_configs(
@@ -1498,7 +1594,8 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
     .await?;
     Ok(ResolvedLlm {
         agent,
-        session_context_limit: session.context_limit,
+        session_context_limit: session.context_limit.or(model_context_limit),
+        compress_threshold: session.compress_threshold.clamp(0.0, 1.0),
         session_summary: session.summary,
         effective_model,
         model_name,
@@ -1664,7 +1761,8 @@ async fn start_agent_run(
             "taskLlmConfigs": cfg.task_llm_configs,
             "sessionTitleRequest": session_title_request,
             "settings": {
-                "user_context_limit": cfg.session_context_limit
+                "user_context_limit": cfg.session_context_limit,
+                "compress_threshold": cfg.compress_threshold
             },
             "currentDateTime": chrono::Local::now().to_rfc3339(),
             "recentMessages": history_json,

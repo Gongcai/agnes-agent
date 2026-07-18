@@ -358,6 +358,11 @@ pub enum DbCommand {
         max_tokens: i64,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    UpdateSessionCompressThreshold {
+        id: String,
+        compress_threshold: f64,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     UpdateSessionPermissionMode {
         id: String,
         permission_mode: String,
@@ -408,6 +413,18 @@ pub enum DbCommand {
         id: String,
         status: String,
         resp: oneshot::Sender<AppResult<()>>,
+    },
+    UpdateMessageUsage {
+        id: String,
+        input_tokens: i64,
+        cached_tokens: i64,
+        output_tokens: i64,
+        context_tokens: i64,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    GetTokenUsageTotals {
+        agent_id: Option<String>,
+        resp: oneshot::Sender<AppResult<(i64, i64, i64)>>,
     },
     UpdateMessageModel {
         id: String,
@@ -1403,6 +1420,21 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn update_session_compress_threshold(
+        &self,
+        id: String,
+        compress_threshold: f64,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateSessionCompressThreshold {
+            id,
+            compress_threshold,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn update_session_permission_mode(
         &self,
         id: String,
@@ -1498,6 +1530,34 @@ impl DbActorHandle {
     pub async fn update_message_status(&self, id: String, status: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::UpdateMessageStatus { id, status, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn update_message_usage(
+        &self,
+        id: String,
+        input_tokens: i64,
+        cached_tokens: i64,
+        output_tokens: i64,
+        context_tokens: i64,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateMessageUsage {
+            id,
+            input_tokens,
+            cached_tokens,
+            output_tokens,
+            context_tokens,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn token_usage_totals(&self, agent_id: Option<String>) -> AppResult<(i64, i64, i64)> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetTokenUsageTotals { agent_id, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -2408,6 +2468,17 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         max_tokens,
                     ));
                 }
+                DbCommand::UpdateSessionCompressThreshold {
+                    id,
+                    compress_threshold,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::sessions::update_compress_threshold(
+                        &mut conn,
+                        &id,
+                        compress_threshold,
+                    ));
+                }
                 DbCommand::UpdateSessionPermissionMode {
                     id,
                     permission_mode,
@@ -2462,6 +2533,29 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::UpdateMessageStatus { id, status, resp } => {
                     let _ = resp.send(repo::messages::update_status(&mut conn, &id, &status));
+                }
+                DbCommand::UpdateMessageUsage {
+                    id,
+                    input_tokens,
+                    cached_tokens,
+                    output_tokens,
+                    context_tokens,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::messages::update_usage(
+                        &conn,
+                        &id,
+                        input_tokens,
+                        cached_tokens,
+                        output_tokens,
+                        context_tokens,
+                    ));
+                }
+                DbCommand::GetTokenUsageTotals { agent_id, resp } => {
+                    let _ = resp.send(repo::messages::token_usage_totals(
+                        &conn,
+                        agent_id.as_deref(),
+                    ));
                 }
                 DbCommand::UpdateMessageModel { id, model, resp } => {
                     let _ = resp.send(repo::messages::update_model(&conn, &id, &model));

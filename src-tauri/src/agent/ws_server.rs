@@ -784,6 +784,26 @@ async fn handle_conn<R: tauri::Runtime>(
                     .and_then(|x| x.as_str())
                     .unwrap_or("");
                 let memories_val = env.payload.get("memories").and_then(|x| x.as_array());
+                let usage = env.payload.get("usage").map(|value| {
+                    (
+                        value
+                            .get("input_tokens")
+                            .and_then(|item| item.as_i64())
+                            .unwrap_or(0),
+                        value
+                            .get("cached_tokens")
+                            .and_then(|item| item.as_i64())
+                            .unwrap_or(0),
+                        value
+                            .get("output_tokens")
+                            .and_then(|item| item.as_i64())
+                            .unwrap_or(0),
+                        value
+                            .get("context_tokens")
+                            .and_then(|item| item.as_i64())
+                            .unwrap_or(0),
+                    )
+                });
 
                 // 1. 更新会话摘要
                 if !summary.is_empty() {
@@ -899,6 +919,22 @@ async fn handle_conn<R: tauri::Runtime>(
                     // 写入已有的 message_parts，避免以相同 id 重新 INSERT 触发主键冲突导致整段事务回滚、
                     // 回复内容丢失（表现为 AI 消息在输出结束后消失）。
                     if has_output {
+                        if let Some((input_tokens, cached_tokens, output_tokens, context_tokens)) =
+                            usage
+                        {
+                            if let Err(error) = db
+                                .update_message_usage(
+                                    run.assistant_message_id.clone(),
+                                    input_tokens,
+                                    cached_tokens,
+                                    output_tokens,
+                                    context_tokens,
+                                )
+                                .await
+                            {
+                                eprintln!("[agent][usage] Failed to persist token usage: {error}");
+                            }
+                        }
                         if !parts_to_insert.is_empty() {
                             let _ = db.insert_message_parts(parts_to_insert).await;
                         }

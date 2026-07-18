@@ -235,6 +235,75 @@ pub fn update_status(conn: &mut Connection, id: &str, status: &str) -> AppResult
     Ok(())
 }
 
+/// Persist provider-reported usage in message metadata without changing message content.
+pub fn update_usage(
+    conn: &Connection,
+    id: &str,
+    input_tokens: i64,
+    cached_tokens: i64,
+    output_tokens: i64,
+    context_tokens: i64,
+) -> AppResult<()> {
+    let existing = conn
+        .query_row("SELECT metadata FROM messages WHERE id = ?1", [id], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .optional()?
+        .flatten();
+    let mut metadata = existing
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| Value::Object(Default::default()));
+    metadata["usage"] = serde_json::json!({
+        "input_tokens": input_tokens.max(0),
+        "cached_tokens": cached_tokens.max(0),
+        "output_tokens": output_tokens.max(0),
+        "context_tokens": context_tokens.max(0),
+    });
+    conn.execute(
+        "UPDATE messages SET metadata = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+        params![metadata.to_string(), id],
+    )?;
+    Ok(())
+}
+
+pub fn token_usage_totals(conn: &Connection, agent_id: Option<&str>) -> AppResult<(i64, i64, i64)> {
+    let mut statement = conn.prepare(
+        "SELECT m.metadata FROM messages m \
+         JOIN sessions s ON s.id = m.session_id \
+         WHERE m.role = 'assistant' AND m.deleted_at IS NULL \
+           AND (?1 IS NULL OR s.agent_id = ?1)",
+    )?;
+    let rows = statement.query_map([agent_id], |row| row.get::<_, Option<String>>(0))?;
+    let mut totals = (0_i64, 0_i64, 0_i64);
+    for row in rows {
+        let Some(metadata) = row? else { continue };
+        let Some(usage) = serde_json::from_str::<Value>(&metadata)
+            .ok()
+            .and_then(|value| value.get("usage").cloned())
+        else {
+            continue;
+        };
+        totals.0 += usage
+            .get("input_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .max(0);
+        totals.1 += usage
+            .get("cached_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .max(0);
+        totals.2 += usage
+            .get("output_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .max(0);
+    }
+    Ok(totals)
+}
+
 /// Update the actual model selected for an in-flight assistant response.
 pub fn update_model(conn: &Connection, id: &str, model: &str) -> AppResult<()> {
     conn.execute(
@@ -747,6 +816,49 @@ mod tests {
                 .model
                 .as_deref(),
             Some("backup/model")
+        );
+    }
+
+    #[test]
+    fn usage_metadata_round_trips_and_totals_completed_assistant_calls() {
+        let conn = setup();
+        insert(
+            &conn,
+            &NewMessage {
+                id: "message-usage".into(),
+                session_id: "session-1".into(),
+                role: "assistant".into(),
+                seq: 1,
+                status: "complete".into(),
+                model: Some("provider/model".into()),
+                token_count: None,
+                metadata: None,
+                parent_id: None,
+                selected_child_id: None,
+            },
+        )
+        .unwrap();
+
+        update_usage(&conn, "message-usage", 120, 80, 30, 150).unwrap();
+
+        let metadata: Value = serde_json::from_str(
+            get(&conn, "message-usage")
+                .unwrap()
+                .unwrap()
+                .metadata
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metadata["usage"]["context_tokens"], 150);
+        assert_eq!(token_usage_totals(&conn, None).unwrap(), (120, 80, 30));
+        assert_eq!(
+            token_usage_totals(&conn, Some("agent-1")).unwrap(),
+            (120, 80, 30)
+        );
+        assert_eq!(
+            token_usage_totals(&conn, Some("missing-agent")).unwrap(),
+            (0, 0, 0)
         );
     }
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Optional, TYPE_CHECKING
 
 from .models import completion
@@ -43,21 +44,28 @@ def generate_session_title(
         f"用户消息：\n{source_text}"
     )
     try:
-        title_kwargs = {}
-        if llm_config:
-            endpoint = (llm_config.api_base or "").lower()
-            model_name = (llm_config.litellm_model or model).lower()
-            if "deepseek" in endpoint or "deepseek" in model_name:
-                title_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-        response = completion(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            llm_config=llm_config,
-            max_tokens=TITLE_MAX_TOKENS,
-            temperature=0.2,
-            timeout=TITLE_REQUEST_TIMEOUT_SECONDS,
-            **title_kwargs,
+        title_config = (
+            replace(llm_config, thinking_mode="off", thinking_budget=0)
+            if llm_config
+            else None
         )
+        title_kwargs = {}
+        if title_config and title_config.provider in ("openai", "openai_compatible"):
+            title_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        request = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "llm_config": title_config,
+            "max_tokens": TITLE_MAX_TOKENS,
+            "temperature": 0.2,
+            "timeout": TITLE_REQUEST_TIMEOUT_SECONDS,
+        }
+        try:
+            response = completion(**request, **title_kwargs)
+        except Exception:
+            if not title_kwargs:
+                raise
+            response = completion(**request)
         content = getattr(response.choices[0].message, "content", None)
         title = normalize_session_title(content)
         if title is None:

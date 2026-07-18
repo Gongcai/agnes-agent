@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2 } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -45,7 +45,7 @@ import {
   type SyncStatus,
 } from "../lib/ipc";
 
-type SettingsTab = "general" | "agents" | "memory" | "llm" | "web" | "mcp" | "audit" | "debug";
+type SettingsTab = "general" | "agents" | "memory" | "llm" | "tokens" | "web" | "mcp" | "audit" | "debug";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -60,6 +60,13 @@ interface AuditLog {
   params: string;
   status: string;
   risk: string;
+}
+
+interface TokenUsageStats {
+  input_tokens: number;
+  cached_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
 }
 
 interface StructuredMemory {
@@ -545,6 +552,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Audit state
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [tokenUsageStats, setTokenUsageStats] = useState<TokenUsageStats | null>(null);
+  const [tokenUsageScope, setTokenUsageScope] = useState<"all" | "agent">("all");
+  const [tokenUsageLoading, setTokenUsageLoading] = useState(false);
+  const [tokenUsageError, setTokenUsageError] = useState<string | null>(null);
 
   // Provider editor state
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null); // null = closed, "new" = adding, uuid = editing
@@ -889,6 +900,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         .catch(console.error);
     }
   }, [activeSessionId, activeTab]);
+
+  const loadTokenUsageStats = React.useCallback(() => {
+    if (tokenUsageScope === "agent" && !activeAgentId) return Promise.resolve();
+    setTokenUsageLoading(true);
+    setTokenUsageError(null);
+    return invoke<TokenUsageStats>("get_token_usage_stats", {
+      agentId: tokenUsageScope === "agent" ? activeAgentId : null,
+    })
+      .then(setTokenUsageStats)
+      .catch((error) => {
+        setTokenUsageStats(null);
+        setTokenUsageError(String(error));
+      })
+      .finally(() => setTokenUsageLoading(false));
+  }, [activeAgentId, tokenUsageScope]);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== "tokens") return;
+    void loadTokenUsageStats();
+  }, [activeTab, isOpen, loadTokenUsageStats]);
 
   // Load providers when LLM tab is activated
   useEffect(() => {
@@ -1722,6 +1753,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       .filter((id) => !existing.has(id))
       .map<ModelDescriptor>((id) => ({
         id,
+        context_window: null,
         capabilities: {
           input_modalities: ["text"],
           output_modalities: ["text"],
@@ -1769,6 +1801,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               },
             }
           : model
+      ),
+    }));
+  };
+
+  const updateModelContextWindow = (modelId: string, value: number | null) => {
+    setFormValues((prev) => ({
+      ...prev,
+      models: prev.models.map((model) =>
+        model.id === modelId ? { ...model, context_window: value } : model
       ),
     }));
   };
@@ -1869,6 +1910,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             >
               <Sliders className="h-4 w-4 text-stone-500" />
               <span>模型与同步 (LLM)</span>
+            </button>
+            <button
+              onClick={() => setActiveTab("tokens")}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                activeTab === "tokens"
+                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
+                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+              }`}
+            >
+              <BarChart3 className="h-4 w-4 text-stone-500" />
+              <span>Token 统计</span>
             </button>
             <button
               onClick={() => setActiveTab("web")}
@@ -3204,6 +3256,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               >
                                 嵌入
                               </button>
+                              <label className="ml-auto flex items-center gap-1 text-stone-400">
+                                上下文
+                                <input
+                                  key={`${model.id}-${model.context_window ?? "auto"}`}
+                                  type="number"
+                                  min={1024}
+                                  max={10000000}
+                                  step={1024}
+                                  defaultValue={model.context_window ?? ""}
+                                  onBlur={(event) => {
+                                    const raw = event.currentTarget.value.trim();
+                                    if (!raw) {
+                                      updateModelContextWindow(model.id, null);
+                                      return;
+                                    }
+                                    const parsed = Number(raw);
+                                    const value = Number.isFinite(parsed)
+                                      ? Math.min(10000000, Math.max(1024, Math.round(parsed)))
+                                      : null;
+                                    event.currentTarget.value = value === null ? "" : String(value);
+                                    updateModelContextWindow(model.id, value);
+                                  }}
+                                  placeholder="自动"
+                                  className="h-6 w-24 rounded border border-stone-200 bg-stone-50 px-1.5 text-right font-mono text-[9px] text-stone-600 outline-none focus:border-[#8CA38A]"
+                                />
+                              </label>
                             </div>
                           </div>
                         ))}
@@ -4473,6 +4551,75 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+
+            {activeTab === "tokens" && (
+              <div className="max-w-2xl space-y-5">
+                <div className="flex items-start justify-between gap-4 border-b border-stone-200 pb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-stone-850">Token 统计</h3>
+                    <p className="text-[11px] text-stone-400">统计本机已完成 AI 回复的模型用量。</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <div className="flex rounded-md border border-stone-200 bg-stone-50 p-0.5">
+                      {(["all", "agent"] as const).map((scope) => (
+                        <button
+                          key={scope}
+                          type="button"
+                          onClick={() => setTokenUsageScope(scope)}
+                          className={`rounded px-2.5 py-1 text-[10px] font-semibold ${
+                            tokenUsageScope === scope
+                              ? "bg-white text-stone-800 shadow-sm"
+                              : "text-stone-400 hover:text-stone-700"
+                          }`}
+                        >
+                          {scope === "all" ? "全部" : "当前智能体"}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void loadTokenUsageStats()}
+                      disabled={tokenUsageLoading}
+                      title="刷新统计"
+                      className="flex h-8 w-8 items-center justify-center rounded-md border border-stone-200 text-stone-500 hover:bg-stone-50 disabled:opacity-40"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${tokenUsageLoading ? "animate-spin" : ""}`} />
+                    </button>
+                  </div>
+                </div>
+
+                {tokenUsageError && (
+                  <div className="border-y border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                    {tokenUsageError}
+                  </div>
+                )}
+
+                <dl className="divide-y divide-stone-200 border-y border-stone-200">
+                  {[
+                    ["输入 Token", tokenUsageStats?.input_tokens ?? 0],
+                    ["缓存命中 Token", tokenUsageStats?.cached_tokens ?? 0],
+                    ["输出 Token", tokenUsageStats?.output_tokens ?? 0],
+                    ["总 Token", tokenUsageStats?.total_tokens ?? 0],
+                  ].map(([label, value]) => (
+                    <div key={String(label)} className="flex min-h-12 items-center justify-between gap-4 px-2">
+                      <dt className="text-xs text-stone-500">{label}</dt>
+                      <dd className="font-mono text-sm font-semibold tabular-nums text-stone-800">
+                        {Number(value).toLocaleString()}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+
+                <div className="flex items-center justify-between gap-4 text-xs">
+                  <span className="text-stone-500">输入缓存命中率</span>
+                  <span className="font-mono font-semibold tabular-nums text-stone-800">
+                    {tokenUsageStats && tokenUsageStats.input_tokens > 0
+                      ? `${((tokenUsageStats.cached_tokens / tokenUsageStats.input_tokens) * 100).toFixed(1)}%`
+                      : "0.0%"}
+                  </span>
+                </div>
               </div>
             )}
 

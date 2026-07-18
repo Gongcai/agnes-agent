@@ -11,6 +11,7 @@ from .models import (
     classify_llm_error,
     completion,
 )
+from .prompt import count_tokens
 
 class AgentState(TypedDict):
     messages: List[Dict[str, Any]]
@@ -26,6 +27,34 @@ class AgentState(TypedDict):
     active_llm_config: Optional[Dict[str, Any]]
     active_model: str
     fallback_locked: bool
+    token_usage: Dict[str, int]
+
+
+def _usage_field(usage: Any, name: str) -> int:
+    value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _read_usage(usage: Any) -> Dict[str, int]:
+    """Normalize LiteLLM/OpenAI/Anthropic usage variants into one shape."""
+    if usage is None:
+        return {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
+    details = usage.get("prompt_tokens_details") if isinstance(usage, dict) else getattr(usage, "prompt_tokens_details", None)
+    cached = _usage_field(usage, "cache_read_input_tokens")
+    if cached == 0:
+        cached = _usage_field(usage, "cached_tokens")
+    if cached == 0:
+        cached = _usage_field(details, "cached_tokens")
+    return {
+        "input_tokens": _usage_field(usage, "prompt_tokens")
+        or _usage_field(usage, "input_tokens"),
+        "cached_tokens": cached,
+        "output_tokens": _usage_field(usage, "completion_tokens")
+        or _usage_field(usage, "output_tokens"),
+    }
 
 def get_available_tools(
     tool_policy: Dict[str, Any],
@@ -522,6 +551,12 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
 
     active_index = min(max(int(state.get("active_llm_index", 0)), 0), len(candidates) - 1)
     fallback_locked = bool(state.get("fallback_locked", False))
+    token_usage = {
+        "input_tokens": int((state.get("token_usage") or {}).get("input_tokens", 0)),
+        "cached_tokens": int((state.get("token_usage") or {}).get("cached_tokens", 0)),
+        "output_tokens": int((state.get("token_usage") or {}).get("output_tokens", 0)),
+        "context_tokens": int((state.get("token_usage") or {}).get("context_tokens", 0)),
+    }
     full_text = ""
     full_reasoning = ""
     pending_tool_calls: List[Dict[str, Any]] = []
@@ -538,6 +573,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
         reasoning_started = False
         reasoning_closed = False
         attempt_had_activity = False
+        attempt_usage = {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
 
         try:
             response = completion(
@@ -546,9 +582,13 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
                 tools=tools_arg,
                 stream=True,
                 llm_config=llm_config,
+                stream_options={"include_usage": True},
             )
 
             for chunk in response:
+                chunk_usage = _read_usage(getattr(chunk, "usage", None))
+                for key in attempt_usage:
+                    attempt_usage[key] = max(attempt_usage[key], chunk_usage[key])
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -598,6 +638,23 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
                 await emit("</thought>")
 
             pending_tool_calls = list(tool_calls_accumulator.values())
+            if attempt_usage["input_tokens"] == 0:
+                attempt_usage["input_tokens"] = count_tokens(
+                    json.dumps(
+                        {"messages": messages, "tools": tools_arg},
+                        ensure_ascii=False,
+                    ),
+                    selected_model,
+                )
+            if attempt_usage["output_tokens"] == 0:
+                attempt_usage["output_tokens"] = count_tokens(
+                    full_reasoning + full_text, selected_model
+                )
+            for key in ("input_tokens", "cached_tokens", "output_tokens"):
+                token_usage[key] += attempt_usage[key]
+            token_usage["context_tokens"] = (
+                attempt_usage["input_tokens"] + attempt_usage["output_tokens"]
+            )
             if not full_text and not full_reasoning and not pending_tool_calls:
                 raise EmptyModelResponseError("model returned an empty stream")
             break
@@ -663,6 +720,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
         "active_llm_config": selected_raw,
         "active_model": selected_model,
         "fallback_locked": fallback_locked or attempt_had_activity or bool(full_text),
+        "token_usage": token_usage,
     }
 
 async def execute_tools_node(state: AgentState, config: RunnableConfig) -> Dict[str, Any]:

@@ -8,6 +8,7 @@ use crate::error::AppResult;
 
 pub const MODEL_ROLES_SETTING_KEY: &str = "models:role_assignments";
 pub const MAX_FALLBACK_MODELS: usize = 5;
+pub const MAX_CONTEXT_WINDOW: u64 = 10_000_000;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -45,6 +46,8 @@ pub struct ModelDescriptor {
     pub id: String,
     #[serde(default)]
     pub capabilities: ModelCapabilities,
+    #[serde(default)]
+    pub context_window: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
@@ -207,6 +210,7 @@ pub fn parse_model_catalog(raw: Option<&str>, provider_kind: &str) -> Vec<ModelD
         .filter_map(|entry| match entry {
             Value::String(id) => Some(ModelDescriptor {
                 capabilities: infer_model_capabilities(&id, provider_kind),
+                context_window: None,
                 id,
             }),
             Value::Object(_) => serde_json::from_value(entry).ok(),
@@ -229,6 +233,9 @@ pub fn normalize_model_catalog(
         }
         normalize_modalities(&mut model.capabilities.input_modalities);
         normalize_modalities(&mut model.capabilities.output_modalities);
+        model.context_window = model
+            .context_window
+            .filter(|value| (1_024..=MAX_CONTEXT_WINDOW).contains(value));
         normalized.push(model);
     }
     normalized
@@ -290,10 +297,20 @@ pub fn descriptor_from_api(provider_kind: &str, id: &str, metadata: &Value) -> M
         capabilities.input_modalities.clear();
         capabilities.output_modalities.clear();
     }
+    let context_window = [
+        "context_window",
+        "context_length",
+        "max_context_tokens",
+        "max_input_tokens",
+    ]
+    .iter()
+    .find_map(|key| metadata.get(key).and_then(Value::as_u64))
+    .filter(|value| (1_024..=MAX_CONTEXT_WINDOW).contains(value));
 
     ModelDescriptor {
         id: id.to_string(),
         capabilities,
+        context_window,
     }
 }
 
@@ -421,6 +438,25 @@ mod tests {
     }
 
     #[test]
+    fn context_windows_are_imported_and_invalid_values_are_dropped() {
+        let descriptor = descriptor_from_api(
+            "openai_compatible",
+            "large-context-model",
+            &serde_json::json!({"context_length": 384_000}),
+        );
+        assert_eq!(descriptor.context_window, Some(384_000));
+
+        let models = parse_model_catalog(
+            Some(
+                r#"[{"id":"valid","context_window":200000},{"id":"invalid","context_window":12}]"#,
+            ),
+            "openai_compatible",
+        );
+        assert_eq!(models[0].context_window, Some(200_000));
+        assert_eq!(models[1].context_window, None);
+    }
+
+    #[test]
     fn model_roles_enforce_capability_requirements() {
         let vision = infer_model_capabilities("gpt-4o", "openai");
         let embedding = infer_model_capabilities("bge-m3", "ollama");
@@ -443,6 +479,7 @@ mod tests {
             &[ModelDescriptor {
                 id: "gpt-4o".to_string(),
                 capabilities: infer_model_capabilities("gpt-4o", "openai"),
+                context_window: None,
             }],
         );
         assert_eq!(roles.main_model.as_deref(), Some("openai/gpt-4o"));
@@ -468,10 +505,12 @@ mod tests {
                 ModelDescriptor {
                     id: "gpt-4o".into(),
                     capabilities: infer_model_capabilities("gpt-4o", "openai"),
+                    context_window: None,
                 },
                 ModelDescriptor {
                     id: "text-embedding-3-small".into(),
                     capabilities: infer_model_capabilities("text-embedding-3-small", "openai"),
+                    context_window: None,
                 },
             ],
         );
@@ -542,6 +581,7 @@ mod tests {
                     output_modalities: vec![ModelModality::Text],
                     embedding: false,
                 },
+                context_window: None,
             }],
         );
         assert!(roles.image_model.is_none());
