@@ -1256,6 +1256,18 @@ struct ResolvedLlm {
 const DEFAULT_SESSION_TITLE: &str = "新会话";
 const SESSION_TITLE_MAX_CHARS: usize = 40;
 
+fn is_automatic_session_title(value: &str) -> bool {
+    let title = value.trim();
+    if title == DEFAULT_SESSION_TITLE {
+        return true;
+    }
+    ["新会话 #", "会话 #"].iter().any(|prefix| {
+        title.strip_prefix(prefix).is_some_and(|number| {
+            !number.is_empty() && number.chars().all(|char| char.is_ascii_digit())
+        })
+    })
+}
+
 pub(crate) fn normalize_session_title(value: &str) -> Option<String> {
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = normalized
@@ -1748,19 +1760,37 @@ pub async fn send_message(
     // 取当前活动叶子作为新 user 消息的 parent（首条消息时为 None）
     let path = state.db.list_active_with_parts(session_id.clone()).await?;
     let leaf_id = path.messages.last().map(|am| am.message.id.clone());
-    let session_title_request = if reading_book_id.is_none() && path.messages.is_empty() {
+    let title_source = if path.messages.is_empty() {
+        Some(text.clone())
+    } else {
+        path.messages
+            .iter()
+            .find(|message| message.message.role == "user")
+            .map(|message| {
+                message
+                    .parts
+                    .iter()
+                    .filter(|part| part.kind == "text" && !part.content.trim().is_empty())
+                    .map(|part| part.content.trim())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .filter(|source| !source.is_empty())
+    };
+    let session_title_request = if reading_book_id.is_none() && title_source.is_some() {
         let session = state.db.get_session(session_id.clone()).await?;
         if session
             .as_ref()
-            .is_some_and(|session| session.title.trim() == DEFAULT_SESSION_TITLE)
+            .is_some_and(|session| is_automatic_session_title(&session.title))
         {
-            let fallback_title = fallback_session_title(&text);
+            let source_text = title_source.expect("title source was checked above");
+            let fallback_title = fallback_session_title(&source_text);
             state
                 .db
                 .update_session_title(session_id.clone(), fallback_title.clone())
                 .await?;
             Some(json!({
-                "sourceText": text,
+                "sourceText": source_text,
                 "fallbackTitle": fallback_title,
             }))
         } else {
@@ -3828,9 +3858,9 @@ pub async fn set_setting(
 #[cfg(test)]
 mod tests {
     use super::{
-        latest_user_query, normalize_session_title, persist_search_provider_settings,
-        saved_provider_endpoint_matches, CalendarEventUpdatePayload, SearchProviderSettingsInput,
-        TaskUpdatePayload,
+        is_automatic_session_title, latest_user_query, normalize_session_title,
+        persist_search_provider_settings, saved_provider_endpoint_matches,
+        CalendarEventUpdatePayload, SearchProviderSettingsInput, TaskUpdatePayload,
     };
     use crate::secrets::{InMemorySecretStore, SecretStore};
 
@@ -3909,6 +3939,15 @@ mod tests {
         );
         let expected = format!("{}…", "x".repeat(40));
         assert_eq!(normalize_session_title(&"x".repeat(41)), Some(expected));
+    }
+
+    #[test]
+    fn automatic_session_titles_include_numbered_sidebar_placeholders() {
+        assert!(is_automatic_session_title("新会话"));
+        assert!(is_automatic_session_title("新会话 #48"));
+        assert!(is_automatic_session_title("会话 #3"));
+        assert!(!is_automatic_session_title("新会话 #daily"));
+        assert!(!is_automatic_session_title("阅读 · Jane Eyre"));
     }
 
     #[tokio::test]
