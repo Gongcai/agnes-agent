@@ -750,8 +750,31 @@ pub async fn get_debug_prompt(
             }
         }
     }
-    let retrieved_knowledge =
-        retrieve_knowledge_for_history(&state, &agent.id, &history_json).await;
+    let reading_book = match session_id.as_deref() {
+        Some(session_id) => {
+            state
+                .db
+                .get_reading_book_for_session(session_id.to_string())
+                .await?
+        }
+        None => None,
+    };
+    let reading_collection_id = reading_book
+        .as_ref()
+        .filter(|book| !book.model_knows_content && book.content_context_allowed)
+        .map(|book| book.collection_id.as_str());
+    let retrieved_knowledge = if reading_book.is_some() && reading_collection_id.is_none() {
+        Vec::new()
+    } else {
+        retrieve_knowledge_for_history(
+            &state,
+            &agent.id,
+            &history_json,
+            reading_collection_id,
+            reading_collection_id.is_some(),
+        )
+        .await
+    };
     let workspace_context =
         resolve_workspace_prompt_context(&state.db, session_id.as_deref()).await?;
 
@@ -784,6 +807,7 @@ pub async fn get_debug_prompt(
             "explicitMemories": { "user_md": user_md, "memory_md": memory_md },
             "retrievedMemories": [],
             "retrievedKnowledge": retrieved_knowledge,
+            "readingContext": reading_book.as_ref().map(reading_prompt_context),
             "workspace": workspace_context,
             "projectContext": []
         }
@@ -1406,8 +1430,26 @@ async fn start_agent_run(
             "parts": parts_json,
         }));
     }
-    let retrieved_knowledge =
-        retrieve_knowledge_for_history(state, &cfg.agent.id, &history_json).await;
+    let reading_book = state
+        .db
+        .get_reading_book_for_session(session_id.to_string())
+        .await?;
+    let reading_collection_id = reading_book
+        .as_ref()
+        .filter(|book| !book.model_knows_content && book.content_context_allowed)
+        .map(|book| book.collection_id.as_str());
+    let retrieved_knowledge = if reading_book.is_some() && reading_collection_id.is_none() {
+        Vec::new()
+    } else {
+        retrieve_knowledge_for_history(
+            state,
+            &cfg.agent.id,
+            &history_json,
+            reading_collection_id,
+            reading_collection_id.is_some(),
+        )
+        .await
+    };
     let workspace_context = resolve_workspace_prompt_context(&state.db, Some(session_id)).await?;
 
     let run_id = uuid::Uuid::new_v4().to_string();
@@ -1444,6 +1486,7 @@ async fn start_agent_run(
             },
             "retrievedMemories": [],
             "retrievedKnowledge": retrieved_knowledge,
+            "readingContext": reading_book.as_ref().map(reading_prompt_context),
             "workspace": workspace_context,
             "projectContext": []
         }
@@ -1805,6 +1848,284 @@ fn read_local_knowledge_document(
     Ok((title, media_type, hash, bytes.len() as i64, chunks))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingHighlightPayload {
+    pub cfi_range: String,
+    pub quote: String,
+    #[serde(default)]
+    pub context_before: String,
+    #[serde(default)]
+    pub context_after: String,
+    pub note: Option<String>,
+    pub color: Option<String>,
+}
+
+fn reading_prompt_context(book: &crate::db::repo::reading::ReadingBookRow) -> serde_json::Value {
+    json!({
+        "bookId": book.id,
+        "title": book.title,
+        "author": book.author,
+        "modelKnowsContent": book.model_knows_content,
+        "contentContextAllowed": book.content_context_allowed,
+    })
+}
+
+fn reading_book_storage_path(data_dir: &std::path::Path, book_id: &str) -> std::path::PathBuf {
+    data_dir
+        .join("reading-books")
+        .join(format!("{book_id}.epub"))
+}
+
+fn persist_reading_epub(
+    data_dir: std::path::PathBuf,
+    book_id: String,
+    bytes: Vec<u8>,
+) -> AppResult<std::path::PathBuf> {
+    let target = reading_book_storage_path(&data_dir, &book_id);
+    let parent = target
+        .parent()
+        .ok_or_else(|| AppError::Other("Invalid reading storage path".into()))?;
+    std::fs::create_dir_all(parent)?;
+    let temporary = target.with_extension("epub.partial");
+    std::fs::write(&temporary, bytes)?;
+    std::fs::rename(&temporary, &target)?;
+    Ok(target)
+}
+
+#[tauri::command]
+pub async fn list_reading_books(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<crate::db::repo::reading::ReadingBookRow>> {
+    state.db.list_reading_books().await
+}
+
+#[tauri::command]
+pub async fn import_reading_book(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    path: String,
+) -> AppResult<crate::db::repo::reading::ReadingBookRow> {
+    let path_for_parse = path.clone();
+    let (bytes, source_hash, parsed) = tokio::task::spawn_blocking(move || {
+        let source = std::path::PathBuf::from(path_for_parse);
+        let metadata = std::fs::metadata(&source)?;
+        if !metadata.is_file() {
+            return Err(AppError::Other(
+                "EPUB import path must be a regular file".into(),
+            ));
+        }
+        if metadata.len() > crate::reading::MAX_EPUB_ARCHIVE_BYTES {
+            return Err(AppError::Other(format!(
+                "EPUB exceeds the {} MiB import limit",
+                crate::reading::MAX_EPUB_ARCHIVE_BYTES / 1024 / 1024
+            )));
+        }
+        let bytes = std::fs::read(&source)?;
+        let parsed = crate::reading::parse_epub_bytes(&bytes)?;
+        let source_hash = format!("{:x}", Sha256::digest(&bytes));
+        Ok::<_, AppError>((bytes, source_hash, parsed))
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("EPUB import task aborted: {error}")))??;
+
+    if let Some(existing) = state
+        .db
+        .find_reading_book_by_source_hash(source_hash.clone())
+        .await?
+    {
+        return Ok(existing);
+    }
+
+    let known_agent = state
+        .db
+        .list_agents()
+        .await?
+        .into_iter()
+        .any(|agent| agent.id == agent_id);
+    if !known_agent {
+        return Err(AppError::Other("Agent not found".into()));
+    }
+
+    let book_id = uuid::Uuid::new_v4().to_string();
+    let stored_path = tokio::task::spawn_blocking({
+        let data_dir = state.data_dir.clone();
+        let book_id = book_id.clone();
+        move || persist_reading_epub(data_dir, book_id, bytes)
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("EPUB storage task aborted: {error}")))??;
+
+    let collection_id = uuid::Uuid::new_v4().to_string();
+    let collection_name = format!("Read With AI · {}", parsed.title.trim());
+    let import_result = async {
+        state
+            .db
+            .create_knowledge_collection(crate::db::repo::knowledge::NewKnowledgeCollection {
+                id: collection_id.clone(),
+                name: collection_name,
+                scope: "custom".into(),
+                agent_id: agent_id.clone(),
+            })
+            .await?;
+
+        let mut chunks = Vec::new();
+        for chapter in &parsed.chapters {
+            for mut chunk in chunk_local_text(&chapter.text) {
+                chunk.section_path = Some(chapter.title.clone());
+                chunks.push(chunk);
+            }
+        }
+        let document = state
+            .db
+            .import_local_knowledge_document(crate::db::repo::knowledge::NewLocalDocument {
+                collection_id: collection_id.clone(),
+                agent_id: agent_id.clone(),
+                title: parsed.title.clone(),
+                media_type: "application/epub+zip".into(),
+                local_path: stored_path.to_string_lossy().to_string(),
+                plaintext_hash: source_hash.clone(),
+                size: std::fs::metadata(&stored_path)?.len() as i64,
+                chunks,
+            })
+            .await?;
+        state
+            .db
+            .insert_reading_book(crate::db::repo::reading::NewReadingBook {
+                id: book_id.clone(),
+                collection_id,
+                document_id: document.document_id,
+                local_path: stored_path.to_string_lossy().to_string(),
+                title: parsed.title,
+                author: parsed.author,
+                source_hash,
+            })
+            .await
+    }
+    .await;
+    if import_result.is_err() {
+        let _ = std::fs::remove_file(&stored_path);
+    }
+    import_result
+}
+
+#[tauri::command]
+pub async fn open_reading_book_conversation(
+    state: tauri::State<'_, AppState>,
+    book_id: String,
+    agent_id: String,
+) -> AppResult<String> {
+    if let Some(session_id) = state
+        .db
+        .get_reading_conversation_session(book_id.clone(), agent_id.clone())
+        .await?
+    {
+        return Ok(session_id);
+    }
+    state
+        .db
+        .grant_reading_book_agent_access(book_id.clone(), agent_id.clone())
+        .await?;
+    let book = state
+        .db
+        .list_reading_books()
+        .await?
+        .into_iter()
+        .find(|book| book.id == book_id)
+        .ok_or_else(|| AppError::Other("Reading book not found".into()))?;
+    let session_id = uuid::Uuid::new_v4().to_string();
+    state
+        .db
+        .insert_session(NewSession {
+            id: session_id.clone(),
+            agent_id: agent_id.clone(),
+            title: format!("阅读 · {}", book.title),
+            context_limit: None,
+            compress_threshold: None,
+            recency_window: None,
+            reserved_output_tokens: None,
+            summarizer_model: None,
+            model: None,
+            thinking_mode: None,
+            thinking_budget: None,
+            permission_mode: "auto".into(),
+            workspace_id: None,
+            origin_device_id: None,
+        })
+        .await?;
+    if let Err(error) = state
+        .db
+        .create_reading_conversation(book_id, agent_id, session_id.clone())
+        .await
+    {
+        let _ = state.db.delete_session(session_id.clone()).await;
+        return Err(error);
+    }
+    Ok(session_id)
+}
+
+#[tauri::command]
+pub async fn update_reading_book_mode(
+    state: tauri::State<'_, AppState>,
+    book_id: String,
+    model_knows_content: bool,
+) -> AppResult<crate::db::repo::reading::ReadingBookRow> {
+    state
+        .db
+        .update_reading_book_mode(book_id, model_knows_content)
+        .await
+}
+
+#[tauri::command]
+pub async fn set_reading_book_content_context_allowed(
+    state: tauri::State<'_, AppState>,
+    book_id: String,
+    allowed: bool,
+) -> AppResult<crate::db::repo::reading::ReadingBookRow> {
+    state
+        .db
+        .set_reading_book_content_context_allowed(book_id, allowed)
+        .await
+}
+
+#[tauri::command]
+pub async fn update_reading_book_progress(
+    state: tauri::State<'_, AppState>,
+    book_id: String,
+    cfi: String,
+) -> AppResult<()> {
+    state.db.update_reading_book_progress(book_id, cfi).await
+}
+
+#[tauri::command]
+pub async fn list_reading_highlights(
+    state: tauri::State<'_, AppState>,
+    book_id: String,
+) -> AppResult<Vec<crate::db::repo::reading::ReadingHighlightRow>> {
+    state.db.list_reading_highlights(book_id).await
+}
+
+#[tauri::command]
+pub async fn create_reading_highlight(
+    state: tauri::State<'_, AppState>,
+    book_id: String,
+    payload: ReadingHighlightPayload,
+) -> AppResult<crate::db::repo::reading::ReadingHighlightRow> {
+    state
+        .db
+        .insert_reading_highlight(crate::db::repo::reading::NewReadingHighlight {
+            id: uuid::Uuid::new_v4().to_string(),
+            book_id,
+            cfi_range: payload.cfi_range,
+            quote: payload.quote,
+            context_before: payload.context_before,
+            context_after: payload.context_after,
+            note: payload.note,
+            color: payload.color.unwrap_or_else(|| "yellow".into()),
+        })
+        .await
+}
+
 #[tauri::command]
 pub async fn list_knowledge_collections(
     state: tauri::State<'_, AppState>,
@@ -1944,6 +2265,7 @@ async fn retrieve_knowledge_hybrid(
     agent_id: &str,
     query: &str,
     collection_id: Option<&str>,
+    allow_hidden_collection: bool,
     limit: usize,
 ) -> AppResult<Vec<crate::db::repo::knowledge::KnowledgeSearchResult>> {
     if query.trim().is_empty() {
@@ -1963,6 +2285,7 @@ async fn retrieve_knowledge_hybrid(
         if !visible_collection_ids
             .iter()
             .any(|collection_id| collection_id == requested_collection_id)
+            && !allow_hidden_collection
         {
             return Ok(Vec::new());
         }
@@ -2057,11 +2380,22 @@ async fn retrieve_knowledge_for_history(
     state: &AppState,
     agent_id: &str,
     history: &[serde_json::Value],
+    collection_id: Option<&str>,
+    allow_hidden_collection: bool,
 ) -> Vec<serde_json::Value> {
     let Some(query) = latest_user_query(history) else {
         return Vec::new();
     };
-    match retrieve_knowledge_hybrid(state, agent_id, &query, None, 6).await {
+    match retrieve_knowledge_hybrid(
+        state,
+        agent_id,
+        &query,
+        collection_id,
+        allow_hidden_collection,
+        6,
+    )
+    .await
+    {
         Ok(results) => results
             .into_iter()
             .map(|result| {
@@ -2114,6 +2448,7 @@ pub async fn search_knowledge_hybrid(
         &agent_id,
         query.trim(),
         collection_id.as_deref(),
+        false,
         limit.unwrap_or(10),
     )
     .await

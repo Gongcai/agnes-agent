@@ -4,6 +4,8 @@
 
 记忆系统的实体字段、检索行为与 AI 工具契约详见 `ProjectPlan/MEMORY_SYSTEM.md`。
 
+Read With AI 的 EPUB、划线与讨论上下文边界详见 `ProjectPlan/READ_WITH_AI.md`。
+
 模型能力标签与任务分工详见 `ProjectPlan/MODEL_ROUTING.md`。
 
 大文件、RAG、加密向量制品、多网盘、日历和待办详见 `ProjectPlan/STORAGE_AND_RAG.md`。
@@ -179,6 +181,7 @@ System Prompt
 | V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；MCP 等能力待后续补齐 |
 | V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + R2/Google Drive Provider | 进行中：侧边栏导航、图标轨和会话折叠已完成；知识库正式 schema、旧表迁移、权限隔离、UTF-8 文本导入/分块、FTS5 + sqlite-vec 分区、显式向量化、RRF 混合检索和安全 Agent 上下文注入已完成；加密制品与 Provider 待实现 |
 | V0.7 | 本地日历 + 待办 | 已完成：本地域模型、Local Provider、受审批约束的 Agent 工具、完整桌面工作区、本地统一通知服务和 D1 E2EE 同步均已完成。日历支持月/周/日/议程、多日历叠加、当天议程、待办图层及重复 occurrence 例外；待办支持五类智能视图、自定义列表、重要/我的一天、日期或精确时间、步骤和完成后生成下一重复实例；通知中心覆盖 AI 回复/许可、任务到期和日历事件。Google Calendar / Google Tasks / CalDAV 不纳入默认路线图，未来仅按实际需求作为可选扩展评估。 |
+| V0.8 | Read With AI | 已完成本地优先 v1：EPUB 2/3 导入与原样渲染、阅读进度、CFI 划线、用户级书架、按书籍 × Agent 隔离的连续讨论、已知书籍模式，以及未知书籍首次书内检索授权。原始 EPUB 的加密大对象与跨设备同步留待 V0.6 数据层完成后接入。 |
 
 # 关键决策约束
 

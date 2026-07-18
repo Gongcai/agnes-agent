@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import {
   Brain,
+  BookOpen,
   CalendarDays,
   CheckSquare2,
   ChevronDown,
@@ -36,6 +37,7 @@ interface SidebarProps {
 
 const FEATURE_ICONS: Record<AppFeatureId, LucideIcon> = {
   chat: MessageSquare,
+  reading: BookOpen,
   memory: Brain,
   knowledge: Database,
   drive: HardDrive,

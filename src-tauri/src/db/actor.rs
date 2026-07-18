@@ -142,6 +142,60 @@ pub enum DbCommand {
         limit: usize,
         resp: oneshot::Sender<AppResult<Vec<repo::knowledge::KnowledgeSearchResult>>>,
     },
+    FindReadingBookBySourceHash {
+        source_hash: String,
+        resp: oneshot::Sender<AppResult<Option<repo::reading::ReadingBookRow>>>,
+    },
+    ListReadingBooks {
+        resp: oneshot::Sender<AppResult<Vec<repo::reading::ReadingBookRow>>>,
+    },
+    InsertReadingBook {
+        input: repo::reading::NewReadingBook,
+        resp: oneshot::Sender<AppResult<repo::reading::ReadingBookRow>>,
+    },
+    GetReadingBookForSession {
+        session_id: String,
+        resp: oneshot::Sender<AppResult<Option<repo::reading::ReadingBookRow>>>,
+    },
+    GetReadingConversationSession {
+        book_id: String,
+        agent_id: String,
+        resp: oneshot::Sender<AppResult<Option<String>>>,
+    },
+    GrantReadingBookAgentAccess {
+        book_id: String,
+        agent_id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    CreateReadingConversation {
+        book_id: String,
+        agent_id: String,
+        session_id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    UpdateReadingBookMode {
+        book_id: String,
+        model_knows_content: bool,
+        resp: oneshot::Sender<AppResult<repo::reading::ReadingBookRow>>,
+    },
+    SetReadingBookContentContextAllowed {
+        book_id: String,
+        allowed: bool,
+        resp: oneshot::Sender<AppResult<repo::reading::ReadingBookRow>>,
+    },
+    UpdateReadingBookProgress {
+        book_id: String,
+        cfi: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    ListReadingHighlights {
+        book_id: String,
+        resp: oneshot::Sender<AppResult<Vec<repo::reading::ReadingHighlightRow>>>,
+    },
+    InsertReadingHighlight {
+        input: repo::reading::NewReadingHighlight,
+        resp: oneshot::Sender<AppResult<repo::reading::ReadingHighlightRow>>,
+    },
     ListCalendars {
         resp: oneshot::Sender<AppResult<Vec<repo::planner::CalendarRow>>>,
     },
@@ -819,6 +873,151 @@ impl DbActorHandle {
             limit,
             resp,
         })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn find_reading_book_by_source_hash(
+        &self,
+        source_hash: String,
+    ) -> AppResult<Option<repo::reading::ReadingBookRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::FindReadingBookBySourceHash { source_hash, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_reading_books(&self) -> AppResult<Vec<repo::reading::ReadingBookRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListReadingBooks { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn insert_reading_book(
+        &self,
+        input: repo::reading::NewReadingBook,
+    ) -> AppResult<repo::reading::ReadingBookRow> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::InsertReadingBook { input, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn get_reading_book_for_session(
+        &self,
+        session_id: String,
+    ) -> AppResult<Option<repo::reading::ReadingBookRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetReadingBookForSession { session_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn get_reading_conversation_session(
+        &self,
+        book_id: String,
+        agent_id: String,
+    ) -> AppResult<Option<String>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetReadingConversationSession {
+            book_id,
+            agent_id,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn grant_reading_book_agent_access(
+        &self,
+        book_id: String,
+        agent_id: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GrantReadingBookAgentAccess {
+            book_id,
+            agent_id,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn create_reading_conversation(
+        &self,
+        book_id: String,
+        agent_id: String,
+        session_id: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::CreateReadingConversation {
+            book_id,
+            agent_id,
+            session_id,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn update_reading_book_mode(
+        &self,
+        book_id: String,
+        model_knows_content: bool,
+    ) -> AppResult<repo::reading::ReadingBookRow> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateReadingBookMode {
+            book_id,
+            model_knows_content,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn set_reading_book_content_context_allowed(
+        &self,
+        book_id: String,
+        allowed: bool,
+    ) -> AppResult<repo::reading::ReadingBookRow> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SetReadingBookContentContextAllowed {
+            book_id,
+            allowed,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn update_reading_book_progress(
+        &self,
+        book_id: String,
+        cfi: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateReadingBookProgress { book_id, cfi, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_reading_highlights(
+        &self,
+        book_id: String,
+    ) -> AppResult<Vec<repo::reading::ReadingHighlightRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListReadingHighlights { book_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn insert_reading_highlight(
+        &self,
+        input: repo::reading::NewReadingHighlight,
+    ) -> AppResult<repo::reading::ReadingHighlightRow> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::InsertReadingHighlight { input, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -1836,6 +2035,78 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         &query,
                         limit,
                     ));
+                }
+                DbCommand::FindReadingBookBySourceHash { source_hash, resp } => {
+                    let _ = resp.send(repo::reading::find_by_source_hash(&conn, &source_hash));
+                }
+                DbCommand::ListReadingBooks { resp } => {
+                    let _ = resp.send(repo::reading::list_books(&conn));
+                }
+                DbCommand::InsertReadingBook { input, resp } => {
+                    let _ = resp.send(repo::reading::insert_book(&mut conn, &input));
+                }
+                DbCommand::GetReadingBookForSession { session_id, resp } => {
+                    let _ = resp.send(repo::reading::get_book_for_session(&conn, &session_id));
+                }
+                DbCommand::GetReadingConversationSession {
+                    book_id,
+                    agent_id,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::reading::get_conversation_session(
+                        &conn, &book_id, &agent_id,
+                    ));
+                }
+                DbCommand::GrantReadingBookAgentAccess {
+                    book_id,
+                    agent_id,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::reading::grant_book_agent_access(
+                        &mut conn, &book_id, &agent_id,
+                    ));
+                }
+                DbCommand::CreateReadingConversation {
+                    book_id,
+                    agent_id,
+                    session_id,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::reading::create_conversation(
+                        &mut conn,
+                        &book_id,
+                        &agent_id,
+                        &session_id,
+                    ));
+                }
+                DbCommand::UpdateReadingBookMode {
+                    book_id,
+                    model_knows_content,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::reading::update_book_mode(
+                        &mut conn,
+                        &book_id,
+                        model_knows_content,
+                    ));
+                }
+                DbCommand::SetReadingBookContentContextAllowed {
+                    book_id,
+                    allowed,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::reading::set_content_context_allowed(
+                        &mut conn, &book_id, allowed,
+                    ));
+                }
+                DbCommand::UpdateReadingBookProgress { book_id, cfi, resp } => {
+                    let _ = resp.send(repo::reading::update_progress(&mut conn, &book_id, &cfi));
+                }
+                DbCommand::ListReadingHighlights { book_id, resp } => {
+                    let _ = resp.send(repo::reading::list_highlights(&conn, &book_id));
+                }
+                DbCommand::InsertReadingHighlight { input, resp } => {
+                    let _ = resp.send(repo::reading::insert_highlight(&mut conn, &input));
                 }
                 DbCommand::ListCalendars { resp } => {
                     let _ = resp.send(repo::planner::list_calendars(&conn));

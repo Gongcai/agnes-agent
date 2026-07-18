@@ -541,3 +541,59 @@ CREATE INDEX IF NOT EXISTS idx_document_chunks_version
 CREATE INDEX IF NOT EXISTS idx_embedding_items_collection_profile
   ON embedding_items(collection_id, embedding_profile_id, ref_type, ref_id);
 "#;
+
+/// Read With AI keeps local reading state separate from generic knowledge-base
+/// tables. Source EPUB files stay in the application data directory.
+pub const READING_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS reading_books (
+  id TEXT PRIMARY KEY,
+  collection_id TEXT NOT NULL REFERENCES knowledge_collections(id),
+  document_id TEXT NOT NULL REFERENCES documents(id),
+  local_path TEXT NOT NULL,
+  title TEXT NOT NULL,
+  author TEXT,
+  source_hash TEXT NOT NULL UNIQUE,
+  model_knows_content INTEGER NOT NULL DEFAULT 0 CHECK(model_knows_content IN (0, 1)),
+  content_context_allowed INTEGER NOT NULL DEFAULT 0 CHECK(content_context_allowed IN (0, 1)),
+  content_context_decided INTEGER NOT NULL DEFAULT 0 CHECK(content_context_decided IN (0, 1)),
+  progress_cfi TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS reading_book_conversations (
+  book_id TEXT NOT NULL REFERENCES reading_books(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(book_id, agent_id),
+  UNIQUE(session_id)
+);
+
+CREATE TABLE IF NOT EXISTS reading_highlights (
+  id TEXT PRIMARY KEY,
+  book_id TEXT NOT NULL REFERENCES reading_books(id) ON DELETE CASCADE,
+  cfi_range TEXT NOT NULL,
+  quote TEXT NOT NULL,
+  context_before TEXT NOT NULL DEFAULT '',
+  context_after TEXT NOT NULL DEFAULT '',
+  note TEXT,
+  color TEXT NOT NULL DEFAULT 'yellow',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_reading_books_updated
+  ON reading_books(updated_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_reading_conversations_session
+  ON reading_book_conversations(session_id);
+CREATE INDEX IF NOT EXISTS idx_reading_highlights_book
+  ON reading_highlights(book_id, created_at) WHERE deleted_at IS NULL;
+"#;

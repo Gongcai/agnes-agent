@@ -26,6 +26,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
+    "epubjs": "^0.3.93",
     "katex": "^0.17.0",
     "lucide-react": "^0.460.0",
     "luxon": "^3.7.2",

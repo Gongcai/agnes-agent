@@ -8,6 +8,7 @@ mod error;
 mod memory;
 mod model_registry;
 mod notifications;
+mod reading;
 mod secrets;
 mod state;
 pub mod sync;
@@ -69,6 +70,7 @@ fn main() {
             }
 
             app.manage(AppState {
+                data_dir,
                 db,
                 agent,
                 secrets,
@@ -114,6 +116,14 @@ fn main() {
             commands::create_memory,
             commands::update_memory,
             commands::delete_memory,
+            commands::list_reading_books,
+            commands::import_reading_book,
+            commands::open_reading_book_conversation,
+            commands::update_reading_book_mode,
+            commands::set_reading_book_content_context_allowed,
+            commands::update_reading_book_progress,
+            commands::list_reading_highlights,
+            commands::create_reading_highlight,
             commands::list_knowledge_collections,
             commands::create_knowledge_collection,
             commands::list_knowledge_documents,

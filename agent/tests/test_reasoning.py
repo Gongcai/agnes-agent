@@ -433,6 +433,51 @@ def test_unbound_workspace_prompt_does_not_allow_local_coding_operations():
     assert "Do not attempt local file, shell, or git operations" in system_prompt
 
 
+def test_reading_prompt_respects_the_user_selected_source_mode():
+    base = {"agent": {"model": "gpt-4o", "toolPolicy": {}}}
+    known_prompt, _, _ = assemble_prompt(
+        {
+            "context": {
+                **base,
+                "readingContext": {
+                    "title": "Pride and Prejudice",
+                    "modelKnowsContent": True,
+                    "contentContextAllowed": False,
+                },
+            }
+        }
+    )
+    unapproved_prompt, _, _ = assemble_prompt(
+        {
+            "context": {
+                **base,
+                "readingContext": {
+                    "title": "Private manuscript",
+                    "modelKnowsContent": False,
+                    "contentContextAllowed": False,
+                },
+            }
+        }
+    )
+    approved_prompt, _, _ = assemble_prompt(
+        {
+            "context": {
+                **base,
+                "readingContext": {
+                    "title": "Private manuscript",
+                    "modelKnowsContent": False,
+                    "contentContextAllowed": True,
+                },
+            }
+        }
+    )
+
+    assert "# Read With AI" in known_prompt
+    assert "only exact quotation context" in known_prompt
+    assert "has not allowed full-book retrieval" in unapproved_prompt
+    assert "allowed retrieval from this book" in approved_prompt
+
+
 def test_task_model_routing_and_fallback():
     fallback = LlmConfig(model="main", litellm_model="main")
     model, config = resolve_task_llm({}, "summary", "main", fallback)

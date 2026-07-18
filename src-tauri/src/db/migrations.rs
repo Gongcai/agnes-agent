@@ -154,6 +154,15 @@ fn ensure_knowledge_embedding_metadata(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
+fn ensure_reading_metadata(conn: &Connection) -> AppResult<()> {
+    ensure_column(
+        conn,
+        "reading_books",
+        "content_context_decided",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+}
+
 fn ensure_planner_task_metadata(conn: &Connection) -> AppResult<()> {
     ensure_column(conn, "tasks", "due_date", "TEXT")?;
     ensure_column(conn, "tasks", "due_timezone", "TEXT")?;
@@ -407,6 +416,8 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
     ensure_knowledge_embedding_metadata(conn)?;
     conn.execute_batch(crate::db::schema::KNOWLEDGE_SCHEMA)?;
     migrate_legacy_documents(conn)?;
+    conn.execute_batch(crate::db::schema::READING_SCHEMA)?;
+    ensure_reading_metadata(conn)?;
 
     // 检查是否已有 agent，如果没有则预置默认角色
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))?;

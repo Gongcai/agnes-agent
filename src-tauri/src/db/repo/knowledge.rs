@@ -180,7 +180,12 @@ pub fn list_collections(
            FROM knowledge_collections c
            LEFT JOIN collection_agents a ON a.collection_id = c.id AND a.agent_id = ?1
            LEFT JOIN documents d ON d.collection_id = c.id AND d.status = 'active' AND d.deleted_at IS NULL
-           WHERE c.deleted_at IS NULL AND (c.scope = 'user_global' OR a.agent_id IS NOT NULL)
+           WHERE c.deleted_at IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM reading_books b
+               WHERE b.collection_id = c.id AND b.deleted_at IS NULL
+             )
+             AND (c.scope = 'user_global' OR a.agent_id IS NOT NULL)
            GROUP BY c.id, c.name, c.scope, a.permission, c.updated_at
            ORDER BY CAST(c.updated_at AS INTEGER) DESC, c.id DESC"#,
     )?;
@@ -688,6 +693,10 @@ pub fn search(
                    LEFT JOIN collection_agents a ON a.collection_id = c.id AND a.agent_id = ?1
                    WHERE f.document_chunks_fts MATCH ?2
                      AND d.status = 'active' AND d.deleted_at IS NULL AND c.deleted_at IS NULL
+                     AND NOT EXISTS (
+                       SELECT 1 FROM reading_books b
+                       WHERE b.collection_id = c.id AND b.deleted_at IS NULL
+                     )
                      AND (c.scope = 'user_global' OR a.agent_id IS NOT NULL)
                    ORDER BY bm25(document_chunks_fts), d.id, ch.ordinal LIMIT ?3"#,
             )?;
@@ -857,5 +866,68 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+    }
+
+    #[test]
+    fn excludes_reading_collections_from_generic_search() {
+        unsafe {
+            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::apply(&mut conn).unwrap();
+        create_collection(
+            &mut conn,
+            &NewKnowledgeCollection {
+                id: "reading-collection".into(),
+                name: "Read With AI".into(),
+                scope: "custom".into(),
+                agent_id: "agnes".into(),
+            },
+        )
+        .unwrap();
+        let imported = import_local_document(
+            &mut conn,
+            &NewLocalDocument {
+                collection_id: "reading-collection".into(),
+                agent_id: "agnes".into(),
+                title: "Private book".into(),
+                media_type: "application/epub+zip".into(),
+                local_path: "/tmp/private-book.epub".into(),
+                plaintext_hash: hash_text("Private reading passage about rhubarb."),
+                size: 38,
+                chunks: vec![NewDocumentChunk {
+                    content: "Private reading passage about rhubarb.".into(),
+                    section_path: Some("Chapter 1".into()),
+                    token_count: 5,
+                }],
+            },
+        )
+        .unwrap();
+        crate::db::repo::reading::insert_book(
+            &mut conn,
+            &crate::db::repo::reading::NewReadingBook {
+                id: "reading-book".into(),
+                collection_id: "reading-collection".into(),
+                document_id: imported.document_id,
+                local_path: "/tmp/private-book.epub".into(),
+                title: "Private book".into(),
+                author: None,
+                source_hash: "private-book-hash".into(),
+            },
+        )
+        .unwrap();
+
+        assert!(list_collections(&conn, "agnes").unwrap().is_empty());
+        assert!(search(&conn, "agnes", "rhubarb", None, 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            search(&conn, "agnes", "rhubarb", Some("reading-collection"), 10)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

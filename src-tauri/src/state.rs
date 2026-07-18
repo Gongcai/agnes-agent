@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::agent::AgentManager;
@@ -8,6 +9,7 @@ use crate::sync::engine::SyncService;
 
 /// 应用托管的全局状态（经 Tauri `State` 注入命令）。
 pub struct AppState {
+    pub data_dir: PathBuf,
     pub db: DbActorHandle,
     pub agent: Arc<AgentManager>,
     pub secrets: Arc<dyn SecretStore>,

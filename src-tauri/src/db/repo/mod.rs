@@ -6,6 +6,7 @@ pub mod messages;
 pub mod model_providers;
 pub mod notifications;
 pub mod planner;
+pub mod reading;
 pub mod sessions;
 pub mod settings;
 pub mod sync;
