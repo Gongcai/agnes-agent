@@ -323,9 +323,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   };
 
   return (
-    <main className="flex flex-1 flex-col bg-[#FAF9F5] relative h-full">
+    <main className="agnes-chat-workspace flex flex-1 flex-col bg-[#FAF9F5] relative h-full">
       {/* Header bar */}
-      <header className="flex h-14 items-center justify-between border-b border-stone-200 px-6 bg-white/40 backdrop-blur-md shrink-0">
+      <header className="agnes-chat-header flex h-14 items-center justify-between border-b border-stone-200 px-6 bg-white/40 backdrop-blur-md shrink-0">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-stone-800 text-sm">
@@ -366,7 +366,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       </header>
 
       {/* Message Panel list */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-6 max-w-4xl mx-auto w-full">
+      <div className="agnes-chat-messages flex-1 overflow-y-auto p-6 space-y-6 max-w-4xl mx-auto w-full">
         {messages.map((message, messageIndex) => {
           const isUser = message.role === "user";
           const isLiveAssistant = isStreaming
@@ -376,7 +376,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           return (
             <div
               key={message._renderKey ?? message.id}
-              className={`group flex gap-4 ${isUser ? "justify-end" : "justify-start"}`}
+              className={`agnes-message-row group flex gap-4 ${isUser ? "justify-end" : "justify-start"}`}
             >
               {!isUser && activeAgent && (
                 <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={32} />
@@ -385,7 +385,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               <div className={`space-y-1.5 max-w-[85%] ${isUser ? "order-1" : "order-2"}`}>
                 {isUser ? (
                   editingMsgId === message.id ? (
-                    <div className="rounded-2xl rounded-tr-sm bg-[#F1F5F0]/70 px-3 py-2 text-sm text-stone-900 border border-[#8CA38A] shadow-sm space-y-2">
+                    <div className="agnes-user-bubble rounded-2xl rounded-tr-sm bg-[#F1F5F0]/70 px-3 py-2 text-sm text-stone-900 border border-[#8CA38A] shadow-sm space-y-2">
                       <textarea
                         value={editingText}
                         onChange={(e) => setEditingText(e.target.value)}
@@ -415,14 +415,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <div className="rounded-2xl rounded-tr-sm bg-[#F1F5F0]/70 px-4 py-2.5 text-sm text-stone-900 border border-[#DFE7DD] shadow-sm">
+                    <div className="agnes-user-bubble rounded-2xl rounded-tr-sm bg-[#F1F5F0]/70 px-4 py-2.5 text-sm text-stone-900 border border-[#DFE7DD] shadow-sm">
                       <p className="whitespace-pre-wrap leading-relaxed">
                         {message.parts.map((p) => p.content).join("")}
                       </p>
                     </div>
                   )
                 ) : (
-                  <div className="space-y-3.5">
+                  <div className="agnes-assistant-body space-y-3.5">
                     {message.parts.map((part) => {
                       // tool_result 已在工具卡片中展示（tc.output），跳过避免重复泄漏为正文
                       if (part.kind === "tool_result") return null;
@@ -607,8 +607,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       </div>
 
       {/* Input box */}
-      <div className="border-t border-stone-200 bg-[#FAF9F5]/40 p-4 shrink-0">
-        <div className="max-w-4xl mx-auto relative rounded-xl border border-stone-300/80 bg-white p-2.5 focus-within:border-stone-400 shadow-sm transition-all">
+      <div className="agnes-chat-composer border-t border-stone-200 bg-[#FAF9F5]/40 p-4 shrink-0">
+        <div className="agnes-chat-composer-box max-w-4xl mx-auto relative rounded-xl border border-stone-300/80 bg-white p-2.5 focus-within:border-stone-400 shadow-sm transition-all">
           <textarea
             value={inputVal}
             onChange={(e) => setInputVal(e.target.value)}

@@ -237,7 +237,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           e.preventDefault();
           setCtxMenu({ sessionId: sess.id, x: e.clientX, y: e.clientY, isPinned: !!sess.pinned, title: sess.title });
         }}
-        className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition-all duration-150 ${
+        className={`agnes-session-item flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition-all duration-150 ${
           isActive
             ? "bg-white text-emerald-700 font-semibold border border-stone-200 shadow-[0_1px_2px_0_rgba(0,0,0,0.03)]"
             : "text-stone-600 hover:bg-stone-200/40 hover:text-stone-900"
@@ -252,7 +252,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
-      className={`flex h-full shrink-0 flex-col overflow-hidden border-r border-stone-200/80 bg-stone-100/60 backdrop-blur-md transition-[width] duration-300 ${
+      className={`agnes-sidebar ${isOpen ? "agnes-sidebar--open" : "agnes-sidebar--collapsed"} flex h-full shrink-0 flex-col overflow-hidden border-r border-stone-200/80 bg-stone-100/60 backdrop-blur-md transition-[width] duration-300 ${
         isOpen ? "w-72" : "w-[68px]"
       }`}
     >
@@ -305,7 +305,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 key={feature.id}
                 onClick={() => onSelectFeature(feature.id)}
-                className={`relative flex h-10 w-full items-center rounded-xl transition-colors ${
+                className={`agnes-feature-item relative flex h-10 w-full items-center rounded-xl transition-colors ${
                   isOpen ? "gap-2.5 px-3" : "justify-center"
                 } ${
                   selected
@@ -326,7 +326,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Session navigation is hidden when the sidebar becomes an icon rail. */}
       {isOpen && (
-        <div className="flex-1 space-y-4 overflow-y-auto p-4">
+        <div className="agnes-session-list flex-1 space-y-4 overflow-y-auto p-4">
           <section>
             <div className="mb-2 flex items-center gap-1 px-1 text-[10px] font-bold uppercase tracking-wider text-stone-400">
               <button

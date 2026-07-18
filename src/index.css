@@ -11,7 +11,7 @@
     --card-foreground: 240 10% 10%;
     --popover: 0 0% 100%;
     --popover-foreground: 240 10% 10%;
-    --primary: 115 13% 59%;
+    --primary: 15 63% 60%;
     --primary-foreground: 210 20% 98%;
     --secondary: 240 4.8% 96%;
     --secondary-foreground: 240 5.9% 10%;
@@ -23,8 +23,8 @@
     --destructive-foreground: 210 20% 98%;
     --border: 240 5.9% 88%;
     --input: 240 5.9% 90%;
-    --ring: 115 13% 59%;
-    --radius: 0.75rem;
+    --ring: 15 63% 60%;
+    --radius: 0.5rem;
   }
 }
 
@@ -109,7 +109,7 @@ body {
   --fc-border-color: #e7e5e4;
   --fc-page-bg-color: transparent;
   --fc-neutral-bg-color: #f5f5f4;
-  --fc-today-bg-color: rgba(79, 127, 104, 0.07);
+  --fc-today-bg-color: rgba(217, 119, 87, 0.08);
   --fc-now-indicator-color: #c45d55;
   color: #44403c;
   font-size: 12px;
@@ -161,7 +161,7 @@ body {
 
 .fc .planner-selected-day .fc-daygrid-day-number {
   border-radius: 9999px;
-  background: #4f7f68;
+  background: #d97757;
   color: white;
 }
 
@@ -333,4 +333,584 @@ body {
 }
 .markdown-body .katex {
   font-size: 1.02em;
+}
+
+/* ============ Claude Desktop visual system ============ */
+:root {
+  --claude-canvas: #faf9f5;
+  --claude-sidebar: #f5f3ed;
+  --claude-surface: #ffffff;
+  --claude-surface-soft: #f0ede6;
+  --claude-surface-strong: #e8e4db;
+  --claude-ink: #1f1e1b;
+  --claude-body: #3d3b36;
+  --claude-muted: #77736a;
+  --claude-muted-soft: #9a968c;
+  --claude-border: rgba(51, 48, 42, 0.13);
+  --claude-border-strong: rgba(51, 48, 42, 0.22);
+  --claude-clay: #d97757;
+  --claude-clay-dark: #b95f43;
+  --claude-clay-soft: #f5e2da;
+  --claude-dark: #262624;
+  --claude-success: #3f7d53;
+  --claude-warning: #a96919;
+  --claude-danger: #b84343;
+  --claude-ui-font: "Noto Serif", "Noto Serif SC", "Noto Serif CJK SC", Georgia, "Times New Roman", serif;
+  --claude-mono-font: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  background: var(--claude-canvas);
+  color: var(--claude-ink);
+  font-family: var(--claude-ui-font);
+  letter-spacing: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  letter-spacing: 0;
+}
+
+code,
+pre,
+.font-mono {
+  font-family: var(--claude-mono-font) !important;
+}
+
+.agnes-app {
+  background: var(--claude-canvas) !important;
+  color: var(--claude-ink) !important;
+  font-family: var(--claude-ui-font);
+  letter-spacing: 0;
+}
+
+.agnes-app > main,
+.agnes-app > section {
+  background: var(--claude-surface) !important;
+  color: var(--claude-body);
+}
+
+.agnes-app main > header,
+.agnes-app section > header {
+  background: rgba(250, 249, 245, 0.96) !important;
+  border-color: var(--claude-border) !important;
+  box-shadow: none !important;
+}
+
+.agnes-app input,
+.agnes-app textarea,
+.agnes-app select {
+  color: var(--claude-ink);
+  caret-color: var(--claude-clay);
+}
+
+.agnes-app input:focus,
+.agnes-app textarea:focus,
+.agnes-app select:focus {
+  border-color: rgba(217, 119, 87, 0.65) !important;
+  box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.1);
+  outline: none;
+}
+
+.agnes-app ::selection {
+  background: var(--claude-clay-soft);
+  color: var(--claude-ink);
+}
+
+.agnes-sidebar {
+  width: 276px !important;
+  background: var(--claude-sidebar) !important;
+  border-color: var(--claude-border) !important;
+  backdrop-filter: none !important;
+  box-shadow: none;
+}
+
+.agnes-sidebar--collapsed {
+  width: 64px !important;
+}
+
+.agnes-sidebar > div,
+.agnes-sidebar > nav {
+  border-color: var(--claude-border) !important;
+}
+
+.agnes-sidebar button {
+  color: var(--claude-body);
+  box-shadow: none !important;
+}
+
+.agnes-sidebar button:hover {
+  background: rgba(51, 48, 42, 0.055) !important;
+  color: var(--claude-ink) !important;
+}
+
+.agnes-sidebar .agnes-feature-item,
+.agnes-sidebar .agnes-session-item {
+  border: 0 !important;
+  border-radius: 8px !important;
+  font-weight: 400;
+}
+
+.agnes-sidebar .agnes-feature-item[aria-current="page"],
+.agnes-sidebar .agnes-session-item[class*="bg-white"] {
+  background: rgba(51, 48, 42, 0.075) !important;
+  color: var(--claude-ink) !important;
+  font-weight: 600;
+  box-shadow: none !important;
+  ring: 0 !important;
+}
+
+.agnes-sidebar .agnes-feature-item[aria-current="page"] > span:first-child {
+  background: var(--claude-clay) !important;
+}
+
+.agnes-sidebar .agnes-session-list {
+  padding: 14px 12px 18px !important;
+}
+
+.agnes-sidebar .agnes-session-list section > div:first-child {
+  color: var(--claude-muted) !important;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.agnes-sidebar .text-emerald-700,
+.agnes-sidebar .text-emerald-600,
+.agnes-sidebar .text-\[\#6C806A\] {
+  color: var(--claude-clay-dark) !important;
+}
+
+.agnes-sidebar .bg-emerald-50,
+.agnes-sidebar .bg-emerald-50\/80 {
+  background: var(--claude-clay-soft) !important;
+}
+
+.agnes-chat-workspace {
+  min-width: 0;
+  background: var(--claude-surface) !important;
+  color: var(--claude-body);
+}
+
+.agnes-chat-header {
+  height: 58px !important;
+  padding-inline: 24px !important;
+  background: rgba(255, 255, 255, 0.94) !important;
+  border-color: var(--claude-border) !important;
+  backdrop-filter: blur(12px);
+}
+
+.agnes-chat-header > div:first-child span:first-child {
+  color: var(--claude-ink) !important;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.agnes-chat-header button,
+.agnes-chat-header > div:last-child > div {
+  border-color: var(--claude-border) !important;
+  background: var(--claude-canvas) !important;
+  color: var(--claude-body) !important;
+  box-shadow: none !important;
+  border-radius: 8px !important;
+}
+
+.agnes-chat-header .bg-\[\#8CA38A\] {
+  background: var(--claude-clay) !important;
+}
+
+.agnes-chat-messages {
+  width: 100%;
+  max-width: 760px !important;
+  padding: 30px 32px 48px !important;
+}
+
+.agnes-chat-messages .agnes-message-row {
+  gap: 12px !important;
+}
+
+.agnes-chat-messages .agnes-message-row + .agnes-message-row {
+  margin-top: 24px !important;
+}
+
+.agnes-chat-messages .agnes-user-bubble {
+  max-width: 620px;
+  border: 0 !important;
+  border-radius: 18px 18px 5px 18px !important;
+  background: var(--claude-surface-soft) !important;
+  color: var(--claude-ink) !important;
+  box-shadow: none !important;
+  padding: 11px 17px !important;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.agnes-chat-messages .agnes-assistant-body {
+  color: var(--claude-body);
+  font-size: 14px;
+  line-height: 1.78;
+}
+
+.agnes-chat-messages .agnes-assistant-body > details {
+  border-color: var(--claude-clay) !important;
+  background: var(--claude-canvas) !important;
+  border-radius: 0 8px 8px 0 !important;
+}
+
+.agnes-chat-messages .agnes-assistant-body > details summary {
+  color: var(--claude-clay-dark) !important;
+}
+
+.agnes-chat-messages .agnes-assistant-body pre {
+  border-radius: 8px !important;
+  background: var(--claude-dark) !important;
+}
+
+.agnes-chat-messages button:hover {
+  background: var(--claude-surface-soft) !important;
+  color: var(--claude-ink) !important;
+}
+
+.agnes-chat-composer {
+  padding: 10px 28px 20px !important;
+  background: var(--claude-surface) !important;
+  border-top: 0 !important;
+}
+
+.agnes-chat-composer-box {
+  width: 100%;
+  max-width: 744px !important;
+  border: 1px solid var(--claude-border-strong) !important;
+  border-radius: 16px !important;
+  background: var(--claude-canvas) !important;
+  padding: 5px !important;
+  box-shadow: 0 1px 2px rgba(31, 30, 27, 0.03) !important;
+}
+
+.agnes-chat-composer-box:focus-within {
+  border-color: rgba(217, 119, 87, 0.56) !important;
+  box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.1) !important;
+}
+
+.agnes-chat-composer-box > textarea {
+  height: 58px !important;
+  padding: 10px 12px 5px !important;
+  color: var(--claude-ink) !important;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.agnes-chat-composer-box > div:last-child {
+  border-color: var(--claude-border) !important;
+  color: var(--claude-muted) !important;
+  padding: 7px 7px 3px !important;
+}
+
+.agnes-chat-composer-box button {
+  border-color: var(--claude-border) !important;
+  background: transparent !important;
+  color: var(--claude-body) !important;
+  box-shadow: none !important;
+}
+
+.agnes-chat-composer-box button:hover {
+  background: var(--claude-surface-soft) !important;
+  color: var(--claude-ink) !important;
+}
+
+.agnes-chat-composer-box button[class*="bg-stone-800"] {
+  background: var(--claude-ink) !important;
+  color: var(--claude-surface) !important;
+}
+
+.agnes-app .markdown-body {
+  color: var(--claude-body);
+  font-family: var(--claude-ui-font);
+  font-size: 14px;
+  line-height: 1.78;
+}
+
+.agnes-app .markdown-body h1,
+.agnes-app .markdown-body h2,
+.agnes-app .markdown-body h3,
+.agnes-app .markdown-body h4 {
+  color: var(--claude-ink);
+  font-family: var(--claude-ui-font);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.agnes-app .markdown-body a {
+  color: var(--claude-clay-dark);
+  text-decoration-color: rgba(185, 95, 67, 0.45);
+}
+
+.agnes-app .markdown-body blockquote {
+  border-color: var(--claude-clay);
+  background: var(--claude-canvas);
+  color: var(--claude-muted);
+}
+
+.agnes-app .markdown-body th {
+  background: var(--claude-surface-soft);
+}
+
+.agnes-app .markdown-body th,
+.agnes-app .markdown-body td,
+.agnes-app .markdown-body h1,
+.agnes-app .markdown-body h2 {
+  border-color: var(--claude-border);
+}
+
+/* Existing feature pages share the same semantic accents after the shell is restyled. */
+.agnes-app [class*="bg-emerald-700"],
+.agnes-app [class*="bg-emerald-600"],
+.agnes-app [class*="bg-\[#8CA38A\]"],
+.agnes-app [class*="bg-\[#789176\]"] {
+  background-color: var(--claude-clay) !important;
+}
+
+.agnes-app [class*="hover:bg-emerald-800"]:hover,
+.agnes-app [class*="hover:bg-\[#7A917A\]"]:hover,
+.agnes-app [class*="hover:bg-\[#789176\]"]:hover {
+  background-color: var(--claude-clay-dark) !important;
+}
+
+.agnes-app [class*="text-emerald-700"],
+.agnes-app [class*="text-emerald-600"],
+.agnes-app [class*="text-\[#6C806A\]"],
+.agnes-app [class*="text-\[#5F735D\]"] {
+  color: var(--claude-clay-dark) !important;
+}
+
+.agnes-app [class*="border-emerald-"] {
+  border-color: rgba(217, 119, 87, 0.32) !important;
+}
+
+.agnes-app [class*="bg-emerald-50"] {
+  background-color: var(--claude-clay-soft) !important;
+}
+
+.agnes-app [class*="bg-emerald-100"] {
+  background-color: #f1d3c8 !important;
+}
+
+.agnes-app [class*="bg-stone-50"],
+.agnes-app [class*="bg-stone-100"] {
+  background-color: var(--claude-canvas) !important;
+}
+
+.agnes-app [class*="border-stone-"] {
+  border-color: var(--claude-border) !important;
+}
+
+.agnes-app [class*="shadow-2xl"],
+.agnes-app [class*="shadow-xl"],
+.agnes-app [class*="shadow-lg"] {
+  box-shadow: 0 16px 40px rgba(31, 30, 27, 0.12) !important;
+}
+
+.agnes-settings-overlay {
+  background: rgba(31, 30, 27, 0.34) !important;
+  backdrop-filter: blur(6px);
+}
+
+.agnes-settings-modal {
+  width: min(960px, calc(100vw - 32px)) !important;
+  height: min(680px, calc(100vh - 32px)) !important;
+  border-color: var(--claude-border-strong) !important;
+  border-radius: 10px !important;
+  background: var(--claude-surface) !important;
+  box-shadow: 0 24px 64px rgba(31, 30, 27, 0.18) !important;
+}
+
+.agnes-settings-modal > header {
+  background: var(--claude-canvas) !important;
+  border-color: var(--claude-border) !important;
+}
+
+.agnes-settings-nav {
+  width: 220px !important;
+  background: var(--claude-sidebar) !important;
+  border-color: var(--claude-border) !important;
+}
+
+.agnes-settings-nav button {
+  border-radius: 8px !important;
+  color: var(--claude-muted) !important;
+  box-shadow: none !important;
+}
+
+.agnes-settings-nav button[class*="bg-white"] {
+  background: rgba(51, 48, 42, 0.075) !important;
+  border-color: transparent !important;
+  color: var(--claude-ink) !important;
+}
+
+.agnes-settings-content {
+  background: var(--claude-surface) !important;
+}
+
+.agnes-settings-content article,
+.agnes-settings-content section > div[class*="rounded-xl"],
+.agnes-settings-content div[class*="rounded-xl"][class*="border"] {
+  border-color: var(--claude-border) !important;
+  border-radius: 8px !important;
+  box-shadow: none !important;
+}
+
+.agnes-feature-workspace {
+  background: var(--claude-surface) !important;
+  color: var(--claude-body);
+}
+
+.agnes-feature-workspace > header {
+  height: 58px !important;
+  background: rgba(255, 255, 255, 0.94) !important;
+  border-color: var(--claude-border) !important;
+  backdrop-filter: blur(12px);
+}
+
+.agnes-feature-workspace > header svg[class*="text-\[#8CA38A\]"] {
+  color: var(--claude-clay) !important;
+}
+
+.agnes-subnav {
+  width: 248px !important;
+  background: var(--claude-sidebar) !important;
+  border-color: var(--claude-border) !important;
+}
+
+.agnes-subnav button {
+  border-radius: 8px !important;
+  box-shadow: none !important;
+}
+
+.agnes-subnav button[class*="bg-white"] {
+  background: rgba(51, 48, 42, 0.075) !important;
+  color: var(--claude-ink) !important;
+}
+
+.agnes-feature-content {
+  background: var(--claude-surface);
+}
+
+.agnes-feature-workspace button[class*="bg-white"],
+.agnes-feature-workspace label[class*="bg-white"] {
+  border-color: var(--claude-border) !important;
+  box-shadow: none !important;
+}
+
+.agnes-feature-workspace article,
+.agnes-feature-workspace div[class*="rounded-xl"][class*="border"],
+.agnes-feature-workspace div[class*="rounded-2xl"][class*="border"] {
+  border-color: var(--claude-border) !important;
+  box-shadow: none !important;
+}
+
+.agnes-feature-workspace article,
+.agnes-feature-workspace div[class*="rounded-xl"] {
+  border-radius: 8px !important;
+}
+
+.agnes-drive-workspace .sticky {
+  background: rgba(250, 249, 245, 0.96) !important;
+}
+
+.agnes-drive-workspace input[type="checkbox"],
+.agnes-planner-workspace input[type="checkbox"] {
+  accent-color: var(--claude-clay);
+}
+
+.agnes-reading-workspace > section,
+.agnes-reading-workspace > div > section {
+  background: var(--claude-surface) !important;
+}
+
+.agnes-reading-workspace aside {
+  background: var(--claude-canvas) !important;
+  border-color: var(--claude-border) !important;
+}
+
+.agnes-reading-workspace textarea,
+.agnes-reading-workspace select {
+  background: var(--claude-surface) !important;
+  border-color: var(--claude-border-strong) !important;
+}
+
+@media (max-width: 640px) {
+  .agnes-settings-modal {
+    width: calc(100vw - 16px) !important;
+    height: calc(100vh - 16px) !important;
+  }
+
+  .agnes-settings-nav {
+    width: 172px !important;
+  }
+
+  .agnes-settings-content {
+    padding: 16px !important;
+  }
+
+  .agnes-subnav {
+    width: 196px !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .agnes-sidebar--open {
+    width: 248px !important;
+  }
+
+  .agnes-chat-header {
+    padding-inline: 16px !important;
+  }
+
+  .agnes-chat-header > div:last-child > div:first-child {
+    display: none;
+  }
+
+  .agnes-chat-messages {
+    padding: 24px 20px 40px !important;
+  }
+
+  .agnes-chat-composer {
+    padding-inline: 18px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .agnes-sidebar--open {
+    width: 216px !important;
+  }
+
+  .agnes-chat-header button span {
+    display: none;
+  }
+
+  .agnes-chat-messages {
+    padding-inline: 14px !important;
+  }
+
+  .agnes-chat-messages .agnes-message-row > div:last-child {
+    max-width: 92% !important;
+  }
+
+  .agnes-chat-composer {
+    padding: 8px 10px 12px !important;
+  }
+
+  .agnes-chat-composer-box > div:last-child > span:first-child {
+    display: none;
+  }
 }

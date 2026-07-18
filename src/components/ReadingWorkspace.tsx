@@ -716,7 +716,7 @@ export const ReadingWorkspace: React.FC = () => {
   };
 
   return (
-    <main className="flex min-w-0 flex-1 flex-col bg-[#faf9f5] lg:flex-row">
+    <main className="agnes-feature-workspace agnes-reading-workspace flex min-w-0 flex-1 flex-col bg-[#faf9f5] lg:flex-row">
       {selectedBook ? (
         <div className="relative flex min-h-64 min-w-0 flex-1 flex-col lg:min-h-0 lg:flex-row" onClick={() => setSelectionMenu(null)}>
           <EpubPane

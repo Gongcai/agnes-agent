@@ -667,7 +667,7 @@ export function DriveWorkspace() {
     : [];
 
   return (
-    <main className="flex h-full min-w-0 flex-1 flex-col bg-[#FAF9F5]">
+    <main className="agnes-feature-workspace agnes-drive-workspace flex h-full min-w-0 flex-1 flex-col bg-[#FAF9F5]">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white/40 px-5 backdrop-blur-md">
         <div className="flex items-center gap-2 text-sm font-semibold text-stone-800">
           <HardDrive className="h-4 w-4 text-[#8CA38A]" />
@@ -707,7 +707,7 @@ export function DriveWorkspace() {
       )}
 
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-64 shrink-0 flex-col border-r border-stone-200 bg-white/30 p-3">
+        <aside className="agnes-subnav flex w-64 shrink-0 flex-col border-r border-stone-200 bg-white/30 p-3">
           <div className="mb-2 px-2 text-[10px] font-bold uppercase tracking-wider text-stone-400">
             账户
           </div>

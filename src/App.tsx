@@ -74,7 +74,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#FAF9F5] text-[#2e2e38] antialiased selection:bg-emerald-100 selection:text-emerald-900">
+    <div className="agnes-app flex h-screen w-screen overflow-hidden bg-[#FAF9F5] text-[#2e2e38] antialiased selection:bg-orange-100 selection:text-stone-900">
       {/* Collapsible Left Sidebar */}
       <Sidebar
         isOpen={isSidebarOpen}

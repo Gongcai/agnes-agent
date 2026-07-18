@@ -24,7 +24,7 @@ export function PlannerWorkspace({
   const HeaderIcon = isCalendar ? CalendarDays : CheckSquare2;
 
   return (
-    <main className="flex h-full min-w-0 flex-1 flex-col bg-[#FAF9F5]">
+    <main className="agnes-feature-workspace agnes-planner-workspace flex h-full min-w-0 flex-1 flex-col bg-[#FAF9F5]">
       <header className="flex h-14 shrink-0 items-center border-b border-stone-200 bg-white/55 px-5">
         <span className="flex items-center gap-2 text-sm font-semibold text-stone-800">
           <HeaderIcon className="h-4 w-4 text-[#4f7f68]" />

@@ -36,7 +36,7 @@ export const AgentAvatar: React.FC<AgentAvatarProps> = ({
   return (
     <div
       style={dimension}
-      className={`rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 font-bold shrink-0 select-none ${className}`}
+      className={`rounded-full border border-[#d97757]/25 bg-[#d97757]/10 text-[#b95f43] flex items-center justify-center font-semibold shrink-0 select-none ${className}`}
     >
       <span style={{ fontSize: size * 0.5, lineHeight: 1 }}>{text}</span>
     </div>
