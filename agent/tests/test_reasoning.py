@@ -8,6 +8,7 @@ from app import graph as graph_module
 from app.prompt import assemble_prompt, group_protocol_messages, translate_messages, count_tokens
 from app.graph import build_graph, get_available_tools
 from app.memory_extract import extract_memories
+from app.title import generate_session_title, normalize_session_title
 from app.main import (
     INTERNAL_EMBEDDING_KEY,
     attach_extracted_memory_embeddings,
@@ -63,6 +64,47 @@ def test_completion_uses_configured_max_tokens(monkeypatch):
     )
 
     assert captured["max_tokens"] == 8192
+
+
+def test_completion_accepts_a_shorter_task_timeout(monkeypatch):
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr("app.models.litellm.completion", fake_completion)
+
+    completion("test-model", [{"role": "user", "content": "Hi"}], timeout=15)
+
+    assert captured["timeout"] == 15
+
+
+def test_session_title_generation_uses_quick_model_and_cleans_output(monkeypatch):
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='标题： "排查日历同步"'))]
+        )
+
+    monkeypatch.setattr("app.title.completion", fake_completion)
+    config = LlmConfig(litellm_model="quick-model")
+
+    title = generate_session_title("日历同步为什么失败？", "quick-model", config)
+
+    assert title == "排查日历同步"
+    assert captured["model"] == "quick-model"
+    assert captured["llm_config"] is config
+    assert captured["max_tokens"] == 64
+    assert captured["timeout"] == 15
+
+
+def test_session_title_normalization_rejects_empty_and_limits_length():
+    assert normalize_session_title("  \n\t ") is None
+    assert normalize_session_title("#  concise   title  ") == "concise title"
+    assert normalize_session_title("a" * 41) == "a" * 40 + "…"
 
 
 def test_thought_only_model_response_gets_a_visible_fallback(monkeypatch):

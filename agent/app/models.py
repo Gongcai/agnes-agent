@@ -210,6 +210,7 @@ def completion(
         )
         extra_kwargs.update(thinking_kwargs)
 
+    request_timeout = kwargs.pop("timeout", MODEL_REQUEST_TIMEOUT_SECONDS)
     max_tokens = kwargs.pop(
         "max_tokens",
         llm_config.max_tokens if llm_config else DEFAULT_MAX_OUTPUT_TOKENS,
@@ -219,7 +220,7 @@ def completion(
         messages=messages,
         tools=tools,
         stream=stream,
-        timeout=MODEL_REQUEST_TIMEOUT_SECONDS,
+        timeout=request_timeout,
         max_tokens=max_tokens,
         **extra_kwargs,
         **kwargs,

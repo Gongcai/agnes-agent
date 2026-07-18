@@ -2875,10 +2875,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
 
                 {/* Provider List */}
-                <div className="space-y-2.5">
-                  {providers.map((provider) => (
+                <div className="flex flex-col gap-2.5">
+                  {providers.map((provider, providerIndex) => (
                     <div
                       key={provider.id}
+                      style={{ order: providerIndex * 2 }}
                       className={`border rounded-xl p-4 shadow-sm transition-all duration-200 hover:shadow-md ${
                         editingProviderId === provider.id
                           ? "border-[#8CA38A]/50 bg-[#FAF9F5]/40 ring-1 ring-[#8CA38A]/20"
@@ -2982,17 +2983,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   ))}
 
                   {providers.length === 0 && !editingProviderId && (
-                    <div className="border border-dashed border-stone-200 rounded-xl p-8 text-center">
+                    <div style={{ order: 0 }} className="border border-dashed border-stone-200 rounded-xl p-8 text-center">
                       <Server className="h-8 w-8 text-stone-300 mx-auto mb-2" />
                       <p className="text-xs text-stone-400">尚未配置任何模型服务商</p>
                       <p className="text-[10px] text-stone-350 mt-0.5">点击下方按钮添加您的第一个服务商</p>
                     </div>
                   )}
-                </div>
-
                 {/* Test result (shown globally when no editor is open) */}
                 {testResult && !editingProviderId && (
-                  <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs border transition-all ${
+                  <div style={{ order: providers.length * 2 }} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs border transition-all ${
                     testResult.success
                       ? "bg-emerald-50 border-emerald-200/60 text-emerald-700"
                       : "bg-red-50 border-red-200/60 text-red-600"
@@ -3010,7 +3009,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                 {/* Provider Editor (inline form) */}
                 {editingProviderId && (
-                  <div className="border border-[#8CA38A]/30 bg-[#FAF9F5]/40 rounded-xl p-5 space-y-4 shadow-sm ring-1 ring-[#8CA38A]/10">
+                  <div
+                    style={{
+                      order: editingProviderId === "new"
+                        ? providers.length * 2
+                        : Math.max(0, providers.findIndex((provider) => provider.id === editingProviderId) * 2 + 1),
+                    }}
+                    className="border border-[#8CA38A]/30 bg-[#FAF9F5]/40 rounded-xl p-5 space-y-4 shadow-sm ring-1 ring-[#8CA38A]/10"
+                  >
                     <div className="flex items-center justify-between pb-3 border-b border-stone-200/60">
                       <h4 className="text-xs font-semibold text-stone-700">
                         {editingProviderId === "new" ? "添加新服务商" : "编辑服务商"}
@@ -3265,6 +3271,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                   </div>
                 )}
+                </div>
 
                 {/* Add Provider Button */}
                 {!editingProviderId && (
@@ -4838,7 +4845,7 @@ const GeneralTab: React.FC = () => {
       </div>
 
       <div>
-        <label htmlFor="translation-target-language" className="font-semibold text-stone-500 block mb-2">翻译目标语言</label>
+        <label htmlFor="translation-target-language" className="font-semibold text-stone-500 block mb-2">语言</label>
         <select
           id="translation-target-language"
           value={translationLanguage}

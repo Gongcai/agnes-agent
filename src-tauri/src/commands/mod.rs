@@ -1108,6 +1108,7 @@ pub async fn edit_and_resend(
         &assistant_msg_id,
         false,
         false,
+        None,
     )
     .await
 }
@@ -1155,6 +1156,7 @@ pub async fn regenerate_message(
         &assistant_msg_id,
         true,
         false,
+        None,
     )
     .await
 }
@@ -1249,6 +1251,39 @@ struct ResolvedLlm {
     max_tokens: i64,
     task_llm_configs: serde_json::Value,
     fallback_llm_configs: serde_json::Value,
+}
+
+const DEFAULT_SESSION_TITLE: &str = "新会话";
+const SESSION_TITLE_MAX_CHARS: usize = 40;
+
+pub(crate) fn normalize_session_title(value: &str) -> Option<String> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = normalized
+        .trim_matches(|character: char| {
+            matches!(
+                character,
+                '`' | '*' | '_' | '#' | '"' | '\'' | '“' | '”' | '‘' | '’'
+            )
+        })
+        .trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut chars = trimmed.chars();
+    let mut title = chars
+        .by_ref()
+        .take(SESSION_TITLE_MAX_CHARS)
+        .collect::<String>();
+    if chars.next().is_some() {
+        title = title.trim_end().to_string();
+        title.push('…');
+    }
+    Some(title)
+}
+
+fn fallback_session_title(source_text: &str) -> String {
+    normalize_session_title(source_text).unwrap_or_else(|| DEFAULT_SESSION_TITLE.to_string())
 }
 
 /// Resolve a routed model reference into the same provider configuration used by the main model.
@@ -1476,6 +1511,7 @@ async fn start_agent_run(
     assistant_msg_id: &str,
     is_regeneration: bool,
     include_reading_context: bool,
+    session_title_request: Option<serde_json::Value>,
 ) -> AppResult<()> {
     eprintln!("[agent][run] Preparing run for session={session_id} assistant={assistant_msg_id}");
     let (user_md, memory_md) =
@@ -1614,6 +1650,7 @@ async fn start_agent_run(
             },
             "fallbackLlmConfigs": cfg.fallback_llm_configs,
             "taskLlmConfigs": cfg.task_llm_configs,
+            "sessionTitleRequest": session_title_request,
             "settings": {
                 "user_context_limit": cfg.session_context_limit
             },
@@ -1674,6 +1711,7 @@ async fn start_agent_run_or_mark_failed(
     assistant_msg_id: &str,
     is_regeneration: bool,
     include_reading_context: bool,
+    session_title_request: Option<serde_json::Value>,
 ) -> AppResult<()> {
     let result = start_agent_run(
         state,
@@ -1682,6 +1720,7 @@ async fn start_agent_run_or_mark_failed(
         assistant_msg_id,
         is_regeneration,
         include_reading_context,
+        session_title_request,
     )
     .await;
     if let Err(error) = &result {
@@ -1709,6 +1748,27 @@ pub async fn send_message(
     // 取当前活动叶子作为新 user 消息的 parent（首条消息时为 None）
     let path = state.db.list_active_with_parts(session_id.clone()).await?;
     let leaf_id = path.messages.last().map(|am| am.message.id.clone());
+    let session_title_request = if reading_book_id.is_none() && path.messages.is_empty() {
+        let session = state.db.get_session(session_id.clone()).await?;
+        if session
+            .as_ref()
+            .is_some_and(|session| session.title.trim() == DEFAULT_SESSION_TITLE)
+        {
+            let fallback_title = fallback_session_title(&text);
+            state
+                .db
+                .update_session_title(session_id.clone(), fallback_title.clone())
+                .await?;
+            Some(json!({
+                "sourceText": text,
+                "fallbackTitle": fallback_title,
+            }))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // 原子插入 user + pending assistant 并链接版本树
     let (_user_id, assistant_msg_id) = state
@@ -1724,6 +1784,7 @@ pub async fn send_message(
         &assistant_msg_id,
         false,
         reading_book_id.is_some(),
+        session_title_request,
     )
     .await
 }
@@ -3767,8 +3828,9 @@ pub async fn set_setting(
 #[cfg(test)]
 mod tests {
     use super::{
-        latest_user_query, persist_search_provider_settings, saved_provider_endpoint_matches,
-        CalendarEventUpdatePayload, SearchProviderSettingsInput, TaskUpdatePayload,
+        latest_user_query, normalize_session_title, persist_search_provider_settings,
+        saved_provider_endpoint_matches, CalendarEventUpdatePayload, SearchProviderSettingsInput,
+        TaskUpdatePayload,
     };
     use crate::secrets::{InMemorySecretStore, SecretStore};
 
@@ -3836,6 +3898,17 @@ mod tests {
             "openai_compatible",
             None,
         ));
+    }
+
+    #[test]
+    fn session_title_normalization_is_short_and_single_line() {
+        assert_eq!(normalize_session_title("  \n\t"), None);
+        assert_eq!(
+            normalize_session_title("`  日历  同步  `").as_deref(),
+            Some("日历 同步")
+        );
+        let expected = format!("{}…", "x".repeat(40));
+        assert_eq!(normalize_session_title(&"x".repeat(41)), Some(expected));
     }
 
     #[tokio::test]
