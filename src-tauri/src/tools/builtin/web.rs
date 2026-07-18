@@ -79,6 +79,25 @@ impl BuiltinTool for WebSearchTool {
         };
 
         ctx.update_running("web://search").await?;
+        let settings = match crate::web::load_search_provider_settings(ctx.db).await {
+            Ok(settings) => settings,
+            Err(error) => return fail(ctx, error.to_string()).await,
+        };
+        let selected_provider = ctx.policy.web.search_provider.trim().to_ascii_lowercase();
+        let needs_brave_key = selected_provider == "brave"
+            || ((selected_provider.is_empty() || selected_provider == "auto")
+                && settings
+                    .fallback_order
+                    .iter()
+                    .any(|provider| provider == "brave"));
+        let brave_api_key = if needs_brave_key {
+            match ctx.search_secrets.brave_api_key().await {
+                Ok(api_key) => api_key,
+                Err(error) => return fail(ctx, error.to_string()).await,
+            }
+        } else {
+            None
+        };
         let result = match crate::web::search(
             &ctx.policy.web.search_provider,
             query,
@@ -86,6 +105,8 @@ impl BuiltinTool for WebSearchTool {
             language,
             freshness,
             ctx.policy.web.timeout_sec,
+            &settings,
+            brave_api_key.as_deref(),
         )
         .await
         {

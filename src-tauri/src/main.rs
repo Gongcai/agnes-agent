@@ -76,7 +76,12 @@ fn main() {
             // 2) 启动 AgentManager：Rust 起 WS Server + 拉起 Python sidecar。
             //    非致命：失败仅日志，不阻断 UI 启动。
             let agent = Arc::new(agent::AgentManager::new());
-            if let Err(e) = agent.start(db.clone(), app.handle().clone(), mcp.clone()) {
+            if let Err(e) = agent.start(
+                db.clone(),
+                app.handle().clone(),
+                mcp.clone(),
+                secrets.clone(),
+            ) {
                 eprintln!("[agent] 启动失败（非致命）：{e}");
             }
 
@@ -181,6 +186,9 @@ fn main() {
             commands::delete_provider,
             commands::get_model_roles,
             commands::set_model_roles,
+            commands::get_search_provider_settings,
+            commands::set_search_provider_settings,
+            commands::test_search_provider,
             commands::get_secret_store_status,
             commands::test_provider,
             commands::fetch_provider_models,

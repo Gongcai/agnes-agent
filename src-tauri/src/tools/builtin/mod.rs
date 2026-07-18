@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::db::DbActorHandle;
 use crate::error::AppResult;
+use crate::secrets::SecretStore;
 use crate::tools::policy::{ApprovalTier, Risk, ToolPolicy};
 use crate::tools::sandbox::SandboxGuard;
 
@@ -26,9 +27,27 @@ pub mod planner;
 pub mod shell;
 pub mod web;
 
+/// Narrow credential facade exposed to built-in tools.
+pub struct SearchSecretAccess<'a> {
+    store: &'a dyn SecretStore,
+}
+
+impl<'a> SearchSecretAccess<'a> {
+    pub(crate) fn new(store: &'a dyn SecretStore) -> Self {
+        Self { store }
+    }
+
+    pub async fn brave_api_key(&self) -> AppResult<Option<String>> {
+        self.store
+            .get(crate::web::BRAVE_SEARCH_API_KEY_SECRET_ID)
+            .await
+    }
+}
+
 /// 工具执行上下文：包含审计所需的 DB 句柄、参数、policy 与 workspace cwd。
 pub struct ToolCtx<'a> {
     pub db: &'a DbActorHandle,
+    pub search_secrets: SearchSecretAccess<'a>,
     pub session_id: &'a str,
     pub tool_call_id: &'a str,
     pub args: &'a Value,

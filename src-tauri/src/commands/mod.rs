@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::agent::protocol::{msg_type, Envelope};
 use crate::db::repo::agents::{AgentRow, AgentUpdate, NewAgent};
@@ -3338,6 +3338,193 @@ pub async fn set_model_roles(
 }
 
 #[derive(Serialize)]
+pub struct SearchProviderSettingsDto {
+    pub fallback_order: Vec<String>,
+    pub searxng_base_url: Option<String>,
+    pub has_brave_api_key: bool,
+}
+
+#[derive(Deserialize)]
+pub struct SearchProviderSettingsInput {
+    pub fallback_order: Vec<String>,
+    pub searxng_base_url: Option<String>,
+    pub brave_api_key: Option<String>,
+    #[serde(default)]
+    pub clear_brave_api_key: bool,
+}
+
+#[derive(Serialize)]
+pub struct SearchProviderTestResult {
+    pub success: bool,
+    pub provider: String,
+    pub category: Option<String>,
+    pub message: String,
+    pub result_count: usize,
+    pub latency_ms: u128,
+}
+
+/// Return device-local search routing without exposing the Brave API key.
+#[tauri::command]
+pub async fn get_search_provider_settings(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<SearchProviderSettingsDto> {
+    let settings = crate::web::load_search_provider_settings(&state.db).await?;
+    let has_brave_api_key = state
+        .secrets
+        .get(crate::web::BRAVE_SEARCH_API_KEY_SECRET_ID)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|key| !key.is_empty());
+    Ok(SearchProviderSettingsDto {
+        fallback_order: settings.fallback_order,
+        searxng_base_url: settings.searxng_base_url,
+        has_brave_api_key,
+    })
+}
+
+/// Persist search routing and update the Brave credential transactionally.
+#[tauri::command]
+pub async fn set_search_provider_settings(
+    state: tauri::State<'_, AppState>,
+    input: SearchProviderSettingsInput,
+) -> AppResult<()> {
+    persist_search_provider_settings(&state.db, state.secrets.as_ref(), input).await
+}
+
+async fn persist_search_provider_settings(
+    db: &crate::db::DbActorHandle,
+    secrets: &dyn SecretStore,
+    mut input: SearchProviderSettingsInput,
+) -> AppResult<()> {
+    let mut settings = crate::web::SearchProviderSettings {
+        fallback_order: input.fallback_order,
+        searxng_base_url: input.searxng_base_url,
+    };
+    settings.normalize()?;
+
+    let secret_id = crate::web::BRAVE_SEARCH_API_KEY_SECRET_ID;
+    let supplied_key = input
+        .brave_api_key
+        .take()
+        .map(|key| Zeroizing::new(key.trim().to_string()))
+        .filter(|key| !key.is_empty());
+    let supplied_key_value = supplied_key.as_ref().map(|key| key.as_str());
+    if supplied_key_value
+        .is_some_and(|key| key.len() > 1024 || !key.bytes().all(|value| value.is_ascii_graphic()))
+    {
+        return Err(AppError::Other(
+            "Brave Search API Key 必须是 1 到 1024 字节的可打印 ASCII 字符".into(),
+        ));
+    }
+    let brave_in_chain = settings
+        .fallback_order
+        .iter()
+        .any(|provider| provider == "brave");
+    let credential_access_needed =
+        brave_in_chain || input.clear_brave_api_key || supplied_key_value.is_some();
+    let previous_key = if credential_access_needed {
+        secrets.get(secret_id).await?.map(Zeroizing::new)
+    } else {
+        None
+    };
+    let previous_key_value = previous_key.as_ref().map(|key| key.as_str());
+    let desired_key = if input.clear_brave_api_key {
+        None
+    } else {
+        supplied_key_value.or_else(|| previous_key_value.filter(|key| !key.is_empty()))
+    };
+    if brave_in_chain && desired_key.is_none() {
+        return Err(AppError::Other(
+            "回退链包含 Brave Search，但尚未配置 API Key".into(),
+        ));
+    }
+
+    let credential_changed = input.clear_brave_api_key || supplied_key.is_some();
+    if input.clear_brave_api_key {
+        secrets.delete(secret_id).await?;
+    } else if let Some(key) = supplied_key_value {
+        secrets.set(secret_id, key).await?;
+    }
+    if credential_changed {
+        let verified = secrets.get(secret_id).await?;
+        if verified.as_deref() != desired_key {
+            let rollback_error = restore_secret(secrets, secret_id, previous_key_value)
+                .await
+                .err();
+            return Err(AppError::SecretStore(format!(
+                "search credential verification failed{}",
+                rollback_error
+                    .map(|error| format!("; rollback failed: {error}"))
+                    .unwrap_or_default()
+            )));
+        }
+    }
+
+    if let Err(db_error) = crate::web::save_search_provider_settings(db, &settings).await {
+        let rollback_error = if credential_changed {
+            restore_secret(secrets, secret_id, previous_key_value)
+                .await
+                .err()
+        } else {
+            None
+        };
+        if let Some(rollback_error) = rollback_error {
+            return Err(AppError::SecretStore(format!(
+                "search settings save failed: {db_error}; credential rollback failed: {rollback_error}"
+            )));
+        }
+        return Err(db_error);
+    }
+    Ok(())
+}
+
+/// Probe one configured search Provider with a fixed non-sensitive query.
+#[tauri::command]
+pub async fn test_search_provider(
+    state: tauri::State<'_, AppState>,
+    provider_id: String,
+) -> AppResult<SearchProviderTestResult> {
+    let provider = provider_id.trim().to_ascii_lowercase();
+    if !crate::web::SEARCH_PROVIDER_IDS.contains(&provider.as_str()) {
+        return Err(AppError::Other(format!(
+            "不支持的搜索 Provider `{provider}`"
+        )));
+    }
+    let settings = crate::web::load_search_provider_settings(&state.db).await?;
+    let api_key = if provider == "brave" {
+        state
+            .secrets
+            .get(crate::web::BRAVE_SEARCH_API_KEY_SECRET_ID)
+            .await?
+    } else {
+        None
+    };
+    let started = std::time::Instant::now();
+    let probe =
+        crate::web::probe_search_provider(&provider, &settings, api_key.as_deref(), 15).await;
+    let latency_ms = started.elapsed().as_millis();
+    Ok(match probe {
+        Ok(result_count) => SearchProviderTestResult {
+            success: true,
+            provider,
+            category: None,
+            message: format!("连接正常，返回 {result_count} 条测试结果"),
+            result_count,
+            latency_ms,
+        },
+        Err(category) => SearchProviderTestResult {
+            success: false,
+            provider,
+            category: Some(category.as_str().into()),
+            message: category.display_message().into(),
+            result_count: 0,
+            latency_ms,
+        },
+    })
+}
+
+#[derive(Serialize)]
 pub struct SecretStoreStatusDto {
     pub available: bool,
     pub backend: &'static str,
@@ -3580,9 +3767,27 @@ pub async fn set_setting(
 #[cfg(test)]
 mod tests {
     use super::{
-        latest_user_query, saved_provider_endpoint_matches, CalendarEventUpdatePayload,
-        TaskUpdatePayload,
+        latest_user_query, persist_search_provider_settings, saved_provider_endpoint_matches,
+        CalendarEventUpdatePayload, SearchProviderSettingsInput, TaskUpdatePayload,
     };
+    use crate::secrets::{InMemorySecretStore, SecretStore};
+
+    struct UnavailableSecretStore;
+
+    #[async_trait::async_trait]
+    impl SecretStore for UnavailableSecretStore {
+        async fn get(&self, _secret_id: &str) -> crate::error::AppResult<Option<String>> {
+            Err(crate::error::AppError::SecretStore("unavailable".into()))
+        }
+
+        async fn set(&self, _secret_id: &str, _value: &str) -> crate::error::AppResult<()> {
+            Err(crate::error::AppError::SecretStore("unavailable".into()))
+        }
+
+        async fn delete(&self, _secret_id: &str) -> crate::error::AppResult<()> {
+            Err(crate::error::AppError::SecretStore("unavailable".into()))
+        }
+    }
 
     #[test]
     fn latest_user_query_uses_the_newest_text_message() {
@@ -3631,6 +3836,98 @@ mod tests {
             "openai_compatible",
             None,
         ));
+    }
+
+    #[tokio::test]
+    async fn search_provider_settings_keep_credentials_out_of_db_and_validate_brave() {
+        let db_path =
+            std::env::temp_dir().join(format!("agnes-search-settings-{}.db", uuid::Uuid::new_v4()));
+        let db = crate::db::spawn_db_actor(db_path);
+        let secrets = InMemorySecretStore::default();
+
+        persist_search_provider_settings(
+            &db,
+            &secrets,
+            SearchProviderSettingsInput {
+                fallback_order: vec!["brave".into(), "duckduckgo".into()],
+                searxng_base_url: None,
+                brave_api_key: Some("brave-secret".into()),
+                clear_brave_api_key: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            secrets
+                .get(crate::web::BRAVE_SEARCH_API_KEY_SECRET_ID)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("brave-secret")
+        );
+        let stored = db
+            .get_setting(crate::web::SEARCH_PROVIDER_SETTINGS_KEY.into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!stored.contains("brave-secret"));
+
+        persist_search_provider_settings(
+            &db,
+            &secrets,
+            SearchProviderSettingsInput {
+                fallback_order: vec!["duckduckgo".into()],
+                searxng_base_url: None,
+                brave_api_key: None,
+                clear_brave_api_key: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(secrets
+            .get(crate::web::BRAVE_SEARCH_API_KEY_SECRET_ID)
+            .await
+            .unwrap()
+            .is_none());
+
+        let result = persist_search_provider_settings(
+            &db,
+            &secrets,
+            SearchProviderSettingsInput {
+                fallback_order: vec!["brave".into()],
+                searxng_base_url: None,
+                brave_api_key: None,
+                clear_brave_api_key: false,
+            },
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn no_key_search_settings_do_not_depend_on_the_secret_store() {
+        let db_path = std::env::temp_dir().join(format!(
+            "agnes-no-key-search-settings-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = crate::db::spawn_db_actor(db_path);
+        persist_search_provider_settings(
+            &db,
+            &UnavailableSecretStore,
+            SearchProviderSettingsInput {
+                fallback_order: vec!["duckduckgo".into(), "bing".into()],
+                searxng_base_url: None,
+                brave_api_key: None,
+                clear_brave_api_key: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .get_setting(crate::web::SEARCH_PROVIDER_SETTINGS_KEY.into())
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[test]

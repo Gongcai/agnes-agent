@@ -9,18 +9,20 @@ use crate::db::repo::tools::NewToolCall;
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::mcp::McpManager;
-use crate::tools::builtin::{builtin_tools, ToolCtx};
+use crate::secrets::SharedSecretStore;
+use crate::tools::builtin::{builtin_tools, SearchSecretAccess, ToolCtx};
 use crate::tools::policy::ToolPolicy;
 use crate::tools::PermissionMode;
 
 pub struct ToolExecutor {
     db: DbActorHandle,
     mcp: Arc<McpManager>,
+    secrets: SharedSecretStore,
 }
 
 impl ToolExecutor {
-    pub fn new(db: DbActorHandle, mcp: Arc<McpManager>) -> Self {
-        Self { db, mcp }
+    pub fn new(db: DbActorHandle, mcp: Arc<McpManager>, secrets: SharedSecretStore) -> Self {
+        Self { db, mcp, secrets }
     }
 
     /// 执行工具调用：审计入志 → workspace cwd → 有效 policy → 派发。
@@ -134,6 +136,7 @@ impl ToolExecutor {
         // E. 派发到内置工具
         let ctx = ToolCtx {
             db: &self.db,
+            search_secrets: SearchSecretAccess::new(self.secrets.as_ref()),
             session_id,
             tool_call_id,
             args: arguments,
@@ -203,11 +206,9 @@ mod tests {
             let _ = fs::remove_file(&db_path);
         }
         let db = spawn_db_actor(db_path.clone());
-        let mcp = std::sync::Arc::new(crate::mcp::McpManager::new(
-            db.clone(),
-            std::sync::Arc::new(crate::secrets::InMemorySecretStore::default()),
-        ));
-        let executor = ToolExecutor::new(db.clone(), mcp);
+        let secrets = std::sync::Arc::new(crate::secrets::InMemorySecretStore::default());
+        let mcp = std::sync::Arc::new(crate::mcp::McpManager::new(db.clone(), secrets.clone()));
+        let executor = ToolExecutor::new(db.clone(), mcp, secrets);
 
         db.insert_agent(new_agent("test-agent", "Test Agent"))
             .await

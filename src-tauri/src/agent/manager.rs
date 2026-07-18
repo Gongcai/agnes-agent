@@ -8,6 +8,7 @@ use crate::agent::protocol::Envelope;
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::mcp::McpManager;
+use crate::secrets::SharedSecretStore;
 
 /// Agent 运行时：拥有 Python sidecar 子进程与 WS Server 端口/token。
 struct AgentRuntime {
@@ -62,6 +63,7 @@ impl AgentManager {
         db: DbActorHandle,
         app_handle: tauri::AppHandle,
         mcp: Arc<McpManager>,
+        secrets: SharedSecretStore,
     ) -> AppResult<()> {
         if self.running.swap(true, Ordering::SeqCst) {
             return Ok(());
@@ -99,6 +101,7 @@ impl AgentManager {
                 app_handle,
                 manager_clone,
                 mcp,
+                secrets,
             )
             .await
             {

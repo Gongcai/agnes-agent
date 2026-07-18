@@ -17,6 +17,7 @@ use crate::db::repo::tools::NewToolCall;
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::mcp::McpManager;
+use crate::secrets::SharedSecretStore;
 use crate::state::AppState;
 use crate::tools::{PermissionMode, ToolExecutor, ToolPolicy};
 
@@ -101,6 +102,7 @@ pub async fn run<R: tauri::Runtime>(
     app_handle: tauri::AppHandle<R>,
     manager: Arc<AgentManager>,
     mcp: Arc<McpManager>,
+    secrets: SharedSecretStore,
 ) -> AppResult<()> {
     std_listener
         .set_nonblocking(true)
@@ -124,11 +126,21 @@ pub async fn run<R: tauri::Runtime>(
         let app_handle = app_handle.clone();
         let manager = manager.clone();
         let mcp = mcp.clone();
+        let secrets = secrets.clone();
         let active_runs = active_runs.clone();
 
         tokio::spawn(async move {
-            if let Err(e) =
-                handle_conn(stream, token, db, app_handle, manager, mcp, active_runs).await
+            if let Err(e) = handle_conn(
+                stream,
+                token,
+                db,
+                app_handle,
+                manager,
+                mcp,
+                secrets,
+                active_runs,
+            )
+            .await
             {
                 eprintln!("[agent][ws] conn error: {e}");
             }
@@ -144,6 +156,7 @@ async fn handle_conn<R: tauri::Runtime>(
     app_handle: tauri::AppHandle<R>,
     manager: Arc<AgentManager>,
     mcp: Arc<McpManager>,
+    secrets: SharedSecretStore,
     active_runs: Arc<tokio::sync::Mutex<HashMap<String, ActiveRun>>>,
 ) -> AppResult<()> {
     let ws = accept_async(stream)
@@ -168,7 +181,7 @@ async fn handle_conn<R: tauri::Runtime>(
         }
     });
 
-    let tool_executor = ToolExecutor::new(db.clone(), mcp);
+    let tool_executor = ToolExecutor::new(db.clone(), mcp, secrets);
 
     // 读取循环
     while let Some(msg) = ws_read.next().await {
@@ -1031,10 +1044,8 @@ mod tests {
         let app = tauri::test::mock_app();
         let app_handle = app.handle().clone();
         let manager = Arc::new(AgentManager::new());
-        let mcp = Arc::new(crate::mcp::McpManager::new(
-            db.clone(),
-            Arc::new(crate::secrets::InMemorySecretStore::default()),
-        ));
+        let secrets = Arc::new(crate::secrets::InMemorySecretStore::default());
+        let mcp = Arc::new(crate::mcp::McpManager::new(db.clone(), secrets.clone()));
 
         // 真实 Rust WS Server
         let srv_token = token.clone();
@@ -1048,6 +1059,7 @@ mod tests {
                 app_handle,
                 manager_clone,
                 mcp,
+                secrets,
             )
             .await;
         });

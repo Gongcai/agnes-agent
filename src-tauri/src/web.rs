@@ -2,17 +2,27 @@ use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use encoding_rs::{Encoding, UTF_8};
 use futures_util::StreamExt;
-use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_LENGTH, CONTENT_TYPE, LOCATION};
+use reqwest::header::{
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONTENT_LENGTH, CONTENT_TYPE, LOCATION,
+};
 use reqwest::{Client, Url};
 use scraper::{ElementRef, Html, Selector};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 
+pub const SEARCH_PROVIDER_SETTINGS_KEY: &str = "web:search_providers:v1";
+pub const BRAVE_SEARCH_API_KEY_SECRET_ID: &str = "web:search:brave:api_key";
+pub const SEARCH_PROVIDER_IDS: [&str; 4] = ["duckduckgo", "bing", "searxng", "brave"];
+
 const SEARCH_BODY_LIMIT: usize = 2 * 1024 * 1024;
+const SEARCH_API_BODY_LIMIT: usize = 2 * 1024 * 1024;
 const FETCH_BODY_LIMIT: usize = 3 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
 const DNS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -32,6 +42,153 @@ pub struct WebSearchResponse {
     pub query: String,
     pub provider: String,
     pub results: Vec<WebSearchResult>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_attempts: Vec<SearchFallbackAttempt>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SearchFallbackAttempt {
+    pub provider: String,
+    pub category: SearchFailureCategory,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchFailureCategory {
+    Authentication,
+    RateLimit,
+    Timeout,
+    Network,
+    ServiceUnavailable,
+    InvalidConfig,
+    InvalidResponse,
+    EmptyResults,
+}
+
+impl SearchFailureCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Authentication => "authentication",
+            Self::RateLimit => "rate_limit",
+            Self::Timeout => "timeout",
+            Self::Network => "network",
+            Self::ServiceUnavailable => "service_unavailable",
+            Self::InvalidConfig => "invalid_config",
+            Self::InvalidResponse => "invalid_response",
+            Self::EmptyResults => "empty_results",
+        }
+    }
+
+    pub fn display_message(self) -> &'static str {
+        match self {
+            Self::Authentication => "认证失败",
+            Self::RateLimit => "请求受到限流",
+            Self::Timeout => "请求超时",
+            Self::Network => "网络连接失败",
+            Self::ServiceUnavailable => "服务暂时不可用",
+            Self::InvalidConfig => "配置不完整或无效",
+            Self::InvalidResponse => "服务返回了无法解析的响应",
+            Self::EmptyResults => "没有返回搜索结果",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SearchProviderFailure {
+    category: SearchFailureCategory,
+}
+
+impl SearchProviderFailure {
+    fn new(category: SearchFailureCategory) -> Self {
+        Self { category }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchProviderSettings {
+    pub fallback_order: Vec<String>,
+    pub searxng_base_url: Option<String>,
+}
+
+impl Default for SearchProviderSettings {
+    fn default() -> Self {
+        Self {
+            fallback_order: vec!["duckduckgo".into(), "bing".into()],
+            searxng_base_url: None,
+        }
+    }
+}
+
+impl SearchProviderSettings {
+    pub fn normalize(&mut self) -> AppResult<()> {
+        if self.fallback_order.len() > SEARCH_PROVIDER_IDS.len() {
+            return Err(AppError::Other(format!(
+                "搜索回退链最多包含 {} 个 Provider",
+                SEARCH_PROVIDER_IDS.len()
+            )));
+        }
+        let mut seen = HashSet::new();
+        self.fallback_order = self
+            .fallback_order
+            .drain(..)
+            .map(|provider| provider.trim().to_ascii_lowercase())
+            .filter(|provider| !provider.is_empty() && seen.insert(provider.clone()))
+            .collect();
+        if self.fallback_order.is_empty() {
+            return Err(AppError::Other("搜索回退链至少需要一个 Provider".into()));
+        }
+        if let Some(provider) = self
+            .fallback_order
+            .iter()
+            .find(|provider| !SEARCH_PROVIDER_IDS.contains(&provider.as_str()))
+        {
+            return Err(AppError::Other(format!(
+                "不支持的搜索 Provider `{provider}`"
+            )));
+        }
+        self.searxng_base_url = self
+            .searxng_base_url
+            .take()
+            .map(|value| normalize_searxng_base_url(&value))
+            .transpose()?;
+        if self
+            .fallback_order
+            .iter()
+            .any(|provider| provider == "searxng")
+            && self.searxng_base_url.is_none()
+        {
+            return Err(AppError::Other(
+                "回退链包含 SearXNG，但尚未配置服务地址".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub async fn load_search_provider_settings(
+    db: &DbActorHandle,
+) -> AppResult<SearchProviderSettings> {
+    let raw = db
+        .get_setting(SEARCH_PROVIDER_SETTINGS_KEY.to_string())
+        .await?;
+    let mut settings: SearchProviderSettings = raw
+        .as_deref()
+        .and_then(|value| serde_json::from_str(value).ok())
+        .unwrap_or_default();
+    settings.normalize()?;
+    Ok(settings)
+}
+
+pub async fn save_search_provider_settings(
+    db: &DbActorHandle,
+    settings: &SearchProviderSettings,
+) -> AppResult<()> {
+    db.set_setting(
+        SEARCH_PROVIDER_SETTINGS_KEY.to_string(),
+        serde_json::to_string(settings)?,
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,6 +207,105 @@ struct DownloadedPage {
     truncated: bool,
 }
 
+struct SearchRequest<'a> {
+    query: &'a str,
+    count: usize,
+    language: Option<&'a str>,
+    freshness: Option<&'a str>,
+    timeout_sec: u32,
+}
+
+#[async_trait]
+trait SearchProvider: Send + Sync {
+    fn id(&self) -> &'static str;
+
+    async fn search(
+        &self,
+        request: &SearchRequest<'_>,
+    ) -> Result<WebSearchResponse, SearchProviderFailure>;
+}
+
+struct DuckDuckGoSearchProvider;
+struct BingSearchProvider;
+struct SearxngSearchProvider {
+    base_url: String,
+}
+struct BraveSearchProvider {
+    api_key: String,
+}
+
+#[async_trait]
+impl SearchProvider for DuckDuckGoSearchProvider {
+    fn id(&self) -> &'static str {
+        "duckduckgo"
+    }
+
+    async fn search(
+        &self,
+        request: &SearchRequest<'_>,
+    ) -> Result<WebSearchResponse, SearchProviderFailure> {
+        search_duckduckgo(
+            request.query,
+            request.count,
+            request.language,
+            request.freshness,
+            request.timeout_sec,
+        )
+        .await
+        .map_err(|error| classify_search_error(self.id(), &error))
+    }
+}
+
+#[async_trait]
+impl SearchProvider for BingSearchProvider {
+    fn id(&self) -> &'static str {
+        "bing"
+    }
+
+    async fn search(
+        &self,
+        request: &SearchRequest<'_>,
+    ) -> Result<WebSearchResponse, SearchProviderFailure> {
+        search_bing(
+            request.query,
+            request.count,
+            request.language,
+            request.freshness,
+            request.timeout_sec,
+        )
+        .await
+        .map_err(|error| classify_search_error(self.id(), &error))
+    }
+}
+
+#[async_trait]
+impl SearchProvider for SearxngSearchProvider {
+    fn id(&self) -> &'static str {
+        "searxng"
+    }
+
+    async fn search(
+        &self,
+        request: &SearchRequest<'_>,
+    ) -> Result<WebSearchResponse, SearchProviderFailure> {
+        search_searxng(&self.base_url, request).await
+    }
+}
+
+#[async_trait]
+impl SearchProvider for BraveSearchProvider {
+    fn id(&self) -> &'static str {
+        "brave"
+    }
+
+    async fn search(
+        &self,
+        request: &SearchRequest<'_>,
+    ) -> Result<WebSearchResponse, SearchProviderFailure> {
+        search_brave(&self.api_key, request).await
+    }
+}
+
 pub async fn search(
     provider: &str,
     query: &str,
@@ -57,36 +313,97 @@ pub async fn search(
     language: Option<&str>,
     freshness: Option<&str>,
     timeout_sec: u32,
+    settings: &SearchProviderSettings,
+    brave_api_key: Option<&str>,
 ) -> AppResult<WebSearchResponse> {
     let language = normalize_language(language)?;
-    match provider {
-        "duckduckgo" => {
-            search_duckduckgo(query, count, language.as_deref(), freshness, timeout_sec).await
-        }
-        "bing" => search_bing(query, count, language.as_deref(), freshness, timeout_sec).await,
-        "auto" | "" => {
-            let duckduckgo =
-                search_duckduckgo(query, count, language.as_deref(), freshness, timeout_sec).await;
-            if let Ok(response) = &duckduckgo {
-                if !response.results.is_empty() {
-                    return Ok(response.clone());
-                }
-            }
+    let request = SearchRequest {
+        query,
+        count,
+        language: language.as_deref(),
+        freshness,
+        timeout_sec,
+    };
+    let provider = provider.trim().to_ascii_lowercase();
+    let provider_ids = if provider.is_empty() || provider == "auto" {
+        settings.fallback_order.clone()
+    } else if SEARCH_PROVIDER_IDS.contains(&provider.as_str()) {
+        vec![provider]
+    } else {
+        return Err(AppError::Other(format!(
+            "Unsupported web search provider `{provider}`"
+        )));
+    };
 
-            let bing = search_bing(query, count, language.as_deref(), freshness, timeout_sec).await;
-            match bing {
-                Ok(response) => Ok(response),
-                Err(bing_error) => match duckduckgo {
-                    Ok(response) => Ok(response),
-                    Err(duckduckgo_error) => Err(AppError::Other(format!(
-                        "Web search failed with DuckDuckGo ({duckduckgo_error}) and Bing ({bing_error})"
-                    ))),
-                },
+    let mut attempts = Vec::new();
+    let mut last_empty_response = None;
+    for provider_id in provider_ids {
+        let provider = match create_search_provider(&provider_id, settings, brave_api_key) {
+            Ok(provider) => provider,
+            Err(failure) => {
+                attempts.push(SearchFallbackAttempt {
+                    provider: provider_id,
+                    category: failure.category,
+                });
+                continue;
             }
+        };
+        match provider.search(&request).await {
+            Ok(mut response) if !response.results.is_empty() => {
+                response.fallback_attempts = attempts;
+                return Ok(response);
+            }
+            Ok(response) => {
+                attempts.push(SearchFallbackAttempt {
+                    provider: provider.id().into(),
+                    category: SearchFailureCategory::EmptyResults,
+                });
+                last_empty_response = Some(response);
+            }
+            Err(failure) => attempts.push(SearchFallbackAttempt {
+                provider: provider.id().into(),
+                category: failure.category,
+            }),
         }
-        other => Err(AppError::Other(format!(
-            "Unsupported web search provider `{other}`"
-        ))),
+    }
+
+    if let Some(mut response) = last_empty_response {
+        response.fallback_attempts = attempts;
+        return Ok(response);
+    }
+    let summary = attempts
+        .iter()
+        .map(|attempt| format!("{}={}", attempt.provider, attempt.category.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(AppError::Other(format!(
+        "Web search providers failed: {summary}"
+    )))
+}
+
+pub async fn probe_search_provider(
+    provider: &str,
+    settings: &SearchProviderSettings,
+    brave_api_key: Option<&str>,
+    timeout_sec: u32,
+) -> Result<usize, SearchFailureCategory> {
+    let provider = create_search_provider(provider, settings, brave_api_key)
+        .map_err(|failure| failure.category)?;
+    let request = SearchRequest {
+        query: "OpenAI",
+        count: 1,
+        language: Some("en-US"),
+        freshness: None,
+        timeout_sec,
+    };
+    let response = provider
+        .search(&request)
+        .await
+        .map_err(|failure| failure.category)?;
+    if response.results.is_empty() {
+        Err(SearchFailureCategory::EmptyResults)
+    } else {
+        Ok(response.results.len())
     }
 }
 
@@ -168,6 +485,7 @@ async fn search_duckduckgo(
         query: query.to_string(),
         provider: "duckduckgo".into(),
         results: parse_duckduckgo_results(&html, count),
+        fallback_attempts: Vec::new(),
     })
 }
 
@@ -199,6 +517,226 @@ async fn search_bing(
         query: query.to_string(),
         provider: "bing".into(),
         results: parse_bing_results(&html, count),
+        fallback_attempts: Vec::new(),
+    })
+}
+
+fn create_search_provider(
+    provider: &str,
+    settings: &SearchProviderSettings,
+    brave_api_key: Option<&str>,
+) -> Result<Box<dyn SearchProvider>, SearchProviderFailure> {
+    match provider {
+        "duckduckgo" => Ok(Box::new(DuckDuckGoSearchProvider)),
+        "bing" => Ok(Box::new(BingSearchProvider)),
+        "searxng" => settings
+            .searxng_base_url
+            .as_ref()
+            .map(|base_url| {
+                Box::new(SearxngSearchProvider {
+                    base_url: base_url.clone(),
+                }) as Box<dyn SearchProvider>
+            })
+            .ok_or_else(|| SearchProviderFailure::new(SearchFailureCategory::InvalidConfig)),
+        "brave" => brave_api_key
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(|api_key| {
+                Box::new(BraveSearchProvider {
+                    api_key: api_key.to_string(),
+                }) as Box<dyn SearchProvider>
+            })
+            .ok_or_else(|| SearchProviderFailure::new(SearchFailureCategory::InvalidConfig)),
+        _ => Err(SearchProviderFailure::new(
+            SearchFailureCategory::InvalidConfig,
+        )),
+    }
+}
+
+fn normalize_searxng_base_url(value: &str) -> AppResult<String> {
+    let mut url = Url::parse(value.trim())
+        .map_err(|error| AppError::Other(format!("SearXNG 地址无效: {error}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(AppError::Other("SearXNG 地址只能使用 HTTP 或 HTTPS".into()));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(AppError::Other("SearXNG 地址不能包含用户名或密码".into()));
+    }
+    if url.host_str().is_none() {
+        return Err(AppError::Other("SearXNG 地址必须包含主机名".into()));
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    let normalized = url.as_str().trim_end_matches('/').to_string();
+    if normalized.len() > 2048 {
+        return Err(AppError::Other("SearXNG 地址过长".into()));
+    }
+    Ok(normalized)
+}
+
+fn classify_search_error(_provider: &str, error: &AppError) -> SearchProviderFailure {
+    let message = error.to_string().to_ascii_lowercase();
+    let category = if message.contains("429") || message.contains("rate limit") {
+        SearchFailureCategory::RateLimit
+    } else if message.contains("timed out") || message.contains("timeout") {
+        SearchFailureCategory::Timeout
+    } else if ["http 500", "http 502", "http 503", "http 504", "http 529"]
+        .iter()
+        .any(|marker| message.contains(marker))
+    {
+        SearchFailureCategory::ServiceUnavailable
+    } else if message.contains("dns")
+        || message.contains("request failed")
+        || message.contains("connection")
+        || message.contains("resolve")
+    {
+        SearchFailureCategory::Network
+    } else {
+        SearchFailureCategory::InvalidResponse
+    };
+    SearchProviderFailure::new(category)
+}
+
+fn status_failure(status: reqwest::StatusCode) -> SearchProviderFailure {
+    let category = match status.as_u16() {
+        401 | 403 => SearchFailureCategory::Authentication,
+        429 => SearchFailureCategory::RateLimit,
+        500..=599 => SearchFailureCategory::ServiceUnavailable,
+        _ => SearchFailureCategory::InvalidResponse,
+    };
+    SearchProviderFailure::new(category)
+}
+
+fn request_failure(error: &reqwest::Error) -> SearchProviderFailure {
+    let category = if error.is_timeout() {
+        SearchFailureCategory::Timeout
+    } else if error.is_connect() || error.is_request() {
+        SearchFailureCategory::Network
+    } else {
+        SearchFailureCategory::InvalidResponse
+    };
+    SearchProviderFailure::new(category)
+}
+
+async fn read_search_api_json(response: reqwest::Response) -> Result<Value, SearchProviderFailure> {
+    if !response.status().is_success() {
+        return Err(status_failure(response.status()));
+    }
+    if response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > SEARCH_API_BODY_LIMIT)
+    {
+        return Err(SearchProviderFailure::new(
+            SearchFailureCategory::InvalidResponse,
+        ));
+    }
+    let mut body = Vec::with_capacity(64 * 1024);
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| request_failure(&error))?;
+        if body.len().saturating_add(chunk.len()) > SEARCH_API_BODY_LIMIT {
+            return Err(SearchProviderFailure::new(
+                SearchFailureCategory::InvalidResponse,
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body)
+        .map_err(|_| SearchProviderFailure::new(SearchFailureCategory::InvalidResponse))
+}
+
+async fn search_searxng(
+    base_url: &str,
+    request: &SearchRequest<'_>,
+) -> Result<WebSearchResponse, SearchProviderFailure> {
+    let base_url = base_url.trim_end_matches('/');
+    let endpoint = if base_url.ends_with("/search") {
+        base_url.to_string()
+    } else {
+        format!("{base_url}/search")
+    };
+    let mut url = Url::parse(&endpoint)
+        .map_err(|_| SearchProviderFailure::new(SearchFailureCategory::InvalidConfig))?;
+    {
+        let mut params = url.query_pairs_mut();
+        params.append_pair("q", request.query);
+        params.append_pair("format", "json");
+        if let Some(language) = request.language {
+            params.append_pair("language", language);
+        }
+        if let Some(freshness) = request.freshness {
+            params.append_pair("time_range", freshness);
+        }
+    }
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(request.timeout_sec.clamp(3, 60) as u64))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|_| SearchProviderFailure::new(SearchFailureCategory::InvalidConfig))?;
+    let response = client
+        .get(url)
+        .header(ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|error| request_failure(&error))?;
+    let value = read_search_api_json(response).await?;
+    Ok(WebSearchResponse {
+        query: request.query.to_string(),
+        provider: "searxng".into(),
+        results: parse_searxng_results(&value, request.count),
+        fallback_attempts: Vec::new(),
+    })
+}
+
+async fn search_brave(
+    api_key: &str,
+    request: &SearchRequest<'_>,
+) -> Result<WebSearchResponse, SearchProviderFailure> {
+    let mut url = Url::parse("https://api.search.brave.com/res/v1/web/search")
+        .expect("valid Brave Search endpoint");
+    {
+        let mut params = url.query_pairs_mut();
+        params.append_pair("q", request.query);
+        params.append_pair("count", &request.count.to_string());
+        if let Some(language) = request.language {
+            let search_lang = language.split('-').next().unwrap_or(language);
+            params.append_pair("search_lang", search_lang);
+        }
+        if let Some(freshness) = request.freshness.and_then(brave_freshness) {
+            params.append_pair("freshness", freshness);
+        }
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    headers.insert(
+        "X-Subscription-Token",
+        HeaderValue::from_str(api_key)
+            .map_err(|_| SearchProviderFailure::new(SearchFailureCategory::InvalidConfig))?,
+    );
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(request.timeout_sec.clamp(3, 60) as u64))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(USER_AGENT)
+        .default_headers(headers)
+        .build()
+        .map_err(|_| SearchProviderFailure::new(SearchFailureCategory::InvalidConfig))?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| request_failure(&error))?;
+    let value = read_search_api_json(response).await?;
+    Ok(WebSearchResponse {
+        query: request.query.to_string(),
+        provider: "brave".into(),
+        results: parse_brave_results(&value, request.count),
+        fallback_attempts: Vec::new(),
     })
 }
 
@@ -471,6 +1009,16 @@ fn bing_freshness(freshness: &str) -> Option<String> {
     }
 }
 
+fn brave_freshness(freshness: &str) -> Option<&'static str> {
+    match freshness {
+        "day" => Some("pd"),
+        "week" => Some("pw"),
+        "month" => Some("pm"),
+        "year" => Some("py"),
+        _ => None,
+    }
+}
+
 fn parse_duckduckgo_results(html: &str, count: usize) -> Vec<WebSearchResult> {
     let document = Html::parse_document(html);
     let result_selector = Selector::parse(".result").expect("valid selector");
@@ -530,6 +1078,80 @@ fn parse_bing_results(html: &str, count: usize) -> Vec<WebSearchResult> {
             .next()
             .map(element_text)
             .unwrap_or_default();
+        results.push(WebSearchResult {
+            rank: results.len() + 1,
+            title,
+            url,
+            snippet,
+        });
+        if results.len() == count {
+            break;
+        }
+    }
+    results
+}
+
+fn parse_searxng_results(value: &Value, count: usize) -> Vec<WebSearchResult> {
+    parse_json_results(
+        value.get("results").and_then(Value::as_array),
+        "title",
+        "url",
+        "content",
+        count,
+    )
+}
+
+fn parse_brave_results(value: &Value, count: usize) -> Vec<WebSearchResult> {
+    parse_json_results(
+        value
+            .get("web")
+            .and_then(|web| web.get("results"))
+            .and_then(Value::as_array),
+        "title",
+        "url",
+        "description",
+        count,
+    )
+}
+
+fn parse_json_results(
+    items: Option<&Vec<Value>>,
+    title_key: &str,
+    url_key: &str,
+    snippet_key: &str,
+    count: usize,
+) -> Vec<WebSearchResult> {
+    let mut seen = HashSet::new();
+    let mut results = Vec::new();
+    for item in items.into_iter().flatten() {
+        let title = item
+            .get(title_key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let url = item
+            .get(url_key)
+            .and_then(Value::as_str)
+            .and_then(normalized_public_url);
+        let (Some(title), Some(url)) = (title, url) else {
+            continue;
+        };
+        if url.len() > 4096 {
+            continue;
+        }
+        if !seen.insert(url.clone()) {
+            continue;
+        }
+        let title = truncate_chars(title, 500).0;
+        let snippet = truncate_chars(
+            &item
+                .get(snippet_key)
+                .and_then(Value::as_str)
+                .map(normalize_plain_text)
+                .unwrap_or_default(),
+            2_000,
+        )
+        .0;
         results.push(WebSearchResult {
             rank: results.len() + 1,
             title,
@@ -792,6 +1414,140 @@ mod tests {
     }
 
     #[test]
+    fn parses_searxng_and_brave_json_results() {
+        let searxng = serde_json::json!({
+            "results": [
+                {"title": "Result A", "url": "https://example.com/a", "content": " First  summary. "},
+                {"title": "Duplicate", "url": "https://example.com/a", "content": "ignored"},
+                {"title": "Result B", "url": "https://example.com/b", "content": "Second summary."}
+            ]
+        });
+        let searxng_results = parse_searxng_results(&searxng, 2);
+        assert_eq!(searxng_results.len(), 2);
+        assert_eq!(searxng_results[0].title, "Result A");
+        assert_eq!(searxng_results[0].snippet, "First summary.");
+
+        let brave = serde_json::json!({
+            "web": {"results": [
+                {"title": "Brave result", "url": "https://example.org/news", "description": "Current news"}
+            ]}
+        });
+        let brave_results = parse_brave_results(&brave, 5);
+        assert_eq!(brave_results.len(), 1);
+        assert_eq!(brave_results[0].url, "https://example.org/news");
+        assert_eq!(brave_results[0].snippet, "Current news");
+    }
+
+    #[test]
+    fn search_settings_validate_order_and_searxng_endpoint() {
+        let legacy: SearchProviderSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.fallback_order, vec!["duckduckgo", "bing"]);
+
+        let mut settings = SearchProviderSettings {
+            fallback_order: vec![
+                " brave ".into(),
+                "duckduckgo".into(),
+                "brave".into(),
+                "searxng".into(),
+            ],
+            searxng_base_url: Some(" http://127.0.0.1:8888/ ".into()),
+        };
+        settings.normalize().unwrap();
+        assert_eq!(
+            settings.fallback_order,
+            vec!["brave", "duckduckgo", "searxng"]
+        );
+        assert_eq!(
+            settings.searxng_base_url.as_deref(),
+            Some("http://127.0.0.1:8888")
+        );
+
+        settings.fallback_order = vec!["unknown".into()];
+        assert!(settings.normalize().is_err());
+        settings.fallback_order = vec!["searxng".into()];
+        settings.searxng_base_url = None;
+        assert!(settings.normalize().is_err());
+        assert!(normalize_searxng_base_url("ftp://example.com").is_err());
+        assert!(normalize_searxng_base_url("https://user:secret@example.com").is_err());
+        assert!(!serde_json::to_string(&settings)
+            .unwrap()
+            .contains("api_key"));
+    }
+
+    #[test]
+    fn search_errors_are_reduced_to_stable_categories() {
+        let timeout = classify_search_error(
+            "duckduckgo",
+            &AppError::Other("request timed out while sending secret details".into()),
+        );
+        assert_eq!(timeout.category, SearchFailureCategory::Timeout);
+        let rate_limit = classify_search_error(
+            "bing",
+            &AppError::Other("Web request returned HTTP 429".into()),
+        );
+        assert_eq!(rate_limit.category, SearchFailureCategory::RateLimit);
+        assert_eq!(
+            status_failure(reqwest::StatusCode::UNAUTHORIZED).category,
+            SearchFailureCategory::Authentication
+        );
+        assert_eq!(
+            status_failure(reqwest::StatusCode::BAD_GATEWAY).category,
+            SearchFailureCategory::ServiceUnavailable
+        );
+    }
+
+    #[tokio::test]
+    async fn searches_a_configured_local_searxng_instance() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("GET /search?"));
+            assert!(request.contains("q=local+test"));
+            assert!(request.contains("format=json"));
+            let body = r#"{"results":[{"title":"Local result","url":"https://example.com/result","content":"Local summary"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let settings = SearchProviderSettings {
+            fallback_order: vec!["brave".into(), "searxng".into()],
+            searxng_base_url: Some(format!("http://{address}")),
+        };
+        let response = search(
+            "auto",
+            "local test",
+            3,
+            Some("en-US"),
+            None,
+            5,
+            &settings,
+            None,
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+        assert_eq!(response.provider, "searxng");
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].title, "Local result");
+        assert_eq!(
+            response.fallback_attempts,
+            vec![SearchFallbackAttempt {
+                provider: "brave".into(),
+                category: SearchFailureCategory::InvalidConfig,
+            }]
+        );
+    }
+
+    #[test]
     fn extracts_main_content_without_navigation() {
         let html = r#"
           <html><head><title> Sample page </title></head><body>
@@ -820,17 +1576,31 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires public network"]
     async fn searches_and_fetches_public_web() {
+        let settings = SearchProviderSettings {
+            fallback_order: vec!["brave".into(), "duckduckgo".into()],
+            searxng_base_url: None,
+        };
         let search = search(
-            "duckduckgo",
+            "auto",
             "Rust programming language official website",
             3,
             Some("en-US"),
             None,
             15,
+            &settings,
+            None,
         )
         .await
         .unwrap();
         assert!(!search.results.is_empty());
+        assert_eq!(search.provider, "duckduckgo");
+        assert_eq!(
+            search.fallback_attempts,
+            vec![SearchFallbackAttempt {
+                provider: "brave".into(),
+                category: SearchFailureCategory::InvalidConfig,
+            }]
+        );
 
         let page = fetch("https://www.rust-lang.org/", 5_000, 15)
             .await

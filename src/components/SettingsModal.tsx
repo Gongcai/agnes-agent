@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -45,7 +45,7 @@ import {
   type SyncStatus,
 } from "../lib/ipc";
 
-type SettingsTab = "general" | "agents" | "memory" | "llm" | "mcp" | "audit" | "debug";
+type SettingsTab = "general" | "agents" | "memory" | "llm" | "web" | "mcp" | "audit" | "debug";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -194,6 +194,48 @@ interface SecretStoreStatus {
   error: string | null;
 }
 
+type SearchProviderId = "duckduckgo" | "bing" | "searxng" | "brave";
+
+interface SearchProviderSettings {
+  fallback_order: SearchProviderId[];
+  searxng_base_url: string | null;
+  has_brave_api_key: boolean;
+}
+
+interface SearchProviderForm {
+  fallbackOrder: SearchProviderId[];
+  searxngBaseUrl: string;
+  braveApiKey: string;
+  hasBraveApiKey: boolean;
+  clearBraveApiKey: boolean;
+}
+
+interface SearchProviderTestResult {
+  success: boolean;
+  provider: SearchProviderId;
+  category: string | null;
+  message: string;
+  result_count: number;
+  latency_ms: number;
+}
+
+const SEARCH_PROVIDER_LABELS: Record<SearchProviderId, string> = {
+  duckduckgo: "DuckDuckGo HTML",
+  bing: "Bing HTML",
+  searxng: "SearXNG",
+  brave: "Brave Search API",
+};
+
+const SEARCH_PROVIDER_IDS: SearchProviderId[] = ["duckduckgo", "bing", "searxng", "brave"];
+
+const EMPTY_SEARCH_PROVIDER_FORM: SearchProviderForm = {
+  fallbackOrder: ["duckduckgo", "bing"],
+  searxngBaseUrl: "",
+  braveApiKey: "",
+  hasBraveApiKey: false,
+  clearBraveApiKey: false,
+};
+
 interface McpEnvConfig {
   name: string;
   hasValue: boolean;
@@ -288,7 +330,7 @@ function capabilityLabels(capabilities: ModelCapabilities): string[] {
 }
 
 type ApprovalTier = "never" | "on_write" | "on_risk" | "always";
-type WebSearchProvider = "auto" | "duckduckgo" | "bing";
+type WebSearchProvider = "auto" | SearchProviderId;
 
 interface AgentToolToggle {
   enabled: boolean;
@@ -427,7 +469,7 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
         base[k] = { ...t, enabled: t.enabled !== false, approval };
       }
     });
-    const searchProvider = ["auto", "duckduckgo", "bing"].includes(obj?.web?.search_provider)
+    const searchProvider = ["auto", "duckduckgo", "bing", "searxng", "brave"].includes(obj?.web?.search_provider)
       ? obj.web.search_provider as WebSearchProvider
       : "auto";
     base.web = {
@@ -522,6 +564,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isSavingMcp, setIsSavingMcp] = useState(false);
   const [testingMcpId, setTestingMcpId] = useState<string | null>(null);
   const [mcpMessage, setMcpMessage] = useState<{ success: boolean; text: string } | null>(null);
+  const [savedSearchProviderSettings, setSavedSearchProviderSettings] = useState<SearchProviderSettings | null>(null);
+  const [searchProviderForm, setSearchProviderForm] = useState<SearchProviderForm>(EMPTY_SEARCH_PROVIDER_FORM);
+  const [isSavingSearchProviders, setIsSavingSearchProviders] = useState(false);
+  const [testingSearchProvider, setTestingSearchProvider] = useState<SearchProviderId | null>(null);
+  const [searchProviderTests, setSearchProviderTests] = useState<Partial<Record<SearchProviderId, SearchProviderTestResult>>>({});
+  const [searchProviderMessage, setSearchProviderMessage] = useState<{ success: boolean; text: string } | null>(null);
+  const [showBraveSearchKey, setShowBraveSearchKey] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncStatusError, setSyncStatusError] = useState<string | null>(null);
   const [isSyncingNow, setIsSyncingNow] = useState(false);
@@ -862,6 +911,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       });
   }, []);
 
+  const loadSearchProviderSettings = React.useCallback(() => {
+    return invoke<SearchProviderSettings>("get_search_provider_settings")
+      .then((settings) => {
+        setSavedSearchProviderSettings(settings);
+        setSearchProviderForm({
+          fallbackOrder: settings.fallback_order,
+          searxngBaseUrl: settings.searxng_base_url || "",
+          braveApiKey: "",
+          hasBraveApiKey: settings.has_brave_api_key,
+          clearBraveApiKey: false,
+        });
+      })
+      .catch((error) => {
+        setSearchProviderMessage({ success: false, text: String(error) });
+      });
+  }, []);
+
   useEffect(() => {
     if (!isOpen || (activeTab !== "mcp" && activeTab !== "agents")) return;
     void loadMcpServers();
@@ -873,6 +939,62 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         });
     }
   }, [activeTab, isOpen, loadMcpServers]);
+
+  useEffect(() => {
+    if (!isOpen || (activeTab !== "web" && activeTab !== "agents")) return;
+    void loadSearchProviderSettings();
+    if (activeTab === "web") {
+      invoke<SecretStoreStatus>("get_secret_store_status")
+        .then(setSecretStoreStatus)
+        .catch((error) => {
+          setSecretStoreStatus({ available: false, backend: "OS Keyring", error: String(error) });
+        });
+    }
+  }, [activeTab, isOpen, loadSearchProviderSettings]);
+
+  const saveSearchProviders = async () => {
+    setIsSavingSearchProviders(true);
+    setSearchProviderMessage(null);
+    try {
+      await invoke("set_search_provider_settings", {
+        input: {
+          fallback_order: searchProviderForm.fallbackOrder,
+          searxng_base_url: searchProviderForm.searxngBaseUrl.trim() || null,
+          brave_api_key: searchProviderForm.braveApiKey.trim() || null,
+          clear_brave_api_key: searchProviderForm.clearBraveApiKey,
+        },
+      });
+      await loadSearchProviderSettings();
+      setSearchProviderTests({});
+      setSearchProviderMessage({ success: true, text: "搜索 Provider 配置已保存" });
+    } catch (error) {
+      setSearchProviderMessage({ success: false, text: String(error) });
+    } finally {
+      setIsSavingSearchProviders(false);
+    }
+  };
+
+  const testSearchProvider = async (provider: SearchProviderId) => {
+    setTestingSearchProvider(provider);
+    try {
+      const result = await invoke<SearchProviderTestResult>("test_search_provider", { providerId: provider });
+      setSearchProviderTests((current) => ({ ...current, [provider]: result }));
+    } catch (error) {
+      setSearchProviderTests((current) => ({
+        ...current,
+        [provider]: {
+          success: false,
+          provider,
+          category: "command_error",
+          message: String(error),
+          result_count: 0,
+          latency_ms: 0,
+        },
+      }));
+    } finally {
+      setTestingSearchProvider(null);
+    }
+  };
 
   const openNewMcpServer = () => {
     setMcpForm(EMPTY_MCP_FORM);
@@ -1749,6 +1871,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>模型与同步 (LLM)</span>
             </button>
             <button
+              onClick={() => setActiveTab("web")}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                activeTab === "web"
+                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
+                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+              }`}
+            >
+              <Globe2 className="h-4 w-4 text-stone-500" />
+              <span>联网搜索</span>
+            </button>
+            <button
               onClick={() => setActiveTab("mcp")}
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "mcp"
@@ -2123,9 +2256,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               }
                               className="rounded-md border border-stone-200 bg-white px-2 py-1 text-[10px] font-semibold text-stone-600 outline-none disabled:opacity-40"
                             >
-                              <option value="auto">自动切换</option>
+                              <option value="auto">
+                                自动回退链（{searchProviderForm.fallbackOrder.length} 个）
+                              </option>
                               <option value="duckduckgo">DuckDuckGo</option>
                               <option value="bing">Bing</option>
+                              <option value="searxng" disabled={!savedSearchProviderSettings?.searxng_base_url}>
+                                SearXNG{savedSearchProviderSettings?.searxng_base_url ? "" : "（未配置）"}
+                              </option>
+                              <option
+                                value="brave"
+                                disabled={!savedSearchProviderSettings?.has_brave_api_key}
+                              >
+                                Brave Search{savedSearchProviderSettings?.has_brave_api_key ? "" : "（未配置）"}
+                              </option>
                             </select>
                           </div>
                           <div className="flex items-center justify-between py-1.5 border-b border-stone-100">
@@ -3768,7 +3912,248 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             )}
 
-            {/* 4. MCP TAB */}
+            {/* 4. WEB SEARCH TAB */}
+            {activeTab === "web" && (
+              <div className="space-y-5">
+                <div className="flex items-start justify-between gap-4 border-b border-stone-200 pb-3">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-stone-850">联网搜索 Provider</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={saveSearchProviders}
+                    disabled={isSavingSearchProviders || searchProviderForm.fallbackOrder.length === 0}
+                    className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-40"
+                  >
+                    {isSavingSearchProviders ? "保存中..." : "保存配置"}
+                  </button>
+                </div>
+
+                <div
+                  className={`flex items-center gap-2 border-y px-3 py-2 text-[11px] ${
+                    secretStoreStatus?.available
+                      ? "border-emerald-200 bg-emerald-50/60 text-emerald-700"
+                      : "border-rose-200 bg-rose-50/60 text-rose-700"
+                  }`}
+                  title={secretStoreStatus?.error || undefined}
+                >
+                  <Key className="h-3.5 w-3.5 shrink-0" />
+                  {secretStoreStatus?.available
+                    ? "Brave API Key 仅保存在本机系统密钥环"
+                    : secretStoreStatus?.error || "正在检查系统密钥环"}
+                </div>
+
+                {searchProviderMessage && (
+                  <div className={`border px-3 py-2 text-[11px] ${
+                    searchProviderMessage.success
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "border-rose-200 bg-rose-50 text-rose-700"
+                  }`}>
+                    {searchProviderMessage.text}
+                  </div>
+                )}
+
+                <section>
+                  <div className="mb-2">
+                    <h4 className="text-xs font-semibold text-stone-700">Provider 状态</h4>
+                  </div>
+                  <div className="divide-y divide-stone-200 border-y border-stone-200">
+                    {SEARCH_PROVIDER_IDS.map((provider) => {
+                      const configured = provider === "duckduckgo"
+                        || provider === "bing"
+                        || (provider === "searxng" && Boolean(savedSearchProviderSettings?.searxng_base_url))
+                        || (provider === "brave" && Boolean(savedSearchProviderSettings?.has_brave_api_key));
+                      const test = searchProviderTests[provider];
+                      const testing = testingSearchProvider === provider;
+                      return (
+                        <div key={provider} className="flex min-h-12 items-center gap-3 px-2 py-2">
+                          <span className={`h-2 w-2 shrink-0 rounded-full ${
+                            test?.success ? "bg-emerald-500" : test ? "bg-rose-500" : "bg-stone-300"
+                          }`} />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[11px] font-semibold text-stone-700">{SEARCH_PROVIDER_LABELS[provider]}</span>
+                              <span className="text-[9px] text-stone-400">
+                                {test?.success ? "连接正常" : test ? "连接异常" : configured ? "待测试" : "未配置"}
+                              </span>
+                            </div>
+                            {test && (
+                              <p className={`truncate text-[9px] ${test.success ? "text-emerald-600" : "text-rose-600"}`} title={test.message}>
+                                {test.message}{test.latency_ms > 0 ? ` · ${test.latency_ms} ms` : ""}
+                              </p>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            title={configured ? "测试连接" : "请先配置并保存"}
+                            disabled={!configured || testingSearchProvider !== null}
+                            onClick={() => testSearchProvider(provider)}
+                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-700 disabled:opacity-30"
+                          >
+                            <RefreshCw className={`h-3.5 w-3.5 ${testing ? "animate-spin" : ""}`} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="space-y-3 border-t border-stone-200 pt-4">
+                  <div>
+                    <h4 className="text-xs font-semibold text-stone-700">SearXNG</h4>
+                  </div>
+                  <label className="block space-y-1">
+                    <span className="text-[10px] font-semibold text-stone-600">服务地址</span>
+                    <input
+                      value={searchProviderForm.searxngBaseUrl}
+                      onChange={(event) => setSearchProviderForm((form) => ({ ...form, searxngBaseUrl: event.target.value }))}
+                      placeholder="https://search.example.com 或 http://127.0.0.1:8888"
+                      className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 text-[11px] font-mono text-stone-700 outline-none focus:ring-1 focus:ring-indigo-200"
+                    />
+                  </label>
+                </section>
+
+                <section className="space-y-3 border-t border-stone-200 pt-4">
+                  <div>
+                    <h4 className="text-xs font-semibold text-stone-700">Brave Search API</h4>
+                  </div>
+                  <label className="block space-y-1">
+                    <span className="text-[10px] font-semibold text-stone-600">API Key</span>
+                    <div className="flex gap-2">
+                      <div className="relative min-w-0 flex-1">
+                        <input
+                          type={showBraveSearchKey ? "text" : "password"}
+                          value={searchProviderForm.braveApiKey}
+                          maxLength={1024}
+                          disabled={searchProviderForm.clearBraveApiKey}
+                          onChange={(event) => setSearchProviderForm((form) => ({
+                            ...form,
+                            braveApiKey: event.target.value,
+                            clearBraveApiKey: false,
+                          }))}
+                          placeholder={searchProviderForm.hasBraveApiKey ? "已保存在系统密钥环；留空保持不变" : "输入 Brave Search API Key"}
+                          className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 pr-9 text-[11px] font-mono text-stone-700 outline-none focus:ring-1 focus:ring-indigo-200 disabled:bg-stone-50"
+                        />
+                        <button
+                          type="button"
+                          title={showBraveSearchKey ? "隐藏密钥" : "显示密钥"}
+                          onClick={() => setShowBraveSearchKey((visible) => !visible)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700"
+                        >
+                          {showBraveSearchKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                        </button>
+                      </div>
+                      {searchProviderForm.hasBraveApiKey && (
+                        <button
+                          type="button"
+                          onClick={() => setSearchProviderForm((form) => ({
+                            ...form,
+                            braveApiKey: "",
+                            clearBraveApiKey: !form.clearBraveApiKey,
+                            fallbackOrder: !form.clearBraveApiKey
+                              ? form.fallbackOrder.filter((provider) => provider !== "brave")
+                              : form.fallbackOrder,
+                          }))}
+                          className={`rounded-md border px-2.5 text-[10px] font-semibold ${
+                            searchProviderForm.clearBraveApiKey
+                              ? "border-amber-200 bg-amber-50 text-amber-700"
+                              : "border-stone-200 text-stone-500 hover:bg-rose-50 hover:text-rose-600"
+                          }`}
+                        >
+                          {searchProviderForm.clearBraveApiKey ? "保留" : "删除"}
+                        </button>
+                      )}
+                    </div>
+                  </label>
+                </section>
+
+                <section className="border-t border-stone-200 pt-4">
+                  <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-semibold text-stone-700">自动回退顺序</h4>
+                    </div>
+                    <select
+                      value=""
+                      onChange={(event) => {
+                        const provider = event.target.value as SearchProviderId;
+                        if (!provider || searchProviderForm.fallbackOrder.includes(provider)) return;
+                        setSearchProviderForm((form) => ({ ...form, fallbackOrder: [...form.fallbackOrder, provider] }));
+                      }}
+                      className="w-full rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-[10px] text-stone-600 outline-none sm:w-48"
+                    >
+                      <option value="">添加 Provider...</option>
+                      {SEARCH_PROVIDER_IDS.map((provider) => {
+                        const configured = provider === "duckduckgo"
+                          || provider === "bing"
+                          || (provider === "searxng" && Boolean(searchProviderForm.searxngBaseUrl.trim()))
+                          || (provider === "brave"
+                            && !searchProviderForm.clearBraveApiKey
+                            && (searchProviderForm.hasBraveApiKey || Boolean(searchProviderForm.braveApiKey.trim())));
+                        return (
+                          <option
+                            key={provider}
+                            value={provider}
+                            disabled={!configured || searchProviderForm.fallbackOrder.includes(provider)}
+                          >
+                            {SEARCH_PROVIDER_LABELS[provider]}{configured ? "" : "（未配置）"}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                  <div className="mt-2 divide-y divide-stone-200 border-y border-stone-200">
+                    {searchProviderForm.fallbackOrder.map((provider, index) => (
+                      <div key={provider} className="flex h-10 items-center gap-2 px-2">
+                        <span className="w-5 text-center text-[10px] tabular-nums text-stone-400">{index + 1}</span>
+                        <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-stone-700">
+                          {SEARCH_PROVIDER_LABELS[provider]}
+                        </span>
+                        <button
+                          type="button"
+                          title="提高优先级"
+                          disabled={index === 0}
+                          onClick={() => setSearchProviderForm((form) => {
+                            const next = [...form.fallbackOrder];
+                            [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                            return { ...form, fallbackOrder: next };
+                          })}
+                          className="flex h-7 w-7 items-center justify-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-700 disabled:opacity-25"
+                        >
+                          <ArrowUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          title="降低优先级"
+                          disabled={index === searchProviderForm.fallbackOrder.length - 1}
+                          onClick={() => setSearchProviderForm((form) => {
+                            const next = [...form.fallbackOrder];
+                            [next[index], next[index + 1]] = [next[index + 1], next[index]];
+                            return { ...form, fallbackOrder: next };
+                          })}
+                          className="flex h-7 w-7 items-center justify-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-700 disabled:opacity-25"
+                        >
+                          <ArrowDown className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          title="移出自动回退链"
+                          disabled={searchProviderForm.fallbackOrder.length === 1}
+                          onClick={() => setSearchProviderForm((form) => ({
+                            ...form,
+                            fallbackOrder: form.fallbackOrder.filter((value) => value !== provider),
+                          }))}
+                          className="flex h-7 w-7 items-center justify-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-25"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {/* 5. MCP TAB */}
             {activeTab === "mcp" && (
               <div className="space-y-5">
                 <div className="flex items-start justify-between border-b border-stone-200 pb-3">
