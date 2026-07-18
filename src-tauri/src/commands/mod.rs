@@ -752,6 +752,8 @@ pub async fn get_debug_prompt(
     }
     let retrieved_knowledge =
         retrieve_knowledge_for_history(&state, &agent.id, &history_json).await;
+    let workspace_context =
+        resolve_workspace_prompt_context(&state.db, session_id.as_deref()).await?;
 
     let task_llm_configs = resolve_task_llm_configs(&state, &model_roles).await?;
     let snapshot = json!({
@@ -782,6 +784,7 @@ pub async fn get_debug_prompt(
             "explicitMemories": { "user_md": user_md, "memory_md": memory_md },
             "retrievedMemories": [],
             "retrievedKnowledge": retrieved_knowledge,
+            "workspace": workspace_context,
             "projectContext": []
         }
     });
@@ -1226,6 +1229,29 @@ async fn resolve_task_llm_configs(
     Ok(serde_json::Value::Object(configs))
 }
 
+async fn resolve_workspace_prompt_context(
+    db: &crate::db::DbActorHandle,
+    session_id: Option<&str>,
+) -> AppResult<Option<serde_json::Value>> {
+    let Some(session_id) = session_id else {
+        return Ok(None);
+    };
+    let Some(session) = db.get_session(session_id.to_string()).await? else {
+        return Ok(None);
+    };
+    let Some(workspace_id) = session.workspace_id else {
+        return Ok(None);
+    };
+    let Some(workspace) = db.get_workspace(workspace_id).await? else {
+        return Ok(None);
+    };
+
+    Ok(Some(json!({
+        "name": workspace.name,
+        "hasLocalFolderBinding": !workspace.folder_path.trim().is_empty(),
+    })))
+}
+
 /// 解析会话当前生效的 LLM 配置（模型/思考/provider/密钥）。
 async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLlm> {
     let session = state
@@ -1382,6 +1408,7 @@ async fn start_agent_run(
     }
     let retrieved_knowledge =
         retrieve_knowledge_for_history(state, &cfg.agent.id, &history_json).await;
+    let workspace_context = resolve_workspace_prompt_context(&state.db, Some(session_id)).await?;
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let context_snapshot = json!({
@@ -1417,6 +1444,7 @@ async fn start_agent_run(
             },
             "retrievedMemories": [],
             "retrievedKnowledge": retrieved_knowledge,
+            "workspace": workspace_context,
             "projectContext": []
         }
     });

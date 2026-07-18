@@ -390,6 +390,49 @@ def test_prompt_exposes_current_time_for_planner_requests():
     assert "RFC 3339" in system_prompt
 
 
+def test_workspace_coding_instructions_are_only_injected_for_workspace_sessions():
+    base_context = {
+        "agent": {"model": "gpt-4o", "toolPolicy": {}},
+        "settings": {},
+    }
+
+    standalone_prompt, _, _ = assemble_prompt({"context": base_context})
+    workspace_prompt, _, _ = assemble_prompt(
+        {
+            "context": {
+                **base_context,
+                "workspace": {
+                    "name": "Desktop app",
+                    "hasLocalFolderBinding": True,
+                },
+            }
+        }
+    )
+
+    assert "# Workspace Coding Mode" not in standalone_prompt
+    assert "# Workspace Coding Mode" in workspace_prompt
+    assert "Desktop app" in workspace_prompt
+    assert "Use relative paths from the workspace root" in workspace_prompt
+    assert "local absolute path is intentionally not part of this prompt" in workspace_prompt
+
+
+def test_unbound_workspace_prompt_does_not_allow_local_coding_operations():
+    system_prompt, _, _ = assemble_prompt(
+        {
+            "context": {
+                "agent": {"model": "gpt-4o", "toolPolicy": {}},
+                "workspace": {
+                    "name": "Remote workspace",
+                    "hasLocalFolderBinding": False,
+                },
+            }
+        }
+    )
+
+    assert "# Workspace Coding Mode" in system_prompt
+    assert "Do not attempt local file, shell, or git operations" in system_prompt
+
+
 def test_task_model_routing_and_fallback():
     fallback = LlmConfig(model="main", litellm_model="main")
     model, config = resolve_task_llm({}, "summary", "main", fallback)
