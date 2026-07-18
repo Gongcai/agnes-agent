@@ -579,8 +579,10 @@ tasks
 - [x] 增加基于 RFC 5545/IANA 时区的 occurrence 动态展开，以及单次修改、取消、恢复；Agent 复用 `calendar_update` 并保持 High 风险审批；
 - [x] 完成重复任务实例语义：完成后生成下一实例，重新打开时清理未编辑的自动实例，保留已编辑实例，并遵守 RRULE `COUNT/UNTIL`；
 - [x] 抽象本地统一 `NotificationService`：持久化收件箱、未读状态、来源去重、AI 回复/许可请求、任务到期和日历事件提醒均已接入；
-- [ ] 接入 D1 E2EE 同步；
-- 再接 Google Calendar / Google Tasks / CalDAV；
+- [x] 接入 D1 E2EE 同步；
+- 外部 Calendar/Task Provider（Google Calendar、Google Tasks、CalDAV）不纳入默认路线图：
+  当前产品定位为国内自用、本地优先 Agent，未来仅在实际需求出现时作为可选 adapter/plugin 评估；
+  Local Provider 是正式支持的默认实现。
 
 ---
 

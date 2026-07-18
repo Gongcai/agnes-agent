@@ -68,7 +68,7 @@
 - `sessions.agent_id` → `agents.id`（多对一：一个 Agent 可有多个 session，但每个 session 只属于一个 Agent）。
 - `memory_store.agent_id`：长期记忆库按 Agent 隔离。
 
-**同步策略**：云端只同步白名单内的结构化用户实体（agents/sessions/messages/explicit_memories/memory_store/workspaces，后续扩展日历/待办和文件清单）；通用 settings 保持设备本地。**原始向量行和 sqlite-vec 表不进 D1**：每台设备可本地重建，也可在 embedding/parser/chunker 指纹完全一致时从 R2/Google Drive 下载客户端加密的便携向量制品。D1 只保存最新版本、密文 Hash、Provider 副本和设备落地状态。事务性 outbox 使用 `device_id + HLC` 做增量 push/pull 与冲突解决；聊天消息正文完成后不可变，记忆和角色配置才需字段级冲突处理。
+**同步策略**：云端只同步白名单内的结构化用户实体（agents/sessions/messages/explicit_memories/memory_store/workspaces/calendars/calendar_events/event_exceptions/task_lists/tasks，文件清单后续扩展）；通用 settings 保持设备本地。**原始向量行和 sqlite-vec 表不进 D1**：每台设备可本地重建，也可在 embedding/parser/chunker 指纹完全一致时从 R2/Google Drive 下载客户端加密的便携向量制品。D1 只保存最新版本、密文 Hash、Provider 副本和设备落地状态。事务性 outbox 使用 `device_id + HLC` 做增量 push/pull 与冲突解决；聊天消息正文完成后不可变，记忆和角色配置才需字段级冲突处理。
 
 # AGENTS / 角色卡
 
@@ -162,7 +162,7 @@ System Prompt
 - RAG 文档归属独立 `knowledge_collection`，通过授权分配给一个或多个 Agent，不按 Agent 重复存储源文件和向量。
 - D1 是文件/制品同步控制面；R2 / Google Drive 是加密大对象数据面；sqlite-vec 是本地检索引擎。
 - 网盘通过 `ObjectStorageProvider` 端口接入；R2 和 Google Drive 使用官方 API，夸克逆向 API 只作为默认禁用的社区插件。
-- 日历和待办是用户级结构化数据，分别使用 `CalendarProvider / TaskProvider` 适配外部服务，Agent 读写受 tool policy 约束。
+- 日历和待办是用户级结构化数据，默认仅使用 Local Provider，Agent 读写受 tool policy 约束；外部 `CalendarProvider / TaskProvider` adapter 保留为未来按实际需求启用的扩展，不属于当前自用、国内本地优先路线。
 - 主界面侧边栏将调整为子功能列表 + 可折叠聊天会话 + 可折叠工作区会话，详见 `UI_DESIGN.md`。
 
 # 版本路线图与当前进度
@@ -175,7 +175,7 @@ System Prompt
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 暂缓：先稳定桌面客户端与本地 Agent 能力，再启动 Android 客户端 |
 | V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 工具、审批、Linux 沙箱、审计和模型路由已提前实现；MCP 等能力待后续补齐 |
 | V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + R2/Google Drive Provider | 进行中：侧边栏导航、图标轨和会话折叠已完成；知识库正式 schema、旧表迁移、权限隔离、UTF-8 文本导入/分块、FTS5 + sqlite-vec 分区、显式向量化、RRF 混合检索和安全 Agent 上下文注入已完成；加密制品与 Provider 待实现 |
-| V0.7 | 日历 + 待办 + 外部 Calendar/Task Provider | 进行中：本地域模型、Local Provider、受审批约束的 Agent 工具、完整桌面工作区与本地统一通知服务已完成。日历支持月/周/日/议程、多日历叠加、当天议程、待办图层及重复 occurrence 例外；待办支持五类智能视图、自定义列表、重要/我的一天、日期或精确时间、步骤和完成后生成下一重复实例；通知中心覆盖 AI 回复/许可、任务到期和日历事件。D1 E2EE 同步与外部 Provider 待实现 |
+| V0.7 | 本地日历 + 待办 | 已完成：本地域模型、Local Provider、受审批约束的 Agent 工具、完整桌面工作区、本地统一通知服务和 D1 E2EE 同步均已完成。日历支持月/周/日/议程、多日历叠加、当天议程、待办图层及重复 occurrence 例外；待办支持五类智能视图、自定义列表、重要/我的一天、日期或精确时间、步骤和完成后生成下一重复实例；通知中心覆盖 AI 回复/许可、任务到期和日历事件。Google Calendar / Google Tasks / CalDAV 不纳入默认路线图，未来仅按实际需求作为可选扩展评估。 |
 
 # 关键决策约束
 
