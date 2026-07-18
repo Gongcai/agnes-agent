@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import ePub, { type Book, type Contents, type NavItem, type Rendition } from "epubjs";
 import {
@@ -13,6 +14,7 @@ import {
   Copy,
   FileUp,
   Highlighter,
+  History,
   Languages,
   LoaderCircle,
   MessageCircleMore,
@@ -53,6 +55,14 @@ interface ReadingHighlight {
   context_after: string;
   note: string | null;
   color: string;
+}
+
+interface ReadingConversation {
+  session_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  is_current: boolean;
 }
 
 interface PendingSelection {
@@ -103,6 +113,18 @@ function translationRequest(book: ReadingBook, selection: PendingSelection, lang
   return `[阅读翻译 · ${attribution}]\n\n请将以下文本翻译成${language}。只输出译文，保留原文的段落结构和必要的专有名词。\n\n原文：\n${selection.quote}`;
 }
 
+function conversationDate(timestamp: string): string {
+  const date = new Date(Number(timestamp) * 1000);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 const EpubPane: React.FC<{
   book: ReadingBook;
   highlights: ReadingHighlight[];
@@ -128,12 +150,58 @@ const EpubPane: React.FC<{
   useEffect(() => { openSelectionMenuRef.current = onOpenSelectionMenu; }, [onOpenSelectionMenu]);
 
   useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void invoke("set_reading_context_menu_active", { active: true });
+
+    const openNativeSelectionMenu = () => {
+      const rendition = renditionRef.current;
+      if (!rendition) return;
+      const contentsList = rendition.getContents() as unknown as Contents[];
+      for (const contents of contentsList) {
+        const selection = contents.window.getSelection();
+        const quote = selection?.toString().replace(/\s+/g, " ").trim() ?? "";
+        const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+        if (!selection || !quote || !range || range.collapsed) continue;
+        let cfiRange: string;
+        try {
+          cfiRange = contents.cfiFromRange(range);
+        } catch {
+          continue;
+        }
+        const nearby = nearbyParagraphs(selection);
+        const frame = contents.document.defaultView?.frameElement;
+        const frameRect = frame instanceof HTMLElement ? frame.getBoundingClientRect() : null;
+        const rangeRect = range.getBoundingClientRect();
+        openSelectionMenuRef.current(
+          { cfiRange, quote, contextBefore: nearby.before, contextAfter: nearby.after },
+          (frameRect?.left ?? 0) + rangeRect.right,
+          (frameRect?.top ?? 0) + rangeRect.bottom,
+        );
+        return;
+      }
+    };
+
+    void listen("reading://native-context-menu", () => openNativeSelectionMenu()).then((remove) => {
+      if (disposed) remove();
+      else unlisten = remove;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+      void invoke("set_reading_context_menu_active", { active: false });
+    };
+  }, [book.id]);
+
+  useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     let disposed = false;
     let rendered: Rendition | null = null;
     const source = convertFileSrc(book.local_path);
     const hookedContents = new WeakSet<object>();
+    const hookedFrames = new WeakSet<HTMLIFrameElement>();
+    let contextObserver: MutationObserver | null = null;
 
     const applyHighlights = () => {
       if (!rendered) return;
@@ -245,6 +313,11 @@ const EpubPane: React.FC<{
           documentTarget.addEventListener("contextmenu", handleContextMenu, true);
           documentTarget.documentElement?.addEventListener("contextmenu", handleContextMenu, true);
           documentTarget.body?.addEventListener("contextmenu", handleContextMenu, true);
+          // WebKitGTK may skip the capture listeners for an iframe context menu;
+          // the event-property path still suppresses its native menu.
+          documentTarget.oncontextmenu = handleContextMenu;
+          if (documentTarget.documentElement) documentTarget.documentElement.oncontextmenu = handleContextMenu;
+          if (documentTarget.body) documentTarget.body.oncontextmenu = handleContextMenu;
           const frame = contents.document.defaultView?.frameElement;
           if (frame instanceof HTMLElement) {
             frame.addEventListener("contextmenu", (event) => {
@@ -252,6 +325,26 @@ const EpubPane: React.FC<{
             }, true);
           }
         };
+        const attachIframeContents = (iframe: HTMLIFrameElement) => {
+          const attach = () => {
+            if (disposed || !rendered) return;
+            const contents = (rendered.getContents() as unknown as Contents[])
+              .find((item) => item.document === iframe.contentDocument);
+            if (contents) attachContextMenu(contents);
+          };
+          if (!hookedFrames.has(iframe)) {
+            hookedFrames.add(iframe);
+            iframe.addEventListener("load", attach, true);
+          }
+          attach();
+          window.setTimeout(attach, 0);
+          window.setTimeout(attach, 100);
+        };
+        const scanIframes = () => {
+          host.querySelectorAll("iframe").forEach((iframe) => attachIframeContents(iframe));
+        };
+        contextObserver = new MutationObserver(scanIframes);
+        contextObserver.observe(host, { childList: true, subtree: true });
         rendered.hooks.content.register(attachContextMenu);
         rendered.on("rendered", (_section: unknown, view: { contents?: Contents }) => {
           attachContextMenu(view);
@@ -277,6 +370,7 @@ const EpubPane: React.FC<{
         if (!disposed) {
           const currentContents = rendered.getContents() as unknown as Contents[];
           currentContents.forEach(attachContextMenu);
+          scanIframes();
           applyHighlights();
           setLoading(false);
         }
@@ -291,6 +385,8 @@ const EpubPane: React.FC<{
 
     return () => {
       disposed = true;
+      contextObserver?.disconnect();
+      contextObserver = null;
       renditionRef.current?.destroy();
       bookRef.current?.destroy();
       renditionRef.current = null;
@@ -379,8 +475,10 @@ export const ReadingWorkspace: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [showConsent, setShowConsent] = useState(false);
   const [readingSessionId, setReadingSessionId] = useState<string | null>(null);
+  const [readingConversations, setReadingConversations] = useState<ReadingConversation[]>([]);
   const [isDiscussionOpen, setIsDiscussionOpen] = useState(true);
   const [isDiscussionOptionsOpen, setIsDiscussionOptionsOpen] = useState(false);
+  const [isConversationHistoryOpen, setIsConversationHistoryOpen] = useState(false);
   const [highlightMode, setHighlightMode] = useState(false);
   const [translationLanguage, setTranslationLanguage] = useState("中文");
   const messageEndRef = useRef<HTMLDivElement>(null);
@@ -417,11 +515,20 @@ export const ReadingWorkspace: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
     setReadingSessionId(null);
+    setReadingConversations([]);
+    setIsConversationHistoryOpen(false);
     if (!selectedBook || !activeAgentId) return () => { cancelled = true; };
     void invoke<string>("open_reading_book_conversation", { bookId: selectedBook.id, agentId: activeAgentId })
       .then(async (sessionId) => {
         await setActiveSessionId(sessionId);
-        if (!cancelled) setReadingSessionId(sessionId);
+        const conversations = await invoke<ReadingConversation[]>("list_reading_book_conversations", {
+          bookId: selectedBook.id,
+          agentId: activeAgentId,
+        });
+        if (!cancelled) {
+          setReadingSessionId(sessionId);
+          setReadingConversations(conversations);
+        }
       })
       .catch((reason) => {
         if (!cancelled) setError(String(reason));
@@ -538,6 +645,41 @@ export const ReadingWorkspace: React.FC = () => {
     }
   };
 
+  const refreshReadingConversations = async (bookId: string, agentId: string) => {
+    const conversations = await invoke<ReadingConversation[]>("list_reading_book_conversations", {
+      bookId,
+      agentId,
+    });
+    setReadingConversations(conversations);
+  };
+
+  const switchReadingConversation = async (sessionId: string) => {
+    if (!selectedBook || !activeAgentId || sessionId === readingSessionId || isStreaming) {
+      setIsConversationHistoryOpen(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke("select_reading_book_conversation", {
+        bookId: selectedBook.id,
+        agentId: activeAgentId,
+        sessionId,
+      });
+      setQuotedSelection(null);
+      setSelectionMenu(null);
+      setQuestion("");
+      await setActiveSessionId(sessionId);
+      setReadingSessionId(sessionId);
+      await refreshReadingConversations(selectedBook.id, activeAgentId);
+      setIsConversationHistoryOpen(false);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const conversationReady = readingSessionId !== null && readingSessionId === activeSessionId;
   const openBook = (bookId: string) => {
     setSelectedBookId(bookId);
@@ -552,6 +694,7 @@ export const ReadingWorkspace: React.FC = () => {
     setSelectionMenu(null);
     setQuestion("");
     setShowConsent(false);
+    setIsConversationHistoryOpen(false);
   };
 
   return (
@@ -574,10 +717,18 @@ export const ReadingWorkspace: React.FC = () => {
 
           {isDiscussionOpen ? (
             <aside className="flex h-[42%] min-h-64 w-full shrink-0 flex-col border-t border-stone-200 bg-white lg:h-auto lg:w-[min(32vw,400px)] lg:min-w-80 lg:border-l lg:border-t-0">
-              <header className="border-b border-stone-200">
+              <header className="relative border-b border-stone-200">
                 <div className="flex h-12 items-center gap-2 px-4">
                   <MessageCircleMore className="h-4 w-4 text-emerald-700" />
                   <span className="min-w-0 flex-1 text-sm font-semibold text-stone-800">阅读讨论</span>
+                  <button
+                    onClick={() => setIsConversationHistoryOpen((open) => !open)}
+                    disabled={!conversationReady || loading}
+                    className={`rounded p-1 disabled:opacity-40 ${isConversationHistoryOpen ? "bg-stone-100 text-stone-700" : "text-stone-400 hover:bg-stone-100 hover:text-stone-700"}`}
+                    title="讨论历史"
+                  >
+                    <History className="h-4 w-4" />
+                  </button>
                   <button
                     onClick={() => {
                       if (!selectedBook || !activeAgentId || isStreaming) return;
@@ -594,6 +745,8 @@ export const ReadingWorkspace: React.FC = () => {
                           await setActiveSessionId(sessionId);
                           await loadSessions(activeAgentId);
                           setReadingSessionId(sessionId);
+                          await refreshReadingConversations(selectedBook.id, activeAgentId);
+                          setIsConversationHistoryOpen(false);
                         })
                         .catch((reason) => setError(String(reason)))
                         .finally(() => setLoading(false));
@@ -607,6 +760,32 @@ export const ReadingWorkspace: React.FC = () => {
                   <button onClick={() => setIsDiscussionOptionsOpen((open) => !open)} className={`rounded p-1 ${isDiscussionOptionsOpen ? "bg-stone-100 text-stone-700" : "text-stone-400 hover:bg-stone-100 hover:text-stone-700"}`} title="讨论设置"><SlidersHorizontal className="h-4 w-4" /></button>
                   <button onClick={() => setIsDiscussionOpen(false)} className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700" title="收起讨论"><PanelRightClose className="h-4 w-4" /></button>
                 </div>
+                {isConversationHistoryOpen && (
+                  <>
+                    <div className="fixed inset-0 z-20" onClick={() => setIsConversationHistoryOpen(false)} />
+                    <div className="absolute right-12 top-10 z-30 w-64 overflow-hidden rounded-md border border-stone-200 bg-white shadow-xl">
+                      <div className="border-b border-stone-100 px-3 py-2 text-[11px] font-semibold text-stone-500">讨论历史</div>
+                      <div className="max-h-64 overflow-y-auto py-1">
+                        {readingConversations.map((conversation, index) => (
+                          <button
+                            key={conversation.session_id}
+                            onClick={() => void switchReadingConversation(conversation.session_id)}
+                            disabled={isStreaming || loading}
+                            className={`flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-stone-50 disabled:opacity-50 ${conversation.session_id === readingSessionId ? "bg-emerald-50" : ""}`}
+                          >
+                            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${conversation.session_id === readingSessionId ? "bg-emerald-600" : "bg-stone-300"}`} />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-medium text-stone-700">
+                                {conversation.session_id === readingSessionId ? "当前讨论" : `历史讨论 ${readingConversations.length - index}`}
+                              </span>
+                              <span className="mt-0.5 block text-[10px] text-stone-400">{conversationDate(conversation.created_at)}</span>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
                 {isDiscussionOptionsOpen && (
                   <div className="border-t border-stone-100 px-4 py-3">
                     <label className="flex cursor-pointer items-center gap-2 text-[11px] text-stone-500">

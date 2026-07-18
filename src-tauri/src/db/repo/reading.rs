@@ -37,6 +37,15 @@ pub struct ReadingHighlightRow {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ReadingConversationRow {
+    pub session_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub is_current: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewReadingBook {
     pub id: String,
@@ -88,6 +97,10 @@ fn reading_book_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReadingBoo
 const BOOK_COLUMNS: &str =
     "id, collection_id, document_id, local_path, title, author, source_hash, \
     model_knows_content, content_context_allowed, content_context_decided, progress_cfi, created_at, updated_at";
+
+const BOOK_COLUMNS_QUALIFIED: &str =
+    "b.id, b.collection_id, b.document_id, b.local_path, b.title, b.author, b.source_hash, \
+    b.model_knows_content, b.content_context_allowed, b.content_context_decided, b.progress_cfi, b.created_at, b.updated_at";
 
 pub fn insert_book(conn: &mut Connection, input: &NewReadingBook) -> AppResult<ReadingBookRow> {
     if input.title.trim().is_empty() || input.source_hash.trim().is_empty() {
@@ -159,10 +172,10 @@ pub fn get_book_for_session(
 ) -> AppResult<Option<ReadingBookRow>> {
     conn.query_row(
         &format!(
-            "SELECT b.{BOOK_COLUMNS} FROM reading_books b \
-             JOIN reading_book_conversations c ON c.book_id = b.id \
-             JOIN sessions s ON s.id = c.session_id AND s.deleted_at IS NULL \
-             WHERE c.session_id = ?1 AND b.deleted_at IS NULL"
+            "SELECT {BOOK_COLUMNS_QUALIFIED} FROM reading_books b \
+             JOIN reading_book_conversation_sessions h ON h.book_id = b.id \
+             JOIN sessions s ON s.id = h.session_id AND s.deleted_at IS NULL \
+             WHERE h.session_id = ?1 AND b.deleted_at IS NULL"
         ),
         [session_id],
         reading_book_from_row,
@@ -185,6 +198,69 @@ pub fn get_conversation_session(
     )
     .optional()
     .map_err(Into::into)
+}
+
+pub fn list_conversations(
+    conn: &Connection,
+    book_id: &str,
+    agent_id: &str,
+) -> AppResult<Vec<ReadingConversationRow>> {
+    let mut statement = conn.prepare(
+        "SELECT h.session_id, s.title, COALESCE(s.created_at, '0'), \
+                COALESCE(s.updated_at, s.created_at, '0'), \
+                CASE WHEN current.session_id = h.session_id THEN 1 ELSE 0 END \
+         FROM reading_book_conversation_sessions h \
+         JOIN sessions s ON s.id = h.session_id AND s.deleted_at IS NULL \
+         LEFT JOIN reading_book_conversations current \
+           ON current.book_id = h.book_id AND current.agent_id = h.agent_id \
+         WHERE h.book_id = ?1 AND h.agent_id = ?2 \
+         ORDER BY 5 DESC, CAST(s.created_at AS INTEGER) DESC, s.id DESC",
+    )?;
+    let rows = statement.query_map(params![book_id, agent_id], |row| {
+        Ok(ReadingConversationRow {
+            session_id: row.get(0)?,
+            title: row.get(1)?,
+            created_at: row.get(2)?,
+            updated_at: row.get(3)?,
+            is_current: row.get::<_, i64>(4)? != 0,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn select_conversation(
+    conn: &mut Connection,
+    book_id: &str,
+    agent_id: &str,
+    session_id: &str,
+) -> AppResult<()> {
+    let timestamp = now();
+    let tx = conn.transaction()?;
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM reading_book_conversation_sessions h \
+         JOIN sessions s ON s.id = h.session_id AND s.deleted_at IS NULL \
+         WHERE h.book_id = ?1 AND h.agent_id = ?2 AND h.session_id = ?3)",
+        params![book_id, agent_id, session_id],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Err(AppError::Other("Reading conversation not found".into()));
+    }
+    tx.execute(
+        "INSERT INTO reading_book_conversations \
+         (book_id, agent_id, session_id, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?4) \
+         ON CONFLICT(book_id, agent_id) DO UPDATE SET \
+           session_id = excluded.session_id, updated_at = excluded.updated_at",
+        params![book_id, agent_id, session_id, timestamp],
+    )?;
+    tx.execute(
+        "UPDATE reading_book_conversation_sessions SET updated_at = ?1 \
+         WHERE book_id = ?2 AND agent_id = ?3 AND session_id = ?4",
+        params![timestamp, book_id, agent_id, session_id],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn grant_book_agent_access(
@@ -244,6 +320,13 @@ pub fn create_conversation(
             "Invalid reading conversation association".into(),
         ));
     }
+    tx.execute(
+        "INSERT INTO reading_book_conversation_sessions \
+         (book_id, agent_id, session_id, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?4) \
+         ON CONFLICT(book_id, agent_id, session_id) DO UPDATE SET updated_at = excluded.updated_at",
+        params![book_id, agent_id, session_id, timestamp],
+    )?;
     tx.execute(
         "INSERT INTO reading_book_conversations (book_id, agent_id, session_id, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, ?4) \
@@ -525,5 +608,53 @@ mod tests {
             )
             .unwrap();
         assert!(old_session_exists);
+        let conversations = list_conversations(&conn, "book", "agent").unwrap();
+        assert_eq!(conversations.len(), 2);
+        assert_eq!(conversations[0].session_id, "session-2");
+        assert!(conversations[0].is_current);
+        assert_eq!(
+            get_book_for_session(&conn, "session-1")
+                .unwrap()
+                .unwrap()
+                .id,
+            "book"
+        );
+
+        select_conversation(&mut conn, "book", "agent", "session-1").unwrap();
+        assert_eq!(
+            get_conversation_session(&conn, "book", "agent")
+                .unwrap()
+                .as_deref(),
+            Some("session-1")
+        );
+    }
+
+    #[test]
+    fn gets_book_for_session_with_qualified_columns() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        seed(&conn);
+        insert_book(
+            &mut conn,
+            &NewReadingBook {
+                id: "book".into(),
+                collection_id: "collection".into(),
+                document_id: "document".into(),
+                local_path: "/tmp/book.epub".into(),
+                title: "Book".into(),
+                author: Some("Author".into()),
+                source_hash: "hash".into(),
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, title) VALUES ('session', 'agent', 'Reading')",
+            [],
+        )
+        .unwrap();
+        create_conversation(&mut conn, "book", "agent", "session").unwrap();
+
+        let book = get_book_for_session(&conn, "session").unwrap().unwrap();
+        assert_eq!(book.id, "book");
+        assert_eq!(book.title, "Book");
     }
 }

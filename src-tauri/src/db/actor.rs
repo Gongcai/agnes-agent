@@ -162,6 +162,17 @@ pub enum DbCommand {
         agent_id: String,
         resp: oneshot::Sender<AppResult<Option<String>>>,
     },
+    ListReadingConversations {
+        book_id: String,
+        agent_id: String,
+        resp: oneshot::Sender<AppResult<Vec<repo::reading::ReadingConversationRow>>>,
+    },
+    SelectReadingConversation {
+        book_id: String,
+        agent_id: String,
+        session_id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     GrantReadingBookAgentAccess {
         book_id: String,
         agent_id: String,
@@ -932,6 +943,38 @@ impl DbActorHandle {
         self.send(DbCommand::GetReadingConversationSession {
             book_id,
             agent_id,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_reading_conversations(
+        &self,
+        book_id: String,
+        agent_id: String,
+    ) -> AppResult<Vec<repo::reading::ReadingConversationRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListReadingConversations {
+            book_id,
+            agent_id,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn select_reading_conversation(
+        &self,
+        book_id: String,
+        agent_id: String,
+        session_id: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SelectReadingConversation {
+            book_id,
+            agent_id,
+            session_id,
             resp,
         })?;
         rx.await
@@ -2080,6 +2123,28 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 } => {
                     let _ = resp.send(repo::reading::get_conversation_session(
                         &conn, &book_id, &agent_id,
+                    ));
+                }
+                DbCommand::ListReadingConversations {
+                    book_id,
+                    agent_id,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::reading::list_conversations(
+                        &conn, &book_id, &agent_id,
+                    ));
+                }
+                DbCommand::SelectReadingConversation {
+                    book_id,
+                    agent_id,
+                    session_id,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::reading::select_conversation(
+                        &mut conn,
+                        &book_id,
+                        &agent_id,
+                        &session_id,
                     ));
                 }
                 DbCommand::GrantReadingBookAgentAccess {

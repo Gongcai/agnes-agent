@@ -9,6 +9,7 @@ mod memory;
 mod model_registry;
 mod notifications;
 mod reading;
+mod reading_context_menu;
 mod secrets;
 mod state;
 pub mod sync;
@@ -76,6 +77,13 @@ fn main() {
                 eprintln!("[agent] 启动失败（非致命）：{e}");
             }
 
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                if let Err(error) = reading_context_menu::install(&window, app.handle().clone()) {
+                    eprintln!("[reading] 无法安装原生右键菜单拦截：{error}");
+                }
+            }
+
             app.manage(AppState {
                 data_dir,
                 db,
@@ -126,9 +134,12 @@ fn main() {
             commands::list_reading_books,
             commands::import_reading_book,
             commands::open_reading_book_conversation,
+            commands::list_reading_book_conversations,
+            commands::select_reading_book_conversation,
             commands::new_reading_book_conversation,
             commands::update_reading_book_mode,
             commands::set_reading_book_content_context_allowed,
+            commands::set_reading_context_menu_active,
             commands::update_reading_book_progress,
             commands::list_reading_highlights,
             commands::create_reading_highlight,

@@ -160,7 +160,26 @@ fn ensure_reading_metadata(conn: &Connection) -> AppResult<()> {
         "reading_books",
         "content_context_decided",
         "INTEGER NOT NULL DEFAULT 0",
-    )
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO reading_book_conversation_sessions \
+         (book_id, agent_id, session_id, created_at, updated_at) \
+         SELECT book_id, agent_id, session_id, created_at, updated_at \
+         FROM reading_book_conversations",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO reading_book_conversation_sessions \
+         (book_id, agent_id, session_id, created_at, updated_at) \
+         SELECT b.id, s.agent_id, s.id, COALESCE(s.created_at, '0'), COALESCE(s.updated_at, s.created_at, '0') \
+         FROM reading_books b \
+         JOIN reading_book_conversations current ON current.book_id = b.id \
+         JOIN sessions s ON s.agent_id = current.agent_id \
+           AND s.title = '阅读 · ' || b.title \
+           AND s.deleted_at IS NULL",
+        [],
+    )?;
+    Ok(())
 }
 
 fn ensure_planner_task_metadata(conn: &Connection) -> AppResult<()> {

@@ -723,27 +723,62 @@ async fn handle_conn<R: tauri::Runtime>(
                     }
                 }
 
-                // 3. 落地最终的 assistant 思考及正文消息片段（本回合的，已累计的在前序回合 drain 过）
+                // 3. 落地最终的 assistant 思考及正文消息片段（本回合的，已累计的在前序回合 drain 过）。
+                // A provider may finish without sending a delta (for example, an
+                // exhausted reasoning response). Create the run record from the
+                // explicit manager mapping so that this cannot leave a pending
+                // assistant bubble behind.
                 let mut runs = active_runs.lock().await;
+                if !runs.contains_key(&run_id) {
+                    if let Some(id) = manager.peek_run(&run_id) {
+                        runs.insert(
+                            run_id.clone(),
+                            ActiveRun {
+                                assistant_message_id: id,
+                                session_id: session_id.clone(),
+                                accumulated_text: String::new(),
+                                accumulated_thought: String::new(),
+                                current_ordinal: 0,
+                                in_thought: false,
+                            },
+                        );
+                    }
+                }
                 if let Some(mut run) = runs.remove(&run_id) {
                     let mut parts_to_insert = Vec::new();
                     drain_accumulated(&mut run, &mut parts_to_insert);
+                    let has_output = !parts_to_insert.is_empty() || run.current_ordinal > 0;
 
                     // 消息行（pending 占位）已在 send_message 中创建，这里只需把累积的文本/思考片段
                     // 写入已有的 message_parts，避免以相同 id 重新 INSERT 触发主键冲突导致整段事务回滚、
                     // 回复内容丢失（表现为 AI 消息在输出结束后消失）。
-                    if !parts_to_insert.is_empty() {
-                        let _ = db.insert_message_parts(parts_to_insert).await;
-                    }
-
-                    let completed = db
-                        .update_message_status(run.assistant_message_id, "complete".to_string())
-                        .await;
-                    if completed.is_ok() {
-                        if let Some(state) = app_handle.try_state::<AppState>() {
-                            state.sync.schedule();
+                    if has_output {
+                        if !parts_to_insert.is_empty() {
+                            let _ = db.insert_message_parts(parts_to_insert).await;
                         }
+                        let completed = db
+                            .update_message_status(run.assistant_message_id, "complete".to_string())
+                            .await;
+                        if completed.is_ok() {
+                            if let Some(state) = app_handle.try_state::<AppState>() {
+                                state.sync.schedule();
+                            }
+                        }
+                    } else {
+                        let _ = db
+                            .fail_pending_assistant(
+                                run.assistant_message_id,
+                                "（模型未返回内容，请重试或关闭思考模式后再试）".to_string(),
+                            )
+                            .await;
                     }
+                } else if let Some(id) = manager.peek_run(&run_id) {
+                    let _ = db
+                        .fail_pending_assistant(
+                            id,
+                            "（模型未返回内容，请重试或关闭思考模式后再试）".to_string(),
+                        )
+                        .await;
                 }
                 drop(runs);
 

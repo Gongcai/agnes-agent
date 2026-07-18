@@ -1084,7 +1084,7 @@ pub async fn edit_and_resend(
         )
         .await?;
     state.sync.schedule();
-    start_agent_run(
+    start_agent_run_or_mark_failed(
         &state,
         &cfg,
         &msg.session_id,
@@ -1131,7 +1131,7 @@ pub async fn regenerate_message(
         )
         .await?;
     state.sync.schedule();
-    start_agent_run(
+    start_agent_run_or_mark_failed(
         &state,
         &cfg,
         &msg.session_id,
@@ -1604,6 +1604,35 @@ async fn start_agent_run(
     Ok(())
 }
 
+async fn start_agent_run_or_mark_failed(
+    state: &AppState,
+    cfg: &ResolvedLlm,
+    session_id: &str,
+    assistant_msg_id: &str,
+    is_regeneration: bool,
+    include_reading_context: bool,
+) -> AppResult<()> {
+    let result = start_agent_run(
+        state,
+        cfg,
+        session_id,
+        assistant_msg_id,
+        is_regeneration,
+        include_reading_context,
+    )
+    .await;
+    if let Err(error) = &result {
+        let _ = state
+            .db
+            .fail_pending_assistant(
+                assistant_msg_id.to_string(),
+                format!("（无法启动本次回复：{error}）"),
+            )
+            .await;
+    }
+    result
+}
+
 /// 发送消息给 Agent，启动推理引擎运行（Tauri 主入口）。
 #[tauri::command]
 pub async fn send_message(
@@ -1625,7 +1654,7 @@ pub async fn send_message(
         .await?;
     state.sync.schedule();
 
-    start_agent_run(
+    start_agent_run_or_mark_failed(
         &state,
         &cfg,
         &session_id,
@@ -2163,6 +2192,28 @@ pub async fn open_reading_book_conversation(
     Ok(session_id)
 }
 
+#[tauri::command]
+pub async fn list_reading_book_conversations(
+    state: tauri::State<'_, AppState>,
+    book_id: String,
+    agent_id: String,
+) -> AppResult<Vec<crate::db::repo::reading::ReadingConversationRow>> {
+    state.db.list_reading_conversations(book_id, agent_id).await
+}
+
+#[tauri::command]
+pub async fn select_reading_book_conversation(
+    state: tauri::State<'_, AppState>,
+    book_id: String,
+    agent_id: String,
+    session_id: String,
+) -> AppResult<()> {
+    state
+        .db
+        .select_reading_conversation(book_id, agent_id, session_id)
+        .await
+}
+
 /// Create a fresh discussion session for a book while keeping the previous
 /// session available in the normal session list.
 #[tauri::command]
@@ -2235,6 +2286,11 @@ pub async fn set_reading_book_content_context_allowed(
         .db
         .set_reading_book_content_context_allowed(book_id, allowed)
         .await
+}
+
+#[tauri::command]
+pub fn set_reading_context_menu_active(active: bool) {
+    crate::reading_context_menu::set_active(active);
 }
 
 #[tauri::command]

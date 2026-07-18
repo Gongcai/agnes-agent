@@ -574,6 +574,16 @@ CREATE TABLE IF NOT EXISTS reading_book_conversations (
   UNIQUE(session_id)
 );
 
+CREATE TABLE IF NOT EXISTS reading_book_conversation_sessions (
+  book_id TEXT NOT NULL REFERENCES reading_books(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(book_id, agent_id, session_id),
+  UNIQUE(session_id)
+);
+
 CREATE TABLE IF NOT EXISTS reading_highlights (
   id TEXT PRIMARY KEY,
   book_id TEXT NOT NULL REFERENCES reading_books(id) ON DELETE CASCADE,
@@ -594,6 +604,8 @@ CREATE INDEX IF NOT EXISTS idx_reading_books_updated
   ON reading_books(updated_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_reading_conversations_session
   ON reading_book_conversations(session_id);
+CREATE INDEX IF NOT EXISTS idx_reading_conversation_history
+  ON reading_book_conversation_sessions(book_id, agent_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reading_highlights_book
   ON reading_highlights(book_id, created_at) WHERE deleted_at IS NULL;
 "#;
