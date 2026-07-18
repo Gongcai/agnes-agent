@@ -318,7 +318,8 @@ storage_provider_accounts
 
 ### 7.4 Google Drive Provider
 
-- 只使用 Google Drive 官方 API 和 OAuth 2.0 + PKCE，优先最小 `drive.file` 权限。
+- 作为浏览器只读能力完成后的首批高优先级 Provider，与夸克网盘共用账户、文件浏览、导入、传输队列和错误状态模型。
+- 只使用 Google Drive 官方 API 和 OAuth 2.0 + PKCE，并按账户能力选择最小 scope：应用管理的加密副本使用 `drive.file`；浏览和导入用户已有文件需要 `drive.readonly`；覆盖、移动或删除已有文件才显式申请完整 `drive`。不得用 `drive.file` 冒充全盘浏览能力。
 - 使用 resumable upload 上传大型加密制品，使用 Range download 续传。
 - Drive 中使用随机文件名，明文标题、MIME 和目录归属在客户端加密 manifest 中保存。
 - D1 记录加密 file ID、Drive revision/modified time、密文 Hash 和 size，不记录 access/refresh token。
@@ -328,8 +329,9 @@ storage_provider_accounts
 
 ### 7.5 夸克网盘 Provider
 
-- 逆向 API 不进入核心仓库的默认功能和正常同步验收标准。
-- 以可选 community adapter/plugin 提供，默认禁用且优先只读导入。
+- 作为浏览器只读能力完成后的首批高优先级 Provider，优先解决 Linux 缺少官方客户端时的文件浏览、下载和知识库/书架导入。
+- 通过 `quarkpan` 或同类开源逆向 API 的可替换 community adapter 提供；业务层只依赖 `ObjectStorageProvider`，不得直接依赖逆向接口的数据结构。
+- 新账户默认未连接，必须由用户显式启用并提供授权；首个版本优先只读浏览、下载和导入，写入、移动、删除在兼容性验证后单独开放。
 - 必须声明版本和可用性，不得在应用日志、SQLite 或 D1 保存 Cookie/token 明文。
 - 失效只影响该 Provider，不得阻断本地文件、R2、Drive 或其他功能。
 - 在引入前单独检查服务条款、账号风控和法律风险。
@@ -546,21 +548,27 @@ tasks
 - 实现断点下载、Hash 验证、原子安装和失败回退；
 - 加入本地磁盘配额和 GC。
 
-### Phase C：R2 Provider
+### Phase C：通用 Provider 基础与网盘页
+
+- 定稿 `ObjectStorageProvider`、账户、能力声明和 Keyring 凭证边界；
+- 实现网盘页面的账户、目录/文件浏览、下载/导入队列、配额、状态和归一化错误；
+- 完成 Provider 故障隔离：任一远端失效不得影响本地知识库、书架、聊天或其他 Provider。
+
+### Phase D：Google Drive 与夸克 Provider
+
+- Google Drive 创建 OAuth Desktop Client，完成 PKCE、分级 scope、Keyring token 轮换、文件浏览、resumable upload、Range download、revision 与限流重试；
+- Google Drive 接入加密制品副本和 Docs/Sheets/Slides 源文件导出；
+- 夸克以 `quarkpan` 或同类兼容层实现文件浏览、下载、Range/续传能力探测，以及知识库和书架导入；Cookie/token 只存 Keyring；
+- 使用统一契约测试覆盖授权丢失、接口字段变化、限流、断点恢复和 Provider 切换；夸克 adapter 失效时给出明确错误且不影响其他功能。
+
+### Phase E：R2 Provider
 
 - Wrangler 创建 `agnes-blobs` bucket 并绑定 Worker；
 - 实现 Worker 授权的分块上传/下载；
 - 实现 owner 隔离、配额、保留期和孤儿对象 GC；
 - 只使用加密假数据完成故障测试后再开放真实数据。
 
-### Phase D：Google Drive Provider
-
-- 创建 Google Cloud OAuth Desktop Client，完成 PKCE 和 Keyring token 轮换；
-- 实现 resumable upload、Range download、revision 与限流重试；
-- 实现加密制品副本和 Drive 源文件连接器；
-- 用两台设备测试自动决策、授权丢失和 R2/Drive 切换。
-
-### Phase E：子功能 UI
+### Phase F：子功能 UI
 
 - [x] 改造侧边栏为子功能列表 + 可折叠聊天会话 + 可折叠工作区会话；整体折叠时保留图标轨，折叠偏好只存本机；
 - [x] 建立子功能视图宿主和功能注册表；当前只开放已实现的聊天入口，不展示空白功能页；
@@ -570,7 +578,7 @@ tasks
 - 网盘页显示 Provider 账户、配额、同步队列、副本和错误；
 - 知识库页显示源文件、抽取/分块/向量进度和设备覆盖状态。
 
-### Phase F：日历、待办与外部适配器
+### Phase G：日历、待办与外部适配器
 
 - [x] 完成本地 Calendar/TODO 领域表与索引，覆盖时区、全天事件、RRULE、例外、子任务、优先级与完成状态；
 - [x] 完成 Local Provider 的本地 CRUD 与 Tauri IPC：日历/事件、任务列表/任务、任务完成状态；

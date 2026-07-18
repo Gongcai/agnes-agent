@@ -854,6 +854,10 @@ async fn download_inner(
     ))
 }
 
+pub(crate) async fn validate_public_url(url: &Url) -> AppResult<()> {
+    validate_and_resolve(url).await.map(|_| ())
+}
+
 async fn validate_and_resolve(url: &Url) -> AppResult<(String, SocketAddr)> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(AppError::Other(
@@ -1208,7 +1212,7 @@ fn normalized_public_url(value: &str) -> Option<String> {
     Some(url.to_string())
 }
 
-fn extract_html(html: &str) -> (Option<String>, String) {
+pub(crate) fn extract_html(html: &str) -> (Option<String>, String) {
     let document = Html::parse_document(html);
     let title_selector = Selector::parse("title").expect("valid selector");
     let candidate_selector =
@@ -1307,7 +1311,7 @@ fn normalize_inline(value: &str) -> String {
     output
 }
 
-fn normalize_plain_text(value: &str) -> String {
+pub(crate) fn normalize_plain_text(value: &str) -> String {
     value
         .lines()
         .map(normalize_inline)
@@ -1316,7 +1320,7 @@ fn normalize_plain_text(value: &str) -> String {
         .join("\n")
 }
 
-fn truncate_chars(value: &str, max_chars: usize) -> (String, bool) {
+pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> (String, bool) {
     match value.char_indices().nth(max_chars) {
         Some((end, _)) => (value[..end].trim_end().to_string(), true),
         None => (value.to_string(), false),

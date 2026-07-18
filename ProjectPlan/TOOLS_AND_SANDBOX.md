@@ -33,7 +33,7 @@
 | `grep` | 递归内容搜索（只读，ripgrep 风式） | Low |
 | `apply_patch` | 统一 diff 补丁应用（codex 风格，多段一次性改） | Medium |
 
-> `memory_search`、`memory_create`、`memory_update` 与 `MEMORY.md` 专用工具已随记忆系统实现；只读 `web_search/web_fetch` 见 `WEB_AND_MCP.md`，有状态浏览器操作与 `ssh` 仍留待后续单独设计。
+> `memory_search`、`memory_create`、`memory_update` 与 `MEMORY.md` 专用工具已随记忆系统实现；只读 `web_search/web_fetch/browser_open` 见 `WEB_AND_MCP.md`，有状态浏览器操作与 `ssh` 仍留待后续单独设计。
 
 ### 工具模块拆分
 `src-tauri/src/tools/` 改为：
@@ -240,7 +240,7 @@ pub struct NetworkPolicy { pub allow: bool }
 ## 十一、实施结果与安全边界（2026-07-16）
 
 - Phase A–E 已完成；对应提交：`4b4a056`、`1e65bcf`、`a02fa80`、`e070c4d`、`dc6cce5`。
-- Rust 内置工具共 23 个：基础文件/命令/Git 8 个、记忆 5 个、日历待办 8 个、联网研究 2 个；Python sidecar 已声明同一组 schema。记忆工具只访问当前 session 所属 Agent，不能接受任意路径或外部 `agent_id`。结构化记忆写工具固定由系统生成创建人和时间等字段。`web_search/web_fetch` 仅访问公开网络，受 Web capability、总网络开关、SSRF 防护、响应上限和提示词注入隔离共同约束。
+- Rust 内置工具共 24 个：基础文件/命令/Git 8 个、记忆 5 个、日历待办 8 个、联网研究 3 个；Python sidecar 已声明同一组 schema。记忆工具只访问当前 session 所属 Agent，不能接受任意路径或外部 `agent_id`。结构化记忆写工具固定由系统生成创建人和时间等字段。`web_search/web_fetch/browser_open` 仅访问公开网络，受 Web capability、总网络开关、SSRF 防护、响应/正文上限和提示词注入隔离共同约束；浏览器工具额外使用临时无登录 Profile 和只读请求拦截。
 - Linux 已验证 Landlock workspace 写边界、symlink 逃逸拒绝、rlimit 文件大小上限，以及 bubblewrap loopback 网络隔离。
 - 原生文件工具由路径能力层保护；Landlock 仅施加给 shell/git 子进程，避免污染桌面主进程。
 - 非 Linux 或 Landlock 不可用时，文件工具仍受严格路径检查；shell/git 的内核级文件隔离会降级。bubblewrap 不可用且网络关闭时仅能启发式拒绝已知网络动作，不能视为完整网络沙箱。
