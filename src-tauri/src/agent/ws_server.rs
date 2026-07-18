@@ -838,6 +838,32 @@ async fn handle_conn<R: tauri::Runtime>(
         }
     }
 
+    // A sidecar disconnect can otherwise leave the UI with blank pending
+    // assistant placeholders forever. Resolve every in-flight run explicitly.
+    let session_runs = manager.drain_session_runs();
+    let sessions_by_run = session_runs
+        .into_iter()
+        .map(|(session_id, run_id)| (run_id, session_id))
+        .collect::<std::collections::HashMap<_, _>>();
+    for (run_id, assistant_message_id) in manager.drain_runs() {
+        let _ = db
+            .fail_pending_assistant(
+                assistant_message_id,
+                "（Agent 连接已断开，请重新发送）".to_string(),
+            )
+            .await;
+        if let Some(session_id) = sessions_by_run.get(&run_id) {
+            let _ = app_handle.emit(
+                "agent://run_error",
+                json!({
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "message": "Agent 连接已断开"
+                }),
+            );
+        }
+    }
+
     // 关闭逻辑
     manager.clear_active_sender();
     writer_task.abort();

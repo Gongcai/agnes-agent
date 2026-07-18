@@ -235,6 +235,63 @@ pub fn update_status(conn: &mut Connection, id: &str, status: &str) -> AppResult
     Ok(())
 }
 
+/// Finish an interrupted pending response with a visible error instead of an
+/// empty assistant bubble. This state is local-only until a later successful
+/// completion is explicitly synced.
+pub fn fail_pending_assistant(conn: &mut Connection, id: &str, message: &str) -> AppResult<bool> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let status: Option<(String, String)> = tx
+        .query_row(
+            "SELECT role, status FROM messages WHERE id = ?1 AND deleted_at IS NULL",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((role, status)) = status else {
+        tx.commit()?;
+        return Ok(false);
+    };
+    if role != "assistant" || !matches!(status.as_str(), "pending" | "streaming") {
+        tx.commit()?;
+        return Ok(false);
+    }
+
+    let ordinal: i32 = tx.query_row(
+        "SELECT COALESCE(MAX(ordinal) + 1, 0) FROM message_parts WHERE message_id = ?1",
+        [id],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+        "INSERT INTO message_parts (id, message_id, kind, ordinal, content) VALUES (?1, ?2, 'text', ?3, ?4)",
+        params![uuid::Uuid::new_v4().to_string(), id, ordinal, message],
+    )?;
+    let device_id = super::sync::device_id(&tx)?;
+    tx.execute(
+        "UPDATE messages SET status = 'failed', updated_at = ?1, version = version + 1, origin_device_id = ?2 WHERE id = ?3",
+        params![now(), device_id, id],
+    )?;
+    tx.commit()?;
+    Ok(true)
+}
+
+/// Recover stale assistant placeholders left behind by a previous process.
+pub fn recover_interrupted_assistants(conn: &mut Connection) -> AppResult<usize> {
+    let ids = {
+        let mut statement = conn.prepare(
+            "SELECT id FROM messages WHERE role = 'assistant' AND status IN ('pending', 'streaming') AND deleted_at IS NULL",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let mut recovered = 0;
+    for id in ids {
+        if fail_pending_assistant(conn, &id, "（回复在完成前中断，请重新发送）")? {
+            recovered += 1;
+        }
+    }
+    Ok(recovered)
+}
+
 // ===== 版本树相关 =====
 
 /// 活动路径上的一条消息（含片段与版本信息）。
@@ -698,5 +755,50 @@ mod tests {
             )
             .unwrap();
         assert!(completed_payload.contains("\"selected_child_id\":\"message-child\""));
+    }
+
+    #[test]
+    fn failed_or_recovered_pending_assistants_gain_visible_text() {
+        let mut conn = setup();
+        for (id, status) in [
+            ("message-pending", "pending"),
+            ("message-streaming", "streaming"),
+        ] {
+            insert(
+                &conn,
+                &NewMessage {
+                    id: id.into(),
+                    session_id: "session-1".into(),
+                    role: "assistant".into(),
+                    seq: if status == "pending" { 1 } else { 2 },
+                    status: status.into(),
+                    model: None,
+                    token_count: None,
+                    metadata: None,
+                    parent_id: None,
+                    selected_child_id: None,
+                },
+            )
+            .unwrap();
+        }
+
+        assert!(fail_pending_assistant(&mut conn, "message-pending", "Connection lost").unwrap());
+        assert_eq!(
+            get(&conn, "message-pending").unwrap().unwrap().status,
+            "failed"
+        );
+        assert_eq!(
+            list_parts(&conn, "message-pending").unwrap()[0].content,
+            "Connection lost"
+        );
+        assert_eq!(recover_interrupted_assistants(&mut conn).unwrap(), 1);
+        assert_eq!(
+            get(&conn, "message-streaming").unwrap().unwrap().status,
+            "failed"
+        );
+        assert_eq!(
+            list_parts(&conn, "message-streaming").unwrap()[0].content,
+            "（回复在完成前中断，请重新发送）"
+        );
     }
 }

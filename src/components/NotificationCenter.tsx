@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { Bell, CalendarDays, CheckCircle2, CheckSquare2, ChevronRight, ShieldAlert } from "lucide-react";
@@ -20,6 +20,7 @@ export interface AppNotification {
 
 interface NotificationCenterProps {
   onNavigate: (notification: AppNotification) => void | Promise<void>;
+  className?: string;
 }
 
 function notificationIcon(kind: AppNotification["kind"]) {
@@ -39,10 +40,12 @@ function relativeTime(value: string): string {
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(timestamp);
 }
 
-export function NotificationCenter({ onNavigate }: NotificationCenterProps) {
+export function NotificationCenter({ onNavigate, className }: NotificationCenterProps) {
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   const load = async () => {
     try {
@@ -95,11 +98,20 @@ export function NotificationCenter({ onNavigate }: NotificationCenterProps) {
     })));
   };
 
+  const toggle = () => {
+    setOpen((current) => {
+      const next = !current;
+      if (next) setAnchor(triggerRef.current?.getBoundingClientRect() ?? null);
+      return next;
+    });
+  };
+
   return (
-    <div className="fixed right-36 top-3 z-[60]">
+    <div className={className ?? "relative shrink-0"}>
       <button
+        ref={triggerRef}
         type="button"
-        onClick={() => setOpen((current) => !current)}
+        onClick={toggle}
         className={`relative grid h-9 w-9 place-items-center rounded-full border shadow-sm transition-colors ${
           open ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-stone-200 bg-white text-stone-600 hover:bg-stone-50"
         }`}
@@ -116,7 +128,14 @@ export function NotificationCenter({ onNavigate }: NotificationCenterProps) {
       </button>
 
       {open && (
-        <section className="absolute right-0 mt-2 flex max-h-[min(36rem,calc(100vh-4.5rem))] w-[min(25rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-2xl" aria-label="通知中心内容">
+        <section
+          className="fixed z-[70] flex max-h-[min(36rem,calc(100vh-4.5rem))] w-[min(25rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-2xl"
+          style={anchor ? {
+            top: Math.min(anchor.bottom + 8, window.innerHeight - 64),
+            left: Math.min(Math.max(anchor.left, 8), window.innerWidth - 416),
+          } : undefined}
+          aria-label="通知中心内容"
+        >
           <header className="flex h-12 shrink-0 items-center justify-between border-b border-stone-200 px-4">
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-semibold text-stone-900">通知</h2>

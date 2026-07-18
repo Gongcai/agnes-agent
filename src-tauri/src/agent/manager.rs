@@ -195,6 +195,11 @@ impl AgentManager {
         self.pending_runs.lock().unwrap().remove(run_id)
     }
 
+    /// Drain runs that cannot complete after the sidecar connection closes.
+    pub fn drain_runs(&self) -> std::collections::HashMap<String, String> {
+        std::mem::take(&mut *self.pending_runs.lock().unwrap())
+    }
+
     /// 记录某会话当前活跃运行的 run_id（cancel_run 按会话取消用）。
     pub fn set_session_run(&self, session_id: String, run_id: String) {
         self.active_session_runs
@@ -206,6 +211,11 @@ impl AgentManager {
     /// 移除并返回某会话当前活跃运行的 run_id。RUN_FINISHED/RUN_ERROR/cancel 时调用。
     pub fn remove_session_run(&self, session_id: &str) -> Option<String> {
         self.active_session_runs.lock().unwrap().remove(session_id)
+    }
+
+    /// Drain session-to-run associations when the only sidecar disconnects.
+    pub fn drain_session_runs(&self) -> std::collections::HashMap<String, String> {
+        std::mem::take(&mut *self.active_session_runs.lock().unwrap())
     }
 
     /// 记录某 run 当前挂起审批的 tool_call_id（cancel 时据此解除审批阻塞）。

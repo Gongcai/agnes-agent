@@ -4,7 +4,7 @@ import { ChatWorkspace } from "./components/ChatWorkspace";
 import { KnowledgeWorkspace } from "./components/KnowledgeWorkspace";
 import { PlannerWorkspace } from "./components/PlannerWorkspace";
 import { SettingsModal } from "./components/SettingsModal";
-import { NotificationCenter, type AppNotification } from "./components/NotificationCenter";
+import { type AppNotification } from "./components/NotificationCenter";
 import type { AppFeatureId } from "./lib/features";
 import { useAgentStore, setupTauriEventListeners } from "./store/useAgentStore";
 import { invoke } from "@tauri-apps/api/core";
@@ -77,22 +77,19 @@ export default function App() {
         isOpen={isSidebarOpen}
         activeFeature={activeFeature}
         onSelectFeature={setActiveFeature}
+        onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
         onOpenSettings={handleOpenSettings}
+        onNotificationNavigate={handleNotificationNavigate}
       />
 
       {/* Feature view host. New local features are mounted here when enabled. */}
       {activeFeature === "chat" && (
         <ChatWorkspace
-          isSidebarOpen={isSidebarOpen}
-          onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
           onOpenSettings={handleOpenSettings}
         />
       )}
       {activeFeature === "knowledge" && (
-        <KnowledgeWorkspace
-          isSidebarOpen={isSidebarOpen}
-          onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
-        />
+        <KnowledgeWorkspace />
       )}
       {activeFeature === "reading" && (
         <Suspense fallback={<main className="grid min-w-0 flex-1 place-items-center text-sm text-stone-400">加载阅读器...</main>}>
@@ -102,10 +99,8 @@ export default function App() {
       {(activeFeature === "calendar" || activeFeature === "tasks") && (
         <PlannerWorkspace
           mode={activeFeature}
-          isSidebarOpen={isSidebarOpen}
           requestedTaskId={requestedPlannerTaskId}
           requestedEventId={requestedPlannerEventId}
-          onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
           onOpenTask={(taskId) => {
             setRequestedPlannerTaskId(taskId);
             setActiveFeature("tasks");
@@ -114,8 +109,6 @@ export default function App() {
           onCloseRequestedEvent={() => setRequestedPlannerEventId(null)}
         />
       )}
-
-      <NotificationCenter onNavigate={handleNotificationNavigate} />
 
       {/* Configuration Modal Panels */}
       <SettingsModal

@@ -32,6 +32,13 @@ fn main() {
             let data_dir = app.path().app_data_dir().expect("无法获取 app data 目录");
             std::fs::create_dir_all(&data_dir).ok();
             let db = db::spawn_db_actor(data_dir.join("agnes.db"));
+            match tauri::async_runtime::block_on(db.recover_interrupted_assistants()) {
+                Ok(0) => {}
+                Ok(count) => {
+                    eprintln!("[agent] Recovered {count} interrupted assistant response(s)")
+                }
+                Err(error) => eprintln!("[agent] Failed to recover interrupted responses: {error}"),
+            }
 
             let secrets: secrets::SharedSecretStore = Arc::new(secrets::OsSecretStore::new());
             let secret_store_startup_error = match tauri::async_runtime::block_on(async {

@@ -1504,14 +1504,26 @@ async fn start_agent_run(
     let run_req = Envelope {
         protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
         id: uuid::Uuid::new_v4().to_string(),
-        run_id,
+        run_id: run_id.clone(),
         session_id: session_id.to_string(),
         msg_type: msg_type::RUN_REQUEST.to_string(),
         created_at: String::new(),
         payload: context_snapshot,
     };
 
-    state.agent.send_to_agent(run_req)
+    if let Err(error) = state.agent.send_to_agent(run_req) {
+        let _ = state.agent.remove_run(&run_id);
+        let _ = state.agent.remove_session_run(session_id);
+        let _ = state
+            .db
+            .fail_pending_assistant(
+                assistant_msg_id.to_string(),
+                format!("（无法启动本次回复：{error}）"),
+            )
+            .await;
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// 发送消息给 Agent，启动推理引擎运行（Tauri 主入口）。

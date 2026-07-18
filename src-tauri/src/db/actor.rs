@@ -397,6 +397,14 @@ pub enum DbCommand {
         status: String,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    FailPendingAssistant {
+        id: String,
+        message: String,
+        resp: oneshot::Sender<AppResult<bool>>,
+    },
+    RecoverInterruptedAssistants {
+        resp: oneshot::Sender<AppResult<usize>>,
+    },
     GetMessage {
         id: String,
         resp: oneshot::Sender<AppResult<Option<repo::messages::MessageRow>>>,
@@ -1443,6 +1451,20 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn fail_pending_assistant(&self, id: String, message: String) -> AppResult<bool> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::FailPendingAssistant { id, message, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn recover_interrupted_assistants(&self) -> AppResult<usize> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::RecoverInterruptedAssistants { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn get_message(&self, id: String) -> AppResult<Option<repo::messages::MessageRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::GetMessage { id, resp })?;
@@ -2358,6 +2380,14 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::UpdateMessageStatus { id, status, resp } => {
                     let _ = resp.send(repo::messages::update_status(&mut conn, &id, &status));
+                }
+                DbCommand::FailPendingAssistant { id, message, resp } => {
+                    let _ = resp.send(repo::messages::fail_pending_assistant(
+                        &mut conn, &id, &message,
+                    ));
+                }
+                DbCommand::RecoverInterruptedAssistants { resp } => {
+                    let _ = resp.send(repo::messages::recover_interrupted_assistants(&mut conn));
                 }
                 DbCommand::GetMessage { id, resp } => {
                     let _ = resp.send(repo::messages::get(&conn, &id));

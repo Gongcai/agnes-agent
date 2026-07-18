@@ -16,6 +16,8 @@ import {
   Pencil,
   Pin,
   PinOff,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Settings,
   Trash2,
@@ -25,6 +27,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { ENABLED_APP_FEATURES, type AppFeatureId } from "../lib/features";
 import { useAgentStore } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
+import { NotificationCenter, type AppNotification } from "./NotificationCenter";
 
 type SettingsTab = "general" | "agents" | "memory" | "llm" | "audit" | "debug";
 
@@ -32,7 +35,9 @@ interface SidebarProps {
   isOpen: boolean;
   activeFeature: AppFeatureId;
   onSelectFeature: (feature: AppFeatureId) => void;
+  onToggleSidebar: () => void;
   onOpenSettings: (tab?: SettingsTab) => void;
+  onNotificationNavigate: (notification: AppNotification) => void | Promise<void>;
 }
 
 const FEATURE_ICONS: Record<AppFeatureId, LucideIcon> = {
@@ -66,7 +71,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isOpen,
   activeFeature,
   onSelectFeature,
+  onToggleSidebar,
   onOpenSettings,
+  onNotificationNavigate,
 }) => {
   const {
     agents,
@@ -252,7 +259,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Active agent */}
       {activeAgent && (
         <div className={`shrink-0 border-b border-stone-200/80 ${isOpen ? "p-4" : "px-3 py-4"}`}>
-          <div className={`flex items-center ${isOpen ? "gap-3" : "justify-center"}`}>
+          <div className={`flex items-center ${isOpen ? "gap-3" : "flex-col gap-2"}`}>
             <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={isOpen ? 40 : 36} />
             <div className={`min-w-0 overflow-hidden transition-opacity ${isOpen ? "opacity-100" : "hidden opacity-0"}`}>
               <span className="block truncate text-sm font-semibold text-stone-900">{activeAgent.name}</span>
@@ -264,6 +271,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span className="inline-block rounded border border-stone-300/40 bg-stone-200/60 px-1.5 py-0.5 font-mono text-[10px] text-stone-500">
                   未配置模型
                 </span>
+              )}
+            </div>
+            <div className={isOpen ? "ml-auto flex items-center gap-1" : "flex items-center"}>
+              <NotificationCenter onNavigate={onNotificationNavigate} />
+              {isOpen && (
+                <button onClick={onToggleSidebar} className="grid h-8 w-8 place-items-center rounded-full text-stone-500 hover:bg-stone-200/70 hover:text-stone-900" title="收起侧边栏">
+                  <PanelLeftClose className="h-4 w-4" />
+                </button>
               )}
             </div>
           </div>
@@ -400,6 +415,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className={`mt-auto shrink-0 border-t border-stone-200 bg-stone-200/20 ${
         isOpen ? "flex items-center justify-between p-3" : "flex flex-col items-center gap-2 py-3"
       }`}>
+        {!isOpen && (
+          <button onClick={onToggleSidebar} className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-stone-500 hover:bg-stone-200/70 hover:text-stone-900" title="展开侧边栏">
+            <PanelLeftOpen className="h-4 w-4" />
+          </button>
+        )}
         <div className={`flex items-center gap-2 overflow-hidden ${isOpen ? "mr-2" : "h-8 justify-center"}`} title="本地 Sidecar 已就绪">
           <Cloud className={`shrink-0 text-emerald-600 ${isOpen ? "h-3.5 w-3.5" : "h-4 w-4"}`} />
           {isOpen && <span className="truncate text-[10px] text-stone-500">本地服务已就绪</span>}

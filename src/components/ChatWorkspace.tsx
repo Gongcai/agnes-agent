@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  Cpu, Terminal, Send, AlertTriangle, Menu, ChevronLeft, ShieldCheck, ChevronDown, Server, Check, Copy, GitBranch, Trash2, Pencil, RefreshCw, Brain, Square
+  Cpu, Terminal, Send, AlertTriangle, ShieldCheck, ChevronDown, Server, Check, Copy, GitBranch, Trash2, Pencil, RefreshCw, Brain, Square
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
@@ -223,14 +223,10 @@ const ToolCallCard: React.FC<{
 });
 
 interface ChatWorkspaceProps {
-  isSidebarOpen: boolean;
-  onToggleSidebar: () => void;
   onOpenSettings: (tab: "agents" | "memory" | "llm" | "audit" | "debug") => void;
 }
 
 export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
-  isSidebarOpen,
-  onToggleSidebar,
   onOpenSettings,
 }) => {
   const {
@@ -313,14 +309,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       {/* Header bar */}
       <header className="flex h-14 items-center justify-between border-b border-stone-200 px-6 bg-white/40 backdrop-blur-md shrink-0">
         <div className="flex items-center gap-3">
-          <button
-            onClick={onToggleSidebar}
-            className="text-stone-500 hover:text-stone-900 p-1.5 rounded-lg hover:bg-stone-200/40 transition-colors"
-            title={isSidebarOpen ? "收起侧边栏" : "展开侧边栏"}
-          >
-            {isSidebarOpen ? <ChevronLeft className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
-          </button>
-          <div className="h-4 w-[1px] bg-stone-200"></div>
           <div className="flex items-center gap-2">
             <span className="font-semibold text-stone-800 text-sm">
               {activeSession?.title || "暂无活动会话"}

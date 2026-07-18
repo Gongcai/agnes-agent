@@ -7,7 +7,6 @@ import {
   Files,
   FolderPlus,
   LoaderCircle,
-  Menu,
   Search,
 } from "lucide-react";
 import { useAgentStore } from "../store/useAgentStore";
@@ -47,15 +46,7 @@ interface KnowledgeVectorizationResult {
   model_ref: string;
 }
 
-interface KnowledgeWorkspaceProps {
-  isSidebarOpen: boolean;
-  onToggleSidebar: () => void;
-}
-
-export const KnowledgeWorkspace: React.FC<KnowledgeWorkspaceProps> = ({
-  isSidebarOpen,
-  onToggleSidebar,
-}) => {
+export const KnowledgeWorkspace: React.FC = () => {
   const activeAgentId = useAgentStore((state) => state.activeAgentId);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(
@@ -223,14 +214,6 @@ export const KnowledgeWorkspace: React.FC<KnowledgeWorkspaceProps> = ({
     <main className="flex h-full min-w-0 flex-1 flex-col bg-[#FAF9F5]">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white/40 px-6 backdrop-blur-md">
         <div className="flex items-center gap-3">
-          <button
-            onClick={onToggleSidebar}
-            className="rounded-lg p-1.5 text-stone-500 transition-colors hover:bg-stone-200/40 hover:text-stone-900"
-            title={isSidebarOpen ? "收起侧边栏" : "展开侧边栏"}
-          >
-            <Menu className="h-4 w-4" />
-          </button>
-          <div className="h-4 w-px bg-stone-200" />
           <div className="flex items-center gap-2 text-sm font-semibold text-stone-800">
             <BookOpen className="h-4 w-4 text-[#8CA38A]" />
             知识库

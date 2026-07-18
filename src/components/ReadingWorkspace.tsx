@@ -130,6 +130,7 @@ const EpubPane: React.FC<{
     let disposed = false;
     let rendered: Rendition | null = null;
     const source = convertFileSrc(book.local_path);
+    const hookedContents = new WeakSet<object>();
 
     const applyHighlights = () => {
       if (!rendered) return;
@@ -176,10 +177,11 @@ const EpubPane: React.FC<{
           const cfi = location?.start?.cfi;
           if (cfi) onProgress(cfi);
         });
-        rendered.on("rendered", (_section: unknown, view: { contents?: Contents }) => {
-          applyHighlights();
-          const contents = view.contents;
+        const attachContextMenu = (target: Contents | { contents?: Contents }) => {
+          const contents = "document" in target ? target : target.contents;
           if (!contents) return;
+          if (hookedContents.has(contents)) return;
+          hookedContents.add(contents);
           const handleContextMenu = (event: MouseEvent) => {
             const selection = contents.window.getSelection();
             const quote = selection?.toString().replace(/\s+/g, " ").trim() ?? "";
@@ -201,8 +203,10 @@ const EpubPane: React.FC<{
               (frameRect?.top ?? 0) + event.clientY,
             );
           };
-          contents.document.addEventListener("contextmenu", handleContextMenu);
-        });
+          contents.document.addEventListener("contextmenu", handleContextMenu, true);
+        };
+        rendered.hooks.content.register(attachContextMenu);
+        rendered.on("rendered", applyHighlights);
         rendered.on("selected", (cfiRange: string, contents: Contents) => {
           const selection = contents.window.getSelection();
           const quote = selection?.toString().replace(/\s+/g, " ").trim() ?? "";
