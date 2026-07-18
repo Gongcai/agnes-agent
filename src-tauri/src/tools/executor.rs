@@ -225,6 +225,7 @@ mod tests {
             },
             memory: Default::default(),
             planner: Default::default(),
+            web: Default::default(),
             sandbox: Default::default(),
             network: Default::default(),
         };

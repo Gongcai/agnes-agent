@@ -14,6 +14,7 @@ mod secrets;
 mod state;
 pub mod sync;
 mod tools;
+mod web;
 
 use std::sync::Arc;
 

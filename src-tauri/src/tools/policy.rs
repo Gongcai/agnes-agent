@@ -16,6 +16,8 @@ pub struct ToolPolicy {
     #[serde(default)]
     pub planner: PlannerPolicy,
     #[serde(default)]
+    pub web: WebPolicy,
+    #[serde(default)]
     pub sandbox: SandboxPolicy,
     #[serde(default)]
     pub network: NetworkPolicy,
@@ -125,6 +127,15 @@ pub struct PlannerPolicy {
     pub approval: ApprovalTier,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct WebPolicy {
+    pub enabled: bool,
+    pub approval: ApprovalTier,
+    pub search_provider: String,
+    pub timeout_sec: u32,
+}
+
 impl Default for MemoryPolicy {
     fn default() -> Self {
         Self {
@@ -139,6 +150,17 @@ impl Default for PlannerPolicy {
         Self {
             enabled: true,
             approval: ApprovalTier::Always,
+        }
+    }
+}
+
+impl Default for WebPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            approval: ApprovalTier::Never,
+            search_provider: "auto".into(),
+            timeout_sec: 15,
         }
     }
 }
@@ -350,6 +372,17 @@ impl ToolPolicy {
         Ok(())
     }
 
+    /// Validate whether read-only web research is available to this agent.
+    pub fn check_web(&self) -> Result<(), String> {
+        if !self.web.enabled {
+            return Err("Web research tools are disabled for this agent".into());
+        }
+        if !self.network.allow {
+            return Err("Network access is disabled for this agent".into());
+        }
+        Ok(())
+    }
+
     /// Return the approval tier for a tool. Unknown tools fail closed.
     pub fn approval_for(&self, tool: &str) -> ApprovalTier {
         match tool {
@@ -359,6 +392,7 @@ impl ToolPolicy {
             "git" => self.git.approval,
             "memory_search" | "memory_md_view" => ApprovalTier::Never,
             "memory_create" | "memory_update" | "memory_md_edit" => self.memory.approval,
+            "web_search" | "web_fetch" => self.web.approval,
             "calendar_list" | "task_list" => ApprovalTier::Never,
             "calendar_create"
             | "calendar_event_create"
@@ -408,6 +442,8 @@ mod tests {
         assert_eq!(value["git"]["approval"], "on_risk");
         assert_eq!(value["memory"]["approval"], "on_write");
         assert_eq!(value["planner"]["approval"], "always");
+        assert_eq!(value["web"]["approval"], "never");
+        assert_eq!(value["web"]["search_provider"], "auto");
         assert_eq!(value["git"]["timeout_sec"], 30);
         assert_eq!(value["network"]["allow"], true);
         assert_eq!(value["sandbox"]["bwrap"], "auto");
@@ -419,5 +455,16 @@ mod tests {
         assert!(policy.check_planner().is_ok());
         policy.planner.enabled = false;
         assert!(policy.check_planner().is_err());
+    }
+
+    #[test]
+    fn web_capability_requires_both_tool_and_network_access() {
+        let mut policy = ToolPolicy::default();
+        assert!(policy.check_web().is_ok());
+        policy.network.allow = false;
+        assert!(policy.check_web().is_err());
+        policy.network.allow = true;
+        policy.web.enabled = false;
+        assert!(policy.check_web().is_err());
     }
 }

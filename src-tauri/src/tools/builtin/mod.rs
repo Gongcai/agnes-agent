@@ -24,6 +24,7 @@ pub mod memory_search;
 pub mod memory_update;
 pub mod planner;
 pub mod shell;
+pub mod web;
 
 /// 工具执行上下文：包含审计所需的 DB 句柄、参数、policy 与 workspace cwd。
 pub struct ToolCtx<'a> {
@@ -101,6 +102,8 @@ pub fn builtin_tools() -> Vec<Box<dyn BuiltinTool>> {
         Box::new(memory_update::MemoryUpdateTool),
         Box::new(memory_md_view::MemoryMdViewTool),
         Box::new(memory_md_edit::MemoryMdEditTool),
+        Box::new(web::WebSearchTool),
+        Box::new(web::WebFetchTool),
         Box::new(planner::CalendarListTool),
         Box::new(planner::CalendarCreateTool),
         Box::new(planner::CalendarEventCreateTool),
@@ -189,8 +192,8 @@ pub fn is_write_op(tool: &str, args: &Value) -> bool {
         | "task_create"
         | "task_complete"
         | "task_update" => true,
-        "file_read" | "list_files" | "grep" | "memory_search" | "memory_md_view"
-        | "calendar_list" | "task_list" => false,
+        "file_read" | "list_files" | "grep" | "memory_search" | "memory_md_view" | "web_search"
+        | "web_fetch" | "calendar_list" | "task_list" => false,
         "shell" => {
             let cmd = args.get("command").and_then(|x| x.as_str()).unwrap_or("");
             shell::command_is_write(cmd)
@@ -325,6 +328,8 @@ mod tests {
                 "memory_update",
                 "memory_md_view",
                 "memory_md_edit",
+                "web_search",
+                "web_fetch",
                 "calendar_list",
                 "calendar_create",
                 "calendar_event_create",
@@ -354,6 +359,10 @@ mod tests {
             assert!(is_write_op(tool, &json!({})));
         }
         for tool in ["calendar_list", "task_list"] {
+            assert_eq!(compute_risk(tool, &json!({})), Risk::Low);
+            assert!(!is_write_op(tool, &json!({})));
+        }
+        for tool in ["web_search", "web_fetch"] {
             assert_eq!(compute_risk(tool, &json!({})), Risk::Low);
             assert!(!is_write_op(tool, &json!({})));
         }

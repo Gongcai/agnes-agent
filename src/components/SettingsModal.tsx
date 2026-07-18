@@ -236,6 +236,7 @@ function capabilityLabels(capabilities: ModelCapabilities): string[] {
 }
 
 type ApprovalTier = "never" | "on_write" | "on_risk" | "always";
+type WebSearchProvider = "auto" | "duckduckgo" | "bing";
 
 interface AgentToolToggle {
   enabled: boolean;
@@ -262,6 +263,7 @@ interface AgentFormValues {
     git: AgentToolToggle;
     memory: AgentToolToggle;
     planner: AgentToolToggle;
+    web: AgentToolToggle & { search_provider: WebSearchProvider; timeout_sec?: number };
     network: { allow: boolean; [key: string]: unknown };
     sandbox: {
       landlock: boolean;
@@ -301,6 +303,7 @@ const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
   git: { enabled: true, approval: "on_risk" },
   memory: { enabled: true, approval: "on_write" },
   planner: { enabled: true, approval: "always" },
+  web: { enabled: true, approval: "never", search_provider: "auto", timeout_sec: 15 },
   network: { allow: true },
   sandbox: { landlock: true, bwrap: "auto", rlimits: true },
 };
@@ -344,12 +347,12 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
   try {
     const obj = JSON.parse(json);
     if (obj && typeof obj === "object") {
-      const knownKeys = new Set(["shell", "file", "git", "memory", "planner", "network", "sandbox"]);
+      const knownKeys = new Set(["shell", "file", "git", "memory", "planner", "web", "network", "sandbox"]);
       Object.entries(obj).forEach(([key, value]) => {
         if (!knownKeys.has(key)) base[key] = value;
       });
     }
-    (["shell", "file", "git", "memory", "planner"] as const).forEach((k) => {
+    (["shell", "file", "git", "memory", "planner", "web"] as const).forEach((k) => {
       const t = obj?.[k];
       if (t && typeof t === "object") {
         const legacyDefaults: Record<typeof k, ApprovalTier> = {
@@ -358,6 +361,7 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
           git: "on_risk",
           memory: "on_write",
           planner: "always",
+          web: "never",
         };
         const rawApproval = t.approval;
         let approval = legacyDefaults[k];
@@ -368,6 +372,14 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
         base[k] = { ...t, enabled: t.enabled !== false, approval };
       }
     });
+    const searchProvider = ["auto", "duckduckgo", "bing"].includes(obj?.web?.search_provider)
+      ? obj.web.search_provider as WebSearchProvider
+      : "auto";
+    base.web = {
+      ...base.web,
+      search_provider: searchProvider,
+      timeout_sec: typeof obj?.web?.timeout_sec === "number" ? obj.web.timeout_sec : 15,
+    };
     const network = obj?.network;
     base.network = {
       ...(network && typeof network === "object" ? network : {}),
@@ -545,7 +557,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   // Render capability and approval controls for one tool group.
-  const renderToolToggle = (key: "shell" | "file" | "git" | "memory" | "planner", label: string) => (
+  const renderToolToggle = (key: "shell" | "file" | "git" | "memory" | "planner" | "web", label: string) => (
     <div className="flex items-center justify-between py-1.5 border-b border-stone-100 last:border-0">
       <span className="text-xs text-stone-700">{label}</span>
       <div className="flex items-center gap-2">
@@ -1813,6 +1825,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {renderToolToggle("git", "Git 操作")}
                           {renderToolToggle("memory", "长期记忆")}
                           {renderToolToggle("planner", "日历与待办")}
+                          {renderToolToggle("web", "联网搜索与网页读取")}
+                          <div className="flex items-center justify-between gap-3 py-1.5 border-b border-stone-100">
+                            <span className="text-xs text-stone-700">搜索来源</span>
+                            <select
+                              value={agentForm.toolPolicy.web.search_provider}
+                              disabled={!agentForm.toolPolicy.web.enabled}
+                              onChange={(event) =>
+                                setAgentForm((form) => ({
+                                  ...form,
+                                  toolPolicy: {
+                                    ...form.toolPolicy,
+                                    web: {
+                                      ...form.toolPolicy.web,
+                                      search_provider: event.target.value as WebSearchProvider,
+                                    },
+                                  },
+                                }))
+                              }
+                              className="rounded-md border border-stone-200 bg-white px-2 py-1 text-[10px] font-semibold text-stone-600 outline-none disabled:opacity-40"
+                            >
+                              <option value="auto">自动切换</option>
+                              <option value="duckduckgo">DuckDuckGo</option>
+                              <option value="bing">Bing</option>
+                            </select>
+                          </div>
                           <div className="flex items-center justify-between py-1.5 border-b border-stone-100">
                             <span className="text-xs text-stone-700">网络访问</span>
                             <button

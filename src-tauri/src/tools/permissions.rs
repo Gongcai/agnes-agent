@@ -93,6 +93,8 @@ pub fn approval_decision(mode: PermissionMode, tool: &str, risk: Risk) -> Approv
                     | "memory_update"
                     | "memory_md_view"
                     | "memory_md_edit"
+                    | "web_search"
+                    | "web_fetch"
                     | "calendar_list"
                     | "task_list"
             );
@@ -166,6 +168,8 @@ mod tests {
             "memory_update",
             "memory_md_view",
             "memory_md_edit",
+            "web_search",
+            "web_fetch",
         ] {
             assert!(
                 !approval_decision(PermissionMode::AcceptEdits, tool, Risk::High).needs_approval
