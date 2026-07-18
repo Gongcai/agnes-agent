@@ -358,7 +358,7 @@ storage_transfer_jobs                      # 本机传输执行状态
 ### 7.5 夸克网盘 Provider
 
 - 作为浏览器只读能力完成后的首批高优先级 Provider，解决 Linux 缺少官方客户端时的文件浏览、下载和上传需求。
-- 当前实现为 Rust `quark_drive` community adapter，提取并重实现 `quarkpan` 的稳定 HTTP API 语义；业务层只依赖 `FileSourceProvider / FileUploadProvider / QuotaProvider`，不依赖逆向接口的数据结构，也不把夸克伪装成应用加密对象存储。
+- 当前实现为 Rust `quark_drive` community adapter，参考 `lich0821/QuarkPan` 并持续对照仍在维护的 `luxiaosen8/quark-pan-uploader` 重实现 HTTP API 语义；业务层只依赖 `FileSourceProvider / FileUploadProvider / QuotaProvider`，不依赖逆向接口的数据结构，也不把夸克伪装成应用加密对象存储。
 - 新账户必须由用户显式启用，可粘贴文本 Cookie、导入浏览器/QuarkPan Cookie JSON，或使用夸克二维码登录；最终 Cookie 只进入账户级 OS Keyring，SQLite、D1 和日志不保存明文。连接时先调用容量接口验证 Cookie，失效后仅将该账户标记为 `auth_required`。
 - 当前支持目录分页、文件详情、下载链接、Range 下载、容量查询，以及预上传、MD5/SHA1 更新、4 MiB 分片 OSS 上传、合并和 finish。移动、删除、知识库/书架导入和跨设备凭证同步留待后续迭代。
 - Provider 明确标记为 `community`，UI 提示接口变更、风控和服务条款风险；任何夸克故障不得阻断本地文件、R2、Drive 或其他功能。

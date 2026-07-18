@@ -29,6 +29,7 @@ use super::ports::{
 
 const PROVIDER_ID: &str = "quark_drive";
 const API_BASE: &str = "https://drive-pc.quark.cn/1/clouddrive";
+const CAPACITY_PATH: &str = "capacity/growth/info";
 const OSS_BUCKET: &str = "ul-zb";
 const DEFAULT_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 const USER_AGENT: &str =
@@ -64,7 +65,7 @@ impl ProviderFactory for QuarkDriveFactory {
             display_name: "夸克网盘".into(),
             auth_kind: ProviderAuthKind::BrowserSession,
             stability: ProviderStability::Community,
-            implementation_version: "quark-pan-http-v1".into(),
+            implementation_version: "quark-pan-http-v2".into(),
             capabilities: StorageCapabilities {
                 browse_files: true,
                 read_files: true,
@@ -202,10 +203,7 @@ impl ProviderFactory for QuarkDriveFactory {
                 .map_err(|_| invalid_response("夸克二维码状态地址无效"))?;
         status_url
             .query_pairs_mut()
-            .append_pair("client_id", "532")
-            .append_pair("v", "1.2")
-            .append_pair("token", &challenge.token)
-            .append_pair("request_id", &uuid::Uuid::new_v4().to_string());
+            .append_pair("token", &challenge.token);
         let response = self
             .client
             .get(status_url)
@@ -326,6 +324,8 @@ impl FileSourceProvider for QuarkDriveSession {
                     ("pdir_fid".into(), parent_id.into()),
                     ("_page".into(), page.to_string()),
                     ("_size".into(), request.page_size.min(100).to_string()),
+                    ("_fetch_total".into(), "1".into()),
+                    ("_fetch_sub_dirs".into(), "1".into()),
                     ("_sort".into(), "file_name:asc".into()),
                 ],
                 None,
@@ -448,7 +448,9 @@ impl FileSourceProvider for QuarkDriveSession {
 #[async_trait]
 impl QuotaProvider for QuarkDriveSession {
     async fn quota(&self) -> ProviderResult<ProviderQuota> {
-        let response = self.api(Method::GET, "capacity", Vec::new(), None).await?;
+        let response = self
+            .api(Method::GET, CAPACITY_PATH, Vec::new(), None)
+            .await?;
         let data = response.get("data").unwrap_or(&response);
         Ok(ProviderQuota {
             used_bytes: find_number(data, &["use_capacity", "used_capacity", "used", "usage"]),
@@ -1080,7 +1082,7 @@ async fn authorized_from_cookie(
     cookie: &str,
 ) -> ProviderResult<ProviderAuthorizationResult> {
     validate_cookie(cookie)?;
-    request_json(client, cookie, Method::GET, "capacity", Vec::new(), None).await?;
+    request_json(client, cookie, Method::GET, CAPACITY_PATH, Vec::new(), None).await?;
     let uid = cookie_value(cookie, "__uid").unwrap_or_else(|| "account".into());
     Ok(ProviderAuthorizationResult {
         account: StorageProviderAccount {
@@ -1455,6 +1457,16 @@ fn status_error_with_message(status: StatusCode, value: &Value) -> ProviderError
         ProviderError::new(
             ProviderErrorCategory::Authentication,
             "夸克网盘 Cookie 已失效或被拒绝",
+        )
+    } else if status == StatusCode::NOT_FOUND {
+        let path = value_string(value, &["path"]).unwrap_or_else(|| "unknown".into());
+        let detail =
+            value_string(value, &["error", "message"]).unwrap_or_else(|| "Not Found".into());
+        ProviderError::new(
+            ProviderErrorCategory::RemoteUnavailable,
+            format!(
+                "夸克网盘接口返回 404 ({path}): {detail}；请确认 Cookie 有效，或接口路径已发生变化"
+            ),
         )
     } else {
         api_value_error(value)
