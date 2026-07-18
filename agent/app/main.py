@@ -16,6 +16,8 @@ from .graph import build_graph, get_available_tools
 from .models import LlmConfig, embed_texts
 from .memory_extract import extract_memories
 
+EMBEDDING_REQUEST_TIMEOUT_SECONDS = 30
+
 
 def resolve_task_llm(
     task_configs: Dict[str, Dict[str, Any]],
@@ -305,6 +307,35 @@ async def run_agent_graph(
         await ws.send(err_envelope.model_dump_json())
 
 
+async def handle_embedding_request(
+    ws: websockets.WebSocketClientProtocol,
+    envelope: Dict[str, Any],
+) -> None:
+    """Handle an embedding request without blocking the main WS receive loop."""
+    request_id = envelope.get("id", "")
+    payload = envelope.get("payload", {})
+    try:
+        config_raw = payload.get("config") or {}
+        config = LlmConfig.from_dict(config_raw)
+        inputs = payload.get("inputs") or []
+        model = config.litellm_model or config.model
+        vectors = await asyncio.wait_for(
+            asyncio.to_thread(embed_texts, model, inputs, config),
+            timeout=EMBEDDING_REQUEST_TIMEOUT_SECONDS,
+        )
+        result_payload = {"id": request_id, "vectors": vectors}
+    except Exception as embedding_error:
+        result_payload = {"id": request_id, "error": str(embedding_error)}
+    try:
+        result = make(
+            MsgType.EMBEDDING_RESULT,
+            payload=result_payload,
+        )
+        await ws.send(result.model_dump_json())
+    except websockets.exceptions.ConnectionClosed:
+        return
+
+
 async def main() -> None:
     url = os.environ.get("AGENT_WS_URL")
     token = os.environ.get("AGENT_PROTOCOL_TOKEN")
@@ -317,6 +348,7 @@ async def main() -> None:
 
     pending_futures: Dict[str, asyncio.Future] = {}
     run_tasks: Dict[str, asyncio.Task] = {}
+    background_tasks: set[asyncio.Task] = set()
 
     try:
         async with websockets.connect(ws_url) as ws:
@@ -358,21 +390,9 @@ async def main() -> None:
                         run_tasks[run_id].cancel()
 
                 elif mtype == MsgType.EMBEDDING_REQUEST:
-                    request_id = msg.get("id", "")
-                    try:
-                        config_raw = payload.get("config") or {}
-                        config = LlmConfig.from_dict(config_raw)
-                        inputs = payload.get("inputs") or []
-                        model = config.litellm_model or config.model
-                        vectors = await asyncio.to_thread(embed_texts, model, inputs, config)
-                        result_payload = {"id": request_id, "vectors": vectors}
-                    except Exception as embedding_error:
-                        result_payload = {"id": request_id, "error": str(embedding_error)}
-                    result = make(
-                        MsgType.EMBEDDING_RESULT,
-                        payload=result_payload,
-                    )
-                    await ws.send(result.model_dump_json())
+                    task = asyncio.create_task(handle_embedding_request(ws, msg))
+                    background_tasks.add(task)
+                    task.add_done_callback(background_tasks.discard)
 
                 elif mtype == MsgType.DEBUG_PROMPT:
                     # 仅拼装提示词并返回，不调用 LLM，用于前端调试面板

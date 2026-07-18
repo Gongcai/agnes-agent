@@ -169,6 +169,15 @@ pub(crate) async fn request_embeddings(
     config: Value,
     inputs: Vec<String>,
 ) -> AppResult<Vec<Vec<f32>>> {
+    request_embeddings_with_timeout(agent, config, inputs, Duration::from_secs(60)).await
+}
+
+pub(crate) async fn request_embeddings_with_timeout(
+    agent: &Arc<AgentManager>,
+    config: Value,
+    inputs: Vec<String>,
+    timeout: Duration,
+) -> AppResult<Vec<Vec<f32>>> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = tokio::sync::oneshot::channel();
     agent.register_embedding(request_id.clone(), tx);
@@ -185,7 +194,7 @@ pub(crate) async fn request_embeddings(
         agent.resolve_embedding(&request_id, json!({"error": error.to_string()}));
         return Err(error);
     }
-    let payload = match tokio::time::timeout(Duration::from_secs(60), rx).await {
+    let payload = match tokio::time::timeout(timeout, rx).await {
         Ok(Ok(payload)) => payload,
         Ok(Err(_)) => return Err(AppError::Other("Embedding response channel closed".into())),
         Err(_) => {

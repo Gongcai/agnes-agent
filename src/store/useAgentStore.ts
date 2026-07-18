@@ -165,6 +165,7 @@ export interface Session {
   model: string;
   thinking_mode: string;
   thinking_budget: number;
+  max_tokens: number;
   permission_mode: PermissionMode;
   workspace_id: string | null;
 }
@@ -244,12 +245,12 @@ interface AgentState {
   createWorkspace: (agentId: string, name: string, folderPath: string) => Promise<string>;
   renameWorkspace: (workspaceId: string, name: string) => Promise<void>;
   deleteWorkspace: (workspaceId: string) => Promise<void>;
-  sendMessage: (sessionId: string, text: string) => Promise<void>;
+  sendMessage: (sessionId: string, text: string, readingBookId?: string) => Promise<void>;
   cancelRun: (sessionId: string) => Promise<void>;
   approveTool: (toolCallId: string, approved: boolean) => Promise<void>;
   setActiveAgentId: (agentId: string) => Promise<void>;
   setActiveSessionId: (sessionId: string) => Promise<void>;
-  setSessionLlm: (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number) => Promise<void>;
+  setSessionLlm: (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number, maxTokens: number) => Promise<void>;
   setSessionPermissionMode: (sessionId: string, permissionMode: PermissionMode) => Promise<void>;
   switchVersion: (messageId: string, direction: "prev" | "next") => Promise<void>;
   createBranch: (messageId: string) => Promise<void>;
@@ -487,7 +488,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  sendMessage: async (sessionId: string, text: string) => {
+  sendMessage: async (sessionId: string, text: string, readingBookId?: string) => {
     if (get().isStreaming) return;
     
     // 1. Instantly append a local user message and a pending assistant message for responsive UI
@@ -525,7 +526,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     });
 
     try {
-      await invoke("send_message", { sessionId, text });
+      await invoke("send_message", { sessionId, text, readingBookId: readingBookId ?? null });
     } catch (e) {
       console.error("Failed to send message", e);
       // The backend may have persisted a failed assistant message with its
@@ -583,12 +584,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     invoke("set_setting", { key: "ui:last_session_id", value: sessionId }).catch(() => {});
   },
 
-  setSessionLlm: async (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number) => {
+  setSessionLlm: async (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number, maxTokens: number) => {
     try {
-      await invoke("set_session_llm", { sessionId, model, thinkingMode, thinkingBudget });
+      await invoke("set_session_llm", { sessionId, model, thinkingMode, thinkingBudget, maxTokens });
       // 立即更新本地会话状态，避免等待列表刷新
       const sessions = get().sessions.map((s) =>
-        s.id === sessionId ? { ...s, model, thinking_mode: thinkingMode, thinking_budget: thinkingBudget } : s
+        s.id === sessionId
+          ? { ...s, model, thinking_mode: thinkingMode, thinking_budget: thinkingBudget, max_tokens: maxTokens }
+          : s
       );
       set({ sessions });
     } catch (e) {

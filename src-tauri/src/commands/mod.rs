@@ -55,6 +55,7 @@ pub struct SessionDto {
     pub model: String,
     pub thinking_mode: String,
     pub thinking_budget: i64,
+    pub max_tokens: i64,
     pub permission_mode: String,
     pub workspace_id: Option<String>,
 }
@@ -298,6 +299,7 @@ pub async fn list_sessions(
             model: r.model.unwrap_or_default(),
             thinking_mode: r.thinking_mode.unwrap_or_default(),
             thinking_budget: r.thinking_budget.unwrap_or(0),
+            max_tokens: r.reserved_output_tokens.unwrap_or(2048),
             permission_mode: r.permission_mode,
             workspace_id: r.workspace_id,
         })
@@ -377,10 +379,22 @@ pub async fn set_session_llm(
     model: String,
     thinking_mode: String,
     thinking_budget: i64,
+    max_tokens: i64,
 ) -> AppResult<()> {
+    if !(128..=32_768).contains(&max_tokens) {
+        return Err(AppError::Other(
+            "max_tokens 必须在 128 到 32768 之间".into(),
+        ));
+    }
     state
         .db
-        .update_session_llm(session_id, model, thinking_mode, thinking_budget)
+        .update_session_llm(
+            session_id,
+            model,
+            thinking_mode,
+            thinking_budget,
+            max_tokens,
+        )
         .await?;
     state.sync.schedule();
     Ok(())
@@ -676,6 +690,11 @@ pub async fn get_debug_prompt(
         .and_then(|s| s.thinking_budget)
         .or(Some(agent.thinking_budget))
         .unwrap_or(0);
+    let effective_max_tokens = session_opt
+        .as_ref()
+        .and_then(|session| session.reserved_output_tokens)
+        .unwrap_or(2048)
+        .clamp(128, 32_768);
 
     // 复用 send_message 的 LLM 配置解析逻辑
     let agent_model_str = effective_model;
@@ -794,6 +813,7 @@ pub async fn get_debug_prompt(
                 "apiKey": api_key,
                 "model": model_name,
                 "litellmModel": litellm_model,
+                "maxTokens": effective_max_tokens,
                 "thinking": {
                     "mode": effective_thinking_mode,
                     "budget": effective_thinking_budget
@@ -1064,7 +1084,15 @@ pub async fn edit_and_resend(
         )
         .await?;
     state.sync.schedule();
-    start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id, false).await
+    start_agent_run(
+        &state,
+        &cfg,
+        &msg.session_id,
+        &assistant_msg_id,
+        false,
+        false,
+    )
+    .await
 }
 
 /// 单条重新生成：为 AI 消息造一个同级新版本（共享父 user 消息），切换活动路径
@@ -1103,7 +1131,15 @@ pub async fn regenerate_message(
         )
         .await?;
     state.sync.schedule();
-    start_agent_run(&state, &cfg, &msg.session_id, &assistant_msg_id, true).await
+    start_agent_run(
+        &state,
+        &cfg,
+        &msg.session_id,
+        &assistant_msg_id,
+        true,
+        false,
+    )
+    .await
 }
 
 /// 修改记忆：替换某条 AI 消息的全部片段（用户在弹窗里编辑/删除/新增片段）。
@@ -1193,6 +1229,7 @@ struct ResolvedLlm {
     litellm_model: String,
     thinking_mode: String,
     thinking_budget: i64,
+    max_tokens: i64,
     task_llm_configs: serde_json::Value,
 }
 
@@ -1351,6 +1388,10 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         .thinking_budget
         .or(Some(agent.thinking_budget))
         .unwrap_or(0);
+    let max_tokens = session
+        .reserved_output_tokens
+        .unwrap_or(2048)
+        .clamp(128, 32_768);
 
     let task_llm_configs = resolve_task_llm_configs(state, &model_roles).await?;
     Ok(ResolvedLlm {
@@ -1365,6 +1406,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         litellm_model,
         thinking_mode,
         thinking_budget,
+        max_tokens,
         task_llm_configs,
     })
 }
@@ -1377,28 +1419,18 @@ async fn start_agent_run(
     session_id: &str,
     assistant_msg_id: &str,
     is_regeneration: bool,
+    include_reading_context: bool,
 ) -> AppResult<()> {
-    if let Some(config) = cfg.task_llm_configs.get("embedding") {
-        if let Err(error) = crate::embeddings::ensure_agent_memory_index(
-            &state.db,
-            &state.agent,
-            &cfg.agent.id,
-            config,
-        )
-        .await
-        {
-            eprintln!(
-                "[memory] Failed to backfill memory embeddings; continuing with text search: {error}"
-            );
-        }
-    }
+    eprintln!("[agent][run] Preparing run for session={session_id} assistant={assistant_msg_id}");
     let (user_md, memory_md) =
         crate::memory::load_explicit_memories(&state.db, &cfg.agent.id).await?;
+    eprintln!("[agent][run] Explicit memories loaded session={session_id}");
 
     let path = state
         .db
         .list_active_with_parts(session_id.to_string())
         .await?;
+    eprintln!("[agent][run] Active history loaded session={session_id}");
     let mut history_json = Vec::new();
     for am in path.messages {
         // 跳过 pending assistant 占位消息，只把完整历史发给 Python
@@ -1430,10 +1462,27 @@ async fn start_agent_run(
             "parts": parts_json,
         }));
     }
-    let reading_book = state
-        .db
-        .get_reading_book_for_session(session_id.to_string())
-        .await?;
+    let reading_book = if include_reading_context {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            state
+                .db
+                .get_reading_book_for_session(session_id.to_string()),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                eprintln!(
+                    "[agent][run] Reading context lookup timed out; continuing without book context session={session_id}"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    eprintln!("[agent][run] Reading context loaded session={session_id}");
     let reading_collection_id = reading_book
         .as_ref()
         .filter(|book| !book.model_knows_content && book.content_context_allowed)
@@ -1441,16 +1490,43 @@ async fn start_agent_run(
     let retrieved_knowledge = if reading_book.is_some() && reading_collection_id.is_none() {
         Vec::new()
     } else {
-        retrieve_knowledge_for_history(
+        let retrieval = retrieve_knowledge_for_history(
             state,
             &cfg.agent.id,
             &history_json,
             reading_collection_id,
             reading_collection_id.is_some(),
-        )
-        .await
+        );
+        match tokio::time::timeout(std::time::Duration::from_secs(5), retrieval).await {
+            Ok(results) => results,
+            Err(_) => {
+                eprintln!(
+                    "[rag] Knowledge retrieval timed out; continuing without retrieved context session={session_id}"
+                );
+                Vec::new()
+            }
+        }
     };
-    let workspace_context = resolve_workspace_prompt_context(&state.db, Some(session_id)).await?;
+    eprintln!(
+        "[agent][run] Context ready session={session_id} history={} knowledge={} max_tokens={}",
+        history_json.len(),
+        retrieved_knowledge.len(),
+        cfg.max_tokens,
+    );
+    let workspace_context = match tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        resolve_workspace_prompt_context(&state.db, Some(session_id)),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            eprintln!(
+                "[agent][run] Workspace context lookup timed out; continuing without workspace context session={session_id}"
+            );
+            None
+        }
+    };
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let context_snapshot = json!({
@@ -1468,6 +1544,7 @@ async fn start_agent_run(
                 "apiKey": cfg.api_key,
                 "model": cfg.model_name,
                 "litellmModel": cfg.litellm_model,
+                "maxTokens": cfg.max_tokens,
                 "thinking": {
                     "mode": cfg.thinking_mode,
                     "budget": cfg.thinking_budget
@@ -1523,6 +1600,7 @@ async fn start_agent_run(
             .await;
         return Err(error);
     }
+    eprintln!("[agent][run] RUN_REQUEST queued run={run_id}");
     Ok(())
 }
 
@@ -1532,6 +1610,7 @@ pub async fn send_message(
     state: tauri::State<'_, AppState>,
     session_id: String,
     text: String,
+    reading_book_id: Option<String>,
 ) -> AppResult<()> {
     let cfg = resolve_llm(&state, &session_id).await?;
 
@@ -1546,7 +1625,15 @@ pub async fn send_message(
         .await?;
     state.sync.schedule();
 
-    start_agent_run(&state, &cfg, &session_id, &assistant_msg_id, false).await
+    start_agent_run(
+        &state,
+        &cfg,
+        &session_id,
+        &assistant_msg_id,
+        false,
+        reading_book_id.is_some(),
+    )
+    .await
 }
 
 /// 批准或拒绝挂起的工具调用。由 React 用户点击卡片同意/拒绝时触发。
@@ -2328,17 +2415,21 @@ async fn retrieve_knowledge_hybrid(
     let Some(config) = resolve_routed_llm_config(state, Some(model_ref)).await? else {
         return Ok(rank_knowledge_results(fused, limit));
     };
-    let vector =
-        match crate::embeddings::request_embeddings(&state.agent, config, vec![query.to_string()])
-            .await
-        {
-            Ok(mut vectors) if vectors.len() == 1 => vectors.remove(0),
-            Ok(_) => return Ok(rank_knowledge_results(fused, limit)),
-            Err(error) => {
-                eprintln!("[rag] Query embedding failed; using FTS only: {error}");
-                return Ok(rank_knowledge_results(fused, limit));
-            }
-        };
+    let vector = match crate::embeddings::request_embeddings_with_timeout(
+        &state.agent,
+        config,
+        vec![query.to_string()],
+        std::time::Duration::from_secs(5),
+    )
+    .await
+    {
+        Ok(mut vectors) if vectors.len() == 1 => vectors.remove(0),
+        Ok(_) => return Ok(rank_knowledge_results(fused, limit)),
+        Err(error) => {
+            eprintln!("[rag] Query embedding failed; using FTS only: {error}");
+            return Ok(rank_knowledge_results(fused, limit));
+        }
+    };
     let collections = if let Some(collection_id) = selected_collection_id {
         vec![collection_id]
     } else {

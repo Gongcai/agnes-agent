@@ -6,6 +6,8 @@ import {
   ArrowLeft,
   BookMarked,
   BookOpen,
+  Brain,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -184,30 +186,51 @@ const EpubPane: React.FC<{
           if (!contents) return;
           if (hookedContents.has(contents)) return;
           hookedContents.add(contents);
-          const handleContextMenu = (event: MouseEvent) => {
+          let openedOnMouseDownAt = 0;
+          const openMenuForEvent = (event: MouseEvent, coordinatesAreGlobal = false) => {
             const selection = contents.window.getSelection();
             const quote = selection?.toString().replace(/\s+/g, " ").trim() ?? "";
             const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-            if (!quote || !range || range.collapsed) return;
+            if (!quote || !range || range.collapsed) return false;
             event.preventDefault();
-            event.stopPropagation();
+            event.stopImmediatePropagation();
             const nearby = nearbyParagraphs(selection!);
             let cfiRange: string;
             try {
               cfiRange = contents.cfiFromRange(range);
             } catch {
-              return;
+              return false;
             }
             const selected = { cfiRange, quote, contextBefore: nearby.before, contextAfter: nearby.after };
             const frame = contents.document.defaultView?.frameElement;
             const frameRect = frame instanceof HTMLElement ? frame.getBoundingClientRect() : null;
             openSelectionMenuRef.current(
               selected,
-              (frameRect?.left ?? 0) + event.clientX,
-              (frameRect?.top ?? 0) + event.clientY,
+              coordinatesAreGlobal ? event.clientX : (frameRect?.left ?? 0) + event.clientX,
+              coordinatesAreGlobal ? event.clientY : (frameRect?.top ?? 0) + event.clientY,
             );
+            return true;
           };
-          contents.document.addEventListener("contextmenu", handleContextMenu, true);
+          const handleMouseDown = (event: MouseEvent) => {
+            if (event.button !== 2) return;
+            if (openMenuForEvent(event)) openedOnMouseDownAt = Date.now();
+          };
+          const handleContextMenu = (event: MouseEvent) => {
+            if (Date.now() - openedOnMouseDownAt < 750) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              return;
+            }
+            openMenuForEvent(event);
+          };
+          contents.window.addEventListener("mousedown", handleMouseDown, true);
+          contents.window.addEventListener("contextmenu", handleContextMenu, true);
+          const frame = contents.document.defaultView?.frameElement;
+          if (frame instanceof HTMLElement) {
+            frame.addEventListener("contextmenu", (event) => {
+              openMenuForEvent(event, true);
+            }, true);
+          }
         };
         rendered.hooks.content.register(attachContextMenu);
         rendered.on("rendered", (_section: unknown, view: { contents?: Contents }) => {
@@ -232,6 +255,8 @@ const EpubPane: React.FC<{
         });
         await rendered.display(book.progress_cfi || undefined);
         if (!disposed) {
+          const currentContents = rendered.getContents() as unknown as Contents[];
+          currentContents.forEach(attachContextMenu);
           applyHighlights();
           setLoading(false);
         }
@@ -319,8 +344,10 @@ export const ReadingWorkspace: React.FC = () => {
   const activeSessionId = useAgentStore((state) => state.activeSessionId);
   const messages = useAgentStore((state) => state.messages);
   const isStreaming = useAgentStore((state) => state.isStreaming);
+  const sessions = useAgentStore((state) => state.sessions);
   const sendMessage = useAgentStore((state) => state.sendMessage);
   const setActiveSessionId = useAgentStore((state) => state.setActiveSessionId);
+  const setSessionLlm = useAgentStore((state) => state.setSessionLlm);
   const [books, setBooks] = useState<ReadingBook[]>([]);
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
   const [highlights, setHighlights] = useState<ReadingHighlight[]>([]);
@@ -341,6 +368,8 @@ export const ReadingWorkspace: React.FC = () => {
     () => books.find((book) => book.id === selectedBookId) ?? null,
     [books, selectedBookId],
   );
+  const readingSession = sessions.find((session) => session.id === readingSessionId);
+  const readingMaxTokens = readingSession?.max_tokens ?? 2048;
 
   const loadBooks = async () => {
     const next = await invoke<ReadingBook[]>("list_reading_books");
@@ -443,7 +472,7 @@ export const ReadingWorkspace: React.FC = () => {
       setQuestion("");
       setQuotedSelection(null);
       setShowConsent(false);
-      await sendMessage(readingSessionId, text);
+      await sendMessage(readingSessionId, text, selectedBook.id);
     } catch (reason) {
       setError(String(reason));
     }
@@ -482,7 +511,7 @@ export const ReadingWorkspace: React.FC = () => {
       const text = translationRequest(selectedBook, selectionMenu.selection, translationLanguage);
       setSelectionMenu(null);
       setQuotedSelection(null);
-      await sendMessage(readingSessionId, text);
+      await sendMessage(readingSessionId, text, selectedBook.id);
     } catch (reason) {
       setError(String(reason));
     }
@@ -543,6 +572,35 @@ export const ReadingWorkspace: React.FC = () => {
                         允许检索本书片段
                       </label>
                     )}
+                    <label className="mt-3 flex items-center gap-2 border-t border-stone-100 pt-3 text-[11px] text-stone-500">
+                      <span className="min-w-0 flex-1">最大输出 Token</span>
+                      <input
+                        key={`${readingSessionId}-${readingMaxTokens}`}
+                        type="number"
+                        min={128}
+                        max={32768}
+                        step={256}
+                        defaultValue={readingMaxTokens}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                        onBlur={(event) => {
+                          if (!readingSessionId || !readingSession) return;
+                          const value = Math.min(32768, Math.max(128, Number(event.currentTarget.value) || 2048));
+                          event.currentTarget.value = String(value);
+                          if (value !== readingMaxTokens) {
+                            void setSessionLlm(
+                              readingSessionId,
+                              readingSession.model,
+                              readingSession.thinking_mode,
+                              readingSession.thinking_budget,
+                              value,
+                            ).catch((reason) => setError(String(reason)));
+                          }
+                        }}
+                        className="h-7 w-24 rounded-md border border-stone-200 bg-stone-50 px-2 text-right font-mono text-[10px] text-stone-700 outline-none focus:border-emerald-400"
+                      />
+                    </label>
                   </div>
                 )}
               </header>
@@ -550,9 +608,30 @@ export const ReadingWorkspace: React.FC = () => {
                 {conversationReady && messages.map((message) => (
                   <div key={message.id} className={message.role === "user" ? "ml-6" : "mr-3"}>
                     <div className={`rounded-md px-3 py-2 text-sm ${message.role === "user" ? "bg-emerald-50 text-stone-800" : "border border-stone-200 bg-white text-stone-700"}`}>
-                      {message.parts.filter((part) => part.kind === "text").map((part) => (
-                        <MarkdownMessage key={part.id} content={part.content} streaming={isStreaming && message.status !== "complete"} />
-                      ))}
+                      <div className="space-y-2.5">
+                        {message.parts.map((part) => {
+                          if (part.kind === "thought") {
+                            return (
+                              <details key={part._renderKey ?? part.id} open className="group rounded-r-md border-l-2 border-emerald-600 bg-stone-50 px-2.5 py-2">
+                                <summary className="flex cursor-pointer select-none items-center gap-2 text-[11px] font-semibold text-emerald-700">
+                                  <Brain className="h-3.5 w-3.5" />
+                                  <span>思考过程</span>
+                                  <ChevronDown className="ml-auto h-3 w-3 transition-transform group-open:rotate-180" />
+                                </summary>
+                                <p className="mt-2 whitespace-pre-wrap border-t border-stone-200/70 pt-2 font-mono text-[11px] leading-relaxed text-stone-500">{part.content}</p>
+                              </details>
+                            );
+                          }
+                          if (part.kind !== "text") return null;
+                          return (
+                            <MarkdownMessage
+                              key={part._renderKey ?? part.id}
+                              content={part.content}
+                              streaming={isStreaming && message.status !== "complete"}
+                            />
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
                 ))}

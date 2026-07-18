@@ -344,6 +344,7 @@ pub enum DbCommand {
         model: String,
         thinking_mode: String,
         thinking_budget: i64,
+        max_tokens: i64,
         resp: oneshot::Sender<AppResult<()>>,
     },
     UpdateSessionPermissionMode {
@@ -1339,6 +1340,7 @@ impl DbActorHandle {
         model: String,
         thinking_mode: String,
         thinking_budget: i64,
+        max_tokens: i64,
     ) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::UpdateSessionLlm {
@@ -1346,6 +1348,7 @@ impl DbActorHandle {
             model,
             thinking_mode,
             thinking_budget,
+            max_tokens,
             resp,
         })?;
         rx.await
@@ -2316,6 +2319,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     model,
                     thinking_mode,
                     thinking_budget,
+                    max_tokens,
                     resp,
                 } => {
                     let _ = resp.send(repo::sessions::update_llm(
@@ -2324,6 +2328,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         &model,
                         &thinking_mode,
                         thinking_budget,
+                        max_tokens,
                     ));
                 }
                 DbCommand::UpdateSessionPermissionMode {

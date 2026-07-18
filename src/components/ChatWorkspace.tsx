@@ -280,12 +280,18 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
   // 当前生效的思考模式（会话级优先，回退角色卡）
   const currentThinkingMode = activeSession?.thinking_mode || activeAgent?.thinking_mode || "off";
+  const currentMaxTokens = activeSession?.max_tokens ?? 2048;
   const currentPermissionMode = activeSession?.permission_mode || "auto";
 
   // 持久化会话级模型/思考配置
-  const applySessionLlm = (model: string, thinkingMode: string, thinkingBudget: number) => {
+  const applySessionLlm = (
+    model: string,
+    thinkingMode: string,
+    thinkingBudget: number,
+    maxTokens = currentMaxTokens,
+  ) => {
     if (!activeSessionId) return;
-    setSessionLlm(activeSessionId, model, thinkingMode, thinkingBudget).catch(console.error);
+    setSessionLlm(activeSessionId, model, thinkingMode, thinkingBudget, maxTokens).catch(console.error);
   };
 
   const applyPermissionMode = (permissionMode: PermissionMode) => {
@@ -744,6 +750,33 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                             </button>
                           ))}
                         </div>
+                      </div>
+                      <div className="mt-2 flex items-center gap-2 border-t border-stone-100 px-1 pt-2">
+                        <label htmlFor="session-max-tokens" className="min-w-0 flex-1 text-[10px] font-semibold text-stone-500">
+                          最大输出 Token
+                        </label>
+                        <input
+                          key={`${activeSessionId}-${currentMaxTokens}`}
+                          id="session-max-tokens"
+                          type="number"
+                          min={128}
+                          max={32768}
+                          step={256}
+                          defaultValue={currentMaxTokens}
+                          onClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") event.currentTarget.blur();
+                          }}
+                          onBlur={(event) => {
+                            const value = Math.min(32768, Math.max(128, Number(event.currentTarget.value) || 2048));
+                            event.currentTarget.value = String(value);
+                            if (value !== currentMaxTokens) {
+                              applySessionLlm(effectiveModel, currentThinkingMode, 0, value);
+                            }
+                          }}
+                          className="h-7 w-24 rounded-md border border-stone-200 bg-stone-50 px-2 text-right font-mono text-[10px] text-stone-700 outline-none focus:border-emerald-400"
+                          aria-label="最大输出 Token"
+                        />
                       </div>
                     </div>
                   </>

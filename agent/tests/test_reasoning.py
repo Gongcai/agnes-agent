@@ -39,6 +39,31 @@ def test_completion_applies_a_bounded_request_timeout(monkeypatch):
     assert captured["max_tokens"] == DEFAULT_MAX_OUTPUT_TOKENS
 
 
+def test_llm_config_parses_and_clamps_max_tokens():
+    assert LlmConfig.from_dict({}).max_tokens == DEFAULT_MAX_OUTPUT_TOKENS
+    assert LlmConfig.from_dict({"maxTokens": 8192}).max_tokens == 8192
+    assert LlmConfig.from_dict({"maxTokens": 1}).max_tokens == 128
+    assert LlmConfig.from_dict({"maxTokens": 100_000}).max_tokens == 32768
+
+
+def test_completion_uses_configured_max_tokens(monkeypatch):
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr("app.models.litellm.completion", fake_completion)
+
+    completion(
+        "test-model",
+        [{"role": "user", "content": "Hi"}],
+        llm_config=LlmConfig(max_tokens=8192),
+    )
+
+    assert captured["max_tokens"] == 8192
+
+
 def test_thought_only_model_response_gets_a_visible_fallback(monkeypatch):
     thought_only_chunk = SimpleNamespace(
         choices=[SimpleNamespace(
@@ -586,6 +611,7 @@ def test_embedding_wrapper_uses_config_and_validates_dimensions(monkeypatch):
     assert captured["model"] == "openai/embed-model"
     assert captured["api_base"] == "https://example.test/v1"
     assert captured["api_key"] == "secret"
+    assert captured["timeout"] == MODEL_REQUEST_TIMEOUT_SECONDS
 
 
 def test_embedding_wrapper_rejects_sqlite_vec_oversized_vectors(monkeypatch):

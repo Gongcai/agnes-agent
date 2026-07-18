@@ -40,6 +40,7 @@ class LlmConfig:
     model_ref: Optional[str] = None     # Stable provider/model reference used by local indexes
     thinking_mode: str = "off"         # off | auto | low | medium | high
     thinking_budget: int = 0           # 思考预算(token)：Claude 的 budget_tokens，0 = 按强度预设
+    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
 
     @classmethod
     def from_dict(cls, d: dict) -> "LlmConfig":
@@ -56,6 +57,13 @@ class LlmConfig:
             model_ref=d.get("modelRef"),
             thinking_mode=thinking.get("mode", d.get("thinkingMode", "off")) or "off",
             thinking_budget=int(thinking.get("budget", d.get("thinkingBudget", 0)) or 0),
+            max_tokens=max(
+                128,
+                min(
+                    32768,
+                    int(d.get("maxTokens", DEFAULT_MAX_OUTPUT_TOKENS) or DEFAULT_MAX_OUTPUT_TOKENS),
+                ),
+            ),
         )
 
 
@@ -139,13 +147,17 @@ def completion(
         )
         extra_kwargs.update(thinking_kwargs)
 
+    max_tokens = kwargs.pop(
+        "max_tokens",
+        llm_config.max_tokens if llm_config else DEFAULT_MAX_OUTPUT_TOKENS,
+    )
     return litellm.completion(
         model=call_model,
         messages=messages,
         tools=tools,
         stream=stream,
         timeout=MODEL_REQUEST_TIMEOUT_SECONDS,
-        max_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+        max_tokens=max_tokens,
         **extra_kwargs,
         **kwargs,
     )
@@ -169,7 +181,12 @@ def embed_texts(
         if llm_config.api_key:
             extra_kwargs["api_key"] = llm_config.api_key
 
-    response = litellm.embedding(model=call_model, input=inputs, **extra_kwargs)
+    response = litellm.embedding(
+        model=call_model,
+        input=inputs,
+        timeout=MODEL_REQUEST_TIMEOUT_SECONDS,
+        **extra_kwargs,
+    )
     data = getattr(response, "data", None)
     if data is None and isinstance(response, dict):
         data = response.get("data")

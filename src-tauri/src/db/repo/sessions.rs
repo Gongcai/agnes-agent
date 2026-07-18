@@ -190,18 +190,20 @@ pub fn update_llm(
     model: &str,
     thinking_mode: &str,
     thinking_budget: i64,
+    max_tokens: i64,
 ) -> AppResult<()> {
     let now_str = now();
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let device_id = super::sync::device_id(&tx)?;
     let changed = tx.execute(
         "UPDATE sessions SET model = ?1, thinking_mode = ?2, thinking_budget = ?3, \
-         updated_at = ?4, version = version + 1, origin_device_id = ?5 \
-         WHERE id = ?6 AND deleted_at IS NULL",
+         reserved_output_tokens = ?4, updated_at = ?5, version = version + 1, origin_device_id = ?6 \
+         WHERE id = ?7 AND deleted_at IS NULL",
         params![
             model,
             thinking_mode,
             thinking_budget,
+            max_tokens,
             now_str,
             device_id,
             id
@@ -398,5 +400,37 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sync_outbox", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn update_llm_persists_max_tokens_and_enqueues_it_for_sync() {
+        let mut conn = setup();
+        insert(&mut conn, &new_session(None)).unwrap();
+
+        update_llm(
+            &mut conn,
+            "session-1",
+            "provider/model",
+            "medium",
+            4096,
+            8192,
+        )
+        .unwrap();
+
+        let session = get(&conn, "session-1").unwrap().unwrap();
+        assert_eq!(session.model.as_deref(), Some("provider/model"));
+        assert_eq!(session.thinking_mode.as_deref(), Some("medium"));
+        assert_eq!(session.thinking_budget, Some(4096));
+        assert_eq!(session.reserved_output_tokens, Some(8192));
+
+        let payload: String = conn
+            .query_row(
+                "SELECT payload FROM sync_outbox WHERE entity_id = 'session-1' \
+                 ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(payload.contains("\"reserved_output_tokens\":8192"));
     }
 }
