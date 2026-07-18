@@ -317,6 +317,7 @@ pub trait ProviderFactory: Send + Sync {
 - 是否支持 Range download；
 - 是否支持 resumable/multipart upload；
 - 是否支持条件写和稳定 revision/etag；
+- 文件详情中的大小是否稳定、可用于传输完整性校验；
 - 是否支持将用户文件移入可恢复的回收站；
 - 单对象限制和建议分片大小；
 - 是否需要每设备用户授权；

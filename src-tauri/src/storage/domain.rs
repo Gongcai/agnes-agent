@@ -118,6 +118,7 @@ pub struct StorageCapabilities {
     pub resumable_upload: bool,
     pub conditional_write: bool,
     pub stable_revisions: bool,
+    pub stable_file_sizes: bool,
     pub quota: bool,
     pub user_authorization: bool,
     pub worker_proxy: bool,

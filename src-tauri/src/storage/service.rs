@@ -149,8 +149,17 @@ impl StorageService {
                 return Err(provider_error(error));
             }
         };
+        let descriptor = self
+            .registry
+            .descriptor(&row.provider_id)
+            .map_err(provider_error)?;
         let job_id = uuid::Uuid::new_v4().to_string();
-        let bytes_total = remote_file.size.and_then(|value| i64::try_from(value).ok());
+        let bytes_total = descriptor
+            .capabilities
+            .stable_file_sizes
+            .then(|| remote_file.size)
+            .flatten()
+            .and_then(|value| i64::try_from(value).ok());
         self.db
             .insert_storage_transfer_job(NewStorageTransferJob {
                 id: job_id.clone(),

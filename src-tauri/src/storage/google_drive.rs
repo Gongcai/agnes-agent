@@ -92,6 +92,7 @@ impl ProviderFactory for GoogleDriveFactory {
                 range_download: true,
                 resumable_upload: true,
                 stable_revisions: true,
+                stable_file_sizes: true,
                 quota: true,
                 user_authorization: true,
                 max_object_bytes: Some(5 * 1024 * 1024 * 1024 * 1024),

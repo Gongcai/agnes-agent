@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { downloadDir, join } from "@tauri-apps/api/path";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import * as QRCode from "qrcode";
 import {
@@ -494,9 +495,13 @@ export function DriveWorkspace() {
   const downloadFile = async (item: RemoteFileItem) => {
     if (!selectedAccount || !item.downloadable) return;
     try {
+      const safeName = item.name.replace(/[\\/\u0000]/g, "_").trim() || "download";
+      const defaultPath = await downloadDir()
+        .then((directory) => join(directory, safeName))
+        .catch(() => safeName);
       const destination = await save({
         title: "保存网盘文件",
-        defaultPath: item.name,
+        defaultPath,
       });
       if (typeof destination !== "string") return;
       setLoading(true);
