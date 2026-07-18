@@ -14,6 +14,7 @@ mod reading;
 mod reading_context_menu;
 mod secrets;
 mod state;
+mod storage;
 pub mod sync;
 mod tools;
 mod web;
@@ -73,6 +74,15 @@ fn main() {
             ));
             notifications.clone().start_background();
             let mcp = Arc::new(mcp::McpManager::new(db.clone(), secrets.clone()));
+            let storage_registry = Arc::new(storage::StorageProviderRegistry::new());
+            let storage_credentials = Arc::new(storage::KeyringProviderCredentialStore::new(
+                secrets.clone(),
+            ));
+            let storage = Arc::new(storage::StorageService::new(
+                db.clone(),
+                storage_registry,
+                storage_credentials,
+            ));
 
             // 2) 启动 AgentManager：Rust 起 WS Server + 拉起 Python sidecar。
             //    非致命：失败仅日志，不阻断 UI 启动。
@@ -99,6 +109,7 @@ fn main() {
                 agent,
                 mcp,
                 secrets,
+                storage,
                 sync,
                 notifications,
                 secret_store_startup_error,
@@ -162,6 +173,12 @@ fn main() {
             commands::search_knowledge,
             commands::vectorize_knowledge,
             commands::search_knowledge_hybrid,
+            commands::list_storage_provider_catalog,
+            commands::list_storage_accounts,
+            commands::list_storage_files,
+            commands::refresh_storage_quota,
+            commands::list_storage_transfers,
+            commands::remove_storage_account,
             commands::list_calendars,
             commands::create_calendar,
             commands::list_calendar_events,

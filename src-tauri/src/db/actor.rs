@@ -142,6 +142,45 @@ pub enum DbCommand {
         limit: usize,
         resp: oneshot::Sender<AppResult<Vec<repo::knowledge::KnowledgeSearchResult>>>,
     },
+    ListStorageAccounts {
+        resp: oneshot::Sender<AppResult<Vec<repo::storage::StorageAccountRow>>>,
+    },
+    GetStorageAccount {
+        account_id: String,
+        resp: oneshot::Sender<AppResult<Option<repo::storage::StorageAccountRow>>>,
+    },
+    UpsertStorageAccount {
+        input: repo::storage::UpsertStorageAccount,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    UpdateStorageBinding {
+        account_id: String,
+        auth_state: String,
+        enabled: bool,
+        capabilities_json: String,
+        quota_used_bytes: Option<i64>,
+        quota_total_bytes: Option<i64>,
+        error: Option<(String, String)>,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    DeleteStorageAccount {
+        account_id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    ListStorageTransferJobs {
+        account_id: Option<String>,
+        limit: usize,
+        resp: oneshot::Sender<AppResult<Vec<repo::storage::StorageTransferJobRow>>>,
+    },
+    InsertStorageTransferJob {
+        input: repo::storage::NewStorageTransferJob,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    UpdateStorageTransferJob {
+        job_id: String,
+        progress: repo::storage::StorageTransferProgress,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     FindReadingBookBySourceHash {
         source_hash: String,
         resp: oneshot::Sender<AppResult<Option<repo::reading::ReadingBookRow>>>,
@@ -913,6 +952,106 @@ impl DbActorHandle {
             collection_id,
             query,
             limit,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_storage_accounts(&self) -> AppResult<Vec<repo::storage::StorageAccountRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListStorageAccounts { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn get_storage_account(
+        &self,
+        account_id: String,
+    ) -> AppResult<Option<repo::storage::StorageAccountRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetStorageAccount { account_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn upsert_storage_account(
+        &self,
+        input: repo::storage::UpsertStorageAccount,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpsertStorageAccount { input, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_storage_binding(
+        &self,
+        account_id: String,
+        auth_state: String,
+        enabled: bool,
+        capabilities_json: String,
+        quota_used_bytes: Option<i64>,
+        quota_total_bytes: Option<i64>,
+        error: Option<(String, String)>,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateStorageBinding {
+            account_id,
+            auth_state,
+            enabled,
+            capabilities_json,
+            quota_used_bytes,
+            quota_total_bytes,
+            error,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn delete_storage_account(&self, account_id: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::DeleteStorageAccount { account_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_storage_transfer_jobs(
+        &self,
+        account_id: Option<String>,
+        limit: usize,
+    ) -> AppResult<Vec<repo::storage::StorageTransferJobRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListStorageTransferJobs {
+            account_id,
+            limit,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn insert_storage_transfer_job(
+        &self,
+        input: repo::storage::NewStorageTransferJob,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::InsertStorageTransferJob { input, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn update_storage_transfer_job(
+        &self,
+        job_id: String,
+        progress: repo::storage::StorageTransferProgress,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateStorageTransferJob {
+            job_id,
+            progress,
             resp,
         })?;
         rx.await
@@ -2174,6 +2313,64 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         &collection_id,
                         &query,
                         limit,
+                    ));
+                }
+                DbCommand::ListStorageAccounts { resp } => {
+                    let _ = resp.send(repo::storage::list_accounts(&conn));
+                }
+                DbCommand::GetStorageAccount { account_id, resp } => {
+                    let _ = resp.send(repo::storage::get_account(&conn, &account_id));
+                }
+                DbCommand::UpsertStorageAccount { input, resp } => {
+                    let _ = resp.send(repo::storage::upsert_account(&mut conn, &input));
+                }
+                DbCommand::UpdateStorageBinding {
+                    account_id,
+                    auth_state,
+                    enabled,
+                    capabilities_json,
+                    quota_used_bytes,
+                    quota_total_bytes,
+                    error,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::storage::update_binding_status(
+                        &conn,
+                        &account_id,
+                        &auth_state,
+                        enabled,
+                        &capabilities_json,
+                        quota_used_bytes,
+                        quota_total_bytes,
+                        error
+                            .as_ref()
+                            .map(|(category, message)| (category.as_str(), message.as_str())),
+                    ));
+                }
+                DbCommand::DeleteStorageAccount { account_id, resp } => {
+                    let _ = resp.send(repo::storage::delete_account(&mut conn, &account_id));
+                }
+                DbCommand::ListStorageTransferJobs {
+                    account_id,
+                    limit,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::storage::list_transfer_jobs(
+                        &conn,
+                        account_id.as_deref(),
+                        limit,
+                    ));
+                }
+                DbCommand::InsertStorageTransferJob { input, resp } => {
+                    let _ = resp.send(repo::storage::insert_transfer_job(&conn, &input));
+                }
+                DbCommand::UpdateStorageTransferJob {
+                    job_id,
+                    progress,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::storage::update_transfer_job(
+                        &conn, &job_id, &progress,
                     ));
                 }
                 DbCommand::FindReadingBookBySourceHash { source_hash, resp } => {

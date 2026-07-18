@@ -2916,6 +2916,69 @@ pub async fn search_knowledge_hybrid(
 }
 
 #[tauri::command]
+pub fn list_storage_provider_catalog(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<crate::storage::ProviderDescriptor>> {
+    state.storage.catalog()
+}
+
+#[tauri::command]
+pub async fn list_storage_accounts(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<crate::storage::service::StorageAccountView>> {
+    state.storage.list_accounts().await
+}
+
+#[tauri::command]
+pub async fn list_storage_files(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    parent_id: Option<String>,
+    page_token: Option<String>,
+    page_size: Option<usize>,
+) -> AppResult<crate::storage::RemoteFilePage> {
+    state
+        .storage
+        .list_files(
+            account_id,
+            crate::storage::ListFilesRequest {
+                parent_id,
+                page_token,
+                page_size: page_size.unwrap_or(100),
+            },
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn refresh_storage_quota(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+) -> AppResult<crate::storage::ProviderQuota> {
+    state.storage.refresh_quota(account_id).await
+}
+
+#[tauri::command]
+pub async fn list_storage_transfers(
+    state: tauri::State<'_, AppState>,
+    account_id: Option<String>,
+    limit: Option<usize>,
+) -> AppResult<Vec<crate::db::repo::storage::StorageTransferJobRow>> {
+    state
+        .storage
+        .list_transfers(account_id, limit.unwrap_or(100))
+        .await
+}
+
+#[tauri::command]
+pub async fn remove_storage_account(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+) -> AppResult<()> {
+    state.storage.remove_account(account_id).await
+}
+
+#[tauri::command]
 pub async fn list_calendars(
     state: tauri::State<'_, AppState>,
 ) -> AppResult<Vec<crate::db::repo::planner::CalendarRow>> {

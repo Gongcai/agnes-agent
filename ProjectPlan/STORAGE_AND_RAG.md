@@ -268,22 +268,43 @@ R2 的 `opaque_server_key` 是随机、不含业务语义的 object key，Worker
 
 ### 7.1 边界
 
-业务层不识别 Google Drive file resource、R2 S3 key、夸克 Cookie 或任何特定 SDK 类型。它只依赖应用定义的端口：
+业务层不识别 Google Drive file resource、R2 S3 key、夸克 Cookie 或任何特定 SDK 类型。实际实现采用接口隔离，不要求只读夸克 adapter 伪造上传能力：
 
 ```rust
 #[async_trait]
 pub trait ObjectStorageProvider: Send + Sync {
-    fn kind(&self) -> StorageProviderKind;
-    fn capabilities(&self) -> StorageCapabilities;
-    async fn stat(&self, locator: &EncryptedLocator) -> Result<RemoteObjectState>;
-    async fn download(&self, request: DownloadRequest) -> Result<DownloadStream>;
-    async fn upload(&self, request: UploadRequest) -> Result<UploadSession>;
-    async fn resume_upload(&self, request: ResumeUploadRequest) -> Result<RemoteObject>;
-    async fn delete(&self, locator: &EncryptedLocator) -> Result<()>;
+    async fn stat_object(&self, locator: &RemoteObjectLocator) -> ProviderResult<RemoteObjectState>;
+    async fn download_object(&self, request: DownloadObjectRequest) -> ProviderResult<ProviderByteStream>;
+    async fn begin_object_upload(&self, request: BeginObjectUploadRequest) -> ProviderResult<ObjectUploadSession>;
+    async fn upload_object_chunk(&self, request: UploadObjectChunkRequest) -> ProviderResult<UploadedObjectChunk>;
+    async fn abort_object_upload(&self, session_id: &str) -> ProviderResult<()>;
+    async fn delete_object(&self, locator: &RemoteObjectLocator) -> ProviderResult<()>;
+}
+
+#[async_trait]
+pub trait FileSourceProvider: Send + Sync {
+    async fn list_files(&self, request: ListFilesRequest) -> ProviderResult<RemoteFilePage>;
+    async fn get_file(&self, file_id: &str) -> ProviderResult<RemoteFileItem>;
+    async fn download_file(&self, request: DownloadFileRequest) -> ProviderResult<ProviderByteStream>;
+}
+
+#[async_trait]
+pub trait QuotaProvider: Send + Sync {
+    async fn quota(&self) -> ProviderResult<ProviderQuota>;
+}
+
+#[async_trait]
+pub trait ProviderFactory: Send + Sync {
+    fn descriptor(&self) -> ProviderDescriptor;
+    async fn connect(
+        &self,
+        account: &StorageProviderAccount,
+        credentials: Arc<dyn ProviderCredentialAccess>,
+    ) -> ProviderResult<Arc<dyn ProviderSession>>;
 }
 ```
 
-上层 `ArtifactReplicationService` 负责版本、Hash、加密、重试、副本选择和 D1 状态；Provider adapter 只负责远端对象 API。不把同步策略复制到每个 Provider 内部。
+`ProviderSession` 分别暴露可选的 `file_source()`、`quota_source()` 与 `object_storage()` 窄端口。开放字符串 Provider ID 经过统一校验后注册到 `StorageProviderRegistry`，descriptor 在注册时冻结，新增 WebDAV/S3 等实现不需要扩充核心枚举或修改业务 `match`。`StorageService` 是 renderer、知识库、书架和后续 `ArtifactReplicationService` 的统一应用入口，负责账户状态、Keyring 写后校验、adapter 连接、配额缓存和归一化错误；传给 factory 的 `ProviderCredentialAccess` 已绑定当前 account ID，adapter 无法借此读取其他账户凭证。Provider 只负责远端 API，不得自建业务队列或复制同步策略。
 
 `StorageCapabilities` 至少声明：
 
@@ -297,14 +318,21 @@ pub trait ObjectStorageProvider: Send + Sync {
 ### 7.2 Provider 账户
 
 ```text
-storage_provider_accounts
-  id / kind / display_name / account_subject?
-  auth_state / capabilities_json / is_enabled
+storage_provider_accounts                  # 逻辑元数据，未来可进入同步白名单
+  id / provider_id / display_name / account_subject? / config_json
   created_at / updated_at
+
+storage_provider_bindings                  # 严格设备本地
+  account_id / auth_state / enabled / capabilities_json
+  quota cache / change cursor / last error / last checked
+
+storage_transfer_jobs                      # 本机传输执行状态
+  account_id / operation / remote item / destination
+  status / bytes / normalized error / timestamps
 ```
 
 - 凭证 secret ID 可由 `storage:{account_id}:credential` 派生，明文值只存 OS Keyring。
-- D1 可同步不含凭证的逻辑 Provider 配置，但新设备必须自行 OAuth/授权后才能使用该 replica。
+- D1 未来只同步 `storage_provider_accounts` 中不含凭证的逻辑配置；binding、Cookie/OAuth token、游标、配额缓存、错误和传输任务不进入 D1，新设备必须自行授权。
 - 用户可为每个 collection 设置 `local_only / r2 / google_drive / mirrored`。
 - D1 清单是查找对象的主入口；Provider list 只用于修复、对账和孤儿对象 GC。
 
@@ -550,9 +578,11 @@ tasks
 
 ### Phase C：通用 Provider 基础与网盘页
 
-- 定稿 `ObjectStorageProvider`、账户、能力声明和 Keyring 凭证边界；
-- 实现网盘页面的账户、目录/文件浏览、下载/导入队列、配额、状态和归一化错误；
-- 完成 Provider 故障隔离：任一远端失效不得影响本地知识库、书架、聊天或其他 Provider。
+- [x] 定稿接口隔离的 `FileSourceProvider / ObjectStorageProvider / ProviderFactory`、开放注册表、能力声明和归一化错误；
+- [x] 将逻辑账户、本机授权 binding 与传输任务分表；凭证通过 `ProviderCredentialStore` 只进 OS Keyring；
+- [x] 实现 `StorageService` 与通用 IPC，统一处理账户门禁、adapter 连接、目录分页、配额缓存和传输队列读取；
+- [x] 实现网盘工作区的账户、目录、配额、错误和传输视图；首个真实 adapter 可连接前保持 feature flag 关闭，不展示空入口；
+- [x] 使用假 Provider 契约测试验证新增服务商只需注册 factory 并实现所需窄端口；任一 adapter 缺失或失效不影响本地功能。
 
 ### Phase D：Google Drive 与夸克 Provider
 
@@ -574,7 +604,7 @@ tasks
 - [x] 建立子功能视图宿主和功能注册表；当前只开放已实现的聊天入口，不展示空白功能页；
 - [x] 增加知识库页面路由：collection、文档导入、显式向量索引、索引状态和本地混合检索结果可用；
 - [x] 增加日历、待办页面路由；
-- [ ] 增加网盘页面路由；
+- [x] 增加网盘页面路由和按需加载；在首个真实 Provider 可连接前继续隐藏侧边栏入口；
 - 网盘页显示 Provider 账户、配额、同步队列、副本和错误；
 - 知识库页显示源文件、抽取/分块/向量进度和设备覆盖状态。
 

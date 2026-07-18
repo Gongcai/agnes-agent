@@ -6,6 +6,7 @@ use crate::db::DbActorHandle;
 use crate::mcp::McpManager;
 use crate::notifications::NotificationService;
 use crate::secrets::SecretStore;
+use crate::storage::StorageService;
 use crate::sync::engine::SyncService;
 
 /// 应用托管的全局状态（经 Tauri `State` 注入命令）。
@@ -15,6 +16,7 @@ pub struct AppState {
     pub agent: Arc<AgentManager>,
     pub mcp: Arc<McpManager>,
     pub secrets: Arc<dyn SecretStore>,
+    pub storage: Arc<StorageService>,
     pub sync: Arc<SyncService>,
     pub notifications: Arc<NotificationService>,
     pub secret_store_startup_error: Option<String>,

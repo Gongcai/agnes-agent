@@ -609,3 +609,63 @@ CREATE INDEX IF NOT EXISTS idx_reading_conversation_history
 CREATE INDEX IF NOT EXISTS idx_reading_highlights_book
   ON reading_highlights(book_id, created_at) WHERE deleted_at IS NULL;
 "#;
+
+/// Storage account metadata is split from device-local authorization state.
+/// Credentials are never stored in SQLite and are addressed through OS Keyring.
+pub const STORAGE_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS storage_provider_accounts (
+  id TEXT PRIMARY KEY,
+  provider_id TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  account_subject TEXT,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT,
+  origin_device_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS storage_provider_bindings (
+  account_id TEXT PRIMARY KEY REFERENCES storage_provider_accounts(id) ON DELETE CASCADE,
+  auth_state TEXT NOT NULL DEFAULT 'disconnected'
+    CHECK(auth_state IN ('disconnected','authorizing','connected','auth_required','error')),
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+  capabilities_json TEXT NOT NULL DEFAULT '{}',
+  quota_used_bytes INTEGER,
+  quota_total_bytes INTEGER,
+  change_cursor TEXT,
+  last_error_category TEXT,
+  last_error_message TEXT,
+  last_checked_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS storage_transfer_jobs (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES storage_provider_accounts(id),
+  operation TEXT NOT NULL
+    CHECK(operation IN ('file_download','knowledge_import','reading_import','object_upload','object_download')),
+  remote_item_id TEXT,
+  display_name TEXT NOT NULL,
+  destination_kind TEXT,
+  destination_id TEXT,
+  status TEXT NOT NULL DEFAULT 'queued'
+    CHECK(status IN ('queued','running','paused','completed','failed','cancelled')),
+  bytes_transferred INTEGER NOT NULL DEFAULT 0 CHECK(bytes_transferred >= 0),
+  bytes_total INTEGER CHECK(bytes_total IS NULL OR bytes_total >= 0),
+  error_category TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_storage_accounts_provider
+  ON storage_provider_accounts(provider_id,updated_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_storage_transfers_account
+  ON storage_transfer_jobs(account_id,status,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_storage_transfers_active
+  ON storage_transfer_jobs(status,updated_at) WHERE status IN ('queued','running','paused');
+"#;

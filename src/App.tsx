@@ -12,6 +12,9 @@ import { invoke } from "@tauri-apps/api/core";
 const ReadingWorkspace = lazy(() =>
   import("./components/ReadingWorkspace").then((module) => ({ default: module.ReadingWorkspace })),
 );
+const DriveWorkspace = lazy(() =>
+  import("./components/DriveWorkspace").then((module) => ({ default: module.DriveWorkspace })),
+);
 
 export default function App() {
   const { init, agents, setActiveAgentId, setActiveSessionId } = useAgentStore();
@@ -94,6 +97,11 @@ export default function App() {
       {activeFeature === "reading" && (
         <Suspense fallback={<main className="grid min-w-0 flex-1 place-items-center text-sm text-stone-400">加载阅读器...</main>}>
           <ReadingWorkspace />
+        </Suspense>
+      )}
+      {activeFeature === "drive" && (
+        <Suspense fallback={<main className="grid min-w-0 flex-1 place-items-center text-sm text-stone-400">加载网盘...</main>}>
+          <DriveWorkspace />
         </Suspense>
       )}
       {(activeFeature === "calendar" || activeFeature === "tasks") && (

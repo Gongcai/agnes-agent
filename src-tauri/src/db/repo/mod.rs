@@ -9,6 +9,7 @@ pub mod planner;
 pub mod reading;
 pub mod sessions;
 pub mod settings;
+pub mod storage;
 pub mod sync;
 pub mod tools;
 pub mod workspaces;

@@ -437,6 +437,7 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
     migrate_legacy_documents(conn)?;
     conn.execute_batch(crate::db::schema::READING_SCHEMA)?;
     ensure_reading_metadata(conn)?;
+    conn.execute_batch(crate::db::schema::STORAGE_SCHEMA)?;
 
     // 检查是否已有 agent，如果没有则预置默认角色
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))?;
