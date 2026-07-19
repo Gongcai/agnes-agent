@@ -23,7 +23,8 @@ pnpm --filter @agnes/sync-api db:migrate:local
 
 `sync:test` 在 Cloudflare `workerd`/Miniflare 中应用真实 D1 migration，覆盖认证、设备撤销、
 SPAKE2 不透明配对中继、动态凭证、幂等 push、CAS、append-only message、owner 隔离、pull、
-bootstrap 和 ack。
+bootstrap、ack，以及加密制品 Multipart 分片校验、R2 head 校验、Range 下载、object manifest
+CAS、幂等重放、设备落地状态和 owner 隔离。
 
 如需手动启动本地 Worker，在未提交的 `workers/sync-api/.dev.vars` 中配置测试身份：
 
@@ -72,6 +73,15 @@ E2EE、配对和轮换均已完成，production D1 在部署后复核为空。
 - `POST /v1/pairing/sessions/{sessionId}/finalize`（旧设备认证）
 - `GET /v1/pairing/sessions/{sessionId}/package`（公开；仅返回加密 transfer bundle）
 - `POST /v1/pairing/sessions/{sessionId}/consume`（新设备认证）
+- `POST /v1/objects/uploads`（创建 R2 Multipart 会话；只接受密文 hash/大小等控制面元数据）
+- `PUT /v1/objects/uploads/{uploadSessionId}/parts/{partNumber}`（带 `X-Agnes-Part-Sha256` 的二进制分片）
+- `POST /v1/objects/uploads/{uploadSessionId}/complete`
+- `DELETE /v1/objects/uploads/{uploadSessionId}`
+- `GET /v1/objects/manifests/{objectId}`
+- `GET /v1/objects/changes?after={serverSeq}&limit={n}`
+- `POST /v1/objects/states`（设备安装状态）
+- `HEAD /v1/objects/{artifactId}` / `GET /v1/objects/{artifactId}`（支持单段 `Range`）
+- `DELETE /v1/objects/{artifactId}`（仅允许删除未被当前 manifest 引用的旧 R2 副本）
 
 协议版本固定为 `1`，单次 push 最多 20 条 change，请求体上限 256 KiB。配对会话 10 分钟过期，
 每小时清理。完整协议与威胁模型见 `ProjectPlan/E2EE.md` 和 `ProjectPlan/CLOUDFLARE_SYNC.md`。

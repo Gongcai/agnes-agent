@@ -358,6 +358,16 @@ pub struct BeginObjectUploadRequest {
     pub content_hash: String,
     pub media_type: String,
     pub chunk_size: u64,
+    pub publish: Option<ObjectPublishMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectPublishMetadata {
+    pub object_id: String,
+    pub object_kind: String,
+    pub logical_version: u64,
+    pub key_version: i64,
+    pub updated_hlc: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

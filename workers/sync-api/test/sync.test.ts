@@ -13,7 +13,17 @@ const EMPTY_PAYLOAD_HASH =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 beforeEach(async () => {
+  const objects = await env.ARTIFACT_OBJECTS.list();
+  if (objects.objects.length > 0) {
+    await env.ARTIFACT_OBJECTS.delete(objects.objects.map((object) => object.key));
+  }
   await env.SYNC_DB.batch([
+    env.SYNC_DB.prepare("DELETE FROM object_upload_parts"),
+    env.SYNC_DB.prepare("DELETE FROM object_uploads"),
+    env.SYNC_DB.prepare("DELETE FROM device_object_states"),
+    env.SYNC_DB.prepare("DELETE FROM object_changes"),
+    env.SYNC_DB.prepare("DELETE FROM object_replicas"),
+    env.SYNC_DB.prepare("DELETE FROM object_manifests"),
     env.SYNC_DB.prepare("DELETE FROM pairing_sessions"),
     env.SYNC_DB.prepare("DELETE FROM sync_acks"),
     env.SYNC_DB.prepare("DELETE FROM sync_changes"),
@@ -24,6 +34,11 @@ beforeEach(async () => {
 
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256Bytes(value: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(value).buffer);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
@@ -79,7 +94,7 @@ function request(path: string, token?: string, init: RequestInit = {}): Promise<
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
-  if (init.body) {
+  if (init.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   return exports.default.fetch(`https://sync.example.test${path}`, { ...init, headers });
@@ -692,6 +707,179 @@ describe("bootstrap and ack", () => {
     });
     expect(ahead.status).toBe(400);
     expect(await ahead.json()).toMatchObject({ error: { code: "INVALID_REQUEST" } });
+  });
+});
+
+describe("encrypted artifact objects", () => {
+  const objectId = "knowledge-object-1";
+  const artifactId = "artifact-00000000-0000-4000-8000-000000000001";
+
+  async function createUpload(
+    bytes: Uint8Array,
+    overrides: Partial<{
+      objectId: string;
+      artifactId: string;
+      logicalVersion: number;
+      ciphertextHash: string;
+      size: number;
+      keyVersion: number;
+    }> = {},
+  ): Promise<Response> {
+    return request("/v1/objects/uploads", TOKEN_A, {
+      method: "POST",
+      body: JSON.stringify({
+        protocolVersion: 1,
+        objectId: overrides.objectId ?? objectId,
+        objectKind: "knowledge_vectors",
+        logicalVersion: overrides.logicalVersion ?? 2,
+        artifactId: overrides.artifactId ?? artifactId,
+        ciphertextHash: overrides.ciphertextHash ?? (await sha256Bytes(bytes)),
+        size: overrides.size ?? bytes.byteLength,
+        keyVersion: overrides.keyVersion ?? 1,
+        updatedHlc: "1784188800123-0001-device-a",
+      }),
+    });
+  }
+
+  async function putPart(uploadSessionId: string, bytes: Uint8Array, checksum: string): Promise<Response> {
+    return request(`/v1/objects/uploads/${uploadSessionId}/parts/1`, TOKEN_A, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(bytes.byteLength),
+        "X-Agnes-Part-Sha256": checksum,
+      },
+      body: bytes.buffer as ArrayBuffer,
+    });
+  }
+
+  it("publishes only a verified multipart object and supports isolated range downloads", async () => {
+    const bytes = new TextEncoder().encode("opaque encrypted artifact bytes for range download");
+    const checksum = await sha256Bytes(bytes);
+    const created = await createUpload(bytes);
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as { uploadSessionId: string };
+
+    const wrongChecksum = await putPart(createdBody.uploadSessionId, bytes, "0".repeat(64));
+    expect(wrongChecksum.status).toBe(422);
+    expect(await wrongChecksum.json()).toMatchObject({ error: { code: "CHECKSUM_MISMATCH" } });
+
+    const part = await putPart(createdBody.uploadSessionId, bytes, checksum);
+    expect(part.status).toBe(200);
+    expect(await part.json()).toMatchObject({ partNumber: 1, size: bytes.byteLength, checksum });
+
+    const completed = await request(
+      `/v1/objects/uploads/${createdBody.uploadSessionId}/complete`,
+      TOKEN_A,
+      { method: "POST" },
+    );
+    expect(completed.status).toBe(200);
+    expect(await completed.json()).toMatchObject({
+      status: "completed",
+      objectId,
+      artifactId,
+      logicalVersion: 2,
+      ciphertextHash: checksum,
+    });
+
+    const manifest = await request(`/v1/objects/manifests/${objectId}`, TOKEN_B);
+    expect(manifest.status).toBe(200);
+    expect(await manifest.json()).toMatchObject({
+      manifest: { objectId, artifactId, logicalVersion: 2, ciphertextHash: checksum },
+      replicas: [{ providerKind: "r2", status: "ready", size: bytes.byteLength }],
+    });
+
+    const head = await request(`/v1/objects/${artifactId}`, TOKEN_B, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("X-Agnes-Ciphertext-Hash")).toBe(checksum);
+    expect(head.headers.get("Content-Length")).toBe(String(bytes.byteLength));
+
+    const ranged = await request(`/v1/objects/${artifactId}`, TOKEN_B, {
+      headers: { Range: "bytes=7-15" },
+    });
+    expect(ranged.status).toBe(206);
+    expect(ranged.headers.get("Content-Range")).toBe(`bytes 7-15/${bytes.byteLength}`);
+    expect(new Uint8Array(await ranged.arrayBuffer())).toEqual(bytes.slice(7, 16));
+
+    const changes = await request("/v1/objects/changes?after=0", TOKEN_B);
+    expect(await changes.json()).toMatchObject({
+      changes: [{ objectId, artifactId, logicalVersion: 2, operation: "upsert" }],
+      hasMore: false,
+    });
+
+    const installed = await request("/v1/objects/states", TOKEN_B, {
+      method: "POST",
+      body: JSON.stringify({
+        protocolVersion: 1,
+        deviceId: DEVICE_B,
+        objectId,
+        observedLogicalVersion: 2,
+        installedArtifactId: artifactId,
+        localStatus: "installed",
+        verifiedCiphertextHash: checksum,
+        errorCode: null,
+      }),
+    });
+    expect(installed.status).toBe(200);
+    const state = await env.SYNC_DB.prepare(
+      "SELECT observed_logical_version, installed_artifact_id, local_status FROM device_object_states WHERE device_id = ?",
+    )
+      .bind(DEVICE_B)
+      .first();
+    expect(state).toEqual({
+      observed_logical_version: 2,
+      installed_artifact_id: artifactId,
+      local_status: "installed",
+    });
+
+    const isolated = await request(`/v1/objects/${artifactId}`, OTHER_OWNER_TOKEN);
+    expect(isolated.status).toBe(404);
+    const replica = await env.SYNC_DB.prepare(
+      "SELECT opaque_server_key FROM object_replicas WHERE artifact_id = ?",
+    )
+      .bind(artifactId)
+      .first<{ opaque_server_key: string }>();
+    expect(replica?.opaque_server_key).toMatch(/^o\/[0-9a-f-]{36}$/);
+    expect(replica?.opaque_server_key).not.toContain(objectId);
+    expect(replica?.opaque_server_key).not.toContain(artifactId);
+  });
+
+  it("replays completed artifacts idempotently and rejects stale or conflicting manifests", async () => {
+    const bytes = new TextEncoder().encode("ciphertext-v2");
+    const checksum = await sha256Bytes(bytes);
+    const created = await createUpload(bytes);
+    const { uploadSessionId } = (await created.json()) as { uploadSessionId: string };
+    expect((await putPart(uploadSessionId, bytes, checksum)).status).toBe(200);
+    expect(
+      (await request(`/v1/objects/uploads/${uploadSessionId}/complete`, TOKEN_A, { method: "POST" }))
+        .status,
+    ).toBe(200);
+
+    const replay = await createUpload(bytes);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ status: "ready", uploadSessionId: null, artifactId });
+
+    const reused = await createUpload(bytes, { ciphertextHash: "f".repeat(64) });
+    expect(reused.status).toBe(409);
+    expect(await reused.json()).toMatchObject({ error: { code: "UPLOAD_CONFLICT" } });
+
+    const conflicting = await createUpload(bytes, {
+      artifactId: "artifact-00000000-0000-4000-8000-000000000002",
+    });
+    expect(conflicting.status).toBe(409);
+
+    const stale = await createUpload(bytes, {
+      artifactId: "artifact-00000000-0000-4000-8000-000000000003",
+      logicalVersion: 1,
+    });
+    expect(stale.status).toBe(409);
+    const counts = await env.SYNC_DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM object_manifests) AS manifests,
+         (SELECT COUNT(*) FROM object_replicas) AS replicas,
+         (SELECT COUNT(*) FROM object_changes) AS changes`,
+    ).first();
+    expect(counts).toEqual({ manifests: 1, replicas: 1, changes: 1 });
   });
 });
 

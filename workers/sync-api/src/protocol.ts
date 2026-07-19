@@ -145,6 +145,11 @@ export interface ApiErrorBody {
       | "PAIRING_EXPIRED"
       | "PAIRING_NOT_READY"
       | "PAIRING_CONFLICT"
+      | "OBJECT_NOT_FOUND"
+      | "UPLOAD_EXPIRED"
+      | "UPLOAD_CONFLICT"
+      | "CHECKSUM_MISMATCH"
+      | "QUOTA_EXCEEDED"
       | "RATE_LIMITED"
       | "SYNC_TEMPORARILY_UNAVAILABLE";
     message: string;

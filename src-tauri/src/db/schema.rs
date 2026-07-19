@@ -668,3 +668,64 @@ CREATE INDEX IF NOT EXISTS idx_storage_transfers_account
 CREATE INDEX IF NOT EXISTS idx_storage_transfers_active
   ON storage_transfer_jobs(status,updated_at) WHERE status IN ('queued','running','paused');
 "#;
+
+/// Artifact payloads live in the app data directory or a remote object
+/// Provider. SQLite stores only immutable manifests and transfer/install state.
+pub const ARTIFACT_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS artifact_manifests (
+  id TEXT PRIMARY KEY,
+  artifact_type TEXT NOT NULL,
+  source_version_id TEXT NOT NULL,
+  build_fingerprint TEXT NOT NULL,
+  format_version INTEGER NOT NULL,
+  plaintext_hash TEXT NOT NULL,
+  ciphertext_hash TEXT NOT NULL,
+  plaintext_size INTEGER NOT NULL CHECK(plaintext_size >= 0),
+  size INTEGER NOT NULL CHECK(size > 0),
+  encryption_scheme TEXT NOT NULL,
+  key_version INTEGER NOT NULL CHECK(key_version > 0),
+  chunk_size INTEGER NOT NULL CHECK(chunk_size > 0),
+  chunk_count INTEGER NOT NULL CHECK(chunk_count > 0),
+  local_path TEXT,
+  local_status TEXT NOT NULL DEFAULT 'built'
+    CHECK(local_status IN ('built','available','installed','invalid','garbage')),
+  created_at TEXT NOT NULL,
+  installed_at TEXT,
+  UNIQUE(artifact_type,source_version_id,build_fingerprint)
+);
+
+CREATE TABLE IF NOT EXISTS artifact_replicas (
+  artifact_id TEXT NOT NULL REFERENCES artifact_manifests(id) ON DELETE CASCADE,
+  provider_account_id TEXT NOT NULL,
+  provider_kind TEXT NOT NULL,
+  encrypted_locator TEXT NOT NULL,
+  provider_revision TEXT,
+  etag TEXT,
+  ciphertext_hash TEXT NOT NULL,
+  size INTEGER NOT NULL CHECK(size > 0),
+  status TEXT NOT NULL
+    CHECK(status IN ('uploading','ready','failed','deleted')),
+  last_error_code TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(artifact_id,provider_account_id)
+);
+
+CREATE TABLE IF NOT EXISTS device_artifact_states (
+  device_id TEXT NOT NULL,
+  artifact_id TEXT NOT NULL REFERENCES artifact_manifests(id) ON DELETE CASCADE,
+  observed_version INTEGER NOT NULL DEFAULT 0 CHECK(observed_version >= 0),
+  local_status TEXT NOT NULL
+    CHECK(local_status IN ('missing','downloading','verifying','installed','failed','incompatible')),
+  verified_hash TEXT,
+  last_checked_at TEXT NOT NULL,
+  last_error_code TEXT,
+  PRIMARY KEY(device_id,artifact_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifact_manifests_source
+  ON artifact_manifests(artifact_type,source_version_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifact_replicas_status
+  ON artifact_replicas(provider_account_id,status,updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_device_artifact_states_status
+  ON device_artifact_states(device_id,local_status,last_checked_at DESC);
+"#;

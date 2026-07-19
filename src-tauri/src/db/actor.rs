@@ -142,6 +142,32 @@ pub enum DbCommand {
         limit: usize,
         resp: oneshot::Sender<AppResult<Vec<repo::knowledge::KnowledgeSearchResult>>>,
     },
+    GetArtifactManifest {
+        artifact_id: String,
+        resp: oneshot::Sender<AppResult<Option<repo::artifacts::ArtifactManifestRow>>>,
+    },
+    FindArtifactManifestByFingerprint {
+        artifact_type: String,
+        source_version_id: String,
+        build_fingerprint: String,
+        resp: oneshot::Sender<AppResult<Option<repo::artifacts::ArtifactManifestRow>>>,
+    },
+    UpsertArtifactManifest {
+        input: repo::artifacts::UpsertArtifactManifest,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    UpsertArtifactReplica {
+        input: repo::artifacts::ArtifactReplicaRow,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    ListArtifactReplicas {
+        artifact_id: String,
+        resp: oneshot::Sender<AppResult<Vec<repo::artifacts::ArtifactReplicaRow>>>,
+    },
+    UpsertDeviceArtifactState {
+        input: repo::artifacts::DeviceArtifactStateRow,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ListStorageAccounts {
         resp: oneshot::Sender<AppResult<Vec<repo::storage::StorageAccountRow>>>,
     },
@@ -954,6 +980,73 @@ impl DbActorHandle {
             limit,
             resp,
         })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn get_artifact_manifest(
+        &self,
+        artifact_id: String,
+    ) -> AppResult<Option<repo::artifacts::ArtifactManifestRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetArtifactManifest { artifact_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn find_artifact_manifest_by_fingerprint(
+        &self,
+        artifact_type: String,
+        source_version_id: String,
+        build_fingerprint: String,
+    ) -> AppResult<Option<repo::artifacts::ArtifactManifestRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::FindArtifactManifestByFingerprint {
+            artifact_type,
+            source_version_id,
+            build_fingerprint,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn upsert_artifact_manifest(
+        &self,
+        input: repo::artifacts::UpsertArtifactManifest,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpsertArtifactManifest { input, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn upsert_artifact_replica(
+        &self,
+        input: repo::artifacts::ArtifactReplicaRow,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpsertArtifactReplica { input, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_artifact_replicas(
+        &self,
+        artifact_id: String,
+    ) -> AppResult<Vec<repo::artifacts::ArtifactReplicaRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListArtifactReplicas { artifact_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn upsert_device_artifact_state(
+        &self,
+        input: repo::artifacts::DeviceArtifactStateRow,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpsertDeviceArtifactState { input, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -2314,6 +2407,34 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         &query,
                         limit,
                     ));
+                }
+                DbCommand::GetArtifactManifest { artifact_id, resp } => {
+                    let _ = resp.send(repo::artifacts::get_manifest(&conn, &artifact_id));
+                }
+                DbCommand::FindArtifactManifestByFingerprint {
+                    artifact_type,
+                    source_version_id,
+                    build_fingerprint,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::artifacts::find_manifest_by_fingerprint(
+                        &conn,
+                        &artifact_type,
+                        &source_version_id,
+                        &build_fingerprint,
+                    ));
+                }
+                DbCommand::UpsertArtifactManifest { input, resp } => {
+                    let _ = resp.send(repo::artifacts::upsert_manifest(&conn, &input));
+                }
+                DbCommand::UpsertArtifactReplica { input, resp } => {
+                    let _ = resp.send(repo::artifacts::upsert_replica(&conn, &input));
+                }
+                DbCommand::ListArtifactReplicas { artifact_id, resp } => {
+                    let _ = resp.send(repo::artifacts::list_replicas(&conn, &artifact_id));
+                }
+                DbCommand::UpsertDeviceArtifactState { input, resp } => {
+                    let _ = resp.send(repo::artifacts::upsert_device_state(&conn, &input));
                 }
                 DbCommand::ListStorageAccounts { resp } => {
                     let _ = resp.send(repo::storage::list_accounts(&conn));

@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod artifacts;
 pub mod explicit_memories;
 pub mod knowledge;
 pub mod memory;

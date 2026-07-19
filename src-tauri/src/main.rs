@@ -242,6 +242,11 @@ fn main() {
                     storage::QuarkDriveFactory::new().expect("无法初始化夸克网盘 Provider"),
                 ))
                 .expect("无法注册夸克网盘 Provider");
+            storage_registry
+                .register(Arc::new(
+                    storage::R2Factory::new().expect("无法初始化 R2 Worker Provider"),
+                ))
+                .expect("无法注册 R2 Worker Provider");
             let storage_credentials = Arc::new(storage::KeyringProviderCredentialStore::new(
                 secrets.clone(),
             ));

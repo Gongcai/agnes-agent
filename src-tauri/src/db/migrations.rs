@@ -493,6 +493,7 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
     ensure_reading_metadata(conn)?;
     conn.execute_batch(crate::db::schema::STORAGE_SCHEMA)?;
     ensure_open_storage_transfer_operations(conn)?;
+    conn.execute_batch(crate::db::schema::ARTIFACT_SCHEMA)?;
 
     // 检查是否已有 agent，如果没有则预置默认角色
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))?;

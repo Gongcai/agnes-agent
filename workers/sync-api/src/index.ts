@@ -14,6 +14,19 @@ import {
   joinPairingSession,
 } from "./routes/pairing";
 import { ack, bootstrap, pull, push } from "./routes/sync";
+import {
+  abortObjectUpload,
+  cleanupObjectUploads,
+  completeObjectUpload,
+  createObjectUpload,
+  deleteObject,
+  downloadObject,
+  getObjectManifest,
+  headObject,
+  listObjectChanges,
+  updateObjectState,
+  uploadObjectPart,
+} from "./routes/objects";
 import type { AppEnv } from "./types";
 
 const app = new Hono<AppEnv>();
@@ -48,6 +61,16 @@ app.post("/v1/sync/push", push);
 app.get("/v1/sync/pull", pull);
 app.get("/v1/sync/bootstrap", bootstrap);
 app.post("/v1/sync/ack", ack);
+app.post("/v1/objects/uploads", createObjectUpload);
+app.put("/v1/objects/uploads/:uploadId/parts/:partNumber", uploadObjectPart);
+app.post("/v1/objects/uploads/:uploadId/complete", completeObjectUpload);
+app.delete("/v1/objects/uploads/:uploadId", abortObjectUpload);
+app.get("/v1/objects/changes", listObjectChanges);
+app.post("/v1/objects/states", updateObjectState);
+app.get("/v1/objects/manifests/:objectId", getObjectManifest);
+app.on("HEAD", "/v1/objects/:artifactId", headObject);
+app.get("/v1/objects/:artifactId", downloadObject);
+app.delete("/v1/objects/:artifactId", deleteObject);
 app.get("/v1/devices", listDevices);
 app.post("/v1/devices/:deviceId/revoke", revokeDevice);
 app.post("/v1/pairing/sessions", createPairingSession);
@@ -77,9 +100,12 @@ export default {
   fetch: app.fetch,
   scheduled(_controller, env, context) {
     context.waitUntil(
-      env.SYNC_DB.prepare("DELETE FROM pairing_sessions WHERE expires_at <= ?")
-        .bind(Date.now())
-        .run(),
+      Promise.all([
+        env.SYNC_DB.prepare("DELETE FROM pairing_sessions WHERE expires_at <= ?")
+          .bind(Date.now())
+          .run(),
+        cleanupObjectUploads(env),
+      ]),
     );
   },
 } satisfies ExportedHandler<AppEnv["Bindings"]>;

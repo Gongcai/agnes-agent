@@ -35,9 +35,135 @@ const RECOVERY_KEY_BYTES: usize = 32;
 const RECOVERY_SALT_BYTES: usize = 16;
 const MAX_KEYSET_JSON_BYTES: usize = 16 * 1024;
 const MAX_RECOVERY_BUNDLE_BYTES: usize = 32 * 1024;
+pub(crate) const ARTIFACT_KEY_BYTES: usize = MASTER_KEY_BYTES;
+pub(crate) const ARTIFACT_NONCE_BYTES: usize = NONCE_BYTES;
+pub(crate) const ARTIFACT_TAG_BYTES: usize = TAG_BYTES;
+const ARTIFACT_KEY_WRAP_AAD: &[u8] = b"agnes-artifact-key-wrap-v1\0";
 
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SyncMasterKey([u8; MASTER_KEY_BYTES]);
+
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub(crate) struct ArtifactDataKey([u8; ARTIFACT_KEY_BYTES]);
+
+pub(crate) struct WrappedArtifactKey {
+    pub nonce: [u8; ARTIFACT_NONCE_BYTES],
+    pub ciphertext: Vec<u8>,
+}
+
+pub(crate) fn generate_artifact_data_key() -> ArtifactDataKey {
+    let mut bytes = [0_u8; ARTIFACT_KEY_BYTES];
+    OsRng.fill_bytes(&mut bytes);
+    ArtifactDataKey(bytes)
+}
+
+pub(crate) fn wrap_artifact_data_key(
+    master_key: &SyncMasterKey,
+    artifact_id: &str,
+    key_version: i64,
+    data_key: &ArtifactDataKey,
+) -> AppResult<WrappedArtifactKey> {
+    let nonce = XNonce::generate();
+    let aad = artifact_key_aad(artifact_id, key_version)?;
+    let cipher = XChaCha20Poly1305::new((&master_key.0).into());
+    let ciphertext = cipher
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: &data_key.0,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| AppError::Other("Unable to wrap artifact data key".into()))?;
+    let mut nonce_bytes = [0_u8; ARTIFACT_NONCE_BYTES];
+    nonce_bytes.copy_from_slice(nonce.as_ref());
+    Ok(WrappedArtifactKey {
+        nonce: nonce_bytes,
+        ciphertext,
+    })
+}
+
+pub(crate) fn unwrap_artifact_data_key(
+    master_key: &SyncMasterKey,
+    artifact_id: &str,
+    key_version: i64,
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> AppResult<ArtifactDataKey> {
+    if nonce.len() != ARTIFACT_NONCE_BYTES
+        || ciphertext.len() != ARTIFACT_KEY_BYTES + ARTIFACT_TAG_BYTES
+    {
+        return Err(AppError::Other("Artifact key framing is invalid".into()));
+    }
+    let nonce = XNonce::try_from(nonce)
+        .map_err(|_| AppError::Other("Artifact key nonce is invalid".into()))?;
+    let aad = artifact_key_aad(artifact_id, key_version)?;
+    let cipher = XChaCha20Poly1305::new((&master_key.0).into());
+    let mut plaintext = cipher
+        .decrypt(
+            &nonce,
+            Payload {
+                msg: ciphertext,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| AppError::Other("Artifact key authentication failed".into()))?;
+    let mut bytes = [0_u8; ARTIFACT_KEY_BYTES];
+    if plaintext.len() != bytes.len() {
+        plaintext.zeroize();
+        return Err(AppError::Other("Artifact key plaintext is invalid".into()));
+    }
+    bytes.copy_from_slice(&plaintext);
+    plaintext.zeroize();
+    Ok(ArtifactDataKey(bytes))
+}
+
+pub(crate) fn encrypt_artifact_chunk(
+    data_key: &ArtifactDataKey,
+    nonce: &[u8; ARTIFACT_NONCE_BYTES],
+    aad: &[u8],
+    plaintext: &[u8],
+) -> AppResult<Vec<u8>> {
+    let cipher = XChaCha20Poly1305::new((&data_key.0).into());
+    cipher
+        .encrypt(
+            nonce.into(),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| AppError::Other("Unable to encrypt artifact chunk".into()))
+}
+
+pub(crate) fn decrypt_artifact_chunk(
+    data_key: &ArtifactDataKey,
+    nonce: &[u8; ARTIFACT_NONCE_BYTES],
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> AppResult<Vec<u8>> {
+    let cipher = XChaCha20Poly1305::new((&data_key.0).into());
+    cipher
+        .decrypt(
+            nonce.into(),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
+        .map_err(|_| AppError::Other("Artifact chunk authentication failed".into()))
+}
+
+fn artifact_key_aad(artifact_id: &str, key_version: i64) -> AppResult<Vec<u8>> {
+    if artifact_id.is_empty() || artifact_id.len() > 128 || key_version <= 0 {
+        return Err(AppError::Other("Invalid artifact key metadata".into()));
+    }
+    let mut aad = Vec::with_capacity(ARTIFACT_KEY_WRAP_AAD.len() + artifact_id.len() + 16);
+    aad.extend_from_slice(ARTIFACT_KEY_WRAP_AAD);
+    append_field(&mut aad, artifact_id.as_bytes())?;
+    aad.extend_from_slice(&key_version.to_be_bytes());
+    Ok(aad)
+}
 
 impl SyncMasterKey {
     pub fn generate() -> Self {

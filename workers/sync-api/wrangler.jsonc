@@ -15,6 +15,12 @@
       "migrations_dir": "migrations"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACT_OBJECTS",
+      "bucket_name": "agnes-blobs"
+    }
+  ],
   "observability": {
     "enabled": true
   },

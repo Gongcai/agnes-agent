@@ -349,6 +349,7 @@ storage_transfer_jobs                      # 本机传输执行状态
 - R2 是默认应用托管存储，客户端不持有 Cloudflare Account/R2 API Token。
 - Worker 通过 R2 binding 访问 bucket，校验 owner/device/object manifest 后执行上传或下载。
 - 大文件使用 multipart/分块上传，客户端维护可恢复 upload session。
+- R2 Multipart 非末分片至少 5 MiB；客户端默认使用 8 MiB，单分片小制品仍可直接完成。
 - object key 使用随机 owner/object ID，不包含用户文件名、Agent 名、工作区名或明文 Hash。
 - 当前 Cloudflare 账户已开通 R2，但尚未创建 bucket；实现阶段由 Wrangler 创建 `agnes-blobs` 并写入 Worker binding，不要向 renderer 发放 R2 Token。
 
@@ -578,9 +579,9 @@ tasks
 
 ### Phase B：加密制品与 D1 清单
 
-- 定稿分块 E2EE envelope 和 artifact format v1；
-- 实现 object/artifact/device manifest 和启动决策器；
-- 实现断点下载、Hash 验证、原子安装和失败回退；
+- [x] 定稿分块 E2EE envelope 和 artifact format v1：内层 zstd entry manifest，外层随机 DEK + XChaCha20-Poly1305 分块 envelope，DEK 由账户 key version 包装；
+- [x] 实现本地 artifact/object/device manifest 表、不可变 build fingerprint、Provider replica 状态和设备安装状态；
+- [x] 实现 Range 断点下载、ciphertext/AEAD/内部 manifest/明文 entry Hash 验证、版本目录原子安装和失败回退；
 - 加入本地磁盘配额和 GC。
 
 ### Phase C：通用 Provider 基础与网盘页
@@ -608,10 +609,10 @@ tasks
 
 ### Phase E：R2 Provider
 
-- Wrangler 创建 `agnes-blobs` bucket 并绑定 Worker；
-- 实现 Worker 授权的分块上传/下载；
-- 实现 owner 隔离、配额、保留期和孤儿对象 GC；
-- 只使用加密假数据完成故障测试后再开放真实数据。
+- [x] Wrangler 绑定 `ARTIFACT_OBJECTS` R2 bucket（默认名 `agnes-blobs`）；
+- [x] 实现 Worker 授权的 Multipart 分块上传、分片 SHA-256、完成后 R2 head 校验和单段 Range 下载；
+- [x] 实现 owner 隔离、D1 object manifest/replica/change/device state 控制面、逻辑版本 CAS、幂等重放和过期上传清理；
+- [x] 只使用加密假数据完成 Worker 契约测试，真实 bucket/业务数据仍需部署前验收。
 
 ### Phase F：子功能 UI
 

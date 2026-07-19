@@ -13,11 +13,15 @@ use crate::db::repo::storage::{
 };
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
+use crate::sync::artifact::{install_artifact, ArtifactManifest, BuiltArtifact};
+use crate::sync::crypto::SyncMasterKey;
 
+use super::artifact_transfer;
 use super::domain::{
     BeginFileUploadRequest, ContentHashAlgorithm, ListFilesRequest, ProviderAuthorizationRequest,
     ProviderDescriptor, ProviderError, ProviderQuota, RemoteFileItem, RemoteFileKind,
-    RemoteFilePage, StorageProviderAccount, UploadFileChunkRequest,
+    RemoteFilePage, RemoteObjectLocator, RemoteObjectState, StorageProviderAccount,
+    UploadFileChunkRequest,
 };
 use super::ports::{
     ProviderAuthorizationChallenge, ProviderAuthorizationStep, ProviderCredentialStore,
@@ -92,6 +96,151 @@ impl StorageService {
 
     pub fn catalog(&self) -> AppResult<Vec<ProviderDescriptor>> {
         self.registry.descriptors().map_err(provider_error)
+    }
+
+    /// Uploads an immutable encrypted artifact, verifies the remote replica,
+    /// and records it only after the provider reports a matching object.
+    pub async fn upload_artifact(
+        &self,
+        account_id: String,
+        artifact: BuiltArtifact,
+        object_id: String,
+        logical_version: u64,
+        updated_hlc: String,
+    ) -> AppResult<RemoteObjectState> {
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let object_storage = session.object_storage().ok_or_else(|| {
+            AppError::Other("Storage provider does not support encrypted object storage".into())
+        })?;
+        self.db
+            .upsert_artifact_manifest(crate::db::repo::artifacts::UpsertArtifactManifest {
+                manifest: artifact.manifest.clone(),
+                local_path: None,
+                local_status: "available".into(),
+                installed_at: None,
+            })
+            .await?;
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let bytes_total = i64::try_from(artifact.bytes.len())
+            .map_err(|_| AppError::Other("Artifact exceeds the local transfer range".into()))?;
+        self.db
+            .insert_storage_transfer_job(NewStorageTransferJob {
+                id: job_id.clone(),
+                account_id: row.id.clone(),
+                operation: "object_upload".into(),
+                remote_item_id: Some(artifact.manifest.id.clone()),
+                display_name: artifact.manifest.id.clone(),
+                destination_kind: Some("artifact_replica".into()),
+                destination_id: Some(artifact.manifest.id.clone()),
+                bytes_total: Some(bytes_total),
+            })
+            .await?;
+        self.update_transfer(&job_id, "running", 0, Some(bytes_total), None)
+            .await?;
+        let result = artifact_transfer::upload_artifact(
+            object_storage,
+            &artifact,
+            self.registry
+                .descriptor(&row.provider_id)
+                .map_err(provider_error)?
+                .capabilities
+                .recommended_chunk_bytes,
+            super::domain::ObjectPublishMetadata {
+                object_id,
+                object_kind: artifact.manifest.artifact_type.clone(),
+                logical_version,
+                key_version: artifact.manifest.key_version,
+                updated_hlc,
+            },
+        )
+        .await;
+        let state = match result {
+            Ok(state) => state,
+            Err(error) => {
+                let message = error.to_string();
+                let _ = self
+                    .update_transfer(
+                        &job_id,
+                        "failed",
+                        0,
+                        Some(bytes_total),
+                        Some(("artifact_upload", &message)),
+                    )
+                    .await;
+                return Err(error);
+            }
+        };
+        self.db
+            .upsert_artifact_replica(crate::db::repo::artifacts::ArtifactReplicaRow {
+                artifact_id: artifact.manifest.id.clone(),
+                provider_account_id: row.id.clone(),
+                provider_kind: row.provider_id.clone(),
+                encrypted_locator: serde_json::to_string(&state.locator)?,
+                provider_revision: state.locator.revision.clone(),
+                etag: None,
+                ciphertext_hash: artifact.manifest.ciphertext_hash.clone(),
+                size: bytes_total,
+                status: "ready".into(),
+                last_error_code: None,
+                updated_at: now_string(),
+            })
+            .await?;
+        self.update_transfer(&job_id, "completed", bytes_total, Some(bytes_total), None)
+            .await?;
+        self.update_provider_status(&row, None).await;
+        Ok(state)
+    }
+
+    /// Downloads, verifies, and atomically installs an artifact. The existing
+    /// current pointer is never touched until all checks succeed.
+    pub async fn download_and_install_artifact(
+        &self,
+        account_id: String,
+        manifest: ArtifactManifest,
+        locator: RemoteObjectLocator,
+        master_key: &SyncMasterKey,
+        install_root: std::path::PathBuf,
+    ) -> AppResult<std::path::PathBuf> {
+        if !install_root.is_absolute() {
+            return Err(AppError::Other(
+                "Artifact install root must be absolute".into(),
+            ));
+        }
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let object_storage = session.object_storage().ok_or_else(|| {
+            AppError::Other("Storage provider does not support encrypted object storage".into())
+        })?;
+        let verified = match artifact_transfer::download_artifact(
+            object_storage,
+            locator,
+            &manifest,
+            master_key,
+        )
+        .await
+        {
+            Ok(verified) => verified,
+            Err(error) => {
+                self.update_provider_status(
+                    &row,
+                    Some(&ProviderError::new(
+                        super::domain::ProviderErrorCategory::InvalidResponse,
+                        error.to_string(),
+                    )),
+                )
+                .await;
+                return Err(error);
+            }
+        };
+        let installed = install_artifact(&install_root, &verified)?;
+        self.db
+            .upsert_artifact_manifest(crate::db::repo::artifacts::UpsertArtifactManifest {
+                manifest,
+                local_path: Some(installed.to_string_lossy().to_string()),
+                local_status: "installed".into(),
+                installed_at: Some(now_string()),
+            })
+            .await?;
+        Ok(installed)
     }
 
     pub async fn list_accounts(&self) -> AppResult<Vec<StorageAccountView>> {
@@ -1496,6 +1645,10 @@ fn provider_error(error: ProviderError) -> AppError {
 fn as_sqlite_i64(value: u64) -> AppResult<i64> {
     i64::try_from(value)
         .map_err(|_| AppError::Other("Storage quota exceeds the supported local range".into()))
+}
+
+fn now_string() -> String {
+    chrono::Utc::now().timestamp_millis().to_string()
 }
 
 async fn restore_credential(
