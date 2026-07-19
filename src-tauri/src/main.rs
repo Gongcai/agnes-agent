@@ -21,12 +21,142 @@ mod web;
 
 use std::sync::Arc;
 
-use tauri::Manager;
+use tauri::{AppHandle, Manager, Runtime, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_global_shortcut::{
     Builder as GlobalShortcutBuilder, ShortcutEvent, ShortcutState,
 };
 
 use crate::state::AppState;
+
+const QUICK_WINDOW_LABEL: &str = "quick";
+
+fn create_quick_window<R: Runtime>(app: &AppHandle<R>) -> Option<WebviewWindow<R>> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == QUICK_WINDOW_LABEL)?;
+
+    match WebviewWindowBuilder::from_config(app, config).and_then(|builder| builder.build()) {
+        Ok(window) => Some(window),
+        Err(error) => {
+            eprintln!("[quick] 无法创建快速弹窗: {error}");
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn configure_quick_popup<R: Runtime>(window: &WebviewWindow<R>) {
+    use gdk::WindowTypeHint;
+    use gtk::prelude::*;
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        return;
+    };
+
+    // Utility keeps the X11 popup floating while retaining normal input focus handling.
+    gtk_window.set_type_hint(WindowTypeHint::Utility);
+    gtk_window.set_modal(false);
+    gtk_window.set_skip_taskbar_hint(true);
+    gtk_window.set_skip_pager_hint(true);
+    gtk_window.set_keep_above(true);
+    gtk_window.set_accept_focus(true);
+    gtk_window.set_focus_on_map(true);
+    gtk_window.set_role("agnes-quick");
+    gtk_window.realize();
+    if let Some(gdk_window) = gtk_window.window() {
+        gdk_window.set_type_hint(WindowTypeHint::Utility);
+        gdk_window.set_skip_taskbar_hint(true);
+        gdk_window.set_skip_pager_hint(true);
+        gdk_window.set_keep_above(true);
+        gdk_window.set_accept_focus(true);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_quick_popup<R: Runtime>(_window: &WebviewWindow<R>) {}
+
+#[cfg(target_os = "linux")]
+fn focus_quick_popup<R: Runtime>(window: &WebviewWindow<R>) {
+    let popup = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        use gtk::prelude::*;
+        use std::time::Duration;
+
+        let Ok(gtk_window) = popup.gtk_window() else {
+            return;
+        };
+        let request_focus = move |popup: &gtk::ApplicationWindow| {
+            let Some(gdk_window) = popup.window() else {
+                return;
+            };
+            let Ok(x11_window) = gdk_window.clone().downcast::<gdkx11::X11Window>() else {
+                return;
+            };
+            let timestamp = gdkx11::functions::x11_get_server_time(&x11_window);
+            x11_window.set_user_time(timestamp);
+            popup.present_with_time(timestamp);
+            gdk_window.focus(timestamp);
+            unsafe {
+                let display = (x11::xlib::XOpenDisplay)(std::ptr::null());
+                if !display.is_null() {
+                    (x11::xlib::XSetInputFocus)(
+                        display,
+                        x11_window.xid(),
+                        x11::xlib::RevertToParent,
+                        timestamp.into(),
+                    );
+                    (x11::xlib::XFlush)(display);
+                    (x11::xlib::XCloseDisplay)(display);
+                }
+            }
+        };
+
+        request_focus(&gtk_window);
+        gtk::glib::timeout_add_local_once(Duration::from_millis(80), move || {
+            if gtk_window.is_visible() {
+                request_focus(&gtk_window);
+            }
+        });
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn focus_quick_popup<R: Runtime>(_window: &WebviewWindow<R>) {}
+
+fn reveal_quick_popup<R: Runtime>(window: &WebviewWindow<R>) {
+    let _ = window.center();
+    let _ = window.show();
+    let _ = window.set_focus();
+    focus_quick_popup(window);
+}
+
+fn toggle_quick_popup<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window(QUICK_WINDOW_LABEL) {
+        match window.is_visible() {
+            Ok(true) => {
+                let _ = window.hide();
+            }
+            Ok(false) => reveal_quick_popup(&window),
+            Err(error) => eprintln!("[quick] 无法读取快速弹窗状态: {error}"),
+        }
+        return;
+    }
+
+    // A compositor-level kill can destroy a native window without a close event.
+    // Recreate the hidden instance on the main thread so the global shortcut stays usable.
+    let app_handle = app.clone();
+    let task_handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        let Some(window) = create_quick_window(&task_handle) else {
+            return;
+        };
+        configure_quick_popup(&window);
+        reveal_quick_popup(&window);
+    });
+}
 
 fn main() {
     if let Some(exit_code) = tools::sandbox::run_sandbox_helper_if_requested() {
@@ -44,25 +174,20 @@ fn main() {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
-
-                    let Some(window) = app.get_webview_window("quick") else {
-                        return;
-                    };
-
-                    match window.is_visible() {
-                        Ok(true) => {
-                            let _ = window.hide();
-                        }
-                        Ok(false) => {
-                            let _ = window.center();
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                        Err(error) => eprintln!("[quick] 无法读取快速窗口状态: {error}"),
-                    }
+                    toggle_quick_popup(app);
                 })
                 .build(),
         )
+        .on_window_event(|window, event| {
+            if window.label() != QUICK_WINDOW_LABEL {
+                return;
+            }
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                // The quick popup is a resident singleton. Close means hide, never destroy.
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
             // 1) 初始化 SQLite（阻塞直到建表完成）
             let data_dir = app.path().app_data_dir().expect("无法获取 app data 目录");
@@ -155,6 +280,10 @@ fn main() {
                 notifications,
                 secret_store_startup_error,
             });
+
+            if let Some(window) = create_quick_window(app.handle()) {
+                configure_quick_popup(&window);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

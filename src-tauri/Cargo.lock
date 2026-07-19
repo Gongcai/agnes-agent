@@ -43,7 +43,10 @@ dependencies = [
  "diffy",
  "encoding_rs",
  "futures-util",
+ "gdk",
+ "gdkx11",
  "globset",
+ "gtk",
  "hkdf",
  "keyring",
  "landlock",
@@ -77,6 +80,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "webkit2gtk",
+ "x11",
  "zeroize",
  "zip",
 ]
