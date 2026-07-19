@@ -1,4 +1,4 @@
-# agnes-agent UI/UX 设计规范与界面方案 (现代极简版)
+# agnes-agent UI/UX 设计规范与界面方案 (Claude Desktop 风格)
 
 本文件定义了 `agnes-agent` 桌面客户端 (Tauri + React) 的极简、现代化设计方案。主界面是聊天、记忆、知识库、网盘、日历和待办的统一工作台；角色人设、Provider 授权、同步和其他低频配置收纳到设置中心。
 
@@ -6,7 +6,7 @@
 
 ## 1. 设计理念 (Design Philosophy)
 
-*   **现代极简主义 (Modern Minimalism)**：采用干净、开阔的 Zinc/Slate 灰白配色系统，强调信息层级与大留白。支持系统级的明暗主题切换，不堆砌繁复的霓虹、赛博或多色渐变，回归纯净高对比度的文本阅读体验。
+*   **温暖的人文工具感 (Warm Humanist Utility)**：主要参考 `claude-desktop-reconstruction.html` 的 Claude Code Desktop 产品界面，以暖纸色侧栏、白色工作区、陶土色动作和深色代码面建立层级；`DESIGN-claude.md` 仅补充品牌色与排版原则。界面保持桌面工具的信息密度，不照搬营销页的大字号与卡片分区。
 *   **功能聚焦 (Feature Focus)**：主界面使用稳定的子功能导航，聊天、记忆、知识库、网盘、日历和待办分别进入独立视图。当前视图内只保留与当前任务相关的操作。
 *   **渐进式暴露 (Progressive Disclosure)**：非高频使用的管理交互（如添加角色、编辑角色人设、直接手写记忆文件 USER.md/MEMORY.md）全部移入统一配置后台，随用随开。
 *   **直观的执行反馈 (Clear Execution Pipeline)**：保留可收缩的 AI 思考轨迹与高度醒目的工具审批卡片，确保 Agent 执行本地命令的透明度与控制力。
@@ -147,24 +147,26 @@
 
 ## 4. 颜色与视觉规范 (Visual System Tokens)
 
-视觉系统采用温暖雅致的象牙白与灰色轻量线条，搭配低饱和度、极具亲和力的**莫兰迪绿 (Morandi Green)** 作为副色系高亮，呈现平滑、温润的现代简洁感。
+视觉系统采用 Claude Desktop 的暖纸色与暖黑文字，以**陶土色 (Clay / Coral)** 作为唯一品牌动作色；工具输出和代码使用暖黑深色面。颜色真理源位于 `src/index.css` 的 `--claude-*` tokens，旧的绿色 utility 仅作为迁移输入，不再定义最终视觉。
 
 ### 4.1 调色板 (Color Palette)
 
 | 颜色名称 | 变量/Hex | 使用场景 |
 |---|---|---|
-| **Background (主背景)** | `bg-[#FAF9F5]` / #FAF9F5 (象牙白) | 整个应用的主背景，温润舒适 |
-| **Sidebar (侧边栏背景)** | `bg-stone-100/50` / #F1F0EC | 侧栏底色，与聊天区产生柔和的阶梯对比 |
-| **Card / Bubbles (卡片)** | `bg-white` | 消息气泡、输入框、控制面板、弹窗卡片 |
-| **Border (细分割线)** | `border-stone-200` / #E4E4E0 | 极纤细的 1px 温和描边 |
-| **Accent Green (莫兰迪绿)**| `bg-[#8CA38A]` / `#8CA38A` | 主按钮、选中态文字、活动状态、思维指示高亮 |
-| **Text Primary (正文)** | `text-stone-900` / #1E1E24 | 高可读性文本色 |
-| **Text Secondary (次要)** | `text-stone-500` / #7C7C88 | 时间戳、元数据、折叠标题 |
+| **Canvas (主背景)** | `--claude-canvas` / `#FAF9F5` | 输入区、工具条、暖纸色空白 |
+| **Sidebar (侧边栏)** | `--claude-sidebar` / `#F5F3ED` | 功能和会话导航，与白色工作区形成一级层差 |
+| **Surface (主工作区)** | `--claude-surface` / `#FFFFFF` | 聊天正文、设置内容、日历和列表工作面 |
+| **Surface Soft** | `--claude-surface-soft` / `#F0EDE6` | 用户消息、安静选中态、次级控件 |
+| **Border** | `--claude-border` / warm black 13% | 0.5-1px 分隔线与控件描边 |
+| **Clay (品牌动作)** | `--claude-clay` / `#D97757` | 主按钮、当前项边线、焦点和 Agent 状态 |
+| **Ink (主文字)** | `--claude-ink` / `#1F1E1B` | 标题、正文和主要图标 |
+| **Muted (次要文字)** | `--claude-muted` / `#77736A` | 时间戳、Token、状态说明 |
+| **Dark Surface** | `--claude-dark` / `#262624` | 终端、代码与高对比工具输出 |
 
 ### 4.2 细节规范
-*   **圆角系统 (Border Radius)**：统一采用较大而圆润的现代圆角设计（`rounded-2xl` 适用于主气泡/卡片，`rounded-xl` 适用于按钮/输入框）。
-*   **阴影系统 (Shadows)**：使用现代柔和的极轻量扩散阴影（`shadow-sm` 用于气泡与小卡，`shadow-xl` 用于设置大弹窗），去除扁平化带来的简陋感。
-*   **排版**：正文字号略微调大，行间距设计为 `leading-relaxed`，提供极佳的阅读舒适感。
+*   **圆角系统 (Border Radius)**：普通按钮、列表项和卡片不超过 8px；聊天输入框使用 Claude Desktop 标志性的 16px，用户气泡使用 18px 并保留一个 5px 尾角。
+*   **阴影系统 (Shadows)**：深度主要依靠表面色差和细边框；常驻面板不使用阴影，仅弹窗和上下文菜单使用克制的 16-24px 扩散阴影。
+*   **排版**：界面统一使用系统可用的 `Noto Serif` 英文 serif，并以 `Noto Serif SC / Noto Serif CJK SC` 作为中文回退；代码和 Token 元数据使用 `JetBrains Mono` 等宽栈。所有文字 letter-spacing 为 0。
 
 ---
 
@@ -177,4 +179,4 @@
     *   在 Tailwind 样式中统一使用这些变量对应的 utility 类（如 `bg-background`、`text-primary`），避免硬编码特定颜色类名。
 2.  **动态样式注入**：
     *   在 V0.4 中，用户的自定义配色将作为 JSON 存入本地 SQLite 的 `settings` 表中。
-    *   前端 React 启动时，通过自定义 hook 读取该配置，并通过 JS 动态修改 HTML `document.documentElement.style` 的 CSS 变量值（如将 `--primary` 改为用户自定义的莫兰迪红或灰蓝色 HSL 值），实现实时、全局且无刷新的主题无缝切换。
+    *   前端 React 启动时，通过自定义 hook 读取该配置，并通过 JS 动态修改 HTML `document.documentElement.style` 的 CSS 变量值（如覆盖 `--claude-clay`），实现实时、全局且无刷新的主题切换。

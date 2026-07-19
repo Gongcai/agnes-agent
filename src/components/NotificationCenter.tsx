@@ -109,7 +109,7 @@ export function NotificationCenter({ onNavigate, className }: NotificationCenter
 
   const popover = open && anchor && (
     <section
-      className="fixed z-[100] flex w-[min(25rem,calc(100vw-1rem))] flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-2xl"
+      className="claude-popover fixed z-[100] flex w-[min(25rem,calc(100vw-1rem))] flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-2xl"
       style={{
         top: Math.min(anchor.bottom + 8, window.innerHeight - 72),
         left: Math.min(Math.max(anchor.left, 8), Math.max(8, window.innerWidth - 408)),
@@ -126,7 +126,7 @@ export function NotificationCenter({ onNavigate, className }: NotificationCenter
           type="button"
           onClick={() => void markAllRead()}
           disabled={unreadCount === 0}
-          className="text-[11px] font-medium text-emerald-700 disabled:text-stone-300"
+          className="text-[11px] font-medium text-[#b95f43] disabled:text-stone-300"
         >
           全部已读
         </button>
@@ -145,7 +145,7 @@ export function NotificationCenter({ onNavigate, className }: NotificationCenter
               type="button"
               onClick={() => void openNotification(notification)}
               className={`flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-stone-50 ${
-                notification.read_at ? "opacity-70" : "bg-emerald-50/35"
+                notification.read_at ? "opacity-70" : "bg-[#f5e2da]/35"
               }`}
             >
               <span className={`mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full ${
@@ -153,7 +153,7 @@ export function NotificationCenter({ onNavigate, className }: NotificationCenter
                   ? "bg-amber-100 text-amber-700"
                   : notification.kind === "task_due"
                   ? "bg-rose-100 text-rose-700"
-                  : "bg-emerald-100 text-emerald-700"
+                  : "bg-[#f5e2da] text-[#b95f43]"
               }`}>
                 <Icon className="h-3.5 w-3.5" />
               </span>
@@ -180,7 +180,7 @@ export function NotificationCenter({ onNavigate, className }: NotificationCenter
           type="button"
           onClick={toggle}
           className={`relative grid h-9 w-9 place-items-center rounded-full border shadow-sm transition-colors ${
-            open ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-stone-200 bg-white text-stone-600 hover:bg-stone-50"
+            open ? "border-[#d97757]/30 bg-[#f5e2da] text-[#b95f43]" : "border-stone-200 bg-white text-stone-600 hover:bg-stone-50"
           }`}
           title="通知中心"
           aria-label={unreadCount ? `通知中心，${unreadCount} 条未读` : "通知中心"}

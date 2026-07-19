@@ -355,7 +355,7 @@ body {
   --claude-success: #3f7d53;
   --claude-warning: #a96919;
   --claude-danger: #b84343;
-  --claude-ui-font: "Noto Serif", "Noto Serif SC", "Noto Serif CJK SC", Georgia, "Times New Roman", serif;
+  --claude-ui-font: Georgia, "Noto Serif SC", "Noto Serif CJK SC", "Noto Serif", "Songti SC", "Times New Roman", serif;
   --claude-mono-font: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
 }
 
@@ -705,6 +705,90 @@ pre,
   background-color: #f1d3c8 !important;
 }
 
+/* Migrate legacy Morandi-green and indigo action utilities to the Clay system.
+   Status colors such as emerald-500, amber, rose, and violet remain semantic. */
+.agnes-app [class~="bg-[#8CA38A]"],
+.agnes-app [class~="bg-[#6C806A]"],
+.agnes-app [class~="bg-[#4f7f68]"],
+.agnes-app [class~="bg-[#596C58]"],
+.agnes-app [class~="bg-indigo-600"],
+.agnes-app [class~="bg-indigo-700"] {
+  background-color: var(--claude-clay) !important;
+}
+
+.agnes-app [class~="hover:bg-[#7A917A]"]:hover,
+.agnes-app [class~="hover:bg-[#789176]"]:hover,
+.agnes-app [class~="hover:bg-[#596C58]"]:hover,
+.agnes-app [class~="hover:bg-indigo-700"]:hover,
+.agnes-app [class~="hover:bg-indigo-800"]:hover {
+  background-color: var(--claude-clay-dark) !important;
+}
+
+.agnes-app [class~="bg-[#8CA38A]/10"],
+.agnes-app [class~="bg-indigo-50"] {
+  background-color: var(--claude-clay-soft) !important;
+}
+
+.agnes-app [class~="bg-[#F1F5F0]/70"] {
+  background-color: rgba(240, 237, 230, 0.72) !important;
+}
+
+.agnes-app [class~="text-[#8CA38A]"],
+.agnes-app [class~="text-[#6C806A]"],
+.agnes-app [class~="text-[#556654]"],
+.agnes-app [class~="text-[#5F735D]"],
+.agnes-app [class~="text-[#4f7f68]"],
+.agnes-app [class~="text-indigo-600"],
+.agnes-app [class~="text-indigo-700"] {
+  color: var(--claude-clay-dark) !important;
+}
+
+.agnes-app [class~="border-[#8CA38A]"],
+.agnes-app [class~="border-[#4f7f68]"],
+.agnes-app [class~="border-indigo-100"],
+.agnes-app [class~="border-indigo-200"],
+.agnes-app [class~="border-indigo-300"] {
+  border-color: rgba(217, 119, 87, 0.42) !important;
+}
+
+.agnes-app [class~="border-[#DFE7DD]"] {
+  border-color: var(--claude-border) !important;
+}
+
+.agnes-app [class~="ring-[#8CA38A]"],
+.agnes-app [class~="ring-indigo-200"],
+.agnes-app [class~="ring-indigo-300"] {
+  --tw-ring-color: rgba(217, 119, 87, 0.28) !important;
+}
+
+.agnes-app [class~="ring-[#8CA38A]/10"] {
+  --tw-ring-color: rgba(217, 119, 87, 0.1) !important;
+}
+
+.agnes-app [class~="ring-[#8CA38A]/20"] {
+  --tw-ring-color: rgba(217, 119, 87, 0.2) !important;
+}
+
+.agnes-app [class~="ring-[#8CA38A]/40"] {
+  --tw-ring-color: rgba(217, 119, 87, 0.4) !important;
+}
+
+.agnes-app [class~="border-[#8CA38A]/20"] {
+  border-color: rgba(217, 119, 87, 0.2) !important;
+}
+
+.agnes-app [class~="border-[#8CA38A]/30"] {
+  border-color: rgba(217, 119, 87, 0.3) !important;
+}
+
+.agnes-app [class~="border-[#8CA38A]/50"] {
+  border-color: rgba(217, 119, 87, 0.5) !important;
+}
+
+.agnes-app [class~="accent-indigo-600"] {
+  accent-color: var(--claude-clay) !important;
+}
+
 .agnes-app [class*="bg-stone-50"],
 .agnes-app [class*="bg-stone-100"] {
   background-color: var(--claude-canvas) !important;
@@ -718,6 +802,22 @@ pre,
 .agnes-app [class*="shadow-xl"],
 .agnes-app [class*="shadow-lg"] {
   box-shadow: 0 16px 40px rgba(31, 30, 27, 0.12) !important;
+}
+
+.agnes-app div[class*="fixed"][class*="rounded-xl"][class*="border"][class*="bg-white"] {
+  border-color: var(--claude-border-strong) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 16px 40px rgba(31, 30, 27, 0.14) !important;
+}
+
+.agnes-app div[class*="fixed"][class*="rounded-xl"][class*="border"][class*="bg-white"] button:hover {
+  background: var(--claude-surface-soft) !important;
+}
+
+.agnes-app div.fixed > div[class*="rounded-2xl"][class*="bg-white"] {
+  border-radius: 10px !important;
+  border-color: var(--claude-border-strong) !important;
+  box-shadow: 0 18px 48px rgba(31, 30, 27, 0.16) !important;
 }
 
 .agnes-settings-overlay {
@@ -759,6 +859,22 @@ pre,
 
 .agnes-settings-content {
   background: var(--claude-surface) !important;
+}
+
+.claude-popover {
+  border-color: var(--claude-border-strong) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 16px 40px rgba(31, 30, 27, 0.14) !important;
+  font-family: var(--claude-ui-font);
+}
+
+.claude-popover > header {
+  background: var(--claude-canvas);
+  border-color: var(--claude-border) !important;
+}
+
+.claude-popover button:hover {
+  background: var(--claude-surface-soft) !important;
 }
 
 .agnes-settings-content article,
@@ -816,6 +932,18 @@ pre,
 .agnes-feature-workspace div[class*="rounded-2xl"][class*="border"] {
   border-color: var(--claude-border) !important;
   box-shadow: none !important;
+}
+
+.agnes-feature-workspace button[class*="rounded-xl"],
+.agnes-feature-workspace button[class*="rounded-2xl"],
+.agnes-feature-workspace label[class*="rounded-xl"],
+.agnes-feature-workspace label[class*="rounded-2xl"] {
+  border-radius: 8px !important;
+}
+
+.agnes-settings-content [class*="rounded-xl"],
+.agnes-settings-content [class*="rounded-2xl"] {
+  border-radius: 8px !important;
 }
 
 .agnes-feature-workspace article,
