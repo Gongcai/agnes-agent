@@ -617,6 +617,33 @@ pub async fn set_sync_credential(
                 .unwrap_or_default()
         )));
     }
+    if let Err(storage_error) = state
+        .storage
+        .ensure_managed_r2_account(crate::sync::engine::SYNC_GATEWAY_URL)
+        .await
+    {
+        let credential_rollback_error = restore_secret(
+            state.secrets.as_ref(),
+            SYNC_CREDENTIAL_SECRET_ID,
+            previous.as_deref(),
+        )
+        .await
+        .err();
+        let binding_rollback_error = state
+            .storage
+            .ensure_managed_r2_account(crate::sync::engine::SYNC_GATEWAY_URL)
+            .await
+            .err();
+        return Err(AppError::Other(format!(
+            "managed R2 account refresh failed: {storage_error}{}{}",
+            credential_rollback_error
+                .map(|error| format!("; credential rollback failed: {error}"))
+                .unwrap_or_default(),
+            binding_rollback_error
+                .map(|error| format!("; binding rollback failed: {error}"))
+                .unwrap_or_default()
+        )));
+    }
     state.sync.status().await
 }
 

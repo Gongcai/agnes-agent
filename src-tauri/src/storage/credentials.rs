@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use zeroize::Zeroizing;
 
-use crate::secrets::SecretStore;
+use crate::secrets::{SecretStore, SYNC_CREDENTIAL_SECRET_ID};
 
 use super::domain::{validate_account_id, ProviderError, ProviderErrorCategory, ProviderResult};
 use super::ports::{ProviderCredentialAccess, ProviderCredentialStore};
@@ -19,6 +19,10 @@ pub struct ScopedProviderCredentialAccess {
     store: Arc<dyn ProviderCredentialStore>,
 }
 
+pub struct SyncProviderCredentialAccess {
+    secrets: Arc<dyn SecretStore>,
+}
+
 impl ScopedProviderCredentialAccess {
     pub fn new(
         account_id: impl Into<String>,
@@ -31,6 +35,12 @@ impl ScopedProviderCredentialAccess {
 }
 
 impl KeyringProviderCredentialStore {
+    pub fn new(secrets: Arc<dyn SecretStore>) -> Self {
+        Self { secrets }
+    }
+}
+
+impl SyncProviderCredentialAccess {
     pub fn new(secrets: Arc<dyn SecretStore>) -> Self {
         Self { secrets }
     }
@@ -83,10 +93,36 @@ impl ProviderCredentialAccess for ScopedProviderCredentialAccess {
     }
 }
 
+#[async_trait]
+impl ProviderCredentialAccess for SyncProviderCredentialAccess {
+    async fn load(&self) -> ProviderResult<Option<Zeroizing<String>>> {
+        self.secrets
+            .get(SYNC_CREDENTIAL_SECRET_ID)
+            .await
+            .map(|value| value.map(Zeroizing::new))
+            .map_err(secret_error)
+    }
+
+    async fn store(&self, _credential: Zeroizing<String>) -> ProviderResult<()> {
+        Err(read_only_error())
+    }
+
+    async fn delete(&self) -> ProviderResult<()> {
+        Err(read_only_error())
+    }
+}
+
 fn secret_error(error: crate::error::AppError) -> ProviderError {
     ProviderError::new(
         ProviderErrorCategory::Authentication,
         format!("Unable to access storage credentials: {error}"),
+    )
+}
+
+fn read_only_error() -> ProviderError {
+    ProviderError::new(
+        ProviderErrorCategory::Permission,
+        "Sync credentials are read-only from storage providers",
     )
 }
 
@@ -131,6 +167,34 @@ mod tests {
         assert_eq!(
             account_two.load().await.unwrap().unwrap().as_str(),
             "second"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_adapter_reuses_the_existing_secret_without_allowing_mutation() {
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .set(SYNC_CREDENTIAL_SECRET_ID, "sync-secret")
+            .await
+            .unwrap();
+        let access = SyncProviderCredentialAccess::new(secrets.clone());
+
+        assert_eq!(
+            access.load().await.unwrap().unwrap().as_str(),
+            "sync-secret"
+        );
+        assert!(access
+            .store(Zeroizing::new("replacement".into()))
+            .await
+            .is_err());
+        assert!(access.delete().await.is_err());
+        assert_eq!(
+            secrets
+                .get(SYNC_CREDENTIAL_SECRET_ID)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("sync-secret")
         );
     }
 }

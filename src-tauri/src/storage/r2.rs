@@ -3,12 +3,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, ETAG, RANGE, RETRY_AFTER};
+use reqwest::header::{CONTENT_TYPE, ETAG, RANGE, RETRY_AFTER};
 use reqwest::{Method, Response, StatusCode, Url};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::json;
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
+
+use crate::sync::auth::SyncCredential;
 
 use super::domain::{
     BeginObjectUploadRequest, DownloadObjectRequest, ObjectPublishMetadata, ObjectUploadSession,
@@ -20,7 +22,9 @@ use super::ports::{
     ObjectStorageProvider, ProviderCredentialAccess, ProviderFactory, ProviderSession,
 };
 
-const PROVIDER_ID: &str = "r2";
+pub const R2_PROVIDER_ID: &str = "r2";
+pub const MANAGED_R2_ACCOUNT_ID: &str = "r2-managed";
+pub const SYNC_CREDENTIAL_SOURCE: &str = "sync";
 const USER_AGENT: &str = "Agnes-Agent/0.1 R2WorkerProvider";
 const ARTIFACT_SUFFIX: &str = ".agnes-artifact";
 const MIN_MULTIPART_PART_BYTES: u64 = 5 * 1024 * 1024;
@@ -40,11 +44,25 @@ impl R2Factory {
     }
 }
 
+pub fn managed_r2_account(base_url: &str) -> ProviderResult<StorageProviderAccount> {
+    let base_url = parse_base_url(base_url)?;
+    Ok(StorageProviderAccount {
+        id: MANAGED_R2_ACCOUNT_ID.into(),
+        provider_id: R2_PROVIDER_ID.into(),
+        display_name: "Agnes Cloud Storage".into(),
+        account_subject: None,
+        config: json!({
+            "base_url": base_url.as_str(),
+            "credential_source": SYNC_CREDENTIAL_SOURCE,
+        }),
+    })
+}
+
 #[async_trait]
 impl ProviderFactory for R2Factory {
     fn descriptor(&self) -> ProviderDescriptor {
         ProviderDescriptor {
-            id: PROVIDER_ID.into(),
+            id: R2_PROVIDER_ID.into(),
             display_name: "Cloudflare R2".into(),
             auth_kind: ProviderAuthKind::Managed,
             stability: ProviderStability::Official,
@@ -69,7 +87,7 @@ impl ProviderFactory for R2Factory {
         account: &StorageProviderAccount,
         credentials: Arc<dyn ProviderCredentialAccess>,
     ) -> ProviderResult<Arc<dyn ProviderSession>> {
-        if account.provider_id != PROVIDER_ID {
+        if account.provider_id != R2_PROVIDER_ID {
             return Err(invalid_request("R2 received another provider account"));
         }
         let base_url = account
@@ -78,31 +96,53 @@ impl ProviderFactory for R2Factory {
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| invalid_request("R2 Worker base_url is required"))?;
         let base_url = parse_base_url(base_url)?;
-        let token = credentials.load().await?.ok_or_else(|| {
+        let credential = credentials.load().await?.ok_or_else(|| {
             ProviderError::new(
                 ProviderErrorCategory::Authentication,
-                "R2 Worker bearer credential is missing on this device",
+                "R2 Worker credential is missing on this device",
             )
         })?;
-        if token.is_empty() || token.len() > 512 {
-            return Err(ProviderError::new(
-                ProviderErrorCategory::Authentication,
-                "R2 Worker bearer credential is invalid",
-            ));
-        }
+        let auth = R2Auth::parse(credential)?;
         Ok(Arc::new(R2Session {
             client: self.client.clone(),
             base_url,
-            bearer: token,
+            auth,
             uploads: Mutex::new(HashMap::new()),
         }))
+    }
+}
+
+enum R2Auth {
+    Sync(SyncCredential),
+    Bearer(Zeroizing<String>),
+}
+
+impl R2Auth {
+    fn parse(secret: Zeroizing<String>) -> ProviderResult<Self> {
+        if secret.trim_start().starts_with('{') {
+            return SyncCredential::parse(secret.as_str())
+                .map(Self::Sync)
+                .map_err(|_| authentication_error("R2 Worker credential is invalid"));
+        }
+        let bearer = Zeroizing::new(secret.trim().to_string());
+        if bearer.is_empty() || bearer.len() > 512 {
+            return Err(authentication_error("R2 Worker credential is invalid"));
+        }
+        Ok(Self::Bearer(bearer))
+    }
+
+    fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self {
+            Self::Sync(credential) => credential.apply(request),
+            Self::Bearer(token) => request.bearer_auth(token.as_str()),
+        }
     }
 }
 
 struct R2Session {
     client: reqwest::Client,
     base_url: Url,
-    bearer: Zeroizing<String>,
+    auth: R2Auth,
     uploads: Mutex<HashMap<String, UploadState>>,
 }
 
@@ -363,8 +403,7 @@ impl R2Session {
         range: Option<&str>,
     ) -> ProviderResult<Response> {
         let url = self.url(path)?;
-        let mut request = self.client.request(method, url);
-        request = request.header(AUTHORIZATION, format!("Bearer {}", self.bearer.as_str()));
+        let mut request = self.auth.apply(self.client.request(method, url));
         if let Some(range) = range {
             request = request.header(RANGE, range);
         }
@@ -412,9 +451,8 @@ impl R2Session {
     ) -> ProviderResult<()> {
         let url = self.url(path)?;
         let response = self
-            .client
-            .request(method, url)
-            .header(AUTHORIZATION, format!("Bearer {}", self.bearer.as_str()))
+            .auth
+            .apply(self.client.request(method, url))
             .header(CONTENT_TYPE, "application/octet-stream")
             .header("Content-Length", bytes.len())
             .header("X-Agnes-Part-Sha256", checksum)
@@ -512,6 +550,10 @@ fn invalid_response(message: &str) -> ProviderError {
     ProviderError::new(ProviderErrorCategory::InvalidResponse, message)
 }
 
+fn authentication_error(message: &str) -> ProviderError {
+    ProviderError::new(ProviderErrorCategory::Authentication, message)
+}
+
 fn network_error(error: reqwest::Error) -> ProviderError {
     ProviderError::new(
         ProviderErrorCategory::Network,
@@ -556,5 +598,66 @@ mod tests {
         assert_eq!(descriptor.id, "r2");
         assert!(descriptor.capabilities.worker_proxy);
         assert!(descriptor.capabilities.resumable_upload);
+
+        let account = managed_r2_account("https://sync.example.test").unwrap();
+        assert_eq!(account.id, MANAGED_R2_ACCOUNT_ID);
+        assert_eq!(account.config["base_url"], "https://sync.example.test/");
+        assert_eq!(account.config["credential_source"], SYNC_CREDENTIAL_SOURCE);
+    }
+
+    #[test]
+    fn auth_supports_sync_credentials_and_legacy_bearer_tokens() {
+        let client = reqwest::Client::new();
+        let bearer = R2Auth::parse(Zeroizing::new("legacy-token".into())).unwrap();
+        let bearer_request = bearer
+            .apply(client.get("https://sync.example.test/v1/objects"))
+            .build()
+            .unwrap();
+        assert_eq!(
+            bearer_request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .unwrap(),
+            "Bearer legacy-token"
+        );
+
+        let sync_bearer = R2Auth::parse(Zeroizing::new(
+            r#"{"kind":"bearer","token":"sync-token"}"#.into(),
+        ))
+        .unwrap();
+        let sync_bearer_request = sync_bearer
+            .apply(client.get("https://sync.example.test/v1/objects"))
+            .build()
+            .unwrap();
+        assert_eq!(
+            sync_bearer_request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .unwrap(),
+            "Bearer sync-token"
+        );
+
+        let access = R2Auth::parse(Zeroizing::new(
+            r#"{"kind":"cloudflare_access","client_id":"client-id","client_secret":"client-secret"}"#
+                .into(),
+        ))
+        .unwrap();
+        let access_request = access
+            .apply(client.get("https://sync.example.test/v1/objects"))
+            .build()
+            .unwrap();
+        assert_eq!(
+            access_request.headers().get("CF-Access-Client-Id").unwrap(),
+            "client-id"
+        );
+        assert_eq!(
+            access_request
+                .headers()
+                .get("CF-Access-Client-Secret")
+                .unwrap(),
+            "client-secret"
+        );
+        assert!(R2Auth::parse(Zeroizing::new("  ".into())).is_err());
+        assert!(R2Auth::parse(Zeroizing::new("{not-json}".into())).is_err());
     }
 }

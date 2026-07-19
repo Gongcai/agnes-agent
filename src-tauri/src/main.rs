@@ -250,11 +250,19 @@ fn main() {
             let storage_credentials = Arc::new(storage::KeyringProviderCredentialStore::new(
                 secrets.clone(),
             ));
+            let sync_credentials =
+                Arc::new(storage::SyncProviderCredentialAccess::new(secrets.clone()));
             let storage = Arc::new(storage::StorageService::new(
                 db.clone(),
                 storage_registry,
                 storage_credentials,
+                sync_credentials,
             ));
+            if let Err(error) = tauri::async_runtime::block_on(
+                storage.ensure_managed_r2_account(sync::engine::SYNC_GATEWAY_URL),
+            ) {
+                eprintln!("[storage] managed R2 account bootstrap failed: {error}");
+            }
 
             // 2) 启动 AgentManager：Rust 起 WS Server + 拉起 Python sidecar。
             //    非致命：失败仅日志，不阻断 UI 启动。

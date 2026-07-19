@@ -219,13 +219,21 @@ export function DriveWorkspace() {
         invoke<StorageAccount[]>("list_storage_accounts"),
         invoke<TransferJob[]>("list_storage_transfers", { accountId: null, limit: 100 }),
       ]);
+      const fileProviderIds = new Set(
+        nextCatalog
+          .filter((provider) => provider.capabilities.browse_files)
+          .map((provider) => provider.id),
+      );
+      const fileAccounts = nextAccounts.filter((account) =>
+        fileProviderIds.has(account.provider_id),
+      );
       setCatalog(nextCatalog);
-      setAccounts(nextAccounts);
+      setAccounts(fileAccounts);
       setTransfers(nextTransfers);
       setSelectedAccountId((current) =>
-        current && nextAccounts.some((account) => account.id === current)
+        current && fileAccounts.some((account) => account.id === current)
           ? current
-          : nextAccounts[0]?.id ?? null,
+          : fileAccounts[0]?.id ?? null,
       );
     } catch (reason) {
       setError(String(reason));

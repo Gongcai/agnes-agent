@@ -24,11 +24,13 @@ use super::domain::{
     UploadFileChunkRequest,
 };
 use super::ports::{
-    ProviderAuthorizationChallenge, ProviderAuthorizationStep, ProviderCredentialStore,
-    ProviderSession,
+    ProviderAuthorizationChallenge, ProviderAuthorizationStep, ProviderCredentialAccess,
+    ProviderCredentialStore, ProviderSession,
 };
 use super::registry::StorageProviderRegistry;
-use super::ScopedProviderCredentialAccess;
+use super::{
+    ScopedProviderCredentialAccess, MANAGED_R2_ACCOUNT_ID, R2_PROVIDER_ID, SYNC_CREDENTIAL_SOURCE,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StorageAccountView {
@@ -79,6 +81,7 @@ pub struct StorageService {
     db: DbActorHandle,
     registry: Arc<StorageProviderRegistry>,
     credentials: Arc<dyn ProviderCredentialStore>,
+    sync_credentials: Arc<dyn ProviderCredentialAccess>,
 }
 
 impl StorageService {
@@ -86,16 +89,48 @@ impl StorageService {
         db: DbActorHandle,
         registry: Arc<StorageProviderRegistry>,
         credentials: Arc<dyn ProviderCredentialStore>,
+        sync_credentials: Arc<dyn ProviderCredentialAccess>,
     ) -> Self {
         Self {
             db,
             registry,
             credentials,
+            sync_credentials,
         }
     }
 
     pub fn catalog(&self) -> AppResult<Vec<ProviderDescriptor>> {
         self.registry.descriptors().map_err(provider_error)
+    }
+
+    pub async fn ensure_managed_r2_account(&self, base_url: &str) -> AppResult<()> {
+        let account = super::r2::managed_r2_account(base_url).map_err(provider_error)?;
+        let descriptor = self
+            .registry
+            .descriptor(R2_PROVIDER_ID)
+            .map_err(provider_error)?;
+        let credential_configured = self
+            .sync_credentials
+            .load()
+            .await
+            .map_err(provider_error)?
+            .is_some();
+        self.db
+            .upsert_storage_account(UpsertStorageAccount {
+                id: account.id,
+                provider_id: account.provider_id,
+                display_name: account.display_name,
+                account_subject: account.account_subject,
+                config_json: serde_json::to_string(&account.config)?,
+                auth_state: if credential_configured {
+                    "connected".into()
+                } else {
+                    "auth_required".into()
+                },
+                enabled: true,
+                capabilities_json: serde_json::to_string(&descriptor.capabilities)?,
+            })
+            .await
     }
 
     /// Uploads an immutable encrypted artifact, verifies the remote replica,
@@ -246,11 +281,12 @@ impl StorageService {
     pub async fn list_accounts(&self) -> AppResult<Vec<StorageAccountView>> {
         let rows = self.db.list_storage_accounts().await?;
         let mut accounts = Vec::with_capacity(rows.len());
-        for account in rows {
+        for mut account in rows {
+            self.refresh_shared_credential_state(&mut account).await?;
             let provider_installed = self.registry.factory(&account.provider_id).is_ok();
             let has_credential = self
-                .credentials
-                .load(&account.id)
+                .credential_access_for(&account)?
+                .load()
                 .await
                 .map_err(provider_error)?
                 .is_some();
@@ -1005,6 +1041,11 @@ impl StorageService {
     }
 
     pub async fn remove_account(&self, account_id: String) -> AppResult<()> {
+        if account_id == MANAGED_R2_ACCOUNT_ID {
+            return Err(AppError::Other(
+                "Managed cloud storage cannot be removed".into(),
+            ));
+        }
         let previous_credential = self
             .credentials
             .load(&account_id)
@@ -1025,11 +1066,12 @@ impl StorageService {
         &self,
         account_id: &str,
     ) -> AppResult<(StorageAccountRow, Arc<dyn ProviderSession>)> {
-        let row = self
+        let mut row = self
             .db
             .get_storage_account(account_id.to_string())
             .await?
             .ok_or_else(|| AppError::Other("Storage provider account was not found".into()))?;
+        self.refresh_shared_credential_state(&mut row).await?;
         if !row.enabled {
             return Err(AppError::Other(
                 "Storage provider account is disabled".into(),
@@ -1053,10 +1095,7 @@ impl StorageService {
             .registry
             .factory(&row.provider_id)
             .map_err(provider_error)?;
-        let credential_access = Arc::new(
-            ScopedProviderCredentialAccess::new(row.id.clone(), self.credentials.clone())
-                .map_err(provider_error)?,
-        );
+        let credential_access = self.credential_access_for(&row)?;
         let session = match factory.connect(&account, credential_access).await {
             Ok(session) => session,
             Err(error) => {
@@ -1065,6 +1104,66 @@ impl StorageService {
             }
         };
         Ok((row, session))
+    }
+
+    async fn refresh_shared_credential_state(&self, row: &mut StorageAccountRow) -> AppResult<()> {
+        if !self.uses_sync_credential(row)? {
+            return Ok(());
+        }
+        let credential_configured = self
+            .sync_credentials
+            .load()
+            .await
+            .map_err(provider_error)?
+            .is_some();
+        let auth_state = if !credential_configured {
+            "auth_required"
+        } else if row.auth_state == "auth_required" && row.last_error_category.is_none() {
+            "connected"
+        } else {
+            return Ok(());
+        };
+        if row.auth_state == auth_state {
+            return Ok(());
+        }
+        self.db
+            .update_storage_binding(
+                row.id.clone(),
+                auth_state.into(),
+                row.enabled,
+                row.capabilities_json.clone(),
+                row.quota_used_bytes,
+                row.quota_total_bytes,
+                None,
+            )
+            .await?;
+        row.auth_state = auth_state.into();
+        row.last_error_category = None;
+        row.last_error_message = None;
+        Ok(())
+    }
+
+    fn credential_access_for(
+        &self,
+        row: &StorageAccountRow,
+    ) -> AppResult<Arc<dyn ProviderCredentialAccess>> {
+        if self.uses_sync_credential(row)? {
+            return Ok(self.sync_credentials.clone());
+        }
+        Ok(Arc::new(
+            ScopedProviderCredentialAccess::new(row.id.clone(), self.credentials.clone())
+                .map_err(provider_error)?,
+        ))
+    }
+
+    fn uses_sync_credential(&self, row: &StorageAccountRow) -> AppResult<bool> {
+        let config: serde_json::Value = serde_json::from_str(&row.config_json)?;
+        Ok(row.id == MANAGED_R2_ACCOUNT_ID
+            && row.provider_id == R2_PROVIDER_ID
+            && config
+                .get("credential_source")
+                .and_then(serde_json::Value::as_str)
+                == Some(SYNC_CREDENTIAL_SOURCE))
     }
 
     async fn update_provider_status(&self, row: &StorageAccountRow, error: Option<&ProviderError>) {
@@ -1669,7 +1768,7 @@ mod tests {
     use async_trait::async_trait;
     use futures_util::stream;
 
-    use crate::secrets::InMemorySecretStore;
+    use crate::secrets::{InMemorySecretStore, SecretStore, SYNC_CREDENTIAL_SECRET_ID};
     use crate::storage::domain::{
         BeginFileUploadRequest, DownloadFileRequest, FileUploadSession, ProviderAuthKind,
         ProviderByteStream, ProviderErrorCategory, ProviderResult, ProviderStability,
@@ -1939,6 +2038,96 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn managed_r2_account_reuses_sync_credentials_without_copying_them() {
+        let path = std::env::temp_dir().join(format!(
+            "agnes-managed-r2-service-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = crate::db::spawn_db_actor(path.clone());
+        let registry = Arc::new(StorageProviderRegistry::new());
+        registry
+            .register(Arc::new(super::super::R2Factory::new().unwrap()))
+            .unwrap();
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let credential_store = Arc::new(super::super::KeyringProviderCredentialStore::new(
+            secrets.clone(),
+        ));
+        let sync_credentials = Arc::new(super::super::SyncProviderCredentialAccess::new(
+            secrets.clone(),
+        ));
+        let service = StorageService::new(db, registry, credential_store.clone(), sync_credentials);
+
+        service
+            .ensure_managed_r2_account("https://sync.example.test")
+            .await
+            .unwrap();
+        let accounts = service.list_accounts().await.unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].account.id, MANAGED_R2_ACCOUNT_ID);
+        assert_eq!(accounts[0].account.auth_state, "auth_required");
+        assert!(!accounts[0].has_credential);
+
+        secrets
+            .set(
+                SYNC_CREDENTIAL_SECRET_ID,
+                r#"{"kind":"bearer","token":"sync-token"}"#,
+            )
+            .await
+            .unwrap();
+        let accounts = service.list_accounts().await.unwrap();
+        assert_eq!(accounts[0].account.auth_state, "connected");
+        assert!(accounts[0].has_credential);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&accounts[0].account.config_json).unwrap()
+                ["credential_source"],
+            SYNC_CREDENTIAL_SOURCE
+        );
+        assert!(credential_store
+            .load(MANAGED_R2_ACCOUNT_ID)
+            .await
+            .unwrap()
+            .is_none());
+
+        let connected_row = accounts[0].account.clone();
+        service
+            .update_provider_status(
+                &connected_row,
+                Some(&ProviderError::new(
+                    ProviderErrorCategory::Authentication,
+                    "credential rejected",
+                )),
+            )
+            .await;
+        let accounts = service.list_accounts().await.unwrap();
+        assert_eq!(accounts[0].account.auth_state, "auth_required");
+        assert_eq!(
+            accounts[0].account.last_error_category.as_deref(),
+            Some("authentication")
+        );
+
+        service
+            .ensure_managed_r2_account("https://sync.example.test")
+            .await
+            .unwrap();
+        let accounts = service.list_accounts().await.unwrap();
+        assert_eq!(accounts[0].account.auth_state, "connected");
+        assert!(accounts[0].account.last_error_category.is_none());
+        assert!(service
+            .remove_account(MANAGED_R2_ACCOUNT_ID.into())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Managed"));
+
+        secrets.delete(SYNC_CREDENTIAL_SECRET_ID).await.unwrap();
+        let accounts = service.list_accounts().await.unwrap();
+        assert_eq!(accounts[0].account.auth_state, "auth_required");
+        assert!(!accounts[0].has_credential);
+
+        let _ = std::fs::remove_file(path);
+    }
+
     struct FakeFactory;
 
     #[async_trait]
@@ -1995,10 +2184,14 @@ mod tests {
         let db = crate::db::spawn_db_actor(path.clone());
         let registry = Arc::new(StorageProviderRegistry::new());
         registry.register(Arc::new(FakeFactory)).unwrap();
+        let secret_store = Arc::new(InMemorySecretStore::default());
         let credential_store = Arc::new(super::super::KeyringProviderCredentialStore::new(
-            Arc::new(InMemorySecretStore::default()),
+            secret_store.clone(),
         ));
-        let service = StorageService::new(db, registry, credential_store);
+        let sync_credentials = Arc::new(super::super::SyncProviderCredentialAccess::new(
+            secret_store,
+        ));
+        let service = StorageService::new(db, registry, credential_store, sync_credentials);
         let account_id = service
             .authorize_account(
                 "future_drive".into(),
@@ -2205,10 +2398,14 @@ mod tests {
                 .unwrap();
             sessions.insert(provider_id, session);
         }
-        let credentials = Arc::new(super::super::KeyringProviderCredentialStore::new(Arc::new(
-            InMemorySecretStore::default(),
-        )));
-        let service = StorageService::new(db, registry, credentials);
+        let secret_store = Arc::new(InMemorySecretStore::default());
+        let credentials = Arc::new(super::super::KeyringProviderCredentialStore::new(
+            secret_store.clone(),
+        ));
+        let sync_credentials = Arc::new(super::super::SyncProviderCredentialAccess::new(
+            secret_store,
+        ));
+        let service = StorageService::new(db, registry, credentials, sync_credentials);
         for (provider_id, _) in scenarios {
             service
                 .authorize_account(

@@ -130,7 +130,8 @@ pub fn upsert_account(conn: &mut Connection, input: &UpsertStorageAccount) -> Ap
          VALUES (?1,?2,?3,?4,?5,?5) \
          ON CONFLICT(account_id) DO UPDATE SET \
            auth_state=excluded.auth_state,enabled=excluded.enabled,\
-           capabilities_json=excluded.capabilities_json,updated_at=excluded.updated_at",
+           capabilities_json=excluded.capabilities_json,last_error_category=NULL,\
+           last_error_message=NULL,updated_at=excluded.updated_at",
         params![
             input.id,
             input.auth_state,
@@ -528,6 +529,13 @@ mod tests {
         let row = get_account(&connection, "account-1").unwrap().unwrap();
         assert_eq!(row.quota_used_bytes, Some(25));
         assert_eq!(row.last_error_category.as_deref(), Some("authentication"));
+
+        upsert_account(&mut connection, &account()).unwrap();
+        let row = get_account(&connection, "account-1").unwrap().unwrap();
+        assert_eq!(row.auth_state, "connected");
+        assert_eq!(row.quota_used_bytes, Some(25));
+        assert!(row.last_error_category.is_none());
+        assert!(row.last_error_message.is_none());
 
         delete_account(&mut connection, "account-1").unwrap();
         assert!(get_account(&connection, "account-1").unwrap().is_none());
