@@ -1020,6 +1020,14 @@ pre,
   accent-color: var(--claude-clay);
 }
 
+.agnes-toggle-thumb--on {
+  transform: translateX(0);
+}
+
+.agnes-toggle-thumb--off {
+  transform: translateX(16px);
+}
+
 .agnes-reading-workspace > section,
 .agnes-reading-workspace > div > section {
   background: var(--claude-surface) !important;
