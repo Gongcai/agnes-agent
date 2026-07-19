@@ -17,6 +17,7 @@ package = false
 
 [dependency-groups]
 dev = [
+    "pyinstaller>=6.0,<7.0",
     "pytest>=9.1.1",
 ]
 

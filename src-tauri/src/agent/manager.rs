@@ -1,7 +1,10 @@
 use std::net::TcpListener;
+#[cfg(debug_assertions)]
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(not(debug_assertions))]
+use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::agent::protocol::Envelope;
@@ -14,7 +17,128 @@ use crate::secrets::SharedSecretStore;
 struct AgentRuntime {
     _port: u16,
     _token: String,
-    child: std::process::Child,
+    child: Option<AgentChild>,
+}
+
+enum AgentChild {
+    #[cfg(debug_assertions)]
+    Dev(std::process::Child),
+    #[cfg(not(debug_assertions))]
+    Bundled(tauri_plugin_shell::process::CommandChild),
+}
+
+impl AgentChild {
+    fn terminate(self) {
+        match self {
+            #[cfg(debug_assertions)]
+            Self::Dev(mut child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            #[cfg(not(debug_assertions))]
+            Self::Bundled(child) => {
+                let _ = child.kill();
+            }
+        }
+    }
+}
+
+impl Drop for AgentRuntime {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.take() {
+            child.terminate();
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+struct DevUvLauncher;
+#[cfg(not(debug_assertions))]
+struct BundledBinLauncher;
+
+enum AgentLauncher {
+    #[cfg(debug_assertions)]
+    DevUv(DevUvLauncher),
+    #[cfg(not(debug_assertions))]
+    BundledBin(BundledBinLauncher),
+}
+
+impl AgentLauncher {
+    fn current() -> Self {
+        #[cfg(debug_assertions)]
+        {
+            Self::DevUv(DevUvLauncher)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            Self::BundledBin(BundledBinLauncher)
+        }
+    }
+
+    fn spawn(
+        &self,
+        app_handle: &tauri::AppHandle,
+        port: u16,
+        token: &str,
+    ) -> AppResult<AgentChild> {
+        let ws_url = format!("ws://127.0.0.1:{port}/agent");
+        #[cfg(debug_assertions)]
+        let _ = app_handle;
+        match self {
+            #[cfg(debug_assertions)]
+            Self::DevUv(_) => {
+                let child = Command::new("uv")
+                    .args(["run", "python", "-m", "app.main"])
+                    .current_dir(resolve_agent_dir())
+                    .env("AGENT_WS_URL", ws_url)
+                    .env("AGENT_PROTOCOL_TOKEN", token)
+                    .spawn()
+                    .map_err(|e| {
+                        AppError::Agent(format!(
+                            "拉起 Python sidecar 失败：{e}（确认 uv 在 PATH 且 agent/ 存在）"
+                        ))
+                    })?;
+                Ok(AgentChild::Dev(child))
+            }
+            #[cfg(not(debug_assertions))]
+            Self::BundledBin(_) => {
+                let command = app_handle
+                    .shell()
+                    .sidecar("agentd")
+                    .map_err(|e| AppError::Agent(format!("解析 bundled sidecar 失败：{e}")))?
+                    .env("AGENT_WS_URL", ws_url)
+                    .env("AGENT_PROTOCOL_TOKEN", token);
+                let (mut events, child) = command
+                    .spawn()
+                    .map_err(|e| AppError::Agent(format!("启动 bundled sidecar 失败：{e}")))?;
+
+                tauri::async_runtime::spawn(async move {
+                    while let Some(event) = events.recv().await {
+                        match event {
+                            CommandEvent::Stdout(line) => {
+                                eprintln!("[sidecar] {}", String::from_utf8_lossy(&line));
+                            }
+                            CommandEvent::Stderr(line) => {
+                                eprintln!("[sidecar][stderr] {}", String::from_utf8_lossy(&line));
+                            }
+                            CommandEvent::Error(error) => {
+                                eprintln!("[sidecar][process] {error}");
+                            }
+                            CommandEvent::Terminated(payload) => {
+                                eprintln!(
+                                    "[sidecar] exited (code={:?}, signal={:?})",
+                                    payload.code, payload.signal
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+
+                Ok(AgentChild::Bundled(child))
+            }
+        }
+    }
 }
 
 /// 管理 Python sidecar 生命周期并协调 WS 通信与工具审批。
@@ -77,17 +201,11 @@ impl AgentManager {
             .map(|a| a.port())
             .map_err(|e| AppError::Agent(format!("取端口失败：{e}")))?;
 
-        let child = Command::new("uv")
-            .args(["run", "python", "-m", "app.main"])
-            .current_dir(resolve_agent_dir())
-            .env("AGENT_WS_URL", format!("ws://127.0.0.1:{port}/agent"))
-            .env("AGENT_PROTOCOL_TOKEN", &token)
-            .spawn()
-            .map_err(|e| {
+        let child = AgentLauncher::current()
+            .spawn(&app_handle, port, &token)
+            .map_err(|error| {
                 self.running.store(false, Ordering::SeqCst);
-                AppError::Agent(format!(
-                    "拉起 Python sidecar 失败：{e}（确认 uv 在 PATH 且 agent/ 存在）"
-                ))
+                error
             })?;
 
         // 绑定 WS Server 运行到 Tauri 异步运行时
@@ -112,7 +230,7 @@ impl AgentManager {
         *self.inner.lock().unwrap() = Some(AgentRuntime {
             _port: port,
             _token: token,
-            child,
+            child: Some(child),
         });
         Ok(())
     }
@@ -261,10 +379,52 @@ fn generate_token() -> String {
         .collect()
 }
 
+#[cfg(debug_assertions)]
 fn resolve_agent_dir() -> std::path::PathBuf {
     if std::path::Path::new("agent").exists() {
         std::path::PathBuf::from("agent")
     } else {
         std::path::PathBuf::from("../agent")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentLauncher;
+
+    #[cfg(all(debug_assertions, unix))]
+    use super::AgentChild;
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_build_uses_uv_launcher() {
+        assert!(matches!(AgentLauncher::current(), AgentLauncher::DevUv(_)));
+    }
+
+    #[cfg(all(debug_assertions, unix))]
+    #[test]
+    fn terminating_a_dev_child_reaps_the_process() {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep process");
+        let pid = child.id();
+        AgentChild::Dev(child).terminate();
+
+        let status = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("inspect child process");
+        assert!(!status.success());
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_build_uses_bundled_launcher() {
+        assert!(matches!(
+            AgentLauncher::current(),
+            AgentLauncher::BundledBin(_)
+        ));
     }
 }

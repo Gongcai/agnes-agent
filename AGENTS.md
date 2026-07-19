@@ -19,25 +19,24 @@ This file provides guidance to Codex when working with code in this repository.
 
 - 本机 npm 未安装在用户目录、调用需 sudo；统一改用 pnpm 管理前端依赖（如 `pnpm add <pkg>` / `pnpm install`），已生成的 `pnpm-lock.yaml` 一并提交。
 
-# 常用命令（项目脚手架就位后）
-
-> 项目当前为空仓库，以下为各组件的预期命令，脚手架建立后据此核对。
+# 常用命令
 
 Rust / Tauri 桌面端：
 ```bash
-npm run tauri dev      # 开发模式
-npm run tauri build    # 打包
+pnpm tauri dev         # 开发模式，sidecar 通过 uv 启动
+pnpm tauri build       # 发布打包，自动冻结并内置 agentd sidecar
+pnpm build:sidecar     # 仅构建并验证发布态 sidecar
 cargo build            # 仅 Rust core
 cargo test             # Rust 单元测试
 ```
 
 Python Agent sidecar：
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app:app --reload        # 或作为 Tauri sidecar 启动
-pytest                          # 运行测试
-pytest tests/test_x.py::test_y  # 单测单个用例
+cd agent
+uv sync
+uv run python -m app.main              # 通常由 Tauri 自动启动
+uv run pytest                           # 运行测试
+uv run pytest tests/test_reasoning.py   # 运行指定测试文件
 ```
 
 Cloudflare Worker / D1：
@@ -49,6 +48,6 @@ wrangler d1 execute <db> --local --file=schema.sql   # 初始化 D1
 
 安卓（Tauri）：
 ```bash
-npm run tauri android dev       # 连设备/模拟器调试
-npm run tauri android build     # 打包 APK/AAB
+pnpm tauri android dev          # 连设备/模拟器调试
+pnpm tauri android build        # 打包 APK/AAB
 ```

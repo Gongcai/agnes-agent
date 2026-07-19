@@ -176,7 +176,7 @@ System Prompt
 
 | 版本 | 范围 | 当前状态（2026-07-19） |
 |---|---|---|
-| V0.1 | Tauri 2 + React 聊天 UI + SQLite + Python LangGraph sidecar + LiteLLM | 主链路已完成；发布态 sidecar 打包待收口 |
+| V0.1 | Tauri 2 + React 聊天 UI + SQLite + Python LangGraph sidecar + LiteLLM | 已完成：开发态通过 `uv` 启动，发布态使用 PyInstaller 冻结为按 target triple 命名的 `agentd` 并由 Tauri `externalBin` 内置；发布构建会自动执行独立 WebSocket 协议握手测试，安装后不依赖 Python 或 `uv` |
 | V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 已完成：摘要、抽取、结构化字段、AI 创建/更新、记忆决策提示词、`MEMORY.md` 专用工具、动态维度 sqlite-vec + RRF 混合检索；已使用 Qwen3-Embedding-8B 完成真实服务端到端验证，手动向量化、覆盖率统计与检索链路均可用 |
 | V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | Phase 0-4 已完成：密文传输、SPAKE2 新设备配对、两阶段密钥轮换、Recovery Bundle 多版本恢复和线上日志审计均已完成；Worker `7316feb3-48b1-4635-8363-a83e78e7dc33` 已部署，production D1 五张相关表均为空。本轮未上传业务数据 |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 暂缓：先稳定桌面客户端与本地 Agent 能力，再启动 Android 客户端 |

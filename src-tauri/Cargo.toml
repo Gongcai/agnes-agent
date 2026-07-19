@@ -25,6 +25,7 @@ reqwest = { version = "0.12", features = ["json", "stream", "gzip", "brotli", "d
 tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-shell = "2"
 async-trait = "0.1"
 chrono = "0.4"
 chrono-tz = "0.10"

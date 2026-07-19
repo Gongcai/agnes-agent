@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:sidecar": "node scripts/build-sidecar.mjs",
     "preview": "vite preview",
     "test": "vitest run src",
     "test:watch": "vitest src",

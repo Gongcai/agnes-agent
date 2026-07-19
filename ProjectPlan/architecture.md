@@ -353,17 +353,19 @@ settings(key PK, value TEXT)
 ```bash
 # 前端 + Rust + 启动 Python sidecar（dev，AgentLauncher=DevUvLauncher）
 pnpm tauri dev
-# 打包（release，AgentLauncher=BundledBinLauncher → externalBin agentd）
+# 打包（release，自动冻结并验证 agentd → Tauri externalBin）
 pnpm tauri build
+# 仅冻结并执行 sidecar 协议握手测试
+pnpm build:sidecar
 # 仅 Rust
 cargo build / cargo test          # src-tauri
 # Python sidecar（uv）
 cd agent && uv sync && uv run python -m app.main
-pytest                            # agent/tests
+uv run pytest                     # agent/tests
 # 前端单测
 pnpm test                         # vitest
 ```
-> 注：当前环境未安装 pnpm，脚手架前需 `npm i -g pnpm`（已配置用户 npm 前缀 `~/.npm-global`，无需 sudo）。
+> 注：`agentd` 由 PyInstaller 在目标平台原生构建，不能直接跨平台冻结；交叉编译 Tauri 时需通过 `AGNES_SIDECAR_BINARY` 提供与目标 triple 匹配的预构建文件。
 
 ---
 

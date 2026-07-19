@@ -9,11 +9,15 @@ src-tauri/gen
 
 # python
 agent/.venv
+agent/.sidecar-build
+agent/.sidecar-dist
+agent/*.spec
 agent/__pycache__
 **/__pycache__
 *.pyc
 
 # tauri
+src-tauri/binaries
 src-tauri/target/*
 
 # env / secrets
