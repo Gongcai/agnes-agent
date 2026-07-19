@@ -32,6 +32,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // 1) 初始化 SQLite（阻塞直到建表完成）
             let data_dir = app.path().app_data_dir().expect("无法获取 app data 目录");

@@ -1,14 +1,14 @@
 //! Shared, device-local notification service.
 //!
 //! Sources only describe an event; this module owns persistence, deduplication,
-//! scheduling and renderer delivery. Native operating-system delivery can be
-//! added later as another output adapter without changing feature modules.
+//! scheduling and renderer/native delivery.
 
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, LocalResult, NaiveDate, SecondsFormat, TimeZone, Utc};
 use chrono_tz::Tz as ChronoTz;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 
 use crate::db::repo::notifications::{NewNotification, NotificationRow};
 use crate::db::repo::planner::{EventRow, TaskRow};
@@ -45,11 +45,38 @@ impl NotificationService {
     }
 
     async fn persist(&self, notification: NewNotification) -> AppResult<Option<NotificationRow>> {
+        // The in-app inbox and the native alert are both intended for background
+        // work. The focused window already exposes live progress and tool cards.
+        if self.window_is_focused() {
+            return Ok(None);
+        }
         let created = self.db.create_notification(notification).await?;
         if let Some(ref row) = created {
             let _ = self.app_handle.emit("notification://created", row);
+            self.show_native_notification(row);
         }
         Ok(created)
+    }
+
+    fn window_is_focused(&self) -> bool {
+        self.app_handle
+            .get_webview_window("main")
+            .and_then(|window| window.is_focused().ok())
+            .unwrap_or(true)
+    }
+
+    fn show_native_notification(&self, row: &NotificationRow) {
+        let mut builder = self
+            .app_handle
+            .notification()
+            .builder()
+            .title(row.title.clone());
+        if let Some(body) = row.body.as_deref() {
+            builder = builder.body(body.to_string());
+        }
+        if let Err(error) = builder.show() {
+            eprintln!("[notifications] native notification failed: {error}");
+        }
     }
 
     pub async fn notify_agent_completed(&self, session_id: &str, run_id: &str) -> AppResult<()> {
