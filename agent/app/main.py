@@ -511,5 +511,14 @@ async def main() -> None:
         sys.exit(1)
 
 
+def run_sidecar() -> int:
+    """Run the sidecar CLI and treat an interactive interrupt as a clean exit."""
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("[sidecar] 收到中断，退出", flush=True)
+    return 0
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(run_sidecar())

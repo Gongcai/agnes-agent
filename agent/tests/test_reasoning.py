@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 import pytest
 from app import graph as graph_module
+from app import main as main_module
 from app.prompt import assemble_prompt, group_protocol_messages, translate_messages, count_tokens
 from app.graph import build_graph, get_available_tools
 from app.memory_extract import extract_memories
@@ -29,6 +30,22 @@ from app.models import (
     completion,
     embed_texts,
 )
+
+
+def test_sidecar_cli_treats_keyboard_interrupt_as_clean_exit(monkeypatch, capsys):
+    main_result = object()
+    monkeypatch.setattr(main_module, "main", lambda: main_result)
+
+    def interrupt(result):
+        assert result is main_result
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(main_module.asyncio, "run", interrupt)
+
+    assert main_module.run_sidecar() == 0
+    captured = capsys.readouterr()
+    assert captured.out == "[sidecar] 收到中断，退出\n"
+    assert captured.err == ""
 
 
 def test_completion_applies_a_bounded_request_timeout(monkeypatch):
