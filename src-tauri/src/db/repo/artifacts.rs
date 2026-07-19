@@ -198,7 +198,7 @@ pub fn upsert_device_state(conn: &Connection, input: &DeviceArtifactStateRow) ->
          ON CONFLICT(device_id,artifact_id) DO UPDATE SET \
            observed_version=MAX(device_artifact_states.observed_version,excluded.observed_version),\
            local_status=excluded.local_status,verified_hash=excluded.verified_hash,\
-           last_checked_at=excluded.last_checked_at,last_error_code=excluded.last_error_code\
+           last_checked_at=excluded.last_checked_at,last_error_code=excluded.last_error_code \
          WHERE device_artifact_states.observed_version <= excluded.observed_version",
         params![
             input.device_id,
