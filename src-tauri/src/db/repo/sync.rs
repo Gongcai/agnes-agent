@@ -60,6 +60,7 @@ pub struct SyncDbStatus {
     pub conflict_count: i64,
     pub dead_letter_count: i64,
     pub last_pull_cursor: i64,
+    pub last_object_cursor: i64,
     pub bootstrap_state: String,
     pub last_success_at: Option<i64>,
     pub last_error_code: Option<String>,
@@ -416,7 +417,7 @@ pub fn status(conn: &Connection) -> AppResult<SyncDbStatus> {
            (SELECT COUNT(*) FROM sync_outbox WHERE status = 'in_flight'), \
            (SELECT COUNT(*) FROM sync_conflicts WHERE status = 'pending'), \
            (SELECT COUNT(*) FROM sync_outbox WHERE status = 'dead_letter'), \
-           r.last_pull_cursor, r.bootstrap_state, r.last_success_at, r.last_error_code, \
+           r.last_pull_cursor, r.last_object_cursor, r.bootstrap_state, r.last_success_at, r.last_error_code, \
            r.backoff_until, r.e2ee_key_version \
          FROM sync_runtime_state r WHERE r.singleton = 1",
         [],
@@ -428,11 +429,12 @@ pub fn status(conn: &Connection) -> AppResult<SyncDbStatus> {
                 conflict_count: row.get(3)?,
                 dead_letter_count: row.get(4)?,
                 last_pull_cursor: row.get(5)?,
-                bootstrap_state: row.get(6)?,
-                last_success_at: row.get(7)?,
-                last_error_code: row.get(8)?,
-                backoff_until: row.get(9)?,
-                e2ee_key_version: row.get(10)?,
+                last_object_cursor: row.get(6)?,
+                bootstrap_state: row.get(7)?,
+                last_success_at: row.get(8)?,
+                last_error_code: row.get(9)?,
+                backoff_until: row.get(10)?,
+                e2ee_key_version: row.get(11)?,
             })
         },
     )
@@ -453,6 +455,41 @@ pub fn set_e2ee_key_version(conn: &Connection, key_version: Option<i64>) -> AppR
         return Err(AppError::Other("Sync runtime state is missing".into()));
     }
     Ok(())
+}
+
+pub fn advance_object_cursor(
+    conn: &Connection,
+    expected_cursor: i64,
+    next_cursor: i64,
+) -> AppResult<i64> {
+    if expected_cursor < 0 || next_cursor < expected_cursor {
+        return Err(AppError::Other(
+            "Object cursor must advance monotonically".into(),
+        ));
+    }
+    let changed = conn.execute(
+        "UPDATE sync_runtime_state SET last_object_cursor = ?1 \
+         WHERE singleton = 1 AND last_object_cursor = ?2",
+        params![next_cursor, expected_cursor],
+    )?;
+    if changed == 1 {
+        return Ok(next_cursor);
+    }
+    let current = conn
+        .query_row(
+            "SELECT last_object_cursor FROM sync_runtime_state WHERE singleton = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::Other("Sync runtime state is missing".into()))?;
+    if current == next_cursor {
+        Ok(current)
+    } else {
+        Err(AppError::Other(format!(
+            "Object cursor changed concurrently from {expected_cursor} to {current}"
+        )))
+    }
 }
 
 pub fn claim_pending(
@@ -3703,5 +3740,21 @@ mod tests {
             .unwrap();
         assert_eq!(pending, 0);
         assert!(list_conflicts(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn object_cursor_advances_independently_and_rejects_stale_pages() {
+        let conn = setup();
+        assert_eq!(status(&conn).unwrap().last_pull_cursor, 0);
+        assert_eq!(status(&conn).unwrap().last_object_cursor, 0);
+
+        assert_eq!(advance_object_cursor(&conn, 0, 4).unwrap(), 4);
+        assert_eq!(advance_object_cursor(&conn, 0, 4).unwrap(), 4);
+        assert!(advance_object_cursor(&conn, 0, 5).is_err());
+        assert!(advance_object_cursor(&conn, 4, 3).is_err());
+
+        let status = status(&conn).unwrap();
+        assert_eq!(status.last_object_cursor, 4);
+        assert_eq!(status.last_pull_cursor, 0);
     }
 }

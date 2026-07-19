@@ -191,6 +191,93 @@ pub struct AckResponse {
     pub server_time: i64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectChangesResponse {
+    #[serde(default)]
+    pub changes: Vec<ObjectChange>,
+    pub next_cursor: i64,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectChange {
+    pub server_seq: i64,
+    pub object_id: String,
+    pub artifact_id: Option<String>,
+    pub operation: String,
+    pub logical_version: i64,
+    pub changed_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectManifestResponse {
+    pub manifest: RemoteObjectManifest,
+    #[serde(default)]
+    pub replicas: Vec<RemoteObjectReplica>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteObjectManifest {
+    pub object_id: String,
+    pub object_kind: String,
+    pub logical_version: i64,
+    pub artifact_id: String,
+    pub ciphertext_hash: String,
+    pub size: u64,
+    pub key_version: i64,
+    pub updated_hlc: String,
+    pub deleted_at: Option<i64>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteObjectReplica {
+    pub provider_kind: String,
+    pub provider_account_id: String,
+    pub provider_revision: Option<String>,
+    pub etag: Option<String>,
+    pub ciphertext_hash: String,
+    pub size: u64,
+    pub status: String,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectLocalStatus {
+    Missing,
+    Downloading,
+    Verifying,
+    Installed,
+    Failed,
+    Incompatible,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectStateRequest {
+    pub protocol_version: u8,
+    pub device_id: String,
+    pub object_id: String,
+    pub observed_logical_version: i64,
+    pub installed_artifact_id: Option<String>,
+    pub local_status: ObjectLocalStatus,
+    pub verified_ciphertext_hash: Option<String>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectStateResponse {
+    pub status: String,
+    pub object_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SyncDevice {
@@ -311,4 +398,71 @@ pub struct ErrorResponse {
 pub struct ErrorDetail {
     pub code: String,
     pub message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn object_control_plane_contract_matches_worker_payloads() {
+        let changes: ObjectChangesResponse = serde_json::from_value(serde_json::json!({
+            "changes": [{
+                "serverSeq": 7,
+                "objectId": "knowledge:collection-1",
+                "artifactId": "artifact-1",
+                "operation": "upsert",
+                "logicalVersion": 2,
+                "changedAt": 1234
+            }],
+            "nextCursor": 7,
+            "hasMore": false
+        }))
+        .unwrap();
+        assert_eq!(changes.next_cursor, 7);
+        assert_eq!(changes.changes[0].logical_version, 2);
+
+        let response: ObjectManifestResponse = serde_json::from_value(serde_json::json!({
+            "manifest": {
+                "objectId": "knowledge:collection-1",
+                "objectKind": "knowledge_index",
+                "logicalVersion": 2,
+                "artifactId": "artifact-1",
+                "ciphertextHash": "a".repeat(64),
+                "size": 1024,
+                "keyVersion": 1,
+                "updatedHlc": "1-0000-device01",
+                "deletedAt": null,
+                "updatedAt": 1234
+            },
+            "replicas": [{
+                "providerKind": "r2",
+                "providerAccountId": "r2",
+                "providerRevision": "revision-1",
+                "etag": "etag-1",
+                "ciphertextHash": "a".repeat(64),
+                "size": 1024,
+                "status": "ready",
+                "updatedAt": 1234
+            }]
+        }))
+        .unwrap();
+        assert_eq!(response.manifest.artifact_id, "artifact-1");
+        assert_eq!(response.replicas[0].provider_kind, "r2");
+
+        let state = ObjectStateRequest {
+            protocol_version: PROTOCOL_VERSION,
+            device_id: "00000000-0000-4000-8000-000000000001".into(),
+            object_id: "knowledge:collection-1".into(),
+            observed_logical_version: 2,
+            installed_artifact_id: Some("artifact-1".into()),
+            local_status: ObjectLocalStatus::Installed,
+            verified_ciphertext_hash: Some("a".repeat(64)),
+            error_code: None,
+        };
+        let state = serde_json::to_value(state).unwrap();
+        assert_eq!(state["protocolVersion"], PROTOCOL_VERSION);
+        assert_eq!(state["localStatus"], "installed");
+        assert_eq!(state["installedArtifactId"], "artifact-1");
+    }
 }

@@ -62,6 +62,12 @@ fn ensure_sync_metadata(conn: &Connection) -> AppResult<()> {
 fn ensure_sync_runtime_state(conn: &Connection) -> AppResult<()> {
     let added_source_payload = !has_column(conn, "sync_outbox", "source_payload");
     ensure_column(conn, "sync_outbox", "source_payload", "TEXT")?;
+    ensure_column(
+        conn,
+        "sync_runtime_state",
+        "last_object_cursor",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     if added_source_payload {
         conn.execute(
             "UPDATE sync_outbox SET source_payload = payload WHERE operation = 'upsert'",
@@ -1059,6 +1065,11 @@ mod tests {
         ensure_sync_runtime_state(&conn).unwrap();
 
         assert!(has_column(&conn, "sync_outbox", "source_payload"));
+        assert!(has_column(
+            &conn,
+            "sync_runtime_state",
+            "last_object_cursor"
+        ));
         let rows: (Option<String>, Option<String>, String) = conn
             .query_row(
                 "SELECT \
@@ -1072,6 +1083,14 @@ mod tests {
         assert_eq!(rows.0.as_deref(), Some("{\"name\":\"legacy\"}"));
         assert_eq!(rows.1, None);
         assert_eq!(rows.2, "pending");
+        let object_cursor: i64 = conn
+            .query_row(
+                "SELECT last_object_cursor FROM sync_runtime_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(object_cursor, 0);
     }
 
     #[test]

@@ -595,6 +595,11 @@ pub enum DbCommand {
         key_version: Option<i64>,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    AdvanceSyncObjectCursor {
+        expected_cursor: i64,
+        next_cursor: i64,
+        resp: oneshot::Sender<AppResult<i64>>,
+    },
     ListSyncConflicts {
         resp: oneshot::Sender<AppResult<Vec<repo::sync::SyncConflictRow>>>,
     },
@@ -2030,6 +2035,21 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn advance_sync_object_cursor(
+        &self,
+        expected_cursor: i64,
+        next_cursor: i64,
+    ) -> AppResult<i64> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::AdvanceSyncObjectCursor {
+            expected_cursor,
+            next_cursor,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn list_sync_conflicts(&self) -> AppResult<Vec<repo::sync::SyncConflictRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListSyncConflicts { resp })?;
@@ -3098,6 +3118,17 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::SetSyncE2eeKeyVersion { key_version, resp } => {
                     let _ = resp.send(repo::sync::set_e2ee_key_version(&conn, key_version));
+                }
+                DbCommand::AdvanceSyncObjectCursor {
+                    expected_cursor,
+                    next_cursor,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::sync::advance_object_cursor(
+                        &conn,
+                        expected_cursor,
+                        next_cursor,
+                    ));
                 }
                 DbCommand::ListSyncConflicts { resp } => {
                     let _ = resp.send(repo::sync::list_conflicts(&conn));

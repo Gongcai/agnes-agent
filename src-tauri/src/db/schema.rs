@@ -383,6 +383,7 @@ CREATE TABLE IF NOT EXISTS sync_runtime_state (
   device_id TEXT NOT NULL UNIQUE,
   last_hlc TEXT,
   last_pull_cursor INTEGER NOT NULL DEFAULT 0,
+  last_object_cursor INTEGER NOT NULL DEFAULT 0,
   bootstrap_state TEXT NOT NULL DEFAULT 'required',
   last_success_at INTEGER,
   last_error_code TEXT,

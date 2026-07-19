@@ -5,7 +5,8 @@ use crate::sync::auth::SyncCredential;
 use crate::sync::protocol::{
     AckRequest, AckResponse, BootstrapResponse, CreatePairingSessionRequest,
     CreatePairingSessionResponse, DeviceListResponse, ErrorResponse, FinalizePairingSessionRequest,
-    FinalizePairingSessionResponse, JoinPairingSessionRequest, PairingJoinResponse,
+    FinalizePairingSessionResponse, JoinPairingSessionRequest, ObjectChangesResponse,
+    ObjectManifestResponse, ObjectStateRequest, ObjectStateResponse, PairingJoinResponse,
     PairingPackageResponse, PairingStatusResponse, PublicPairingSessionResponse, PullResponse,
     PushRequest, PushResponse, RevokeDeviceResponse,
 };
@@ -35,6 +36,23 @@ pub trait SyncTransport: Send + Sync {
         limit: usize,
     ) -> Result<BootstrapResponse, TransportFailure>;
     async fn ack(&self, request: &AckRequest) -> Result<AckResponse, TransportFailure>;
+}
+
+#[async_trait]
+pub trait ObjectSyncTransport: Send + Sync {
+    async fn list_object_changes(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<ObjectChangesResponse, TransportFailure>;
+    async fn get_object_manifest(
+        &self,
+        object_id: &str,
+    ) -> Result<ObjectManifestResponse, TransportFailure>;
+    async fn update_object_state(
+        &self,
+        request: &ObjectStateRequest,
+    ) -> Result<ObjectStateResponse, TransportFailure>;
 }
 
 pub struct HttpSyncTransport {
@@ -269,5 +287,85 @@ impl SyncTransport for HttpSyncTransport {
             .post(format!("{}/v1/sync/ack", self.gateway_url));
         self.execute(self.authenticate(request_builder)?.json(request))
             .await
+    }
+}
+
+#[async_trait]
+impl ObjectSyncTransport for HttpSyncTransport {
+    async fn list_object_changes(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<ObjectChangesResponse, TransportFailure> {
+        if after < 0 || !(1..=500).contains(&limit) {
+            return Err(invalid_request(
+                "Object change cursor or page limit is invalid",
+            ));
+        }
+        let request_builder = self
+            .client
+            .get(format!("{}/v1/objects/changes", self.gateway_url))
+            .query(&[("after", after.to_string()), ("limit", limit.to_string())]);
+        self.execute(self.authenticate(request_builder)?).await
+    }
+
+    async fn get_object_manifest(
+        &self,
+        object_id: &str,
+    ) -> Result<ObjectManifestResponse, TransportFailure> {
+        validate_object_id(object_id)?;
+        let request_builder = self.client.get(format!(
+            "{}/v1/objects/manifests/{object_id}",
+            self.gateway_url
+        ));
+        self.execute(self.authenticate(request_builder)?).await
+    }
+
+    async fn update_object_state(
+        &self,
+        request: &ObjectStateRequest,
+    ) -> Result<ObjectStateResponse, TransportFailure> {
+        validate_object_id(&request.object_id)?;
+        let request_builder = self
+            .client
+            .post(format!("{}/v1/objects/states", self.gateway_url));
+        self.execute(self.authenticate(request_builder)?.json(request))
+            .await
+    }
+}
+
+fn validate_object_id(value: &str) -> Result<(), TransportFailure> {
+    let mut bytes = value.bytes();
+    let first = bytes.next();
+    let valid = value.len() <= 128
+        && first.is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && bytes
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid_request("Object ID is invalid"))
+    }
+}
+
+fn invalid_request(message: &str) -> TransportFailure {
+    TransportFailure {
+        kind: FailureKind::Permanent,
+        code: "INVALID_REQUEST".into(),
+        message: message.into(),
+        retry_after_ms: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn object_ids_are_safe_for_manifest_paths() {
+        assert!(validate_object_id("knowledge:collection-1").is_ok());
+        assert!(validate_object_id("").is_err());
+        assert!(validate_object_id("../escape").is_err());
+        assert!(validate_object_id("contains/slash").is_err());
     }
 }

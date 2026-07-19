@@ -582,6 +582,7 @@ tasks
 - [x] 定稿分块 E2EE envelope 和 artifact format v1：内层 zstd entry manifest，外层随机 DEK + XChaCha20-Poly1305 分块 envelope，DEK 由账户 key version 包装；
 - [x] 实现本地 artifact/object/device manifest 表、不可变 build fingerprint、Provider replica 状态和设备安装状态；
 - [x] 实现 Range 断点下载、ciphertext/AEAD/内部 manifest/明文 entry Hash 验证、版本目录原子安装和失败回退；
+- [x] 接入 object manifest/change/device-state 控制面客户端，并为大对象维护独立于聊天同步的本地 cursor；
 - 加入本地磁盘配额和 GC。
 
 ### Phase C：通用 Provider 基础与网盘页
