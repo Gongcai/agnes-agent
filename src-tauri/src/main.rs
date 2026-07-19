@@ -22,6 +22,9 @@ mod web;
 use std::sync::Arc;
 
 use tauri::Manager;
+use tauri_plugin_global_shortcut::{
+    Builder as GlobalShortcutBuilder, ShortcutEvent, ShortcutState,
+};
 
 use crate::state::AppState;
 
@@ -33,6 +36,33 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(
+            GlobalShortcutBuilder::new()
+                .with_shortcut("CommandOrControl+Shift+Space")
+                .expect("无法注册快速窗口快捷键")
+                .with_handler(|app, _shortcut, event: ShortcutEvent| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+
+                    let Some(window) = app.get_webview_window("quick") else {
+                        return;
+                    };
+
+                    match window.is_visible() {
+                        Ok(true) => {
+                            let _ = window.hide();
+                        }
+                        Ok(false) => {
+                            let _ = window.center();
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                        Err(error) => eprintln!("[quick] 无法读取快速窗口状态: {error}"),
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             // 1) 初始化 SQLite（阻塞直到建表完成）
             let data_dir = app.path().app_data_dir().expect("无法获取 app data 目录");

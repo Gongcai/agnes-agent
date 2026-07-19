@@ -38,6 +38,22 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+body.quick-window-body {
+  background: transparent;
+}
+
+body.quick-window-body #root {
+  width: 100vw;
+  height: 100vh;
+}
+
+.quick-window-shell {
+  border: 1px solid rgba(120, 113, 108, 0.3);
+  border-radius: 10px;
+  background: rgba(251, 250, 247, 0.98);
+  box-shadow: 0 18px 50px rgba(28, 25, 23, 0.2), 0 2px 8px rgba(28, 25, 23, 0.08);
+}
+
 /* Custom scrollbar in light mode */
 ::-webkit-scrollbar {
   width: 6px;

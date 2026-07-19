@@ -242,7 +242,7 @@ interface AgentState {
   modelRoles: ModelRoleAssignments;
   
   // Actions
-  init: () => Promise<void>;
+  init: (persistNavigation?: boolean) => Promise<void>;
   loadAgents: () => Promise<void>;
   loadSessions: (agentId: string) => Promise<void>;
   loadMessages: (sessionId: string, preserveRenderKeys?: boolean) => Promise<void>;
@@ -258,7 +258,7 @@ interface AgentState {
   cancelRun: (sessionId: string) => Promise<void>;
   approveTool: (toolCallId: string, approved: boolean) => Promise<void>;
   setActiveAgentId: (agentId: string) => Promise<void>;
-  setActiveSessionId: (sessionId: string) => Promise<void>;
+  setActiveSessionId: (sessionId: string, persist?: boolean) => Promise<void>;
   setSessionLlm: (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number, maxTokens: number) => Promise<void>;
   setSessionCompressThreshold: (sessionId: string, compressThreshold: number) => Promise<void>;
   setSessionPermissionMode: (sessionId: string, permissionMode: PermissionMode) => Promise<void>;
@@ -336,7 +336,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   // 应用启动初始化：读取持久化的上次 agent/session 与打开模式，按模式恢复或新建。
-  init: async () => {
+  init: async (persistNavigation = true) => {
     try {
       const agents = await invoke<AgentSummary[]>("list_agents");
       set({ agents });
@@ -349,7 +349,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
       const agentId = lastAgentId && agents.some((a) => a.id === lastAgentId) ? lastAgentId : agents[0].id;
       set({ activeAgentId: agentId });
-      invoke("set_setting", { key: "ui:last_agent_id", value: agentId }).catch(() => {});
+      if (persistNavigation) {
+        invoke("set_setting", { key: "ui:last_agent_id", value: agentId }).catch(() => {});
+      }
 
       const sessions = await invoke<Session[]>("list_sessions", { agentId });
       set({ sessions });
@@ -359,7 +361,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         // 打开时自动新建会话
         const sid = await invoke<string>("create_session", { agentId, title: "新会话" });
         set({ activeSessionId: sid, messages: [] });
-        invoke("set_setting", { key: "ui:last_session_id", value: sid }).catch(() => {});
+        if (persistNavigation) {
+          invoke("set_setting", { key: "ui:last_session_id", value: sid }).catch(() => {});
+        }
       } else {
         // 回到上次对话：优先上次会话，回退到首条，再回退到新建
         let sid: string | null = lastSessionId && sessions.some((s) => s.id === lastSessionId) ? lastSessionId : null;
@@ -367,11 +371,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         if (sid) {
           set({ activeSessionId: sid });
           await get().loadMessages(sid);
-          invoke("set_setting", { key: "ui:last_session_id", value: sid }).catch(() => {});
+          if (persistNavigation) {
+            invoke("set_setting", { key: "ui:last_session_id", value: sid }).catch(() => {});
+          }
         } else {
           const newSid = await invoke<string>("create_session", { agentId, title: "新会话" });
           set({ activeSessionId: newSid, messages: [] });
-          invoke("set_setting", { key: "ui:last_session_id", value: newSid }).catch(() => {});
+          if (persistNavigation) {
+            invoke("set_setting", { key: "ui:last_session_id", value: newSid }).catch(() => {});
+          }
         }
       }
     } catch (e) {
@@ -596,11 +604,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  setActiveSessionId: async (sessionId: string) => {
+  setActiveSessionId: async (sessionId: string, persist = true) => {
     set({ activeSessionId: sessionId });
     await get().loadMessages(sessionId);
-    // 持久化上次选中的会话
-    invoke("set_setting", { key: "ui:last_session_id", value: sessionId }).catch(() => {});
+    if (persist) {
+      invoke("set_setting", { key: "ui:last_session_id", value: sessionId }).catch(() => {});
+    }
   },
 
   setSessionLlm: async (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number, maxTokens: number) => {
