@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3 } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Moon, Sun } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -44,6 +44,18 @@ import {
   type SyncPairingJoinStarted,
   type SyncStatus,
 } from "../lib/ipc";
+import {
+  announceUIPreferenceChange,
+  applyColorScheme,
+  getCachedAutoExpandThoughts,
+  getCachedColorScheme,
+  normalizeBooleanPreference,
+  normalizeColorScheme,
+  setAutoExpandThoughts,
+  UI_AUTO_EXPAND_THOUGHTS_KEY,
+  UI_COLOR_SCHEME_KEY,
+  type ColorScheme,
+} from "../lib/uiPreferences";
 
 type SettingsTab = "general" | "agents" | "memory" | "llm" | "tokens" | "web" | "mcp" | "audit" | "debug";
 
@@ -4920,16 +4932,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 const GeneralTab: React.FC = () => {
   const [openMode, setOpenMode] = useState<string>("last");
   const [translationLanguage, setTranslationLanguage] = useState<"中文" | "English">("中文");
+  const [colorScheme, setColorScheme] = useState<ColorScheme>(getCachedColorScheme);
+  const [autoExpandThoughts, setAutoExpandThoughtsState] = useState(getCachedAutoExpandThoughts);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     Promise.all([
       invoke<string | null>("get_setting", { key: "ui:session_open_mode" }),
       invoke<string | null>("get_setting", { key: "ui:translation_target_language" }),
+      invoke<string | null>("get_setting", { key: UI_COLOR_SCHEME_KEY }),
+      invoke<string | null>("get_setting", { key: UI_AUTO_EXPAND_THOUGHTS_KEY }),
     ])
-      .then(([openModeValue, languageValue]) => {
+      .then(([openModeValue, languageValue, colorSchemeValue, autoExpandThoughtsValue]) => {
+        const nextColorScheme = normalizeColorScheme(colorSchemeValue);
+        const nextAutoExpandThoughts = normalizeBooleanPreference(autoExpandThoughtsValue, true);
         setOpenMode(openModeValue ?? "last");
         if (languageValue === "中文" || languageValue === "English") setTranslationLanguage(languageValue);
+        setColorScheme(nextColorScheme);
+        setAutoExpandThoughtsState(nextAutoExpandThoughts);
+        applyColorScheme(nextColorScheme);
+        setAutoExpandThoughts(nextAutoExpandThoughts);
+        announceUIPreferenceChange({
+          colorScheme: nextColorScheme,
+          autoExpandThoughts: nextAutoExpandThoughts,
+        });
       })
       .catch(console.error)
       .finally(() => setLoaded(true));
@@ -4958,11 +4984,98 @@ const GeneralTab: React.FC = () => {
     }
   };
 
+  const updateColorScheme = async (scheme: ColorScheme) => {
+    const previous = colorScheme;
+    setColorScheme(scheme);
+    applyColorScheme(scheme);
+    announceUIPreferenceChange({ colorScheme: scheme });
+    try {
+      await invoke("set_setting", { key: UI_COLOR_SCHEME_KEY, value: scheme });
+    } catch (e) {
+      setColorScheme(previous);
+      applyColorScheme(previous);
+      announceUIPreferenceChange({ colorScheme: previous });
+      console.error("保存界面主题失败", e);
+    }
+  };
+
+  const updateAutoExpandThoughts = async (value: boolean) => {
+    const previous = autoExpandThoughts;
+    setAutoExpandThoughtsState(value);
+    setAutoExpandThoughts(value);
+    announceUIPreferenceChange({ autoExpandThoughts: value });
+    try {
+      await invoke("set_setting", { key: UI_AUTO_EXPAND_THOUGHTS_KEY, value: String(value) });
+    } catch (e) {
+      setAutoExpandThoughtsState(previous);
+      setAutoExpandThoughts(previous);
+      announceUIPreferenceChange({ autoExpandThoughts: previous });
+      console.error("保存思考过程展开设置失败", e);
+    }
+  };
+
   return (
     <div className="space-y-6 max-w-xl">
       <div>
         <h2 className="text-sm font-semibold text-stone-800 mb-1">通用设置</h2>
         <p className="text-[11px] text-stone-400">应用启动行为与界面偏好</p>
+      </div>
+
+      <div>
+        <label className="mb-2 block font-semibold text-stone-500">外观</label>
+        <div className="grid grid-cols-2 gap-1 rounded-lg border border-stone-200 bg-stone-100 p-1">
+          {([
+            { value: "light" as const, label: "浅色", icon: Sun },
+            { value: "dark" as const, label: "深色", icon: Moon },
+          ]).map((option) => {
+            const Icon = option.icon;
+            const active = colorScheme === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                disabled={!loaded}
+                onClick={() => void updateColorScheme(option.value)}
+                className={`flex items-center justify-center gap-2 rounded-md px-3 py-2 text-xs font-semibold transition-colors disabled:opacity-50 ${
+                  active
+                    ? "border border-stone-200 bg-white text-stone-800 shadow-sm"
+                    : "border border-transparent text-stone-500 hover:text-stone-800"
+                }`}
+                aria-pressed={active}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div>
+        <label className="mb-2 block font-semibold text-stone-500">对话</label>
+        <div className="flex items-center gap-3 rounded-lg border border-stone-200 bg-stone-50 px-3.5 py-3">
+          <Brain className="h-4 w-4 shrink-0 text-stone-500" />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold text-stone-700">自动展开思考过程</p>
+            <p className="mt-0.5 text-[10px] text-stone-400">新显示的思考内容默认保持展开，仍可手动收起。</p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoExpandThoughts}
+            disabled={!loaded}
+            onClick={() => void updateAutoExpandThoughts(!autoExpandThoughts)}
+            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+              autoExpandThoughts ? "bg-[#8CA38A]" : "bg-stone-300"
+            }`}
+          >
+            <span
+              className={`agnes-toggle-thumb absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                autoExpandThoughts ? "translate-x-[18px]" : "translate-x-0.5"
+              }`}
+            />
+          </button>
+        </div>
       </div>
 
       <div>

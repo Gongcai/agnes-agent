@@ -8,6 +8,10 @@ import type { PermissionMode, ToolCall } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ModifyMemoryModal } from "./ModifyMemoryModal";
+import {
+  getCachedAutoExpandThoughts,
+  subscribeUIPreferenceChanges,
+} from "../lib/uiPreferences";
 
 // 思考模式/强度选项（与角色卡编辑器保持一致）
 const THINKING_OPTIONS: { value: string; label: string; desc: string }[] = [
@@ -258,6 +262,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [memoryEditMsgId, setMemoryEditMsgId] = useState<string | null>(null);
+  const [autoExpandThoughts, setAutoExpandThoughts] = useState(getCachedAutoExpandThoughts);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -266,6 +271,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   useEffect(() => {
     loadProviders().catch(console.error);
   }, [loadProviders]);
+
+  useEffect(() => subscribeUIPreferenceChanges((change) => {
+    if (change.autoExpandThoughts !== undefined) {
+      setAutoExpandThoughts(change.autoExpandThoughts);
+    }
+  }), []);
 
   // 当前生效的模型：优先会话级覆盖，回退角色卡默认（形如 "provider_id/model_name"）
   const effectiveModel = activeSession?.model || activeAgent?.model || modelRoles.main_model || "";
@@ -443,8 +454,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       if (part.kind === "thought") {
                         return (
                           <details
-                            key={part._renderKey ?? part.id}
-                            open
+                            key={`${part._renderKey ?? part.id}:${autoExpandThoughts}`}
+                            open={autoExpandThoughts}
                             className="group border-l-2 border-[#8CA38A] bg-stone-100/60 rounded-r-xl p-3 transition-colors"
                           >
                             <summary className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-[#6C806A] select-none hover:text-[#556654]">

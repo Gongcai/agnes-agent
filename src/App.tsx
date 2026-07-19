@@ -8,6 +8,15 @@ import { type AppNotification } from "./components/NotificationCenter";
 import type { AppFeatureId } from "./lib/features";
 import { useAgentStore, setupTauriEventListeners } from "./store/useAgentStore";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  announceUIPreferenceChange,
+  applyColorScheme,
+  normalizeBooleanPreference,
+  normalizeColorScheme,
+  setAutoExpandThoughts,
+  UI_AUTO_EXPAND_THOUGHTS_KEY,
+  UI_COLOR_SCHEME_KEY,
+} from "./lib/uiPreferences";
 
 const ReadingWorkspace = lazy(() =>
   import("./components/ReadingWorkspace").then((module) => ({ default: module.ReadingWorkspace })),
@@ -36,6 +45,24 @@ export default function App() {
       cleanup().catch(console.error);
     };
   }, [init]);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      invoke<string | null>("get_setting", { key: UI_COLOR_SCHEME_KEY }),
+      invoke<string | null>("get_setting", { key: UI_AUTO_EXPAND_THOUGHTS_KEY }),
+    ])
+      .then(([colorSchemeValue, autoExpandThoughtsValue]) => {
+        if (!active) return;
+        const colorScheme = normalizeColorScheme(colorSchemeValue);
+        const autoExpandThoughts = normalizeBooleanPreference(autoExpandThoughtsValue, true);
+        applyColorScheme(colorScheme);
+        setAutoExpandThoughts(autoExpandThoughts);
+        announceUIPreferenceChange({ colorScheme, autoExpandThoughts });
+      })
+      .catch((error) => console.error("加载界面偏好失败", error));
+    return () => { active = false; };
+  }, []);
 
   const handleOpenSettings = (tab: "general" | "agents" | "memory" | "llm" | "tokens" | "mcp" | "audit" | "debug" = "agents") => {
     setSettingsTab(tab);

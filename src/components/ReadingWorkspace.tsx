@@ -30,6 +30,12 @@ import {
 } from "lucide-react";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { useAgentStore } from "../store/useAgentStore";
+import {
+  getCachedAutoExpandThoughts,
+  getCachedColorScheme,
+  subscribeUIPreferenceChanges,
+  type ColorScheme,
+} from "../lib/uiPreferences";
 
 interface ReadingBook {
   id: string;
@@ -86,6 +92,25 @@ const HIGHLIGHT_STYLES: Record<string, Record<string, string>> = {
   pink: { fill: "#e6a7c5", "fill-opacity": "0.42", "mix-blend-mode": "multiply" },
 };
 
+function epubTheme(colorScheme: ColorScheme): Record<string, Record<string, string>> {
+  const dark = colorScheme === "dark";
+  return {
+    html: {
+      background: dark ? "#1f1e1b" : "#fbfaf6",
+      color: dark ? "#dedad1" : "#282723",
+    },
+    body: {
+      background: dark ? "#1f1e1b" : "#fbfaf6",
+      color: dark ? "#dedad1" : "#282723",
+      "font-family": "Georgia, 'Noto Serif SC', serif",
+      "line-height": "1.8",
+    },
+    p: { "margin-bottom": "1em" },
+    a: { color: dark ? "#ea9679" : "#b95f43" },
+    img: { "max-width": "100%", height: "auto" },
+  };
+}
+
 function flattenToc(items: NavItem[]): NavItem[] {
   return items.flatMap((item) => [item, ...flattenToc(item.subitems ?? [])]);
 }
@@ -130,18 +155,20 @@ const EpubPane: React.FC<{
   book: ReadingBook;
   highlights: ReadingHighlight[];
   highlightMode: boolean;
+  colorScheme: ColorScheme;
   onProgress: (cfi: string) => void;
   onBackToShelf: () => void;
   onToggleHighlightMode: () => void;
   onCreateHighlight: (selection: PendingSelection) => void;
   onOpenSelectionMenu: (selection: PendingSelection, x: number, y: number) => void;
-}> = ({ book, highlights, highlightMode, onProgress, onBackToShelf, onToggleHighlightMode, onCreateHighlight, onOpenSelectionMenu }) => {
+}> = ({ book, highlights, highlightMode, colorScheme, onProgress, onBackToShelf, onToggleHighlightMode, onCreateHighlight, onOpenSelectionMenu }) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const bookRef = useRef<Book | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
   const highlightModeRef = useRef(highlightMode);
   const createHighlightRef = useRef(onCreateHighlight);
   const openSelectionMenuRef = useRef(onOpenSelectionMenu);
+  const colorSchemeRef = useRef(colorScheme);
   const [toc, setToc] = useState<NavItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -149,6 +176,10 @@ const EpubPane: React.FC<{
   useEffect(() => { highlightModeRef.current = highlightMode; }, [highlightMode]);
   useEffect(() => { createHighlightRef.current = onCreateHighlight; }, [onCreateHighlight]);
   useEffect(() => { openSelectionMenuRef.current = onOpenSelectionMenu; }, [onOpenSelectionMenu]);
+  useEffect(() => {
+    colorSchemeRef.current = colorScheme;
+    renditionRef.current?.themes.default(epubTheme(colorScheme));
+  }, [colorScheme]);
 
   useEffect(() => {
     let disposed = false;
@@ -240,11 +271,7 @@ const EpubPane: React.FC<{
           allowScriptedContent: false,
         });
         renditionRef.current = rendered;
-        rendered.themes.default({
-          body: { color: "#282723", "font-family": "Georgia, 'Noto Serif SC', serif", "line-height": "1.8" },
-          p: { "margin-bottom": "1em" },
-          img: { "max-width": "100%", height: "auto" },
-        });
+        rendered.themes.default(epubTheme(colorSchemeRef.current));
         rendered.on("relocated", (location: { start?: { cfi?: string } }) => {
           const cfi = location?.start?.cfi;
           if (cfi) onProgress(cfi);
@@ -484,6 +511,8 @@ export const ReadingWorkspace: React.FC = () => {
   const [isConversationHistoryOpen, setIsConversationHistoryOpen] = useState(false);
   const [highlightMode, setHighlightMode] = useState(false);
   const [translationLanguage, setTranslationLanguage] = useState("中文");
+  const [colorScheme, setColorScheme] = useState<ColorScheme>(getCachedColorScheme);
+  const [autoExpandThoughts, setAutoExpandThoughts] = useState(getCachedAutoExpandThoughts);
   const messageEndRef = useRef<HTMLDivElement>(null);
 
   const selectedBook = useMemo(
@@ -522,6 +551,13 @@ export const ReadingWorkspace: React.FC = () => {
       })
       .catch(console.error);
   }, []);
+
+  useEffect(() => subscribeUIPreferenceChanges((change) => {
+    if (change.colorScheme !== undefined) setColorScheme(change.colorScheme);
+    if (change.autoExpandThoughts !== undefined) {
+      setAutoExpandThoughts(change.autoExpandThoughts);
+    }
+  }), []);
 
   useEffect(() => {
     if (!selectedBook) { setHighlights([]); return; }
@@ -723,6 +759,7 @@ export const ReadingWorkspace: React.FC = () => {
             book={selectedBook}
             highlights={highlights}
             highlightMode={highlightMode}
+            colorScheme={colorScheme}
             onBackToShelf={returnToShelf}
             onToggleHighlightMode={() => setHighlightMode((enabled) => !enabled)}
             onProgress={(cfi) => {
@@ -902,7 +939,11 @@ export const ReadingWorkspace: React.FC = () => {
                           }
                           if (part.kind === "thought") {
                             return (
-                              <details key={part._renderKey ?? part.id} open className="group rounded-r-md border-l-2 border-emerald-600 bg-stone-50 px-2.5 py-2">
+                              <details
+                                key={`${part._renderKey ?? part.id}:${autoExpandThoughts}`}
+                                open={autoExpandThoughts}
+                                className="group rounded-r-md border-l-2 border-emerald-600 bg-stone-50 px-2.5 py-2"
+                              >
                                 <summary className="flex cursor-pointer select-none items-center gap-2 text-[11px] font-semibold text-emerald-700">
                                   <Brain className="h-3.5 w-3.5" />
                                   <span>思考过程</span>

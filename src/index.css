@@ -355,8 +355,57 @@ body {
   --claude-success: #3f7d53;
   --claude-warning: #a96919;
   --claude-danger: #b84343;
+  --claude-header: rgba(255, 255, 255, 0.94);
+  --claude-header-soft: rgba(250, 249, 245, 0.96);
+  --claude-overlay: rgba(31, 30, 27, 0.34);
+  --claude-shadow: rgba(31, 30, 27, 0.16);
   --claude-ui-font: Georgia, "Noto Serif SC", "Noto Serif CJK SC", "Noto Serif", "Songti SC", "Times New Roman", serif;
   --claude-mono-font: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+:root[data-agnes-theme="dark"] {
+  color-scheme: dark;
+  --background: 42 6% 12%;
+  --foreground: 42 18% 92%;
+  --card: 40 5% 16%;
+  --card-foreground: 42 18% 92%;
+  --popover: 40 5% 16%;
+  --popover-foreground: 42 18% 92%;
+  --primary: 14 72% 66%;
+  --primary-foreground: 40 8% 12%;
+  --secondary: 40 5% 20%;
+  --secondary-foreground: 42 15% 88%;
+  --muted: 40 5% 20%;
+  --muted-foreground: 40 6% 64%;
+  --accent: 40 5% 22%;
+  --accent-foreground: 42 18% 92%;
+  --destructive: 0 62% 55%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 40 5% 26%;
+  --input: 40 5% 26%;
+  --ring: 14 72% 66%;
+  --claude-canvas: #1f1e1b;
+  --claude-sidebar: #262522;
+  --claude-surface: #2b2a27;
+  --claude-surface-soft: #35332e;
+  --claude-surface-strong: #403e38;
+  --claude-ink: #f5f3ed;
+  --claude-body: #dedad1;
+  --claude-muted: #aaa59b;
+  --claude-muted-soft: #858077;
+  --claude-border: rgba(245, 243, 237, 0.12);
+  --claude-border-strong: rgba(245, 243, 237, 0.2);
+  --claude-clay: #d97757;
+  --claude-clay-dark: #ea9679;
+  --claude-clay-soft: rgba(217, 119, 87, 0.18);
+  --claude-dark: #171613;
+  --claude-success: #75ae84;
+  --claude-warning: #d9a557;
+  --claude-danger: #df7b79;
+  --claude-header: rgba(43, 42, 39, 0.94);
+  --claude-header-soft: rgba(31, 30, 27, 0.96);
+  --claude-overlay: rgba(0, 0, 0, 0.58);
+  --claude-shadow: rgba(0, 0, 0, 0.42);
 }
 
 html,
@@ -402,7 +451,7 @@ pre,
 
 .agnes-app main > header,
 .agnes-app section > header {
-  background: rgba(250, 249, 245, 0.96) !important;
+  background: var(--claude-header-soft) !important;
   border-color: var(--claude-border) !important;
   box-shadow: none !important;
 }
@@ -516,7 +565,7 @@ pre,
 .agnes-chat-header {
   height: 58px !important;
   padding-inline: 24px !important;
-  background: rgba(255, 255, 255, 0.94) !important;
+  background: var(--claude-header) !important;
   border-color: var(--claude-border) !important;
   backdrop-filter: blur(12px);
 }
@@ -832,7 +881,7 @@ pre,
 }
 
 .agnes-settings-overlay {
-  background: rgba(31, 30, 27, 0.34) !important;
+  background: var(--claude-overlay) !important;
   backdrop-filter: blur(6px);
 }
 
@@ -903,7 +952,7 @@ pre,
 
 .agnes-feature-workspace > header {
   height: 58px !important;
-  background: rgba(255, 255, 255, 0.94) !important;
+  background: var(--claude-header) !important;
   border-color: var(--claude-border) !important;
   backdrop-filter: blur(12px);
 }
@@ -963,7 +1012,7 @@ pre,
 }
 
 .agnes-drive-workspace .sticky {
-  background: rgba(250, 249, 245, 0.96) !important;
+  background: var(--claude-header-soft) !important;
 }
 
 .agnes-drive-workspace input[type="checkbox"],
@@ -1004,6 +1053,178 @@ pre,
   .agnes-subnav {
     width: 196px !important;
   }
+}
+
+/* Dark theme utility bridge. Existing feature views use Tailwind's light Stone
+   utilities, so map their neutral surfaces and text back to semantic tokens. */
+:root[data-agnes-theme="dark"] body,
+:root[data-agnes-theme="dark"] #root {
+  background: var(--claude-canvas);
+  color: var(--claude-ink);
+}
+
+:root[data-agnes-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: #4b4943;
+}
+
+:root[data-agnes-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: #5d5a53;
+}
+
+:root[data-agnes-theme="dark"] .clean-panel {
+  background: rgba(43, 42, 39, 0.82);
+  border-color: var(--claude-border);
+}
+
+:root[data-agnes-theme="dark"] .clean-card {
+  background: var(--claude-surface);
+  border-color: var(--claude-border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-white"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-white/40"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-white/45"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-white/55"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-white/70"],
+:root[data-agnes-theme="dark"] .claude-popover[class~="bg-white"],
+:root[data-agnes-theme="dark"] .claude-popover [class~="bg-white"] {
+  background-color: var(--claude-surface) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-stone-50"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-stone-50/50"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-stone-50/70"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-stone-50/80"],
+:root[data-agnes-theme="dark"] .claude-popover [class~="bg-stone-50"] {
+  background-color: var(--claude-canvas) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-stone-100"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-stone-100/60"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-stone-200"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-stone-200/40"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-stone-200/50"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-stone-200/60"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-stone-200/70"] {
+  background-color: var(--claude-surface-soft) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#FAF9F5]"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#faf9f5]"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#fbfaf6]"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#FAF9F5]/20"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#FAF9F5]/30"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#FAF9F5]/40"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#FAF9F5]/45"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#FAF9F5]/70"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#FAF9F5]/95"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#fbfaf6]/80"] {
+  background-color: var(--claude-canvas) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#F1F5F0]/70"] {
+  background-color: var(--claude-surface-soft) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-stone-900"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-stone-850"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-stone-800"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-zinc-900"],
+:root[data-agnes-theme="dark"] .claude-popover [class~="text-stone-900"] {
+  color: var(--claude-ink) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-stone-700"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-stone-600"],
+:root[data-agnes-theme="dark"] .claude-popover [class~="text-stone-700"],
+:root[data-agnes-theme="dark"] .claude-popover [class~="text-stone-600"] {
+  color: var(--claude-body) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-stone-500"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-stone-400"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-stone-300"],
+:root[data-agnes-theme="dark"] .claude-popover [class~="text-stone-500"],
+:root[data-agnes-theme="dark"] .claude-popover [class~="text-stone-400"] {
+  color: var(--claude-muted) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app .hover\:text-stone-900:hover,
+:root[data-agnes-theme="dark"] .agnes-app .hover\:text-stone-800:hover,
+:root[data-agnes-theme="dark"] .agnes-app .hover\:text-stone-700:hover {
+  color: var(--claude-ink) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-amber-50"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-amber-50/60"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-amber-100"] {
+  background-color: rgba(217, 165, 87, 0.16) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-red-50"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-rose-50"] {
+  background-color: rgba(223, 123, 121, 0.14) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-blue-50"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-violet-50"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-indigo-50"] {
+  background-color: rgba(133, 151, 190, 0.15) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-amber-600"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-amber-700"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-amber-800"] {
+  color: #e3b66f !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-red-600"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-rose-600"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-rose-700"] {
+  color: #ed9996 !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-blue-600"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-blue-700"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-violet-600"],
+:root[data-agnes-theme="dark"] .agnes-app [class~="text-violet-700"] {
+  color: #aebce0 !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-toggle-thumb {
+  background: var(--claude-ink) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-app input::placeholder,
+:root[data-agnes-theme="dark"] .agnes-app textarea::placeholder {
+  color: var(--claude-muted-soft);
+  opacity: 1;
+}
+
+:root[data-agnes-theme="dark"] .fc {
+  --fc-border-color: var(--claude-border-strong);
+  --fc-neutral-bg-color: var(--claude-surface-soft);
+  --fc-today-bg-color: rgba(217, 119, 87, 0.13);
+  color: var(--claude-body);
+}
+
+:root[data-agnes-theme="dark"] .fc .fc-scrollgrid {
+  background: rgba(43, 42, 39, 0.82);
+}
+
+:root[data-agnes-theme="dark"] .fc .fc-col-header-cell-cushion,
+:root[data-agnes-theme="dark"] .fc .fc-daygrid-day-number {
+  color: var(--claude-body);
+}
+
+:root[data-agnes-theme="dark"] .fc .fc-list-event:hover td {
+  background: var(--claude-surface-soft);
+}
+
+:root[data-agnes-theme="dark"] .claude-popover {
+  background: var(--claude-surface) !important;
+  color: var(--claude-body);
 }
 
 @media (max-width: 900px) {
