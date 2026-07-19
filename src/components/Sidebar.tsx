@@ -95,6 +95,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Standalone sessions do not belong to a workspace.
   const standaloneSessions = sessions.filter((s) => s.agent_id === activeAgentId && !s.workspace_id);
   const agentWorkspaces = workspaces.filter((w) => w.agent_id === activeAgentId);
+  const activeFeatureIndex = Math.max(
+    0,
+    ENABLED_APP_FEATURES.findIndex((feature) => feature.id === activeFeature),
+  );
 
   // Resolve the model currently bound to the active agent.
   const activeModelName = activeAgent?.model
@@ -297,7 +301,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
             子功能
           </div>
         )}
-        <div className="space-y-1">
+        <div className="relative space-y-1">
+          <span
+            className="agnes-feature-highlight pointer-events-none absolute inset-x-0 top-0 z-0 h-10 rounded-xl"
+            style={{ transform: `translateY(${activeFeatureIndex * 44}px)` }}
+            aria-hidden="true"
+          />
           {ENABLED_APP_FEATURES.map((feature) => {
             const Icon = FEATURE_ICONS[feature.id];
             const selected = feature.id === activeFeature;
@@ -305,17 +314,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 key={feature.id}
                 onClick={() => onSelectFeature(feature.id)}
-                className={`agnes-feature-item relative flex h-10 w-full items-center rounded-xl transition-colors ${
+                className={`agnes-feature-item relative z-10 flex h-10 w-full items-center rounded-xl transition-colors ${
                   isOpen ? "gap-2.5 px-3" : "justify-center"
                 } ${
                   selected
-                    ? "bg-white font-semibold text-emerald-700 shadow-sm ring-1 ring-stone-200/80"
+                    ? "font-semibold text-emerald-700"
                     : "text-stone-500 hover:bg-stone-200/50 hover:text-stone-900"
                 }`}
                 title={isOpen ? undefined : feature.label}
                 aria-current={selected ? "page" : undefined}
               >
-                {selected && <span className="absolute left-0 h-5 w-0.5 rounded-r bg-[#8CA38A]" />}
                 <Icon className="h-[18px] w-[18px] shrink-0" />
                 {isOpen && <span className="truncate text-xs">{feature.label}</span>}
               </button>

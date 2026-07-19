@@ -534,6 +534,33 @@ pre,
   background: var(--claude-clay) !important;
 }
 
+.agnes-feature-highlight {
+  background: rgba(51, 48, 42, 0.075);
+  box-shadow: 0 1px 2px rgba(31, 30, 27, 0.04);
+  transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms ease;
+  will-change: transform;
+}
+
+.agnes-feature-highlight::before {
+  position: absolute;
+  inset: 50% auto auto 0;
+  width: 2px;
+  height: 20px;
+  border-radius: 0 999px 999px 0;
+  background: var(--claude-clay);
+  content: "";
+  transform: translateY(-50%);
+}
+
+.agnes-sidebar .agnes-feature-item[aria-current="page"] {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-feature-highlight {
+  background: var(--claude-surface-soft);
+}
+
 .agnes-sidebar .agnes-session-list {
   padding: 14px 12px 18px !important;
 }
