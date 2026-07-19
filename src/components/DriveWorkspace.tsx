@@ -16,6 +16,7 @@ import {
   FolderOpen,
   HardDrive,
   LoaderCircle,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   ShieldAlert,
@@ -24,6 +25,7 @@ import {
   X,
 } from "lucide-react";
 import { formatStorageBytes, formatTransferSpeed, storageProgress } from "../lib/storage";
+import { useAgentStore } from "../store/useAgentStore";
 
 interface ProviderDescriptor {
   id: string;
@@ -70,6 +72,12 @@ interface RemoteFileItem {
 interface RemoteFilePage {
   items: RemoteFileItem[];
   next_page_token: string | null;
+}
+
+interface KnowledgeCollection {
+  id: string;
+  name: string;
+  permission: string;
 }
 
 interface TransferJob {
@@ -146,6 +154,7 @@ function formatTimestamp(value: string | null): string {
 }
 
 export function DriveWorkspace() {
+  const activeAgentId = useAgentStore((state) => state.activeAgentId);
   const [catalog, setCatalog] = useState<ProviderDescriptor[]>([]);
   const [accounts, setAccounts] = useState<StorageAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
@@ -169,6 +178,8 @@ export function DriveWorkspace() {
   const [quarkQrStatus, setQuarkQrStatus] = useState<string | null>(null);
   const [quarkQrLoading, setQuarkQrLoading] = useState(false);
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
+  const [knowledgeCollections, setKnowledgeCollections] = useState<KnowledgeCollection[]>([]);
+  const [knowledgeImportItem, setKnowledgeImportItem] = useState<RemoteFileItem | null>(null);
   const fileRequestId = useRef(0);
   const transferSpeedSamples = useRef(new Map<string, TransferSpeedSample>());
 
@@ -260,6 +271,18 @@ export function DriveWorkspace() {
   useEffect(() => {
     void loadShell();
   }, []);
+
+  useEffect(() => {
+    if (!activeAgentId) {
+      setKnowledgeCollections([]);
+      return;
+    }
+    void invoke<KnowledgeCollection[]>("list_knowledge_collections", {
+      agentId: activeAgentId,
+    })
+      .then(setKnowledgeCollections)
+      .catch((reason) => setError(String(reason)));
+  }, [activeAgentId]);
 
   useEffect(() => {
     setFolderPath([{ id: null, name: "根目录" }]);
@@ -558,6 +581,82 @@ export function DriveWorkspace() {
     }
   };
 
+  const knowledgeImportable = (item: RemoteFileItem) => {
+    const mediaType = item.media_type?.split(";", 1)[0] ?? "";
+    return [
+      "text/markdown",
+      "text/plain",
+      "text/csv",
+      "application/json",
+      "application/vnd.google-apps.document",
+      "application/vnd.google-apps.spreadsheet",
+      "application/vnd.google-apps.presentation",
+      "application/vnd.google-apps.script",
+    ].includes(mediaType) || /\.(md|markdown|txt|rst|log|csv|json)$/i.test(item.name);
+  };
+
+  const readingImportable = (item: RemoteFileItem) =>
+    item.media_type?.split(";", 1)[0] === "application/epub+zip" || /\.epub$/i.test(item.name);
+
+  const openKnowledgeImport = (item: RemoteFileItem) => {
+    setFileContextMenu(null);
+    if (!activeAgentId || !knowledgeImportable(item)) return;
+    const writableCollections = knowledgeCollections.filter(
+      (collection) => collection.permission === "write" || collection.permission === "manage",
+    );
+    if (writableCollections.length === 0) {
+      setError("当前 Agent 没有可写知识库，请先在知识库页面创建集合");
+      return;
+    }
+    setKnowledgeImportItem(item);
+  };
+
+  const importToKnowledge = async (collectionId: string) => {
+    if (!selectedAccount || !activeAgentId || !knowledgeImportItem) return;
+    const item = knowledgeImportItem;
+    setKnowledgeImportItem(null);
+    setView("transfers");
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke("import_storage_knowledge_document", {
+        accountId: selectedAccount.id,
+        fileId: item.id,
+        expectedRevision: item.revision,
+        expectedSize: item.size,
+        collectionId,
+        agentId: activeAgentId,
+      });
+      await loadShell();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const importToReading = async (item: RemoteFileItem) => {
+    if (!selectedAccount || !activeAgentId || !readingImportable(item)) return;
+    setFileContextMenu(null);
+    setView("transfers");
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke("import_storage_reading_book", {
+        accountId: selectedAccount.id,
+        fileId: item.id,
+        expectedRevision: item.revision,
+        expectedSize: item.size,
+        agentId: activeAgentId,
+      });
+      await loadShell();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const openFolder = (item: RemoteFileItem) => {
     if (item.kind !== "folder") return;
     setFolderPath((path) => [...path, { id: item.id, name: item.name }]);
@@ -658,7 +757,7 @@ export function DriveWorkspace() {
     event.stopPropagation();
     if (!selectedFileIds.has(item.id)) setSelectedFileIds(new Set([item.id]));
     const menuWidth = 196;
-    const menuHeight = item.kind === "folder" ? 132 : 94;
+    const menuHeight = item.kind === "folder" ? 132 : 252;
     setFileContextMenu({
       item,
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
@@ -832,7 +931,7 @@ export function DriveWorkspace() {
                     className="min-h-0 flex-1 overflow-auto border-y border-stone-200 bg-white/40"
                     onContextMenu={(event) => event.preventDefault()}
                   >
-                    <div className="sticky top-0 z-10 grid grid-cols-[28px_minmax(0,1fr)_74px_28px] items-center gap-3 border-b border-stone-200 bg-[#FAF9F5]/95 px-3 py-2 text-[11px] font-medium text-stone-400 backdrop-blur-sm sm:grid-cols-[28px_minmax(0,1fr)_90px_130px_28px] sm:gap-4">
+                    <div className="sticky top-0 z-10 grid grid-cols-[28px_minmax(0,1fr)_74px_56px] items-center gap-3 border-b border-stone-200 bg-[#FAF9F5]/95 px-3 py-2 text-[11px] font-medium text-stone-400 backdrop-blur-sm sm:grid-cols-[28px_minmax(0,1fr)_90px_130px_56px] sm:gap-4">
                       <input
                         type="checkbox"
                         aria-label="全选当前目录"
@@ -862,7 +961,7 @@ export function DriveWorkspace() {
                       <div
                         key={item.id}
                         onContextMenu={(event) => openFileContextMenu(event, item)}
-                        className={`grid w-full grid-cols-[28px_minmax(0,1fr)_74px_28px] items-center gap-3 border-b border-stone-100 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-white sm:grid-cols-[28px_minmax(0,1fr)_90px_130px_28px] sm:gap-4 ${selectedFileIds.has(item.id) ? "bg-emerald-50/60" : ""}`}
+                        className={`grid w-full grid-cols-[28px_minmax(0,1fr)_74px_56px] items-center gap-3 border-b border-stone-100 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-white sm:grid-cols-[28px_minmax(0,1fr)_90px_130px_56px] sm:gap-4 ${selectedFileIds.has(item.id) ? "bg-emerald-50/60" : ""}`}
                       >
                         <input
                           type="checkbox"
@@ -884,16 +983,26 @@ export function DriveWorkspace() {
                         </button>
                         <span className="text-stone-400">{item.kind === "folder" ? "--" : formatStorageBytes(item.size)}</span>
                         <span className="hidden truncate text-stone-400 sm:block">{formatTimestamp(item.modified_at)}</span>
-                        {item.downloadable ? (
+                        <div className="flex items-center justify-end">
+                          {item.downloadable && (
+                            <button
+                              onClick={() => void downloadFile(item)}
+                              disabled={loading}
+                              className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-800 disabled:opacity-40"
+                              title="下载到本地"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                           <button
-                            onClick={() => void downloadFile(item)}
+                            onClick={(event) => openFileContextMenu(event, item)}
                             disabled={loading}
                             className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-800 disabled:opacity-40"
-                            title="下载到本地"
+                            title="更多操作"
                           >
-                            <Download className="h-3.5 w-3.5" />
+                            <MoreHorizontal className="h-3.5 w-3.5" />
                           </button>
-                        ) : <span className="h-7 w-7" />}
+                        </div>
                       </div>
                     ))}
                     {!loading && sortedFiles.length === 0 && (
@@ -1029,18 +1138,40 @@ export function DriveWorkspace() {
                 </button>
               </>
             ) : (
-              <button
-                onClick={() => {
-                  const item = fileContextMenu.item;
-                  setFileContextMenu(null);
-                  void downloadFile(item);
-                }}
-                disabled={loading || !fileContextMenu.item.downloadable}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
-              >
-                <Download className="h-3.5 w-3.5" />
-                下载
-              </button>
+              <>
+                <button
+                  onClick={() => {
+                    const item = fileContextMenu.item;
+                    setFileContextMenu(null);
+                    void downloadFile(item);
+                  }}
+                  disabled={loading || !fileContextMenu.item.downloadable}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  下载
+                </button>
+                {knowledgeImportable(fileContextMenu.item) && (
+                  <button
+                    onClick={() => openKnowledgeImport(fileContextMenu.item)}
+                    disabled={loading || !activeAgentId || !fileContextMenu.item.downloadable}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
+                  >
+                    <FolderOpen className="h-3.5 w-3.5 text-emerald-700" />
+                    导入知识库
+                  </button>
+                )}
+                {readingImportable(fileContextMenu.item) && (
+                  <button
+                    onClick={() => void importToReading(fileContextMenu.item)}
+                    disabled={loading || !activeAgentId || !fileContextMenu.item.downloadable}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
+                  >
+                    <FolderDown className="h-3.5 w-3.5 text-emerald-700" />
+                    导入书架
+                  </button>
+                )}
+              </>
             )}
             {selectedProvider?.capabilities.delete_files && (
               <>
@@ -1057,6 +1188,46 @@ export function DriveWorkspace() {
             )}
           </div>
         </>
+      )}
+
+      {knowledgeImportItem && (
+        <div
+          className="fixed inset-0 z-[60] grid place-items-center bg-black/20 p-4 backdrop-blur-[1px]"
+          onClick={() => setKnowledgeImportItem(null)}
+        >
+          <div
+            className="w-full max-w-sm overflow-hidden rounded-lg border border-stone-200 bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-stone-800">选择知识库</div>
+                <div className="mt-0.5 truncate text-[11px] text-stone-400">{knowledgeImportItem.name}</div>
+              </div>
+              <button
+                onClick={() => setKnowledgeImportItem(null)}
+                className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                title="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="max-h-72 overflow-y-auto py-1">
+              {knowledgeCollections
+                .filter((collection) => collection.permission === "write" || collection.permission === "manage")
+                .map((collection) => (
+                  <button
+                    key={collection.id}
+                    onClick={() => void importToKnowledge(collection.id)}
+                    className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-xs text-stone-700 hover:bg-stone-50"
+                  >
+                    <FolderOpen className="h-3.5 w-3.5 text-emerald-700" />
+                    <span className="truncate">{collection.name}</span>
+                  </button>
+                ))}
+            </div>
+          </div>
+        </div>
       )}
 
       {showQuarkAuthorization && (

@@ -2195,6 +2195,50 @@ fn read_local_knowledge_document(
     i64,
     Vec<crate::db::repo::knowledge::NewDocumentChunk>,
 )> {
+    read_knowledge_document(path, None, None)
+}
+
+fn knowledge_media_type(
+    path: &std::path::Path,
+    remote_media_type: Option<&str>,
+) -> AppResult<String> {
+    let normalized = remote_media_type
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let media_type = match normalized {
+        Some(
+            "application/vnd.google-apps.document" | "application/vnd.google-apps.presentation",
+        ) => Some("text/plain"),
+        Some("application/vnd.google-apps.spreadsheet") => Some("text/csv"),
+        Some("application/vnd.google-apps.script" | "application/vnd.google-apps.script+json") => {
+            Some("application/json")
+        }
+        Some("text/markdown" | "text/plain" | "text/csv" | "application/json") => normalized,
+        Some("application/octet-stream") | None => None,
+        Some(_) => None,
+    };
+    media_type
+        .map(str::to_string)
+        .or_else(|| text_media_type(path).ok().map(str::to_string))
+        .ok_or_else(|| {
+            AppError::Other(
+                "当前仅支持 UTF-8 的 Markdown、文本、CSV、JSON 和可导出的 Google 文档".into(),
+            )
+        })
+}
+
+fn read_knowledge_document(
+    path: String,
+    title_hint: Option<String>,
+    remote_media_type: Option<String>,
+) -> AppResult<(
+    String,
+    String,
+    String,
+    i64,
+    Vec<crate::db::repo::knowledge::NewDocumentChunk>,
+)> {
     let path = std::path::PathBuf::from(path);
     let metadata = std::fs::metadata(&path)?;
     if !metadata.is_file() {
@@ -2206,7 +2250,7 @@ fn read_local_knowledge_document(
             MAX_LOCAL_KNOWLEDGE_DOCUMENT_BYTES / 1024 / 1024
         )));
     }
-    let media_type = text_media_type(&path)?.to_string();
+    let media_type = knowledge_media_type(&path, remote_media_type.as_deref())?;
     let bytes = std::fs::read(&path)?;
     let content = std::str::from_utf8(&bytes)
         .map_err(|_| AppError::Other("仅支持 UTF-8 编码的文本文件".into()))?
@@ -2219,13 +2263,73 @@ fn read_local_knowledge_document(
     if chunks.is_empty() {
         return Err(AppError::Other("文件没有可索引的文本内容".into()));
     }
-    let title = path
-        .file_stem()
-        .map(|name| name.to_string_lossy().trim().to_string())
-        .filter(|name| !name.is_empty())
+    let title = title_hint
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            path.file_stem()
+                .map(|name| name.to_string_lossy().trim().to_string())
+                .filter(|name| !name.is_empty())
+        })
         .unwrap_or_else(|| "未命名文档".into());
     let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
     Ok((title, media_type, hash, bytes.len() as i64, chunks))
+}
+
+fn knowledge_storage_path(
+    data_dir: &std::path::Path,
+    account_id: &str,
+    file_id: &str,
+) -> std::path::PathBuf {
+    let key = format!("{account_id}\0{file_id}");
+    let digest = Sha256::digest(key.as_bytes());
+    data_dir
+        .join("knowledge-sources")
+        .join(format!("{digest:x}.source"))
+}
+
+struct ManagedFileInstall {
+    target: std::path::PathBuf,
+    backup: Option<std::path::PathBuf>,
+}
+
+fn install_managed_file(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> AppResult<ManagedFileInstall> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| AppError::Other("Invalid managed source path".into()))?;
+    std::fs::create_dir_all(parent)?;
+    let backup = if target.exists() {
+        let backup = parent.join(format!(".agnes-source-{}.backup", uuid::Uuid::new_v4()));
+        std::fs::rename(target, &backup)?;
+        Some(backup)
+    } else {
+        None
+    };
+    if let Err(error) = std::fs::rename(source, target) {
+        if let Some(backup) = backup.as_ref() {
+            let _ = std::fs::rename(backup, target);
+        }
+        return Err(error.into());
+    }
+    Ok(ManagedFileInstall {
+        target: target.to_path_buf(),
+        backup,
+    })
+}
+
+fn commit_managed_file(install: ManagedFileInstall) {
+    if let Some(backup) = install.backup {
+        let _ = std::fs::remove_file(backup);
+    }
+}
+
+fn rollback_managed_file(install: ManagedFileInstall) {
+    let _ = std::fs::remove_file(&install.target);
+    if let Some(backup) = install.backup {
+        let _ = std::fs::rename(backup, install.target);
+    }
 }
 
 #[derive(Deserialize)]
@@ -2283,6 +2387,14 @@ pub async fn list_reading_books(
 #[tauri::command]
 pub async fn import_reading_book(
     state: tauri::State<'_, AppState>,
+    agent_id: String,
+    path: String,
+) -> AppResult<crate::db::repo::reading::ReadingBookRow> {
+    import_reading_book_from_path(&state, agent_id, path).await
+}
+
+async fn import_reading_book_from_path(
+    state: &AppState,
     agent_id: String,
     path: String,
 ) -> AppResult<crate::db::repo::reading::ReadingBookRow> {
@@ -2387,6 +2499,49 @@ pub async fn import_reading_book(
         let _ = std::fs::remove_file(&stored_path);
     }
     import_result
+}
+
+#[tauri::command]
+pub async fn import_storage_reading_book(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    file_id: String,
+    expected_revision: Option<String>,
+    expected_size: Option<u64>,
+    agent_id: String,
+) -> AppResult<crate::db::repo::reading::ReadingBookRow> {
+    let staged = state
+        .storage
+        .stage_file_import(
+            account_id,
+            file_id,
+            expected_revision,
+            expected_size,
+            state.data_dir.join("storage-imports"),
+            crate::storage::StorageImportKind::Reading,
+            agent_id.clone(),
+            crate::reading::MAX_EPUB_ARCHIVE_BYTES,
+        )
+        .await?;
+    let result = import_reading_book_from_path(
+        &state,
+        agent_id,
+        staged.local_path.to_string_lossy().to_string(),
+    )
+    .await;
+    let finish_error = result.as_ref().err();
+    let finish_result = state
+        .storage
+        .finish_file_import(&staged, finish_error)
+        .await;
+    let _ = tokio::fs::remove_file(&staged.local_path).await;
+    match result {
+        Ok(book) => {
+            finish_result?;
+            Ok(book)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[tauri::command]
@@ -2648,6 +2803,87 @@ pub async fn import_local_knowledge_document(
             chunks,
         })
         .await
+}
+
+#[tauri::command]
+pub async fn import_storage_knowledge_document(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    file_id: String,
+    expected_revision: Option<String>,
+    expected_size: Option<u64>,
+    collection_id: String,
+    agent_id: String,
+) -> AppResult<crate::db::repo::knowledge::ImportDocumentResult> {
+    let stable_path = knowledge_storage_path(&state.data_dir, &account_id, &file_id);
+    let staged = state
+        .storage
+        .stage_file_import(
+            account_id,
+            file_id,
+            expected_revision,
+            expected_size,
+            state.data_dir.join("storage-imports"),
+            crate::storage::StorageImportKind::Knowledge,
+            collection_id.clone(),
+            MAX_LOCAL_KNOWLEDGE_DOCUMENT_BYTES,
+        )
+        .await?;
+    let parse_path = staged.local_path.to_string_lossy().to_string();
+    let remote_name = staged.remote_file.name.clone();
+    let remote_media_type = staged.remote_file.media_type.clone();
+    let outcome = async {
+        let parsed = tokio::task::spawn_blocking(move || {
+            read_knowledge_document(parse_path, Some(remote_name), remote_media_type)
+        })
+        .await
+        .map_err(|error| AppError::Other(format!("知识库网盘导入任务异常中止：{error}")))??;
+        let (title, media_type, plaintext_hash, size, chunks) = parsed;
+        let install = tokio::task::spawn_blocking({
+            let source = staged.local_path.clone();
+            let target = stable_path.clone();
+            move || install_managed_file(&source, &target)
+        })
+        .await
+        .map_err(|error| AppError::Other(format!("知识库源文件安装任务异常中止：{error}")))??;
+        let result = state
+            .db
+            .import_local_knowledge_document(crate::db::repo::knowledge::NewLocalDocument {
+                collection_id,
+                agent_id,
+                title,
+                media_type,
+                local_path: stable_path.to_string_lossy().to_string(),
+                plaintext_hash,
+                size,
+                chunks,
+            })
+            .await;
+        match result {
+            Ok(result) => {
+                commit_managed_file(install);
+                Ok(result)
+            }
+            Err(error) => {
+                rollback_managed_file(install);
+                Err(error)
+            }
+        }
+    }
+    .await;
+    let finish_error = outcome.as_ref().err();
+    let finish_result = state
+        .storage
+        .finish_file_import(&staged, finish_error)
+        .await;
+    let _ = tokio::fs::remove_file(&staged.local_path).await;
+    match outcome {
+        Ok(result) => {
+            finish_result?;
+            Ok(result)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[tauri::command]
@@ -4118,9 +4354,10 @@ pub async fn set_setting(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_automatic_session_title, latest_user_query, normalize_session_title,
-        persist_search_provider_settings, saved_provider_endpoint_matches,
-        CalendarEventUpdatePayload, SearchProviderSettingsInput, TaskUpdatePayload,
+        commit_managed_file, install_managed_file, is_automatic_session_title, latest_user_query,
+        normalize_session_title, persist_search_provider_settings, read_knowledge_document,
+        rollback_managed_file, saved_provider_endpoint_matches, CalendarEventUpdatePayload,
+        SearchProviderSettingsInput, TaskUpdatePayload,
     };
     use crate::secrets::{InMemorySecretStore, SecretStore};
 
@@ -4327,5 +4564,47 @@ mod tests {
         let event: CalendarEventUpdatePayload =
             serde_json::from_value(serde_json::json!({ "recurrenceRule": null })).unwrap();
         assert_eq!(event.recurrence_rule, Some(None));
+    }
+
+    #[test]
+    fn remote_knowledge_parser_uses_google_export_mime_without_an_extension() {
+        let path =
+            std::env::temp_dir().join(format!("agnes-google-document-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "# Roadmap\n\nDirect import content.").unwrap();
+        let (title, media_type, _, size, chunks) = read_knowledge_document(
+            path.to_string_lossy().to_string(),
+            Some("Roadmap".into()),
+            Some("application/vnd.google-apps.document".into()),
+        )
+        .unwrap();
+        assert_eq!(title, "Roadmap");
+        assert_eq!(media_type, "text/plain");
+        assert!(size > 0);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].section_path.as_deref(), Some("Roadmap"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn managed_knowledge_source_install_supports_rollback_and_commit() {
+        let directory =
+            std::env::temp_dir().join(format!("agnes-managed-source-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let target = directory.join("source");
+        let first = directory.join("first.staged");
+        std::fs::write(&target, b"old").unwrap();
+        std::fs::write(&first, b"new").unwrap();
+        let install = install_managed_file(&first, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        rollback_managed_file(install);
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+
+        let second = directory.join("second.staged");
+        std::fs::write(&second, b"committed").unwrap();
+        let install = install_managed_file(&second, &target).unwrap();
+        commit_managed_file(install);
+        assert_eq!(std::fs::read(&target).unwrap(), b"committed");
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -40,6 +40,37 @@ pub struct StorageAuthorizationProgress {
     pub account_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum StorageImportKind {
+    Knowledge,
+    Reading,
+}
+
+impl StorageImportKind {
+    fn operation(self) -> &'static str {
+        match self {
+            Self::Knowledge => "knowledge_import",
+            Self::Reading => "reading_import",
+        }
+    }
+
+    fn destination_kind(self) -> &'static str {
+        match self {
+            Self::Knowledge => "knowledge_collection",
+            Self::Reading => "reading_library",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct StagedStorageImport {
+    pub job_id: String,
+    pub local_path: std::path::PathBuf,
+    pub remote_file: RemoteFileItem,
+    pub bytes_transferred: i64,
+    pub bytes_total: Option<i64>,
+}
+
 pub struct StorageService {
     db: DbActorHandle,
     registry: Arc<StorageProviderRegistry>,
@@ -169,7 +200,7 @@ impl StorageService {
                 account_id: row.id.clone(),
                 operation: "file_download".into(),
                 remote_item_id: Some(file_id.clone()),
-                display_name: remote_file.name,
+                display_name: remote_file.name.clone(),
                 destination_kind: Some("local_file".into()),
                 destination_id: Some(destination.to_string_lossy().to_string()),
                 bytes_total,
@@ -191,6 +222,8 @@ impl StorageService {
                 &job_id,
                 bytes_total,
                 descriptor.capabilities.stable_file_sizes,
+                supports_range_download(&descriptor, &remote_file),
+                None,
             )
             .await;
         match result {
@@ -210,32 +243,191 @@ impl StorageService {
                 self.update_provider_status(&row, None).await;
                 Ok(())
             }
-            Err(DownloadFailure::Provider(error)) => {
+            Err(DownloadFailure::Provider { error, transferred }) => {
                 self.update_provider_status(&row, Some(&error)).await;
                 let app_error = provider_error(error.clone());
                 let _ = self
                     .update_transfer(
                         &job_id,
                         "failed",
-                        0,
+                        transferred,
                         bytes_total,
                         Some((error.category.as_str(), error.message.as_str())),
                     )
                     .await;
                 Err(app_error)
             }
-            Err(DownloadFailure::Local(error)) => {
+            Err(DownloadFailure::Local { error, transferred }) => {
                 let message = error.to_string();
                 let _ = self
                     .update_transfer(
                         &job_id,
                         "failed",
-                        0,
+                        transferred,
                         bytes_total,
                         Some(("local_io", message.as_str())),
                     )
                     .await;
                 Err(error)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn stage_file_import(
+        &self,
+        account_id: String,
+        file_id: String,
+        expected_revision: Option<String>,
+        expected_size: Option<u64>,
+        destination_directory: std::path::PathBuf,
+        kind: StorageImportKind,
+        destination_id: String,
+        max_bytes: u64,
+    ) -> AppResult<StagedStorageImport> {
+        if !destination_directory.is_absolute() {
+            return Err(AppError::Other(
+                "Storage import directory must be absolute".into(),
+            ));
+        }
+        tokio::fs::create_dir_all(&destination_directory).await?;
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let file_source = session.file_source().ok_or_else(|| {
+            AppError::Other("Storage provider does not support file downloads".into())
+        })?;
+        let remote_file = match file_source.get_file(&file_id).await {
+            Ok(file) => file,
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                return Err(provider_error(error));
+            }
+        };
+        if remote_file.kind != RemoteFileKind::File {
+            return Err(AppError::Other(
+                "Only regular storage files can be imported".into(),
+            ));
+        }
+        let destination = destination_directory.join(match kind {
+            StorageImportKind::Knowledge => {
+                format!("knowledge-{}.staged", uuid::Uuid::new_v4())
+            }
+            StorageImportKind::Reading => format!("reading-{}.epub", uuid::Uuid::new_v4()),
+        });
+        let descriptor = self
+            .registry
+            .descriptor(&row.provider_id)
+            .map_err(provider_error)?;
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let bytes_total = descriptor
+            .capabilities
+            .stable_file_sizes
+            .then(|| remote_file.size)
+            .flatten()
+            .or(expected_size)
+            .and_then(|value| i64::try_from(value).ok());
+        self.db
+            .insert_storage_transfer_job(NewStorageTransferJob {
+                id: job_id.clone(),
+                account_id: row.id.clone(),
+                operation: kind.operation().into(),
+                remote_item_id: Some(file_id.clone()),
+                display_name: remote_file.name.clone(),
+                destination_kind: Some(kind.destination_kind().into()),
+                destination_id: Some(destination_id),
+                bytes_total,
+            })
+            .await?;
+        self.update_transfer(&job_id, "running", 0, bytes_total, None)
+            .await?;
+
+        let result = self
+            .stream_file_to_destination(
+                file_source,
+                super::domain::DownloadFileRequest {
+                    file_id,
+                    range_start: None,
+                    range_end_inclusive: None,
+                    expected_revision,
+                },
+                &destination,
+                &job_id,
+                bytes_total,
+                descriptor.capabilities.stable_file_sizes,
+                supports_range_download(&descriptor, &remote_file),
+                Some(max_bytes),
+            )
+            .await;
+        match result {
+            Ok(bytes_transferred) => {
+                self.update_provider_status(&row, None).await;
+                Ok(StagedStorageImport {
+                    job_id,
+                    local_path: destination,
+                    remote_file,
+                    bytes_transferred,
+                    bytes_total: if descriptor.capabilities.stable_file_sizes {
+                        bytes_total.or(Some(bytes_transferred))
+                    } else {
+                        Some(bytes_transferred)
+                    },
+                })
+            }
+            Err(DownloadFailure::Provider { error, transferred }) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                let app_error = provider_error(error.clone());
+                let _ = self
+                    .update_transfer(
+                        &job_id,
+                        "failed",
+                        transferred,
+                        bytes_total,
+                        Some((error.category.as_str(), error.message.as_str())),
+                    )
+                    .await;
+                Err(app_error)
+            }
+            Err(DownloadFailure::Local { error, transferred }) => {
+                let message = error.to_string();
+                let _ = self
+                    .update_transfer(
+                        &job_id,
+                        "failed",
+                        transferred,
+                        bytes_total,
+                        Some(("local_import", message.as_str())),
+                    )
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn finish_file_import(
+        &self,
+        import: &StagedStorageImport,
+        error: Option<&AppError>,
+    ) -> AppResult<()> {
+        match error {
+            Some(error) => {
+                let message = error.to_string();
+                self.update_transfer(
+                    &import.job_id,
+                    "failed",
+                    import.bytes_transferred,
+                    import.bytes_total,
+                    Some(("local_import", message.as_str())),
+                )
+                .await
+            }
+            None => {
+                self.update_transfer(
+                    &import.job_id,
+                    "completed",
+                    import.bytes_transferred,
+                    import.bytes_total,
+                    None,
+                )
+                .await
             }
         }
     }
@@ -762,9 +954,11 @@ impl StorageService {
         job_id: &str,
         bytes_total: Option<i64>,
         exact_size: bool,
+        range_download: bool,
+        max_bytes: Option<u64>,
     ) -> Result<i64, DownloadFailure> {
         let parent = destination.parent().ok_or_else(|| {
-            DownloadFailure::Local(AppError::Other("Invalid download destination".into()))
+            DownloadFailure::local(AppError::Other("Invalid download destination".into()), 0)
         })?;
         let temporary = parent.join(format!(".agnes-download-{}.partial", uuid::Uuid::new_v4()));
         let result = async {
@@ -773,47 +967,122 @@ impl StorageService {
                 .create_new(true)
                 .open(&temporary)
                 .await
-                .map_err(AppError::from)?;
-            let mut stream = file_source
-                .download_file(request)
-                .await
-                .map_err(DownloadFailure::Provider)?;
+                .map_err(|error| DownloadFailure::local(error.into(), 0))?;
             let mut transferred = 0_i64;
             let mut last_reported = 0_i64;
             let mut last_reported_at = Instant::now();
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk.map_err(DownloadFailure::Provider)?;
-                output.write_all(&chunk).await.map_err(AppError::from)?;
-                let chunk_size = i64::try_from(chunk.len()).map_err(|_| {
-                    AppError::Other("Downloaded storage file exceeds the local size range".into())
-                })?;
-                transferred = transferred.checked_add(chunk_size).ok_or_else(|| {
-                    AppError::Other("Downloaded storage file exceeds the local size range".into())
-                })?;
-                let mut progress_total = bytes_total;
-                if progress_total.is_some_and(|total| transferred > total) {
-                    progress_total = Some(transferred);
+            let mut attempts = 0_usize;
+            loop {
+                let mut next_request = request.clone();
+                if transferred > 0 {
+                    next_request.range_start = Some(
+                        request
+                            .range_start
+                            .unwrap_or_default()
+                            .saturating_add(transferred as u64),
+                    );
                 }
-                if transferred - last_reported >= 1024 * 1024
-                    || last_reported == 0
-                    || last_reported_at.elapsed() >= Duration::from_millis(250)
-                {
-                    self.update_transfer(job_id, "running", transferred, progress_total, None)
-                        .await?;
-                    last_reported = transferred;
-                    last_reported_at = Instant::now();
+                let mut stream = match file_source.download_file(next_request).await {
+                    Ok(stream) => stream,
+                    Err(error)
+                        if can_resume_download(&error, transferred, range_download, attempts) =>
+                    {
+                        retry_download(attempts, error.retry_after_seconds).await;
+                        attempts += 1;
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(DownloadFailure::provider(error, transferred));
+                    }
+                };
+                let mut interrupted = None;
+                while let Some(chunk_result) = stream.next().await {
+                    let chunk = match chunk_result {
+                        Ok(chunk) => chunk,
+                        Err(error) => {
+                            interrupted = Some(error);
+                            break;
+                        }
+                    };
+                    let chunk_size = i64::try_from(chunk.len()).map_err(|_| {
+                        DownloadFailure::local(
+                            AppError::Other(
+                                "Downloaded storage file exceeds the local size range".into(),
+                            ),
+                            transferred,
+                        )
+                    })?;
+                    let next_transferred =
+                        transferred.checked_add(chunk_size).ok_or_else(|| {
+                            DownloadFailure::local(
+                                AppError::Other(
+                                    "Downloaded storage file exceeds the local size range".into(),
+                                ),
+                                transferred,
+                            )
+                        })?;
+                    if let Some(limit) = max_bytes {
+                        if next_transferred as u64 > limit {
+                            return Err(DownloadFailure::local(
+                                AppError::Other(format!(
+                                    "Storage import exceeds the {} MiB limit",
+                                    limit / 1024 / 1024
+                                )),
+                                transferred,
+                            ));
+                        }
+                    }
+                    output
+                        .write_all(&chunk)
+                        .await
+                        .map_err(|error| DownloadFailure::local(error.into(), transferred))?;
+                    transferred = next_transferred;
+                    let mut progress_total = bytes_total;
+                    if progress_total.is_some_and(|total| transferred > total) {
+                        progress_total = Some(transferred);
+                    }
+                    if transferred - last_reported >= 1024 * 1024
+                        || last_reported == 0
+                        || last_reported_at.elapsed() >= Duration::from_millis(250)
+                    {
+                        self.update_transfer(job_id, "running", transferred, progress_total, None)
+                            .await
+                            .map_err(|error| DownloadFailure::local(error, transferred))?;
+                        last_reported = transferred;
+                        last_reported_at = Instant::now();
+                    }
                 }
+                if let Some(error) = interrupted {
+                    if can_resume_download(&error, transferred, range_download, attempts) {
+                        retry_download(attempts, error.retry_after_seconds).await;
+                        attempts += 1;
+                        continue;
+                    }
+                    return Err(DownloadFailure::provider(error, transferred));
+                }
+                break;
             }
             if exact_size && bytes_total.is_some_and(|expected| transferred != expected) {
-                return Err(DownloadFailure::Provider(ProviderError::new(
-                    super::domain::ProviderErrorCategory::InvalidResponse,
-                    "Storage provider download ended before the declared file size",
-                )));
+                return Err(DownloadFailure::provider(
+                    ProviderError::new(
+                        super::domain::ProviderErrorCategory::InvalidResponse,
+                        "Storage provider download ended before the declared file size",
+                    ),
+                    transferred,
+                ));
             }
-            output.flush().await.map_err(AppError::from)?;
-            output.sync_all().await.map_err(AppError::from)?;
+            output
+                .flush()
+                .await
+                .map_err(|error| DownloadFailure::local(error.into(), transferred))?;
+            output
+                .sync_all()
+                .await
+                .map_err(|error| DownloadFailure::local(error.into(), transferred))?;
             drop(output);
-            install_download(&temporary, destination).await?;
+            install_download(&temporary, destination)
+                .await
+                .map_err(|error| DownloadFailure::local(error, transferred))?;
             Ok::<_, DownloadFailure>(transferred)
         }
         .await;
@@ -962,13 +1231,23 @@ impl StorageService {
 }
 
 enum DownloadFailure {
-    Provider(ProviderError),
-    Local(AppError),
+    Provider {
+        error: ProviderError,
+        transferred: i64,
+    },
+    Local {
+        error: AppError,
+        transferred: i64,
+    },
 }
 
-impl From<AppError> for DownloadFailure {
-    fn from(error: AppError) -> Self {
-        Self::Local(error)
+impl DownloadFailure {
+    fn provider(error: ProviderError, transferred: i64) -> Self {
+        Self::Provider { error, transferred }
+    }
+
+    fn local(error: AppError, transferred: i64) -> Self {
+        Self::Local { error, transferred }
     }
 }
 
@@ -1124,6 +1403,49 @@ fn safe_local_name(value: &str) -> String {
     }
 }
 
+fn supports_range_download(descriptor: &ProviderDescriptor, remote_file: &RemoteFileItem) -> bool {
+    if !descriptor.capabilities.range_download {
+        return false;
+    }
+    !remote_file.media_type.as_deref().is_some_and(|media_type| {
+        matches!(
+            media_type,
+            "application/vnd.google-apps.document"
+                | "application/vnd.google-apps.spreadsheet"
+                | "application/vnd.google-apps.presentation"
+                | "application/vnd.google-apps.drawing"
+                | "application/vnd.google-apps.script"
+        )
+    })
+}
+
+fn can_resume_download(
+    error: &ProviderError,
+    transferred: i64,
+    range_download: bool,
+    attempts: usize,
+) -> bool {
+    if attempts >= 3 {
+        return false;
+    }
+    if transferred > 0 && !range_download {
+        return false;
+    }
+    matches!(
+        error.category,
+        super::domain::ProviderErrorCategory::Network
+            | super::domain::ProviderErrorCategory::RemoteUnavailable
+            | super::domain::ProviderErrorCategory::RateLimit
+    )
+}
+
+async fn retry_download(attempt: usize, retry_after_seconds: Option<u64>) {
+    let delay = retry_after_seconds
+        .map(|seconds| Duration::from_secs(seconds.min(5)))
+        .unwrap_or_else(|| Duration::from_millis(100_u64.saturating_mul(1_u64 << attempt.min(4))));
+    tokio::time::sleep(delay).await;
+}
+
 fn available_child_path(
     parent: &std::path::Path,
     name: &str,
@@ -1197,8 +1519,9 @@ mod tests {
     use crate::secrets::InMemorySecretStore;
     use crate::storage::domain::{
         BeginFileUploadRequest, DownloadFileRequest, FileUploadSession, ProviderAuthKind,
-        ProviderByteStream, ProviderResult, ProviderStability, RemoteFileItem, RemoteFileKind,
-        StorageCapabilities, UploadFileChunkRequest, UploadedFileChunk,
+        ProviderByteStream, ProviderErrorCategory, ProviderResult, ProviderStability,
+        RemoteFileItem, RemoteFileKind, StorageCapabilities, UploadFileChunkRequest,
+        UploadedFileChunk,
     };
     use crate::storage::ports::{
         FileManagementProvider, FileSourceProvider, FileUploadProvider,
@@ -1301,6 +1624,147 @@ mod tests {
         async fn trash_files(&self, file_ids: Vec<String>) -> ProviderResult<()> {
             assert_eq!(file_ids, vec!["remote-1"]);
             Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum ContractScenario {
+        Healthy,
+        AuthorizationLost,
+        ChangedFields,
+        RateLimited,
+        Resume,
+    }
+
+    struct ContractDrive {
+        scenario: ContractScenario,
+        requests: std::sync::Mutex<Vec<DownloadFileRequest>>,
+    }
+
+    #[async_trait]
+    impl FileSourceProvider for ContractDrive {
+        async fn list_files(&self, _request: ListFilesRequest) -> ProviderResult<RemoteFilePage> {
+            match self.scenario {
+                ContractScenario::AuthorizationLost => Err(ProviderError::new(
+                    ProviderErrorCategory::Authentication,
+                    "stored authorization expired",
+                )),
+                ContractScenario::ChangedFields => Err(ProviderError::new(
+                    ProviderErrorCategory::InvalidResponse,
+                    "remote metadata changed shape",
+                )),
+                _ => Ok(RemoteFilePage {
+                    items: vec![self.get_file("contract-file").await?],
+                    next_page_token: None,
+                }),
+            }
+        }
+
+        async fn get_file(&self, file_id: &str) -> ProviderResult<RemoteFileItem> {
+            Ok(RemoteFileItem {
+                id: file_id.into(),
+                parent_id: None,
+                name: "contract.txt".into(),
+                kind: RemoteFileKind::File,
+                media_type: Some("text/plain".into()),
+                size: Some(6),
+                modified_at: None,
+                revision: Some("revision-1".into()),
+                downloadable: true,
+            })
+        }
+
+        async fn download_file(
+            &self,
+            request: DownloadFileRequest,
+        ) -> ProviderResult<ProviderByteStream> {
+            self.requests.lock().unwrap().push(request.clone());
+            match self.scenario {
+                ContractScenario::RateLimited => Err(ProviderError::new(
+                    ProviderErrorCategory::RateLimit,
+                    "provider is busy",
+                )
+                .with_retry_after(0)),
+                ContractScenario::Resume if request.range_start.is_none() => {
+                    Ok(Box::pin(stream::iter(vec![
+                        Ok(vec![b'a', b'b', b'c']),
+                        Err(ProviderError::new(
+                            ProviderErrorCategory::Network,
+                            "connection reset",
+                        )),
+                    ])))
+                }
+                ContractScenario::Resume if request.range_start == Some(3) => {
+                    Ok(Box::pin(stream::iter(vec![Ok(vec![b'd', b'e', b'f'])])))
+                }
+                ContractScenario::Resume => Err(ProviderError::new(
+                    ProviderErrorCategory::InvalidRequest,
+                    "unexpected resume offset",
+                )),
+                _ => Ok(Box::pin(stream::iter(vec![Ok(vec![
+                    b'a', b'b', b'c', b'd', b'e', b'f',
+                ])]))),
+            }
+        }
+    }
+
+    impl ProviderSession for ContractDrive {
+        fn file_source(&self) -> Option<&dyn FileSourceProvider> {
+            Some(self)
+        }
+    }
+
+    struct ContractFactory {
+        provider_id: &'static str,
+        scenario: ContractScenario,
+        session: Arc<ContractDrive>,
+    }
+
+    #[async_trait]
+    impl ProviderFactory for ContractFactory {
+        fn descriptor(&self) -> ProviderDescriptor {
+            ProviderDescriptor {
+                id: self.provider_id.into(),
+                display_name: self.provider_id.into(),
+                auth_kind: ProviderAuthKind::ApiToken,
+                stability: ProviderStability::Experimental,
+                implementation_version: "contract-v1".into(),
+                capabilities: StorageCapabilities {
+                    browse_files: true,
+                    read_files: true,
+                    range_download: matches!(self.scenario, ContractScenario::Resume),
+                    stable_file_sizes: true,
+                    user_authorization: true,
+                    ..StorageCapabilities::default()
+                },
+            }
+        }
+
+        async fn authorize(
+            &self,
+            _request: ProviderAuthorizationRequest,
+        ) -> ProviderResult<ProviderAuthorizationResult> {
+            Ok(ProviderAuthorizationResult {
+                account: StorageProviderAccount {
+                    id: format!("{}-account", self.provider_id),
+                    provider_id: self.provider_id.into(),
+                    display_name: self.provider_id.into(),
+                    account_subject: None,
+                    config: serde_json::json!({}),
+                },
+                credential: Zeroizing::new("contract-credential".into()),
+            })
+        }
+
+        async fn connect(
+            &self,
+            _account: &StorageProviderAccount,
+            credentials: Arc<dyn ProviderCredentialAccess>,
+        ) -> ProviderResult<Arc<dyn ProviderSession>> {
+            credentials.load().await?.ok_or_else(|| {
+                ProviderError::new(ProviderErrorCategory::Authentication, "credential missing")
+            })?;
+            Ok(self.session.clone())
         }
     }
 
@@ -1442,6 +1906,34 @@ mod tests {
             std::fs::read(&advisory_destination).unwrap(),
             vec![b'x'; 128]
         );
+        let import_directory =
+            std::env::temp_dir().join(format!("agnes-storage-import-{}", uuid::Uuid::new_v4()));
+        let staged = service
+            .stage_file_import(
+                "account-1".into(),
+                "remote-1".into(),
+                Some("revision-1".into()),
+                Some(128),
+                import_directory.clone(),
+                StorageImportKind::Knowledge,
+                "collection-1".into(),
+                1024,
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&staged.local_path).unwrap(), vec![b'x'; 128]);
+        assert_eq!(
+            service
+                .list_transfers(Some("account-1".into()), 10)
+                .await
+                .unwrap()
+                .iter()
+                .find(|transfer| transfer.id == staged.job_id)
+                .unwrap()
+                .status,
+            "running"
+        );
+        service.finish_file_import(&staged, None).await.unwrap();
         let batch_directory = std::env::temp_dir().join(format!(
             "agnes-storage-batch-download-{}",
             uuid::Uuid::new_v4()
@@ -1479,7 +1971,7 @@ mod tests {
             .list_transfers(Some("account-1".into()), 10)
             .await
             .unwrap();
-        assert_eq!(transfers.len(), 4);
+        assert_eq!(transfers.len(), 5);
         assert!(transfers
             .iter()
             .all(|transfer| transfer.status == "completed"));
@@ -1504,6 +1996,7 @@ mod tests {
         drop(service);
         let _ = std::fs::remove_file(destination);
         let _ = std::fs::remove_file(advisory_destination);
+        let _ = std::fs::remove_dir_all(import_directory);
         let _ = std::fs::remove_dir_all(batch_directory);
         let _ = std::fs::remove_dir_all(upload_directory);
         let _ = std::fs::remove_file(path);
@@ -1527,5 +2020,154 @@ mod tests {
         assert!(validate_download_destination(&destination).is_ok());
         assert!(validate_download_destination(std::path::Path::new("relative.txt")).is_err());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn provider_contract_covers_auth_schema_rate_limit_resume_and_switching() {
+        let database = std::env::temp_dir().join(format!(
+            "agnes-provider-contract-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = crate::db::spawn_db_actor(database.clone());
+        let registry = Arc::new(StorageProviderRegistry::new());
+        let scenarios = [
+            ("contract_healthy", ContractScenario::Healthy),
+            ("contract_auth", ContractScenario::AuthorizationLost),
+            ("contract_schema", ContractScenario::ChangedFields),
+            ("contract_rate", ContractScenario::RateLimited),
+            ("contract_resume", ContractScenario::Resume),
+        ];
+        let mut sessions = std::collections::HashMap::new();
+        for (provider_id, scenario) in scenarios {
+            let session = Arc::new(ContractDrive {
+                scenario,
+                requests: std::sync::Mutex::new(Vec::new()),
+            });
+            registry
+                .register(Arc::new(ContractFactory {
+                    provider_id,
+                    scenario,
+                    session: session.clone(),
+                }))
+                .unwrap();
+            sessions.insert(provider_id, session);
+        }
+        let credentials = Arc::new(super::super::KeyringProviderCredentialStore::new(Arc::new(
+            InMemorySecretStore::default(),
+        )));
+        let service = StorageService::new(db, registry, credentials);
+        for (provider_id, _) in scenarios {
+            service
+                .authorize_account(
+                    provider_id.into(),
+                    ProviderAuthorizationRequest {
+                        input: serde_json::json!({}),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        assert!(service
+            .list_files(
+                "contract_auth-account".into(),
+                ListFilesRequest {
+                    parent_id: None,
+                    page_token: None,
+                    page_size: 10,
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("authentication"));
+        let healthy = service
+            .list_files(
+                "contract_healthy-account".into(),
+                ListFilesRequest {
+                    parent_id: None,
+                    page_token: None,
+                    page_size: 10,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(healthy.items.len(), 1);
+
+        assert!(service
+            .list_files(
+                "contract_schema-account".into(),
+                ListFilesRequest {
+                    parent_id: None,
+                    page_token: None,
+                    page_size: 10,
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("invalid_response"));
+        let accounts = service.list_accounts().await.unwrap();
+        let auth = accounts
+            .iter()
+            .find(|account| account.account.id == "contract_auth-account")
+            .unwrap();
+        assert_eq!(auth.account.auth_state, "auth_required");
+        let schema = accounts
+            .iter()
+            .find(|account| account.account.id == "contract_schema-account")
+            .unwrap();
+        assert_eq!(schema.account.auth_state, "connected");
+        assert_eq!(
+            schema.account.last_error_category.as_deref(),
+            Some("invalid_response")
+        );
+
+        let directory = std::env::temp_dir().join(format!(
+            "agnes-provider-contract-download-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let rate_destination = directory.join("rate.txt");
+        assert!(service
+            .download_file(
+                "contract_rate-account".into(),
+                "contract-file".into(),
+                Some("revision-1".into()),
+                Some(6),
+                rate_destination.to_string_lossy().to_string(),
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("rate_limit"));
+        let rate_jobs = service
+            .list_transfers(Some("contract_rate-account".into()), 10)
+            .await
+            .unwrap();
+        assert_eq!(rate_jobs[0].status, "failed");
+        assert_eq!(rate_jobs[0].error_category.as_deref(), Some("rate_limit"));
+
+        let resume_destination = directory.join("resume.txt");
+        service
+            .download_file(
+                "contract_resume-account".into(),
+                "contract-file".into(),
+                Some("revision-1".into()),
+                Some(6),
+                resume_destination.to_string_lossy().to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&resume_destination).unwrap(), b"abcdef");
+        let resume_requests = sessions["contract_resume"].requests.lock().unwrap();
+        assert_eq!(resume_requests.len(), 2);
+        assert_eq!(resume_requests[0].range_start, None);
+        assert_eq!(resume_requests[1].range_start, Some(3));
+
+        drop(resume_requests);
+        drop(service);
+        let _ = std::fs::remove_dir_all(directory);
+        let _ = std::fs::remove_file(database);
     }
 }
