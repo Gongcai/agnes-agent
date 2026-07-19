@@ -17,6 +17,16 @@ const MIN_UPLOAD_CHUNK: u64 = 5 * 1024 * 1024;
 const MAX_UPLOAD_CHUNK: u64 = 64 * 1024 * 1024;
 const MAX_DOWNLOAD_ATTEMPTS: usize = 3;
 
+#[derive(Debug, Clone)]
+pub struct RemoteArtifactDescriptor {
+    pub artifact_id: String,
+    pub artifact_type: String,
+    pub ciphertext_hash: String,
+    pub size: u64,
+    pub key_version: i64,
+    pub updated_at: i64,
+}
+
 /// Uploads an already-encrypted artifact and verifies the final remote object
 /// before returning a locator suitable for a replica manifest.
 pub async fn upload_artifact(
@@ -101,21 +111,54 @@ pub async fn download_artifact(
     expected: &crate::sync::artifact::ArtifactManifest,
     master_key: &SyncMasterKey,
 ) -> AppResult<VerifiedArtifact> {
+    let bytes =
+        download_ciphertext(provider, locator, expected.size, &expected.ciphertext_hash).await?;
+    verify_artifact(master_key, expected, &bytes)
+}
+
+/// Downloads an object when the control plane has only the safe manifest
+/// fields. The immutable artifact header supplies the remaining local fields.
+pub async fn download_remote_artifact(
+    provider: &dyn ObjectStorageProvider,
+    locator: RemoteObjectLocator,
+    remote: &RemoteArtifactDescriptor,
+    master_key: &SyncMasterKey,
+) -> AppResult<VerifiedArtifact> {
+    let bytes =
+        download_ciphertext(provider, locator, remote.size, &remote.ciphertext_hash).await?;
+    let manifest = crate::sync::artifact::manifest_from_ciphertext(
+        &bytes,
+        &remote.artifact_id,
+        &remote.artifact_type,
+        &remote.ciphertext_hash,
+        remote.size,
+        remote.key_version,
+        remote.updated_at.to_string(),
+    )?;
+    verify_artifact(master_key, &manifest, &bytes)
+}
+
+async fn download_ciphertext(
+    provider: &dyn ObjectStorageProvider,
+    locator: RemoteObjectLocator,
+    expected_size: u64,
+    expected_hash: &str,
+) -> AppResult<Vec<u8>> {
     let state = provider
         .stat_object(&locator)
         .await
         .map_err(provider_error)?;
-    if state.size != expected.size
+    if state.size != expected_size
         || state
             .content_hash
             .as_deref()
-            .is_some_and(|hash| hash != expected.ciphertext_hash)
+            .is_some_and(|hash| hash != expected_hash)
     {
         return Err(AppError::Other(
             "Remote artifact does not match its replica manifest".into(),
         ));
     }
-    let capacity = usize::try_from(expected.size)
+    let capacity = usize::try_from(expected_size)
         .map_err(|_| AppError::Other("Artifact exceeds local memory limits".into()))?;
     let mut bytes = Vec::with_capacity(capacity);
     let mut attempts = 0_usize;
@@ -156,7 +199,7 @@ pub async fn download_artifact(
         }
         attempts += 1;
     }
-    verify_artifact(master_key, expected, &bytes)
+    Ok(bytes)
 }
 
 async fn upload_chunks(

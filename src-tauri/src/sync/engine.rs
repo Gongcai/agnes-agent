@@ -14,6 +14,7 @@ use crate::db::repo::sync::{
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::secrets::{SecretStore, SYNC_CREDENTIAL_SECRET_ID, SYNC_E2EE_KEYSET_SECRET_ID};
+use crate::storage::StorageService;
 use crate::sync::auth::SyncCredential;
 use crate::sync::client::{FailureKind, HttpSyncTransport, SyncTransport, TransportFailure};
 use crate::sync::crypto::{
@@ -27,6 +28,9 @@ use crate::sync::protocol::{
     AckRequest, CreatePairingSessionRequest, DeviceListResponse, FinalizePairingSessionRequest,
     JoinPairingSessionRequest, PairingJoinResponse, PushRequest, PushResponse, RemoteChange,
     RemoteEntity, RevokeDeviceResponse, SyncDevice, DEFAULT_PAGE_LIMIT, PROTOCOL_VERSION,
+};
+use crate::sync::replication::{
+    ArtifactInstaller, ArtifactReplicationCoordinator, ReplicationReport,
 };
 
 pub const SYNC_GATEWAY_URL: &str = "https://agnes-sync-api.caiwengong136.workers.dev";
@@ -945,6 +949,68 @@ impl SyncService {
                 tokio::time::sleep(Duration::from_secs(60)).await;
             }
         });
+    }
+
+    pub fn start_artifact_replication_background(
+        self: Arc<Self>,
+        storage: Arc<StorageService>,
+        install_root: std::path::PathBuf,
+    ) {
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            loop {
+                match self
+                    .run_artifact_replication_once(storage.clone(), install_root.clone())
+                    .await
+                {
+                    Ok(Some(report)) if report.processed > 0 => {
+                        eprintln!(
+                            "[artifact-replication] processed={} downloaded={} skipped={} missing={} incompatible={} cursor={} more={}",
+                            report.processed,
+                            report.downloaded,
+                            report.skipped,
+                            report.missing,
+                            report.incompatible,
+                            report.next_cursor,
+                            report.has_more,
+                        );
+                    }
+                    Ok(Some(_)) | Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("[artifact-replication] background run failed: {error}");
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
+    }
+
+    async fn run_artifact_replication_once(
+        &self,
+        storage: Arc<StorageService>,
+        install_root: std::path::PathBuf,
+    ) -> AppResult<Option<ReplicationReport>> {
+        let status = self.status().await?;
+        if !status.credential_configured || !status.e2ee.confirmed || !status.e2ee.transport_ready {
+            return Ok(None);
+        }
+        let keyset = self
+            .load_keyset()
+            .await?
+            .ok_or_else(|| AppError::Other("Sync encryption keys are not configured".into()))?;
+        let transport = self
+            .http_transport()
+            .await?
+            .ok_or_else(|| AppError::Other("Sync credential is not configured".into()))?;
+        let installer: Arc<dyn ArtifactInstaller> = storage;
+        let coordinator = ArtifactReplicationCoordinator::new(
+            self.db.clone(),
+            Arc::new(transport),
+            installer,
+            crate::storage::MANAGED_R2_ACCOUNT_ID,
+            install_root,
+        )?;
+        coordinator.run_once(&keyset).await.map(Some)
     }
 
     #[cfg(test)]

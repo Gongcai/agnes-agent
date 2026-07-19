@@ -244,13 +244,13 @@ R2 的 `opaque_server_key` 是随机、不含业务语义的 object key，Worker
 
 设备启动后不遍历网盘目录，而是以 D1 清单为准：
 
-1. 使用本机 `last_object_cursor` 拉取逻辑对象、artifact 和 replica 变更；游标过旧时先 bootstrap manifest 快照，再接续高水位之后的新变更。
+1. 使用本机 `last_object_cursor` 拉取逻辑对象、artifact 和 replica 变更；游标过旧时先 bootstrap manifest 快照，再接续高水位之后的新变更。桌面端后台每轮最多拉取有限页数，成功处理的页逐页 CAS 推进游标。
 2. 将远端 `logical_version / build_fingerprint / artifact_id` 与本地状态比较。
 3. 本地已有相同 artifact 且 Hash 验证成功：跳过。
 4. 远端有兼容 artifact 且本机已授权对应 Provider：选择优先级最高的可用 replica 断点下载。
 5. 远端 artifact 不兼容或 Provider 不可用，但本地有源文件：本地重建。
 6. 源文件和 artifact 都不可用：标记 `missing`，不删除旧的可用版本。
-7. 下载/重建成功后验证 Hash，原子安装，再 upsert 本设备状态。
+7. 下载/重建成功后验证 Hash，原子安装，再 upsert 本设备状态；缺少历史 key version、无 ready replica 或下载失败时上报设备状态，失败不会推进 object cursor，也不改变聊天同步运行状态。
 
 启动只阻塞必须的小型 D1 清单同步，大文件下载和重建在后台进行。Agent 查询到未就绪 collection 时应返回“索引准备中”的结构化状态，不将应用整体卡在启动页。
 
@@ -583,6 +583,7 @@ tasks
 - [x] 实现本地 artifact/object/device manifest 表、不可变 build fingerprint、Provider replica 状态和设备安装状态；
 - [x] 实现 Range 断点下载、ciphertext/AEAD/内部 manifest/明文 entry Hash 验证、版本目录原子安装和失败回退；
 - [x] 接入 object manifest/change/device-state 控制面客户端，并为大对象维护独立于聊天同步的本地 cursor；
+- [x] 接入 artifact replication coordinator：后台有界拉取 object changes，按 key version 选择密钥和 ready replica，完成验证后原子安装并上报设备状态；失败、不兼容密钥和无副本不污染聊天同步游标；
 - 加入本地磁盘配额和 GC。
 
 ### Phase C：通用 Provider 基础与网盘页

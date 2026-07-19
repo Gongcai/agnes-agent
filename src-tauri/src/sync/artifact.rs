@@ -262,6 +262,7 @@ pub fn verify_artifact(
         || header.artifact_id != expected.id
         || header.artifact_type != expected.artifact_type
         || header.source_version_id != expected.source_version_id
+        || header.build_fingerprint != expected.build_fingerprint
         || header.inner_format != ARTIFACT_INNER_FORMAT
         || header.plaintext_hash != expected.plaintext_hash
         || header.plaintext_size != expected.plaintext_size
@@ -348,6 +349,49 @@ pub fn verify_artifact(
     Ok(VerifiedArtifact {
         manifest: expected.clone(),
         entries,
+    })
+}
+
+/// Reconstructs the complete local manifest from the authenticated outer
+/// header when the control plane only exposes opaque artifact metadata.
+pub(crate) fn manifest_from_ciphertext(
+    bytes: &[u8],
+    artifact_id: &str,
+    artifact_type: &str,
+    ciphertext_hash: &str,
+    size: u64,
+    key_version: i64,
+    created_at: String,
+) -> AppResult<ArtifactManifest> {
+    if size != bytes.len() as u64 || sha256_hex(bytes) != ciphertext_hash {
+        return Err(AppError::Other(
+            "Artifact ciphertext hash or size is invalid".into(),
+        ));
+    }
+    let (header, _, _) = parse_header(bytes)?;
+    if header.artifact_id != artifact_id
+        || header.artifact_type != artifact_type
+        || header.key_version != key_version
+    {
+        return Err(AppError::Other(
+            "Artifact header does not match the remote object manifest".into(),
+        ));
+    }
+    Ok(ArtifactManifest {
+        id: header.artifact_id,
+        artifact_type: header.artifact_type,
+        source_version_id: header.source_version_id,
+        build_fingerprint: header.build_fingerprint,
+        format_version: header.format_version,
+        plaintext_hash: header.plaintext_hash,
+        ciphertext_hash: ciphertext_hash.into(),
+        plaintext_size: header.plaintext_size,
+        size,
+        encryption_scheme: header.encryption_scheme,
+        key_version: header.key_version,
+        chunk_size: header.chunk_size,
+        chunk_count: header.chunk_count,
+        created_at,
     })
 }
 
@@ -707,6 +751,40 @@ mod tests {
         let pointer: InstallPointer =
             serde_json::from_slice(&fs::read(root.path().join("current.json")).unwrap()).unwrap();
         assert_eq!(pointer.artifact_id, built.manifest.id);
+    }
+
+    #[test]
+    fn reconstructs_remote_manifest_from_the_authenticated_outer_header() {
+        let key = SyncMasterKey::generate();
+        let built = build_artifact(
+            &key,
+            1,
+            "knowledge_vectors",
+            "version-1",
+            &inputs(),
+            entries(),
+        )
+        .unwrap();
+        let reconstructed = manifest_from_ciphertext(
+            &built.bytes,
+            &built.manifest.id,
+            &built.manifest.artifact_type,
+            &built.manifest.ciphertext_hash,
+            built.manifest.size,
+            built.manifest.key_version,
+            "remote-updated-at".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            reconstructed.build_fingerprint,
+            built.manifest.build_fingerprint
+        );
+        assert_eq!(reconstructed.plaintext_hash, built.manifest.plaintext_hash);
+        assert!(verify_artifact(&key, &reconstructed, &built.bytes).is_ok());
+
+        let mut incompatible = reconstructed.clone();
+        incompatible.build_fingerprint = "b".repeat(64);
+        assert!(verify_artifact(&key, &incompatible, &built.bytes).is_err());
     }
 
     #[test]

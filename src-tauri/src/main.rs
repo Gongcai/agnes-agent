@@ -263,6 +263,8 @@ fn main() {
             ) {
                 eprintln!("[storage] managed R2 account bootstrap failed: {error}");
             }
+            sync.clone()
+                .start_artifact_replication_background(storage.clone(), data_dir.join("artifacts"));
 
             // 2) 启动 AgentManager：Rust 起 WS Server + 拉起 Python sidecar。
             //    非致命：失败仅日志，不阻断 UI 启动。

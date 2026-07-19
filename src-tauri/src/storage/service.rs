@@ -278,6 +278,76 @@ impl StorageService {
         Ok(installed)
     }
 
+    pub async fn download_and_install_remote_artifact(
+        &self,
+        account_id: String,
+        descriptor: artifact_transfer::RemoteArtifactDescriptor,
+        locator: RemoteObjectLocator,
+        master_key: &SyncMasterKey,
+        install_root: std::path::PathBuf,
+    ) -> AppResult<(std::path::PathBuf, ArtifactManifest)> {
+        if !install_root.is_absolute() {
+            return Err(AppError::Other(
+                "Artifact install root must be absolute".into(),
+            ));
+        }
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let object_storage = session.object_storage().ok_or_else(|| {
+            AppError::Other("Storage provider does not support encrypted object storage".into())
+        })?;
+        let replica_locator = locator.clone();
+        let verified = match artifact_transfer::download_remote_artifact(
+            object_storage,
+            locator,
+            &descriptor,
+            master_key,
+        )
+        .await
+        {
+            Ok(verified) => verified,
+            Err(error) => {
+                self.update_provider_status(
+                    &row,
+                    Some(&ProviderError::new(
+                        super::domain::ProviderErrorCategory::InvalidResponse,
+                        error.to_string(),
+                    )),
+                )
+                .await;
+                return Err(error);
+            }
+        };
+        let manifest = verified.manifest.clone();
+        let installed = install_artifact(&install_root, &verified)?;
+        self.db
+            .upsert_artifact_manifest(crate::db::repo::artifacts::UpsertArtifactManifest {
+                manifest: manifest.clone(),
+                local_path: Some(installed.to_string_lossy().to_string()),
+                local_status: "installed".into(),
+                installed_at: Some(now_string()),
+            })
+            .await?;
+        self.db
+            .upsert_artifact_replica(crate::db::repo::artifacts::ArtifactReplicaRow {
+                artifact_id: manifest.id.clone(),
+                provider_account_id: row.id.clone(),
+                provider_kind: row.provider_id.clone(),
+                encrypted_locator: serde_json::to_string(&replica_locator)?,
+                provider_revision: replica_locator.revision,
+                etag: None,
+                ciphertext_hash: manifest.ciphertext_hash.clone(),
+                size: i64::try_from(manifest.size).map_err(|_| {
+                    AppError::Other("Artifact exceeds the local metadata range".into())
+                })?,
+                status: "ready".into(),
+                last_error_code: None,
+                updated_at: now_string(),
+            })
+            .await?;
+        self.update_provider_status(&row, None).await;
+        Ok((installed, manifest))
+    }
+
     pub async fn list_accounts(&self) -> AppResult<Vec<StorageAccountView>> {
         let rows = self.db.list_storage_accounts().await?;
         let mut accounts = Vec::with_capacity(rows.len());
