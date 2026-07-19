@@ -422,6 +422,17 @@ pre,
   outline: none;
 }
 
+.agnes-app :focus-visible {
+  outline: 2px solid rgba(217, 119, 87, 0.46);
+  outline-offset: 1px;
+}
+
+.agnes-app input:focus-visible,
+.agnes-app textarea:focus-visible,
+.agnes-app select:focus-visible {
+  outline: none;
+}
+
 .agnes-app ::selection {
   background: var(--claude-clay-soft);
   color: var(--claude-ink);
