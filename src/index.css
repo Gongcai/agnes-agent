@@ -607,6 +607,57 @@ pre,
   transform: scale(0.985);
 }
 
+.agnes-sidebar-label {
+  display: block;
+  min-width: 0;
+  max-width: 190px;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateX(0);
+  white-space: nowrap;
+  transition: max-width 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease 70ms, transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agnes-sidebar--collapsed .agnes-sidebar-label {
+  max-width: 0;
+  opacity: 0;
+  transform: translateX(-6px);
+  transition-delay: 0ms;
+}
+
+.agnes-sidebar-nav-heading {
+  max-height: 18px;
+  margin-bottom: 6px;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateY(0);
+  transition: max-height 240ms cubic-bezier(0.22, 1, 0.36, 1), margin-bottom 240ms cubic-bezier(0.22, 1, 0.36, 1), opacity 160ms ease 70ms, transform 220ms ease;
+}
+
+.agnes-sidebar--collapsed .agnes-sidebar-nav-heading {
+  max-height: 0;
+  margin-bottom: 0;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition-delay: 0ms;
+}
+
+.agnes-session-list {
+  min-width: 278px;
+  opacity: 1;
+  transform: translateX(0);
+  visibility: visible;
+  transition: opacity 180ms ease 90ms, transform 280ms cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0s;
+}
+
+.agnes-sidebar--collapsed .agnes-session-list {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-10px);
+  visibility: hidden;
+  transition: opacity 100ms ease, transform 220ms ease, visibility 0s linear 220ms;
+}
+
 .agnes-sidebar .text-emerald-700,
 .agnes-sidebar .text-emerald-600,
 .agnes-sidebar .text-\[\#6C806A\] {

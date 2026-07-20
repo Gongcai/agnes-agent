@@ -255,68 +255,63 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
+      data-open={isOpen}
       className={`agnes-sidebar ${isOpen ? "agnes-sidebar--open" : "agnes-sidebar--collapsed"} flex h-full shrink-0 flex-col overflow-hidden border-r border-stone-200/80 bg-stone-100/60 backdrop-blur-md transition-[width] duration-300 ${
         isOpen ? "w-72" : "w-[68px]"
       }`}
     >
       {/* Active agent */}
       {activeAgent && (
-        <div className={`shrink-0 border-b border-stone-200/80 ${isOpen ? "p-4" : "px-3 py-4"}`}>
-          <div className={`flex items-center ${isOpen ? "gap-3" : "flex-col gap-2"}`}>
-            {!isOpen && (
+        <div className="h-16 shrink-0 border-b border-stone-200/80 px-3">
+          <div className="flex h-full items-center gap-3">
+            {isOpen ? (
+              <>
+                <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={36} />
+                <div className="agnes-sidebar-agent-copy min-w-0 flex-1 overflow-hidden">
+                  <span className="block truncate text-sm font-semibold text-stone-900">{activeAgent.name}</span>
+                  {activeModelName ? (
+                    <span className="inline-block max-w-full truncate rounded border border-emerald-200/50 bg-emerald-50/80 px-1.5 py-0.5 align-middle font-mono text-[10px] text-emerald-700" title={activeAgent.model}>
+                      {activeModelName}
+                    </span>
+                  ) : (
+                    <span className="inline-block rounded border border-stone-300/40 bg-stone-200/60 px-1.5 py-0.5 font-mono text-[10px] text-stone-500">
+                      未配置模型
+                    </span>
+                  )}
+                </div>
+                <button onClick={onToggleSidebar} className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-stone-500 hover:bg-stone-200/70 hover:text-stone-900" title="收起侧边栏">
+                  <SidebarSimple className="h-4 w-4" weight="regular" mirrored />
+                </button>
+              </>
+            ) : (
               <button onClick={onToggleSidebar} className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-stone-500 hover:bg-stone-200/70 hover:text-stone-900" title="展开侧边栏">
                 <SidebarSimple className="h-4 w-4" weight="regular" />
               </button>
             )}
-            <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={isOpen ? 40 : 36} />
-            <div className={`min-w-0 overflow-hidden transition-opacity ${isOpen ? "opacity-100" : "hidden opacity-0"}`}>
-              <span className="block truncate text-sm font-semibold text-stone-900">{activeAgent.name}</span>
-              {activeModelName ? (
-                <span className="inline-block max-w-full truncate rounded border border-emerald-200/50 bg-emerald-50/80 px-1.5 py-0.5 align-middle font-mono text-[10px] text-emerald-700" title={activeAgent.model}>
-                  {activeModelName}
-                </span>
-              ) : (
-                <span className="inline-block rounded border border-stone-300/40 bg-stone-200/60 px-1.5 py-0.5 font-mono text-[10px] text-stone-500">
-                  未配置模型
-                </span>
-              )}
-            </div>
-            <div className={isOpen ? "ml-auto flex items-center gap-1" : "flex items-center"}>
-              <NotificationCenter onNavigate={onNotificationNavigate} />
-              {isOpen && (
-                <button onClick={onToggleSidebar} className="grid h-8 w-8 place-items-center rounded-full text-stone-500 hover:bg-stone-200/70 hover:text-stone-900" title="收起侧边栏">
-                  <SidebarSimple className="h-4 w-4" weight="regular" mirrored />
-                </button>
-              )}
-            </div>
           </div>
         </div>
       )}
 
-      <div className={isOpen ? "px-3 pt-3" : "px-2 pt-3"}>
+      <div className="px-2 pt-3">
         <button
           type="button"
           onClick={handleAddStandaloneSession}
           disabled={!activeAgentId}
-          className={`agnes-sidebar-primary-action flex w-full items-center disabled:cursor-not-allowed disabled:opacity-40 ${
-            isOpen ? "gap-2 px-3" : "justify-center"
-          }`}
+          className="agnes-sidebar-primary-action flex w-full items-center gap-2 px-3 disabled:cursor-not-allowed disabled:opacity-40"
           title={isOpen ? undefined : "新建对话"}
         >
           <span className="agnes-sidebar-primary-icon grid h-6 w-6 shrink-0 place-items-center rounded-full">
             <Plus className="h-4 w-4" weight="regular" />
           </span>
-          {isOpen && <span>新建对话</span>}
+          <span className="agnes-sidebar-label">新建对话</span>
         </button>
       </div>
 
       {/* Feature navigation remains visible in compact mode. */}
-      <nav className={`shrink-0 border-b border-stone-200/80 ${isOpen ? "p-3" : "px-2 py-3"}`} aria-label="功能">
-        {isOpen && (
-          <div className="mb-1.5 px-2 text-[10px] font-medium text-stone-400">
-            功能
-          </div>
-        )}
+      <nav className="agnes-sidebar-nav shrink-0 border-b border-stone-200/80 px-2 py-3" aria-label="功能">
+        <div className="agnes-sidebar-nav-heading px-2 text-[10px] font-medium text-stone-400" aria-hidden={!isOpen}>
+          功能
+        </div>
         <div className="relative space-y-1">
           <span
             className="agnes-feature-highlight pointer-events-none absolute inset-x-0 top-0 z-0 h-9 rounded-lg"
@@ -330,9 +325,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 key={feature.id}
                 onClick={() => onSelectFeature(feature.id)}
-                className={`agnes-feature-item relative z-10 flex h-9 w-full items-center rounded-lg transition-colors ${
-                  isOpen ? "gap-2.5 px-3" : "justify-center"
-                } ${
+                className={`agnes-feature-item relative z-10 flex h-9 w-full items-center gap-2.5 rounded-lg px-3 transition-colors ${
                   selected
                     ? "font-semibold text-emerald-700"
                     : "text-stone-500 hover:bg-stone-200/50 hover:text-stone-900"
@@ -341,7 +334,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 aria-current={selected ? "page" : undefined}
               >
                 <Icon className="h-[18px] w-[18px] shrink-0" weight="regular" />
-                {isOpen && <span className="truncate text-xs">{feature.label}</span>}
+                <span className="agnes-sidebar-label truncate text-xs">{feature.label}</span>
               </button>
             );
           })}
@@ -349,8 +342,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </nav>
 
       {/* Session navigation is hidden when the sidebar becomes an icon rail. */}
-      {isOpen && (
-        <div className="agnes-session-list flex-1 space-y-4 overflow-y-auto p-4">
+      <div className="agnes-session-list flex-1 space-y-4 overflow-y-auto p-4" aria-hidden={!isOpen}>
           <section>
             <div className="mb-2 flex items-center gap-1 px-1 text-[10px] font-medium text-stone-400">
               <button
@@ -437,8 +429,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
             )}
           </section>
-        </div>
-      )}
+      </div>
 
       {/* Local status and settings */}
       <div className={`mt-auto shrink-0 border-t border-stone-200 bg-stone-200/20 ${
@@ -448,6 +439,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <Cloud className={`shrink-0 text-emerald-600 ${isOpen ? "h-3.5 w-3.5" : "h-4 w-4"}`} />
           {isOpen && <span className="truncate text-[10px] text-stone-500">本地服务已就绪</span>}
         </div>
+        <NotificationCenter onNavigate={onNotificationNavigate} />
         <button
           onClick={() => onOpenSettings("agents")}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-stone-200 bg-white text-stone-500 shadow-sm transition-colors hover:text-stone-900"
