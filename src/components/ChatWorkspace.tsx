@@ -1,22 +1,22 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  AlertTriangle,
+  Warning as AlertTriangle,
   Brain,
   Check,
-  ChevronDown,
+  CaretDown as ChevronDown,
   Copy,
   Cpu,
   GitBranch,
-  Pencil,
-  RefreshCw,
-  Send,
-  Server,
+  PencilSimple as Pencil,
+  ArrowsClockwise as RefreshCw,
+  ArrowUp as Send,
+  HardDrives as Server,
   ShieldCheck,
-  Sparkles,
+  Sparkle as Sparkles,
   Square,
-  Terminal,
-  Trash2,
-} from "lucide-react";
+  TerminalWindow as Terminal,
+  Trash as Trash2,
+} from "@phosphor-icons/react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
 import type { PermissionMode, ToolCall } from "../store/useAgentStore";
@@ -666,7 +666,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           aria-hidden={!isEmptyConversation}
         >
           <div className="flex items-center justify-center gap-3">
-            <Sparkles className="h-7 w-7 text-[var(--claude-clay)]" strokeWidth={1.7} />
+            <Sparkles className="h-7 w-7 text-[var(--claude-clay)]" weight="regular" />
             <h1 className="text-3xl font-normal tracking-tight text-[var(--claude-ink)]">
               {activeAgent ? `${activeAgent.name}，我们聊点什么？` : "今天想聊点什么？"}
             </h1>

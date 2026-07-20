@@ -2,27 +2,26 @@ import React, { useEffect, useState } from "react";
 import {
   Brain,
   BookOpen,
-  CalendarDays,
-  CheckSquare2,
-  ChevronDown,
-  ChevronRight,
+  CalendarDots as CalendarDays,
+  CheckSquare as CheckSquare2,
+  CaretDown as ChevronDown,
+  CaretRight as ChevronRight,
   Cloud,
-  CornerDownRight,
+  ArrowBendDownRight as CornerDownRight,
   Database,
   Folder,
   FolderPlus,
   HardDrive,
-  MessageSquare,
-  Pencil,
-  Pin,
-  PinOff,
-  PanelLeftClose,
-  PanelLeftOpen,
+  ChatsTeardrop as MessageSquare,
+  PencilSimple as Pencil,
+  PushPinSimple as Pin,
+  PushPinSimpleSlash as PinOff,
+  SidebarSimple,
   Plus,
-  Settings,
-  Trash2,
-  type LucideIcon,
-} from "lucide-react";
+  GearSix as Settings,
+  Trash as Trash2,
+  type Icon as PhosphorIcon,
+} from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ENABLED_APP_FEATURES, type AppFeatureId } from "../lib/features";
 import { useAgentStore } from "../store/useAgentStore";
@@ -40,7 +39,7 @@ interface SidebarProps {
   onNotificationNavigate: (notification: AppNotification) => void | Promise<void>;
 }
 
-const FEATURE_ICONS: Record<AppFeatureId, LucideIcon> = {
+const FEATURE_ICONS: Record<AppFeatureId, PhosphorIcon> = {
   chat: MessageSquare,
   reading: BookOpen,
   memory: Brain,
@@ -266,7 +265,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className={`flex items-center ${isOpen ? "gap-3" : "flex-col gap-2"}`}>
             {!isOpen && (
               <button onClick={onToggleSidebar} className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-stone-500 hover:bg-stone-200/70 hover:text-stone-900" title="展开侧边栏">
-                <PanelLeftOpen className="h-4 w-4" />
+                <SidebarSimple className="h-4 w-4" weight="regular" />
               </button>
             )}
             <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={isOpen ? 40 : 36} />
@@ -286,7 +285,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <NotificationCenter onNavigate={onNotificationNavigate} />
               {isOpen && (
                 <button onClick={onToggleSidebar} className="grid h-8 w-8 place-items-center rounded-full text-stone-500 hover:bg-stone-200/70 hover:text-stone-900" title="收起侧边栏">
-                  <PanelLeftClose className="h-4 w-4" />
+                  <SidebarSimple className="h-4 w-4" weight="regular" mirrored />
                 </button>
               )}
             </div>
@@ -304,7 +303,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
           }`}
           title={isOpen ? undefined : "新建对话"}
         >
-          <Plus className="h-4 w-4 shrink-0" />
+          <span className="agnes-sidebar-primary-icon grid h-6 w-6 shrink-0 place-items-center rounded-full">
+            <Plus className="h-4 w-4" weight="regular" />
+          </span>
           {isOpen && <span>新建对话</span>}
         </button>
       </div>
@@ -318,8 +319,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
         <div className="relative space-y-1">
           <span
-            className="agnes-feature-highlight pointer-events-none absolute inset-x-0 top-0 z-0 h-10 rounded-xl"
-            style={{ transform: `translateY(${activeFeatureIndex * 44}px)` }}
+            className="agnes-feature-highlight pointer-events-none absolute inset-x-0 top-0 z-0 h-9 rounded-lg"
+            style={{ transform: `translateY(${activeFeatureIndex * 40}px)` }}
             aria-hidden="true"
           />
           {ENABLED_APP_FEATURES.map((feature) => {
@@ -329,7 +330,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 key={feature.id}
                 onClick={() => onSelectFeature(feature.id)}
-                className={`agnes-feature-item relative z-10 flex h-10 w-full items-center rounded-xl transition-colors ${
+                className={`agnes-feature-item relative z-10 flex h-9 w-full items-center rounded-lg transition-colors ${
                   isOpen ? "gap-2.5 px-3" : "justify-center"
                 } ${
                   selected
@@ -339,7 +340,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 title={isOpen ? undefined : feature.label}
                 aria-current={selected ? "page" : undefined}
               >
-                <Icon className="h-[18px] w-[18px] shrink-0" />
+                <Icon className="h-[18px] w-[18px] shrink-0" weight="regular" />
                 {isOpen && <span className="truncate text-xs">{feature.label}</span>}
               </button>
             );

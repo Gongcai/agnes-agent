@@ -400,11 +400,11 @@ body.quick-window-body #root {
   --border: 40 5% 26%;
   --input: 40 5% 26%;
   --ring: 14 72% 66%;
-  --claude-canvas: #1f1e1b;
-  --claude-sidebar: #262522;
-  --claude-surface: #2b2a27;
-  --claude-surface-soft: #35332e;
-  --claude-surface-strong: #403e38;
+  --claude-canvas: #1f1f1d;
+  --claude-sidebar: #1f1f1d;
+  --claude-surface: #1f1f1d;
+  --claude-surface-soft: #2d2c29;
+  --claude-surface-strong: #383631;
   --claude-ink: #f5f3ed;
   --claude-body: #dedad1;
   --claude-muted: #aaa59b;
@@ -418,8 +418,8 @@ body.quick-window-body #root {
   --claude-success: #75ae84;
   --claude-warning: #d9a557;
   --claude-danger: #df7b79;
-  --claude-header: rgba(43, 42, 39, 0.94);
-  --claude-header-soft: rgba(31, 30, 27, 0.96);
+  --claude-header: rgba(31, 31, 29, 0.94);
+  --claude-header-soft: rgba(31, 31, 29, 0.96);
   --claude-overlay: rgba(0, 0, 0, 0.58);
   --claude-shadow: rgba(0, 0, 0, 0.42);
 }
@@ -504,7 +504,7 @@ pre,
 }
 
 .agnes-sidebar {
-  width: 264px !important;
+  width: 280px !important;
   background: var(--claude-sidebar) !important;
   border-color: var(--claude-border) !important;
   backdrop-filter: none !important;
@@ -579,9 +579,9 @@ pre,
 
 .agnes-sidebar-primary-action {
   min-height: 36px;
-  border: 0.5px solid var(--claude-border) !important;
+  border: 0 !important;
   border-radius: 8px !important;
-  background: var(--claude-surface) !important;
+  background: transparent !important;
   color: var(--claude-ink) !important;
   font-size: 12px;
   font-weight: 500;
@@ -590,6 +590,17 @@ pre,
 
 .agnes-sidebar-primary-action:hover {
   background: var(--claude-surface-soft) !important;
+}
+
+.agnes-sidebar-primary-icon {
+  background: var(--claude-surface-strong);
+  transition: background-color 160ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agnes-sidebar-primary-action:hover .agnes-sidebar-primary-icon {
+  background: var(--claude-clay);
+  color: white;
+  transform: rotate(6deg) scale(1.06);
 }
 
 .agnes-sidebar-primary-action:active {
@@ -644,6 +655,27 @@ pre,
 .agnes-chat-context:hover,
 .agnes-chat-audit-button:hover {
   background: var(--claude-surface-soft) !important;
+}
+
+.agnes-sidebar button > svg,
+.agnes-sidebar button > span > svg,
+.agnes-chat-header button > svg,
+.agnes-chat-composer-box button svg,
+.agnes-chat-messages button svg {
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), color 140ms ease;
+  transform-origin: center;
+}
+
+.agnes-sidebar button:hover > svg,
+.agnes-sidebar button:hover > span > svg,
+.agnes-chat-header button:hover > svg,
+.agnes-chat-composer-box button:hover svg,
+.agnes-chat-messages button:hover svg {
+  transform: translateY(-0.5px) scale(1.08);
+}
+
+.agnes-chat-composer-box button[class*="bg-stone-800"]:hover svg {
+  transform: translateY(-1.5px) scale(1.06);
 }
 
 .agnes-chat-header .bg-\[\#8CA38A\] {
@@ -738,6 +770,10 @@ pre,
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22) !important;
 }
 
+:root[data-agnes-theme="dark"] .agnes-chat-composer-box {
+  background: var(--claude-surface-soft) !important;
+}
+
 .agnes-chat-composer-box:focus-within {
   border-color: rgba(217, 119, 87, 0.56) !important;
   box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.1) !important;
@@ -776,8 +812,13 @@ pre,
 }
 
 .agnes-chat-composer-box button[class*="bg-stone-800"] {
-  background: var(--claude-ink) !important;
-  color: var(--claude-surface) !important;
+  background: var(--claude-clay) !important;
+  color: white !important;
+}
+
+.agnes-chat-composer-box button[class*="bg-stone-800"]:hover {
+  background: var(--claude-clay-dark) !important;
+  color: white !important;
 }
 
 .agnes-app .markdown-body {
