@@ -2,7 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { Bell, CalendarDays, CheckCircle2, CheckSquare2, ChevronRight, ShieldAlert } from "lucide-react";
+import {
+  Bell,
+  CalendarDots as CalendarDays,
+  CheckCircle as CheckCircle2,
+  CheckSquare as CheckSquare2,
+  CaretRight as ChevronRight,
+  ShieldWarning as ShieldAlert,
+} from "@phosphor-icons/react";
 
 export interface AppNotification {
   id: string;
@@ -47,6 +54,7 @@ export function NotificationCenter({ onNavigate, className }: NotificationCenter
   const [loading, setLoading] = useState(true);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLElement>(null);
 
   const load = async () => {
     try {
@@ -107,8 +115,30 @@ export function NotificationCenter({ onNavigate, className }: NotificationCenter
     });
   };
 
+  useEffect(() => {
+    if (!open) return;
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (triggerRef.current?.contains(target) || popoverRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
   const popover = open && anchor && (
     <section
+      ref={popoverRef}
       className="claude-popover fixed z-[100] flex w-[min(25rem,calc(100vw-1rem))] flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-2xl"
       style={{
         top: Math.min(anchor.bottom + 8, window.innerHeight - 72),
