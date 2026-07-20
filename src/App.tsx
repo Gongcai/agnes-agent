@@ -13,7 +13,9 @@ import {
   applyColorScheme,
   normalizeBooleanPreference,
   normalizeColorScheme,
+  setAutoFollowStreaming,
   setAutoExpandThoughts,
+  UI_AUTO_FOLLOW_STREAMING_KEY,
   UI_AUTO_EXPAND_THOUGHTS_KEY,
   UI_COLOR_SCHEME_KEY,
 } from "./lib/uiPreferences";
@@ -51,14 +53,17 @@ export default function App() {
     Promise.all([
       invoke<string | null>("get_setting", { key: UI_COLOR_SCHEME_KEY }),
       invoke<string | null>("get_setting", { key: UI_AUTO_EXPAND_THOUGHTS_KEY }),
+      invoke<string | null>("get_setting", { key: UI_AUTO_FOLLOW_STREAMING_KEY }),
     ])
-      .then(([colorSchemeValue, autoExpandThoughtsValue]) => {
+      .then(([colorSchemeValue, autoExpandThoughtsValue, autoFollowStreamingValue]) => {
         if (!active) return;
         const colorScheme = normalizeColorScheme(colorSchemeValue);
         const autoExpandThoughts = normalizeBooleanPreference(autoExpandThoughtsValue, true);
+        const autoFollowStreaming = normalizeBooleanPreference(autoFollowStreamingValue, true);
         applyColorScheme(colorScheme);
         setAutoExpandThoughts(autoExpandThoughts);
-        announceUIPreferenceChange({ colorScheme, autoExpandThoughts });
+        setAutoFollowStreaming(autoFollowStreaming);
+        announceUIPreferenceChange({ colorScheme, autoExpandThoughts, autoFollowStreaming });
       })
       .catch((error) => console.error("加载界面偏好失败", error));
     return () => { active = false; };

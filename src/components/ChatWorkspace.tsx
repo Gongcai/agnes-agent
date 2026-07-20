@@ -26,6 +26,7 @@ import { ModifyMemoryModal } from "./ModifyMemoryModal";
 import { ThoughtDetails } from "./ThoughtDetails";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
+  getCachedAutoFollowStreaming,
   getCachedAutoExpandThoughts,
   subscribeUIPreferenceChanges,
 } from "../lib/uiPreferences";
@@ -280,6 +281,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [editingText, setEditingText] = useState("");
   const [memoryEditMsgId, setMemoryEditMsgId] = useState<string | null>(null);
   const [autoExpandThoughts, setAutoExpandThoughts] = useState(getCachedAutoExpandThoughts);
+  const [autoFollowStreaming, setAutoFollowStreaming] = useState(getCachedAutoFollowStreaming);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -293,6 +295,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   useEffect(() => subscribeUIPreferenceChanges((change) => {
     if (change.autoExpandThoughts !== undefined) {
       setAutoExpandThoughts(change.autoExpandThoughts);
+    }
+    if (change.autoFollowStreaming !== undefined) {
+      setAutoFollowStreaming(change.autoFollowStreaming);
     }
   }), []);
 
@@ -340,10 +345,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     setSessionPermissionMode(activeSessionId, permissionMode).catch(console.error);
   };
 
-  // Scroll to bottom on new messages
+  // Keep user sends visible, while streaming follow remains an optional UI preference.
   useEffect(() => {
+    const latestMessage = messages[messages.length - 1];
+    if (!autoFollowStreaming && latestMessage?.role !== "user") return;
     messageEndRef.current?.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" });
-  }, [messages, isStreaming]);
+  }, [messages, isStreaming, autoFollowStreaming]);
 
   const handleSend = () => {
     if (!inputVal.trim() || isStreaming || !activeSessionId) return;

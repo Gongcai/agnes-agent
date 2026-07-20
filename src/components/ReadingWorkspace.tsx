@@ -33,6 +33,7 @@ import { ThoughtDetails } from "./ThoughtDetails";
 import { useAgentStore } from "../store/useAgentStore";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
+  getCachedAutoFollowStreaming,
   getCachedAutoExpandThoughts,
   getCachedColorScheme,
   subscribeUIPreferenceChanges,
@@ -531,6 +532,7 @@ export const ReadingWorkspace: React.FC = () => {
   const [translationLanguage, setTranslationLanguage] = useState("中文");
   const [colorScheme, setColorScheme] = useState<ColorScheme>(getCachedColorScheme);
   const [autoExpandThoughts, setAutoExpandThoughts] = useState(getCachedAutoExpandThoughts);
+  const [autoFollowStreaming, setAutoFollowStreaming] = useState(getCachedAutoFollowStreaming);
   const messageEndRef = useRef<HTMLDivElement>(null);
 
   const selectedBook = useMemo(
@@ -575,6 +577,9 @@ export const ReadingWorkspace: React.FC = () => {
     if (change.autoExpandThoughts !== undefined) {
       setAutoExpandThoughts(change.autoExpandThoughts);
     }
+    if (change.autoFollowStreaming !== undefined) {
+      setAutoFollowStreaming(change.autoFollowStreaming);
+    }
   }), []);
 
   useEffect(() => {
@@ -608,7 +613,11 @@ export const ReadingWorkspace: React.FC = () => {
     return () => { cancelled = true; };
   }, [selectedBook?.id, activeAgentId]);
 
-  useEffect(() => { messageEndRef.current?.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" }); }, [messages, isStreaming]);
+  useEffect(() => {
+    const latestMessage = messages[messages.length - 1];
+    if (!autoFollowStreaming && latestMessage?.role !== "user") return;
+    messageEndRef.current?.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" });
+  }, [messages, isStreaming, autoFollowStreaming]);
 
   const importBook = async () => {
     if (!activeAgentId) return;

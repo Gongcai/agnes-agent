@@ -1,5 +1,6 @@
 export const UI_COLOR_SCHEME_KEY = "ui:color_scheme";
 export const UI_AUTO_EXPAND_THOUGHTS_KEY = "ui:auto_expand_thoughts";
+export const UI_AUTO_FOLLOW_STREAMING_KEY = "ui:auto_follow_streaming";
 export const UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY = "ui:default_max_output_tokens";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 131_072;
 export const MIN_MAX_OUTPUT_TOKENS = 128;
@@ -10,10 +11,12 @@ export type ColorScheme = "light" | "dark";
 export interface UIPreferenceChange {
   colorScheme?: ColorScheme;
   autoExpandThoughts?: boolean;
+  autoFollowStreaming?: boolean;
 }
 
 const COLOR_SCHEME_CACHE_KEY = "agnes.ui.color_scheme";
 const AUTO_EXPAND_THOUGHTS_CACHE_KEY = "agnes.ui.auto_expand_thoughts";
+const AUTO_FOLLOW_STREAMING_CACHE_KEY = "agnes.ui.auto_follow_streaming";
 const UI_PREFERENCE_EVENT = "agnes-ui-preference-change";
 
 export function normalizeColorScheme(value: string | null | undefined): ColorScheme {
@@ -66,6 +69,10 @@ export function getCachedAutoExpandThoughts(): boolean {
   return normalizeBooleanPreference(readCache(AUTO_EXPAND_THOUGHTS_CACHE_KEY), true);
 }
 
+export function getCachedAutoFollowStreaming(): boolean {
+  return normalizeBooleanPreference(readCache(AUTO_FOLLOW_STREAMING_CACHE_KEY), true);
+}
+
 export function applyColorScheme(scheme: ColorScheme): void {
   const normalized = normalizeColorScheme(scheme);
   if (typeof document === "undefined") return;
@@ -77,6 +84,10 @@ export function applyColorScheme(scheme: ColorScheme): void {
 
 export function setAutoExpandThoughts(value: boolean): void {
   writeCache(AUTO_EXPAND_THOUGHTS_CACHE_KEY, String(value));
+}
+
+export function setAutoFollowStreaming(value: boolean): void {
+  writeCache(AUTO_FOLLOW_STREAMING_CACHE_KEY, String(value));
 }
 
 export function announceUIPreferenceChange(change: UIPreferenceChange): void {

@@ -47,6 +47,7 @@ import {
 import {
   announceUIPreferenceChange,
   applyColorScheme,
+  getCachedAutoFollowStreaming,
   getCachedAutoExpandThoughts,
   getCachedColorScheme,
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -55,7 +56,9 @@ import {
   normalizeBooleanPreference,
   normalizeColorScheme,
   normalizeMaxOutputTokens,
+  setAutoFollowStreaming,
   setAutoExpandThoughts,
+  UI_AUTO_FOLLOW_STREAMING_KEY,
   UI_AUTO_EXPAND_THOUGHTS_KEY,
   UI_COLOR_SCHEME_KEY,
   UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY,
@@ -4973,6 +4976,7 @@ const GeneralTab: React.FC = () => {
   const [translationLanguage, setTranslationLanguage] = useState<"中文" | "English">("中文");
   const [colorScheme, setColorScheme] = useState<ColorScheme>(getCachedColorScheme);
   const [autoExpandThoughts, setAutoExpandThoughtsState] = useState(getCachedAutoExpandThoughts);
+  const [autoFollowStreaming, setAutoFollowStreamingState] = useState(getCachedAutoFollowStreaming);
   const [defaultMaxOutputTokens, setDefaultMaxOutputTokens] = useState(String(DEFAULT_MAX_OUTPUT_TOKENS));
   const [loaded, setLoaded] = useState(false);
 
@@ -4982,21 +4986,26 @@ const GeneralTab: React.FC = () => {
       invoke<string | null>("get_setting", { key: "ui:translation_target_language" }),
       invoke<string | null>("get_setting", { key: UI_COLOR_SCHEME_KEY }),
       invoke<string | null>("get_setting", { key: UI_AUTO_EXPAND_THOUGHTS_KEY }),
+      invoke<string | null>("get_setting", { key: UI_AUTO_FOLLOW_STREAMING_KEY }),
       invoke<string | null>("get_setting", { key: UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY }),
     ])
-      .then(([openModeValue, languageValue, colorSchemeValue, autoExpandThoughtsValue, maxOutputTokensValue]) => {
+      .then(([openModeValue, languageValue, colorSchemeValue, autoExpandThoughtsValue, autoFollowStreamingValue, maxOutputTokensValue]) => {
         const nextColorScheme = normalizeColorScheme(colorSchemeValue);
         const nextAutoExpandThoughts = normalizeBooleanPreference(autoExpandThoughtsValue, true);
+        const nextAutoFollowStreaming = normalizeBooleanPreference(autoFollowStreamingValue, true);
         setOpenMode(openModeValue ?? "last");
         if (languageValue === "中文" || languageValue === "English") setTranslationLanguage(languageValue);
         setColorScheme(nextColorScheme);
         setAutoExpandThoughtsState(nextAutoExpandThoughts);
+        setAutoFollowStreamingState(nextAutoFollowStreaming);
         setDefaultMaxOutputTokens(String(normalizeMaxOutputTokens(maxOutputTokensValue)));
         applyColorScheme(nextColorScheme);
         setAutoExpandThoughts(nextAutoExpandThoughts);
+        setAutoFollowStreaming(nextAutoFollowStreaming);
         announceUIPreferenceChange({
           colorScheme: nextColorScheme,
           autoExpandThoughts: nextAutoExpandThoughts,
+          autoFollowStreaming: nextAutoFollowStreaming,
         });
       })
       .catch(console.error)
@@ -5053,6 +5062,21 @@ const GeneralTab: React.FC = () => {
       setAutoExpandThoughts(previous);
       announceUIPreferenceChange({ autoExpandThoughts: previous });
       console.error("保存思考过程展开设置失败", e);
+    }
+  };
+
+  const updateAutoFollowStreaming = async (value: boolean) => {
+    const previous = autoFollowStreaming;
+    setAutoFollowStreamingState(value);
+    setAutoFollowStreaming(value);
+    announceUIPreferenceChange({ autoFollowStreaming: value });
+    try {
+      await invoke("set_setting", { key: UI_AUTO_FOLLOW_STREAMING_KEY, value: String(value) });
+    } catch (e) {
+      setAutoFollowStreamingState(previous);
+      setAutoFollowStreaming(previous);
+      announceUIPreferenceChange({ autoFollowStreaming: previous });
+      console.error("保存流式回复跟随设置失败", e);
     }
   };
 
@@ -5130,6 +5154,29 @@ const GeneralTab: React.FC = () => {
               <span
                 className={`agnes-toggle-thumb absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
                   autoExpandThoughts ? "agnes-toggle-thumb--on" : "agnes-toggle-thumb--off"
+                }`}
+              />
+            </button>
+          </div>
+          <div className="flex items-center gap-3 rounded-lg border border-stone-200 bg-stone-50 px-3.5 py-3">
+            <ArrowDown className="h-4 w-4 shrink-0 text-stone-500" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-stone-700">自动跟随 AI 回复</p>
+              <p className="mt-0.5 text-[10px] text-stone-400">流式回复时持续滚动到底部；关闭后保留当前阅读位置。</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoFollowStreaming}
+              disabled={!loaded}
+              onClick={() => void updateAutoFollowStreaming(!autoFollowStreaming)}
+              className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+                autoFollowStreaming ? "bg-[#8CA38A]" : "bg-stone-300"
+              }`}
+            >
+              <span
+                className={`agnes-toggle-thumb absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                  autoFollowStreaming ? "agnes-toggle-thumb--on" : "agnes-toggle-thumb--off"
                 }`}
               />
             </button>

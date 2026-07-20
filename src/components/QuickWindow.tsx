@@ -18,7 +18,11 @@ import {
 } from "lucide-react";
 import { AgentAvatar } from "./AgentAvatar";
 import { MarkdownMessage } from "./MarkdownMessage";
-import { DEFAULT_MAX_OUTPUT_TOKENS } from "../lib/uiPreferences";
+import {
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  getCachedAutoFollowStreaming,
+  subscribeUIPreferenceChanges,
+} from "../lib/uiPreferences";
 import { setupTauriEventListeners, useAgentStore } from "../store/useAgentStore";
 
 const QUICK_SESSION_SETTING = "ui:quick_session_id";
@@ -122,6 +126,7 @@ export const QuickWindow: React.FC = () => {
   const [isPinned, setIsPinned] = useState(false);
   const [isPreparing, setIsPreparing] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [autoFollowStreaming, setAutoFollowStreaming] = useState(getCachedAutoFollowStreaming);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(isPinned);
@@ -138,6 +143,12 @@ export const QuickWindow: React.FC = () => {
   useEffect(() => {
     pinnedRef.current = isPinned;
   }, [isPinned]);
+
+  useEffect(() => subscribeUIPreferenceChanges((change) => {
+    if (change.autoFollowStreaming !== undefined) {
+      setAutoFollowStreaming(change.autoFollowStreaming);
+    }
+  }), []);
 
   useEffect(() => {
     document.body.classList.add("quick-window-body");
@@ -175,6 +186,7 @@ export const QuickWindow: React.FC = () => {
 
     const unlistenPromise = quickWindow.onFocusChanged(({ payload: focused }) => {
       if (focused) {
+        setAutoFollowStreaming(getCachedAutoFollowStreaming());
         window.setTimeout(() => inputRef.current?.focus(), 50);
       } else if (!pinnedRef.current) {
         quickWindow.hide().catch(console.error);
@@ -188,8 +200,10 @@ export const QuickWindow: React.FC = () => {
   }, [quickWindow]);
 
   useEffect(() => {
+    const latestMessage = messages[messages.length - 1];
+    if (!autoFollowStreaming && latestMessage?.role !== "user") return;
     messageEndRef.current?.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" });
-  }, [messages, isStreaming]);
+  }, [messages, isStreaming, autoFollowStreaming]);
 
   const handleSend = () => {
     const trimmed = inputValue.trim();
