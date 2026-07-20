@@ -1,6 +1,21 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  Cpu, Terminal, Send, AlertTriangle, ShieldCheck, ChevronDown, Server, Check, Copy, GitBranch, Trash2, Pencil, RefreshCw, Brain, Square
+  AlertTriangle,
+  Brain,
+  Check,
+  ChevronDown,
+  Copy,
+  Cpu,
+  GitBranch,
+  Pencil,
+  RefreshCw,
+  Send,
+  Server,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  Terminal,
+  Trash2,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
@@ -266,6 +281,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
+  const isEmptyConversation = messages.length === 0;
 
   // 拉取服务商与模型列表，供底部模型切换器使用
   useEffect(() => {
@@ -376,8 +392,15 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         </div>
       </header>
 
+      <div className="agnes-chat-stage relative min-h-0 flex-1 overflow-hidden">
       {/* Message Panel list */}
-      <div className="agnes-chat-messages flex-1 overflow-y-auto p-6 space-y-6 max-w-4xl mx-auto w-full">
+      <div
+        className={`agnes-chat-messages absolute inset-0 mx-auto w-full max-w-4xl space-y-6 overflow-y-auto p-6 transition-[opacity,transform] duration-500 ease-out motion-reduce:transition-none ${
+          isEmptyConversation
+            ? "pointer-events-none translate-y-4 opacity-0"
+            : "translate-y-0 opacity-100"
+        }`}
+      >
         {messages.map((message, messageIndex) => {
           const isUser = message.role === "user";
           const isLiveAssistant = isStreaming
@@ -618,8 +641,29 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       </div>
 
       {/* Input box */}
-      <div className="agnes-chat-composer border-t border-stone-200 bg-[#FAF9F5]/40 p-4 shrink-0">
-        <div className="agnes-chat-composer-box max-w-4xl mx-auto relative rounded-xl border border-stone-300/80 bg-white p-2.5 focus-within:border-stone-400 shadow-sm transition-all">
+      <div
+        className={`agnes-chat-composer absolute inset-x-0 z-20 border-t border-stone-200 bg-[#FAF9F5]/40 p-4 transition-[bottom,transform,background-color] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+          isEmptyConversation
+            ? "agnes-chat-composer--empty bottom-1/2 translate-y-1/2"
+            : "bottom-0 translate-y-0"
+        }`}
+      >
+        <div
+          className={`agnes-chat-empty-welcome pointer-events-none absolute inset-x-5 bottom-full mb-7 text-center transition-[opacity,transform] duration-300 ease-out motion-reduce:delay-0 motion-reduce:transition-none ${
+            isEmptyConversation
+              ? "translate-y-0 opacity-100 delay-150"
+              : "translate-y-4 opacity-0"
+          }`}
+          aria-hidden={!isEmptyConversation}
+        >
+          <div className="flex items-center justify-center gap-3">
+            <Sparkles className="h-7 w-7 text-[var(--claude-clay)]" strokeWidth={1.7} />
+            <h1 className="text-3xl font-normal tracking-tight text-[var(--claude-ink)]">
+              {activeAgent ? `${activeAgent.name}，我们聊点什么？` : "今天想聊点什么？"}
+            </h1>
+          </div>
+        </div>
+        <div className={`agnes-chat-composer-box relative mx-auto max-w-4xl rounded-xl border border-stone-300/80 bg-white p-2.5 shadow-sm transition-[max-width,border-radius,box-shadow] duration-500 focus-within:border-stone-400 ${isEmptyConversation ? "agnes-chat-composer-box--empty" : ""}`}>
           <textarea
             value={inputVal}
             onChange={(e) => setInputVal(e.target.value)}
@@ -630,7 +674,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               }
             }}
             placeholder={
-              activeAgent
+              isEmptyConversation
+                ? "输入一个问题、想法或任务…"
+                : activeAgent
                 ? `向 ${activeAgent.name} 发送消息... (Enter 发送)`
                 : "选择一个会话以开始..."
             }
@@ -892,6 +938,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             </div>
           </div>
         </div>
+      </div>
       </div>
 
       <ModifyMemoryModal
