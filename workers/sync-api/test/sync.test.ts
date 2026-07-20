@@ -831,6 +831,19 @@ describe("encrypted artifact objects", () => {
       installed_artifact_id: artifactId,
       local_status: "installed",
     });
+    const coveredManifest = await request(`/v1/objects/manifests/${objectId}`, TOKEN_B);
+    expect(await coveredManifest.json()).toMatchObject({
+      deviceStates: [
+        {
+          deviceId: DEVICE_B,
+          observedLogicalVersion: 2,
+          installedArtifactId: artifactId,
+          localStatus: "installed",
+          verifiedCiphertextHash: checksum,
+          errorCode: null,
+        },
+      ],
+    });
 
     const isolated = await request(`/v1/objects/${artifactId}`, OTHER_OWNER_TOKEN);
     expect(isolated.status).toBe(404);

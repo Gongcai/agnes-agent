@@ -29,6 +29,12 @@ pub struct KnowledgeDocumentRow {
     pub status: String,
     pub current_version_id: Option<String>,
     pub chunk_count: i64,
+    pub embedded_chunk_count: i64,
+    pub artifact_id: Option<String>,
+    pub artifact_status: Option<String>,
+    pub ready_replica_count: i64,
+    pub device_artifact_status: Option<String>,
+    pub device_artifact_error: Option<String>,
     pub updated_at: String,
 }
 
@@ -291,11 +297,29 @@ pub fn list_documents(
 
     let mut stmt = conn.prepare(
         r#"SELECT d.id, d.collection_id, d.title, d.media_type, d.status, d.current_version_id,
-             COUNT(ch.id), d.updated_at
+             COUNT(DISTINCT ch.id), COUNT(DISTINCT e.ref_id), am.id, am.local_status,
+             COALESCE((SELECT COUNT(*) FROM artifact_replicas r
+                       WHERE r.artifact_id = am.id AND r.status = 'ready'), 0),
+             das.local_status, das.last_error_code, d.updated_at
            FROM documents d
            LEFT JOIN document_chunks ch ON ch.document_version_id = d.current_version_id
+           LEFT JOIN embedding_items e ON e.ref_type = 'document_chunk' AND e.ref_id = ch.id
+           LEFT JOIN artifact_manifests am ON am.id = (
+             SELECT candidate.id FROM artifact_manifests candidate
+             WHERE candidate.artifact_type = 'knowledge_vectors'
+               AND candidate.source_version_id = d.current_version_id
+             ORDER BY CASE candidate.local_status
+                        WHEN 'installed' THEN 3 WHEN 'available' THEN 2 WHEN 'built' THEN 1 ELSE 0
+                      END DESC,
+                      CAST(candidate.created_at AS INTEGER) DESC,
+                      candidate.id DESC
+             LIMIT 1
+           )
+           LEFT JOIN device_artifact_states das ON das.artifact_id = am.id
+             AND das.device_id = (SELECT device_id FROM sync_runtime_state WHERE singleton = 1)
            WHERE d.collection_id = ?1 AND d.deleted_at IS NULL
-           GROUP BY d.id, d.collection_id, d.title, d.media_type, d.status, d.current_version_id, d.updated_at
+           GROUP BY d.id, d.collection_id, d.title, d.media_type, d.status, d.current_version_id,
+             am.id, am.local_status, das.local_status, das.last_error_code, d.updated_at
            ORDER BY CAST(d.updated_at AS INTEGER) DESC, d.id DESC"#,
     )?;
     let rows = stmt.query_map([collection_id], |row| {
@@ -307,7 +331,13 @@ pub fn list_documents(
             status: row.get(4)?,
             current_version_id: row.get(5)?,
             chunk_count: row.get(6)?,
-            updated_at: row.get(7)?,
+            embedded_chunk_count: row.get(7)?,
+            artifact_id: row.get(8)?,
+            artifact_status: row.get(9)?,
+            ready_replica_count: row.get(10)?,
+            device_artifact_status: row.get(11)?,
+            device_artifact_error: row.get(12)?,
+            updated_at: row.get(13)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -1387,6 +1417,84 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+
+        let (document_id, source_version_id): (String, String) = conn
+            .query_row(
+                "SELECT id, current_version_id FROM documents WHERE collection_id = 'collection-a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let snapshot = export_artifact_snapshot(&conn, &source_version_id).unwrap();
+        let built = crate::sync::knowledge_artifact::build_from_snapshot(
+            &crate::sync::crypto::SyncMasterKey::generate(),
+            1,
+            &snapshot,
+        )
+        .unwrap();
+        crate::db::repo::artifacts::upsert_manifest(
+            &conn,
+            &crate::db::repo::artifacts::UpsertArtifactManifest {
+                manifest: built.manifest.clone(),
+                local_path: None,
+                local_status: "installed".into(),
+                installed_at: Some("1".into()),
+            },
+        )
+        .unwrap();
+        crate::db::repo::artifacts::upsert_replica(
+            &conn,
+            &crate::db::repo::artifacts::ArtifactReplicaRow {
+                artifact_id: built.manifest.id.clone(),
+                provider_account_id: "r2-managed".into(),
+                provider_kind: "r2".into(),
+                encrypted_locator: "{}".into(),
+                provider_revision: Some("revision-1".into()),
+                etag: None,
+                ciphertext_hash: built.manifest.ciphertext_hash.clone(),
+                size: built.manifest.size as i64,
+                status: "ready".into(),
+                last_error_code: None,
+                updated_at: "1".into(),
+            },
+        )
+        .unwrap();
+        let device_id: String = conn
+            .query_row(
+                "SELECT device_id FROM sync_runtime_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        crate::db::repo::artifacts::upsert_device_state(
+            &conn,
+            &crate::db::repo::artifacts::DeviceArtifactStateRow {
+                device_id,
+                artifact_id: built.manifest.id.clone(),
+                observed_version: snapshot.logical_version,
+                local_status: "installed".into(),
+                verified_hash: Some(built.manifest.ciphertext_hash),
+                last_checked_at: "1".into(),
+                last_error_code: None,
+            },
+        )
+        .unwrap();
+        let document = list_documents(&conn, "collection-a", "agnes")
+            .unwrap()
+            .into_iter()
+            .find(|document| document.id == document_id)
+            .unwrap();
+        assert_eq!(document.embedded_chunk_count, document.chunk_count);
+        assert_eq!(
+            document.artifact_id.as_deref(),
+            Some(built.manifest.id.as_str())
+        );
+        assert_eq!(document.artifact_status.as_deref(), Some("installed"));
+        assert_eq!(document.ready_replica_count, 1);
+        assert_eq!(
+            document.device_artifact_status.as_deref(),
+            Some("installed")
+        );
     }
 
     #[test]

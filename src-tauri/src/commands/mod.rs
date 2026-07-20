@@ -2980,6 +2980,119 @@ pub async fn vectorize_knowledge(
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeArtifactPublishResult {
+    pub artifact_id: String,
+    pub reused: bool,
+    pub ready_replica_count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeArtifactDeviceCoverage {
+    pub device_id: String,
+    pub device_name: Option<String>,
+    pub current: bool,
+    pub observed_logical_version: i64,
+    pub installed_artifact_id: Option<String>,
+    pub local_status: String,
+    pub checked_at: i64,
+    pub error_code: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeArtifactCoverage {
+    pub artifact_id: String,
+    pub logical_version: i64,
+    pub ready_replica_count: usize,
+    pub devices: Vec<KnowledgeArtifactDeviceCoverage>,
+}
+
+#[tauri::command]
+pub async fn publish_knowledge_artifact(
+    state: tauri::State<'_, AppState>,
+    collection_id: String,
+    agent_id: String,
+    document_id: String,
+) -> AppResult<KnowledgeArtifactPublishResult> {
+    let documents = state
+        .db
+        .list_knowledge_documents(collection_id, agent_id)
+        .await?;
+    let source_version_id = documents
+        .into_iter()
+        .find(|document| document.id == document_id)
+        .and_then(|document| document.current_version_id)
+        .ok_or_else(|| AppError::Other("知识文档不可用".into()))?;
+    let prepared = state
+        .sync
+        .publish_knowledge_artifact(
+            state.storage.clone(),
+            source_version_id,
+            state.data_dir.join("artifacts").join("outbox"),
+        )
+        .await?;
+    Ok(KnowledgeArtifactPublishResult {
+        artifact_id: prepared.artifact_id,
+        reused: prepared.reused,
+        ready_replica_count: prepared.ready_replica_count,
+    })
+}
+
+#[tauri::command]
+pub async fn get_knowledge_artifact_coverage(
+    state: tauri::State<'_, AppState>,
+    collection_id: String,
+    agent_id: String,
+    document_id: String,
+) -> AppResult<KnowledgeArtifactCoverage> {
+    let document_exists = state
+        .db
+        .list_knowledge_documents(collection_id, agent_id)
+        .await?
+        .into_iter()
+        .any(|document| document.id == document_id && document.current_version_id.is_some());
+    if !document_exists {
+        return Err(AppError::Other("知识文档不可用".into()));
+    }
+    let response = state
+        .sync
+        .get_object_manifest(&format!("knowledge:{document_id}"))
+        .await?;
+    let devices = state.sync.list_devices().await?;
+    let coverage = response
+        .device_states
+        .into_iter()
+        .map(|device_state| {
+            let device = devices
+                .iter()
+                .find(|device| device.id == device_state.device_id);
+            KnowledgeArtifactDeviceCoverage {
+                device_id: device_state.device_id,
+                device_name: device.map(|device| device.name.clone()),
+                current: device.is_some_and(|device| device.current),
+                observed_logical_version: device_state.observed_logical_version,
+                installed_artifact_id: device_state.installed_artifact_id,
+                local_status: device_state.local_status,
+                checked_at: device_state.checked_at,
+                error_code: device_state.error_code,
+            }
+        })
+        .collect();
+    Ok(KnowledgeArtifactCoverage {
+        artifact_id: response.manifest.artifact_id,
+        logical_version: response.manifest.logical_version,
+        ready_replica_count: response
+            .replicas
+            .iter()
+            .filter(|replica| replica.status == "ready")
+            .count(),
+        devices: coverage,
+    })
+}
+
 async fn retrieve_knowledge_hybrid(
     state: &AppState,
     agent_id: &str,

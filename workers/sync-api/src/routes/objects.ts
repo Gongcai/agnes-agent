@@ -91,6 +91,16 @@ interface ReplicaRow {
   updated_at: number;
 }
 
+interface DeviceStateRow {
+  device_id: string;
+  observed_logical_version: number;
+  installed_artifact_id: string | null;
+  local_status: string;
+  verified_ciphertext_hash: string | null;
+  checked_at: number;
+  error_code: string | null;
+}
+
 function ownerNotFound(): ApiError {
   return new ApiError(404, "OBJECT_NOT_FOUND", "The requested object does not exist");
 }
@@ -625,13 +635,23 @@ export async function getObjectManifest(context: Context<AppEnv>): Promise<Respo
   if (!manifest) {
     throw ownerNotFound();
   }
-  const replicas = await context.env.SYNC_DB.prepare(
-    `SELECT artifact_id, provider_kind, provider_account_id, opaque_server_key, encrypted_locator,
-            provider_revision, etag, ciphertext_hash, size, status, updated_at
-     FROM object_replicas WHERE owner_id = ? AND artifact_id = ? ORDER BY status = 'ready' DESC, updated_at DESC`,
-  )
-    .bind(identity.ownerId, manifest.latest_artifact_id)
-    .all<ReplicaRow>();
+  const [replicas, deviceStates] = await Promise.all([
+    context.env.SYNC_DB.prepare(
+      `SELECT artifact_id, provider_kind, provider_account_id, opaque_server_key, encrypted_locator,
+              provider_revision, etag, ciphertext_hash, size, status, updated_at
+       FROM object_replicas WHERE owner_id = ? AND artifact_id = ? ORDER BY status = 'ready' DESC, updated_at DESC`,
+    )
+      .bind(identity.ownerId, manifest.latest_artifact_id)
+      .all<ReplicaRow>(),
+    context.env.SYNC_DB.prepare(
+      `SELECT device_id, observed_logical_version, installed_artifact_id, local_status,
+              verified_ciphertext_hash, checked_at, error_code
+       FROM device_object_states WHERE owner_id = ? AND object_id = ?
+       ORDER BY checked_at DESC, device_id`,
+    )
+      .bind(identity.ownerId, manifest.object_id)
+      .all<DeviceStateRow>(),
+  ]);
   return context.json({
     manifest: {
       objectId: manifest.object_id,
@@ -654,6 +674,15 @@ export async function getObjectManifest(context: Context<AppEnv>): Promise<Respo
       size: replica.size,
       status: replica.status,
       updatedAt: replica.updated_at,
+    })),
+    deviceStates: deviceStates.results.map((state) => ({
+      deviceId: state.device_id,
+      observedLogicalVersion: state.observed_logical_version,
+      installedArtifactId: state.installed_artifact_id,
+      localStatus: state.local_status,
+      verifiedCiphertextHash: state.verified_ciphertext_hash,
+      checkedAt: state.checked_at,
+      errorCode: state.error_code,
     })),
   });
 }

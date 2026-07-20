@@ -594,6 +594,7 @@ mod tests {
                 updated_at: logical_version,
             },
             replicas,
+            device_states: Vec::new(),
         }
     }
 

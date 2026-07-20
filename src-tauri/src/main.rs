@@ -359,6 +359,8 @@ fn main() {
             commands::import_storage_knowledge_document,
             commands::search_knowledge,
             commands::vectorize_knowledge,
+            commands::publish_knowledge_artifact,
+            commands::get_knowledge_artifact_coverage,
             commands::search_knowledge_hybrid,
             commands::list_storage_provider_catalog,
             commands::list_storage_accounts,

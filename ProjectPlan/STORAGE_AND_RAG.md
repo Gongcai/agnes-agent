@@ -585,6 +585,7 @@ tasks
 - [x] 接入 object manifest/change/device-state 控制面客户端，并为大对象维护独立于聊天同步的本地 cursor；
 - [x] 接入 artifact replication coordinator：后台有界拉取 object changes，按 key version 选择密钥和 ready replica，完成验证后原子安装并上报设备状态；失败、不兼容密钥和无副本不污染聊天同步游标；
 - [x] 将单个 document version 的 chunks 与同一 embedding profile 导出为加密 artifact，并在验证后事务性导入 FTS5、embedding metadata 与 sqlite-vec 分区；
+- [x] 完成知识制品发布编排：稳定 build fingerprint 和 object ID、原子密文 outbox 缓存、失败重试复用同一 artifact ID/HLC，并发布到 R2 后回写本机安装状态；
 - 加入本地磁盘配额和 GC。
 
 ### Phase C：通用 Provider 基础与网盘页
@@ -626,7 +627,7 @@ tasks
 - [x] 增加日历、待办页面路由；
 - [x] 增加网盘页面路由和按需加载；Google Drive 官方 adapter 注册后开放侧边栏入口；
 - [x] 网盘页显示 Provider 账户、配额、实时传输队列、错误、Google OAuth 连接、本地下载、目录批量下载与当前目录上传；
-- 知识库页显示源文件、抽取/分块/向量进度和设备覆盖状态。
+- [x] 知识库页显示源文件、分块/向量覆盖、待发布状态和 ready 副本数量，可逐文档发布制品并按需查看各设备安装覆盖与错误状态。
 
 ### Phase G：日历、待办与外部适配器
 

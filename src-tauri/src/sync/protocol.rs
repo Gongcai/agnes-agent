@@ -211,15 +211,17 @@ pub struct ObjectChange {
     pub changed_at: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ObjectManifestResponse {
     pub manifest: RemoteObjectManifest,
     #[serde(default)]
     pub replicas: Vec<RemoteObjectReplica>,
+    #[serde(default)]
+    pub device_states: Vec<RemoteObjectDeviceState>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoteObjectManifest {
     pub object_id: String,
@@ -234,7 +236,7 @@ pub struct RemoteObjectManifest {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoteObjectReplica {
     pub provider_kind: String,
@@ -245,6 +247,18 @@ pub struct RemoteObjectReplica {
     pub size: u64,
     pub status: String,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteObjectDeviceState {
+    pub device_id: String,
+    pub observed_logical_version: i64,
+    pub installed_artifact_id: Option<String>,
+    pub local_status: String,
+    pub verified_ciphertext_hash: Option<String>,
+    pub checked_at: i64,
+    pub error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -444,11 +458,21 @@ mod tests {
                 "size": 1024,
                 "status": "ready",
                 "updatedAt": 1234
+            }],
+            "deviceStates": [{
+                "deviceId": "00000000-0000-4000-8000-000000000001",
+                "observedLogicalVersion": 2,
+                "installedArtifactId": "artifact-1",
+                "localStatus": "installed",
+                "verifiedCiphertextHash": "a".repeat(64),
+                "checkedAt": 1234,
+                "errorCode": null
             }]
         }))
         .unwrap();
         assert_eq!(response.manifest.artifact_id, "artifact-1");
         assert_eq!(response.replicas[0].provider_kind, "r2");
+        assert_eq!(response.device_states[0].local_status, "installed");
 
         let state = ObjectStateRequest {
             protocol_version: PROTOCOL_VERSION,

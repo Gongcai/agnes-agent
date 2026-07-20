@@ -15,19 +15,28 @@ use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::secrets::{SecretStore, SYNC_CREDENTIAL_SECRET_ID, SYNC_E2EE_KEYSET_SECRET_ID};
 use crate::storage::StorageService;
+use crate::sync::artifact::{verify_artifact, ArtifactManifest, BuiltArtifact};
 use crate::sync::auth::SyncCredential;
-use crate::sync::client::{FailureKind, HttpSyncTransport, SyncTransport, TransportFailure};
+use crate::sync::client::{
+    FailureKind, HttpSyncTransport, ObjectSyncTransport, SyncTransport, TransportFailure,
+};
 use crate::sync::crypto::{
     open_json, seal_json, PayloadMetadata, RecoveryMaterial, SyncKeyset, EMPTY_PAYLOAD_HASH,
     PAYLOAD_ENCODING, TOMBSTONE_ENCODING,
+};
+use crate::sync::hlc::HybridTimestamp;
+use crate::sync::knowledge_artifact::{
+    build_fingerprint as knowledge_build_fingerprint, build_from_snapshot, cache_built_artifact,
+    decode_verified_artifact, KNOWLEDGE_ARTIFACT_TYPE,
 };
 use crate::sync::pairing::{
     self, PairingDevice, PairingExchange, PairingKey, PreparedPairingTransfer,
 };
 use crate::sync::protocol::{
     AckRequest, CreatePairingSessionRequest, DeviceListResponse, FinalizePairingSessionRequest,
-    JoinPairingSessionRequest, PairingJoinResponse, PushRequest, PushResponse, RemoteChange,
-    RemoteEntity, RevokeDeviceResponse, SyncDevice, DEFAULT_PAGE_LIMIT, PROTOCOL_VERSION,
+    JoinPairingSessionRequest, ObjectLocalStatus, ObjectManifestResponse, ObjectStateRequest,
+    PairingJoinResponse, PushRequest, PushResponse, RemoteChange, RemoteEntity,
+    RevokeDeviceResponse, SyncDevice, DEFAULT_PAGE_LIMIT, PROTOCOL_VERSION,
 };
 use crate::sync::replication::{
     ArtifactInstaller, ArtifactReplicationCoordinator, ReplicationReport,
@@ -60,6 +69,25 @@ pub struct SyncStatus {
     pub e2ee: SyncE2eeStatus,
     #[serde(flatten)]
     pub database: SyncDbStatus,
+}
+
+#[derive(Debug)]
+pub struct PreparedKnowledgeArtifactPublication {
+    pub artifact: Option<BuiltArtifact>,
+    pub manifest: ArtifactManifest,
+    pub object_id: String,
+    pub logical_version: u64,
+    pub updated_hlc: String,
+    pub device_id: String,
+    pub local_path: Option<String>,
+    pub reused_ready_replica: bool,
+}
+
+#[derive(Debug)]
+pub struct KnowledgeArtifactPublicationOutcome {
+    pub artifact_id: String,
+    pub reused: bool,
+    pub ready_replica_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,6 +138,7 @@ pub struct SyncService {
     secrets: Arc<dyn SecretStore>,
     client: reqwest::Client,
     run_gate: Mutex<()>,
+    artifact_publish_gate: Mutex<()>,
     pairing_initiators: Mutex<HashMap<String, PendingInitiatorPairing>>,
     pairing_responders: Mutex<HashMap<String, PendingResponderPairing>>,
     syncing: AtomicBool,
@@ -127,6 +156,7 @@ impl SyncService {
             secrets,
             client,
             run_gate: Mutex::new(()),
+            artifact_publish_gate: Mutex::new(()),
             pairing_initiators: Mutex::new(HashMap::new()),
             pairing_responders: Mutex::new(HashMap::new()),
             syncing: AtomicBool::new(false),
@@ -192,6 +222,239 @@ impl SyncService {
             return Ok(status);
         };
         self.run_with_encrypted_transport(&transport, &keyset).await
+    }
+
+    pub async fn publish_knowledge_artifact(
+        &self,
+        storage: Arc<StorageService>,
+        source_version_id: String,
+        cache_root: std::path::PathBuf,
+    ) -> AppResult<KnowledgeArtifactPublicationOutcome> {
+        let _guard = self.artifact_publish_gate.lock().await;
+        let prepared = self
+            .prepare_knowledge_artifact_publication(source_version_id, cache_root)
+            .await?;
+        let PreparedKnowledgeArtifactPublication {
+            artifact,
+            manifest,
+            object_id,
+            logical_version,
+            updated_hlc,
+            device_id,
+            local_path,
+            reused_ready_replica,
+        } = prepared;
+        if let Some(artifact) = artifact {
+            storage
+                .upload_artifact(
+                    crate::storage::MANAGED_R2_ACCOUNT_ID.into(),
+                    artifact,
+                    object_id.clone(),
+                    logical_version,
+                    updated_hlc,
+                )
+                .await?;
+        }
+        let observed_version = i64::try_from(logical_version)
+            .map_err(|_| AppError::Other("知识文档逻辑版本无效".into()))?;
+        let checked_at = current_unix_seconds_string();
+        self.db
+            .upsert_artifact_manifest(crate::db::repo::artifacts::UpsertArtifactManifest {
+                manifest: manifest.clone(),
+                local_path,
+                local_status: "installed".into(),
+                installed_at: Some(checked_at.clone()),
+            })
+            .await?;
+        self.db
+            .upsert_device_artifact_state(crate::db::repo::artifacts::DeviceArtifactStateRow {
+                device_id,
+                artifact_id: manifest.id.clone(),
+                observed_version,
+                local_status: "installed".into(),
+                verified_hash: Some(manifest.ciphertext_hash.clone()),
+                last_checked_at: checked_at,
+                last_error_code: None,
+            })
+            .await?;
+        self.report_installed_object(
+            object_id,
+            observed_version,
+            manifest.id.clone(),
+            manifest.ciphertext_hash.clone(),
+        )
+        .await?;
+        let ready_replica_count = self
+            .db
+            .list_artifact_replicas(manifest.id.clone())
+            .await?
+            .into_iter()
+            .filter(|replica| replica.status == "ready")
+            .count();
+        Ok(KnowledgeArtifactPublicationOutcome {
+            artifact_id: manifest.id,
+            reused: reused_ready_replica,
+            ready_replica_count,
+        })
+    }
+
+    async fn prepare_knowledge_artifact_publication(
+        &self,
+        source_version_id: String,
+        cache_root: std::path::PathBuf,
+    ) -> AppResult<PreparedKnowledgeArtifactPublication> {
+        let status = self.status().await?;
+        if !status.credential_configured {
+            return Err(AppError::Other("同步凭证尚未配置".into()));
+        }
+        if !status.e2ee.confirmed || !status.e2ee.transport_ready {
+            return Err(AppError::Other("同步端到端加密尚未就绪".into()));
+        }
+        let keyset = self
+            .load_keyset()
+            .await?
+            .ok_or_else(|| AppError::Other("同步加密密钥尚未配置".into()))?;
+        let snapshot = self
+            .db
+            .export_knowledge_artifact_snapshot(source_version_id.clone())
+            .await?;
+        let object_id = format!("knowledge:{}", snapshot.document_id);
+        if object_id.len() > 160
+            || !object_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-'))
+        {
+            return Err(AppError::Other("知识制品对象 ID 无效".into()));
+        }
+        let logical_version = u64::try_from(snapshot.logical_version)
+            .map_err(|_| AppError::Other("知识文档逻辑版本无效".into()))?;
+        let fingerprint = knowledge_build_fingerprint(&snapshot)?;
+        let existing = self
+            .db
+            .find_artifact_manifest_by_fingerprint(
+                KNOWLEDGE_ARTIFACT_TYPE.into(),
+                source_version_id,
+                fingerprint,
+            )
+            .await?;
+        if let Some(existing) = existing {
+            let manifest = existing.to_manifest()?;
+            let ready = self
+                .db
+                .list_artifact_replicas(existing.id.clone())
+                .await?
+                .into_iter()
+                .any(|replica| replica.status == "ready");
+            if ready {
+                return Ok(PreparedKnowledgeArtifactPublication {
+                    updated_hlc: knowledge_publish_hlc(&manifest, &status.database.device_id)?,
+                    artifact: None,
+                    manifest,
+                    object_id,
+                    logical_version,
+                    device_id: status.database.device_id,
+                    local_path: existing.local_path,
+                    reused_ready_replica: true,
+                });
+            }
+            if let Some(local_path) = existing.local_path.as_deref() {
+                let path = std::path::Path::new(local_path);
+                if path.is_file() {
+                    let key = keyset.key(existing.key_version).ok_or_else(|| {
+                        AppError::Other("缓存知识制品所需的历史密钥不可用".into())
+                    })?;
+                    let bytes = tokio::fs::read(path).await?;
+                    let verified = verify_artifact(key, &manifest, &bytes)?;
+                    let decoded = decode_verified_artifact(&verified)?;
+                    if decoded.source_version_id != snapshot.source_version_id
+                        || knowledge_build_fingerprint(&decoded)? != manifest.build_fingerprint
+                    {
+                        return Err(AppError::Other("缓存知识制品与当前索引不匹配".into()));
+                    }
+                    return Ok(PreparedKnowledgeArtifactPublication {
+                        updated_hlc: knowledge_publish_hlc(&manifest, &status.database.device_id)?,
+                        artifact: Some(BuiltArtifact {
+                            manifest: manifest.clone(),
+                            bytes,
+                        }),
+                        manifest,
+                        object_id,
+                        logical_version,
+                        device_id: status.database.device_id,
+                        local_path: Some(local_path.into()),
+                        reused_ready_replica: false,
+                    });
+                }
+            }
+            return Err(AppError::Other("现有知识制品缺少可重试的密文缓存".into()));
+        }
+
+        let artifact =
+            build_from_snapshot(keyset.active_key(), keyset.active_key_version(), &snapshot)?;
+        let artifact_for_cache = artifact.clone();
+        let cache_path = tokio::task::spawn_blocking(move || {
+            cache_built_artifact(&cache_root, &artifact_for_cache)
+        })
+        .await
+        .map_err(|error| AppError::Other(format!("知识制品缓存任务异常中止：{error}")))??;
+        let local_path = cache_path.to_string_lossy().to_string();
+        self.db
+            .upsert_artifact_manifest(crate::db::repo::artifacts::UpsertArtifactManifest {
+                manifest: artifact.manifest.clone(),
+                local_path: Some(local_path.clone()),
+                local_status: "built".into(),
+                installed_at: None,
+            })
+            .await?;
+        Ok(PreparedKnowledgeArtifactPublication {
+            updated_hlc: knowledge_publish_hlc(&artifact.manifest, &status.database.device_id)?,
+            manifest: artifact.manifest.clone(),
+            artifact: Some(artifact),
+            object_id,
+            logical_version,
+            device_id: status.database.device_id,
+            local_path: Some(local_path),
+            reused_ready_replica: false,
+        })
+    }
+
+    pub async fn get_object_manifest(&self, object_id: &str) -> AppResult<ObjectManifestResponse> {
+        let transport = self
+            .http_transport()
+            .await?
+            .ok_or_else(|| AppError::Other("同步凭证尚未配置".into()))?;
+        transport
+            .get_object_manifest(object_id)
+            .await
+            .map_err(admin_transport_error)
+    }
+
+    pub async fn report_installed_object(
+        &self,
+        object_id: String,
+        logical_version: i64,
+        artifact_id: String,
+        ciphertext_hash: String,
+    ) -> AppResult<()> {
+        let status = self.db.get_sync_status().await?;
+        let transport = self
+            .http_transport()
+            .await?
+            .ok_or_else(|| AppError::Other("同步凭证尚未配置".into()))?;
+        transport
+            .update_object_state(&ObjectStateRequest {
+                protocol_version: PROTOCOL_VERSION,
+                device_id: status.device_id,
+                object_id,
+                observed_logical_version: logical_version,
+                installed_artifact_id: Some(artifact_id),
+                local_status: ObjectLocalStatus::Installed,
+                verified_ciphertext_hash: Some(ciphertext_hash),
+                error_code: None,
+            })
+            .await
+            .map_err(admin_transport_error)?;
+        Ok(())
     }
 
     pub async fn begin_e2ee_setup(&self) -> AppResult<RecoveryMaterial> {
@@ -1605,6 +1868,26 @@ fn validate_revoked_device(
 
 fn admin_transport_error(error: TransportFailure) -> AppError {
     AppError::Other(format!("{}: {}", error.code, error.message))
+}
+
+fn knowledge_publish_hlc(manifest: &ArtifactManifest, device_id: &str) -> AppResult<String> {
+    let physical_ms = manifest
+        .created_at
+        .parse::<u64>()
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(1_000))
+        .ok_or_else(|| AppError::Other("知识制品创建时间无效".into()))?;
+    let node = device_id.chars().take(8).collect::<String>();
+    HybridTimestamp::tick(None, physical_ms, &node)
+        .map(|timestamp| timestamp.to_string())
+        .map_err(AppError::Other)
+}
+
+fn current_unix_seconds_string() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".into())
 }
 
 fn canonical_uuid(value: &str, message: &str) -> AppResult<String> {

@@ -1,7 +1,12 @@
 //! Canonical knowledge chunk and vector payloads carried by encrypted artifacts.
 
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::db::repo::knowledge::{
     KnowledgeArtifactChunk, KnowledgeArtifactEmbeddingProfile, KnowledgeArtifactSnapshot,
@@ -145,6 +150,49 @@ pub fn build_from_snapshot(
             },
         ],
     )
+}
+
+pub fn build_fingerprint(snapshot: &KnowledgeArtifactSnapshot) -> AppResult<String> {
+    validate_snapshot(snapshot)?;
+    build_inputs(snapshot)?.build_fingerprint()
+}
+
+/// Persists encrypted artifact bytes before upload so retries reuse the same
+/// immutable artifact ID and publish metadata.
+pub fn cache_built_artifact(root: &Path, artifact: &BuiltArtifact) -> AppResult<PathBuf> {
+    if !root.is_absolute() {
+        return Err(AppError::Other(
+            "Knowledge artifact cache root must be absolute".into(),
+        ));
+    }
+    fs::create_dir_all(root)?;
+    let destination = root.join(format!("{}.agnes-artifact", artifact.manifest.id));
+    if destination.exists() {
+        let bytes = fs::read(&destination)?;
+        if bytes == artifact.bytes {
+            return Ok(destination);
+        }
+        return Err(AppError::Other(
+            "Knowledge artifact cache path contains different bytes".into(),
+        ));
+    }
+    let temporary = root.join(format!(".artifact-{}.tmp", Uuid::new_v4()));
+    let write_result = (|| -> AppResult<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)?;
+        file.write_all(&artifact.bytes)?;
+        file.sync_all()?;
+        fs::rename(&temporary, &destination)?;
+        File::open(root)?.sync_all()?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    write_result?;
+    Ok(destination)
 }
 
 pub fn decode_verified_artifact(
@@ -355,6 +403,7 @@ fn sha256_hex(value: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     fn snapshot() -> KnowledgeArtifactSnapshot {
         KnowledgeArtifactSnapshot {
@@ -420,5 +469,26 @@ mod tests {
             .bytes
             .pop();
         assert!(decode_verified_artifact(&verified).is_err());
+    }
+
+    #[test]
+    fn encrypted_artifact_cache_is_atomic_and_idempotent() {
+        let key = SyncMasterKey::generate();
+        let source = snapshot();
+        let built = build_from_snapshot(&key, 1, &source).unwrap();
+        assert_eq!(
+            build_fingerprint(&source).unwrap(),
+            built.manifest.build_fingerprint
+        );
+        let root = tempdir().unwrap();
+        let first = cache_built_artifact(root.path(), &built).unwrap();
+        let second = cache_built_artifact(root.path(), &built).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(std::fs::read(first).unwrap(), built.bytes);
+        assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".artifact-")));
     }
 }

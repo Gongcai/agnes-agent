@@ -25,6 +25,32 @@ pub struct ArtifactManifestRow {
     pub installed_at: Option<String>,
 }
 
+impl ArtifactManifestRow {
+    pub fn to_manifest(&self) -> AppResult<ArtifactManifest> {
+        Ok(ArtifactManifest {
+            id: self.id.clone(),
+            artifact_type: self.artifact_type.clone(),
+            source_version_id: self.source_version_id.clone(),
+            build_fingerprint: self.build_fingerprint.clone(),
+            format_version: u16::try_from(self.format_version)
+                .map_err(|_| AppError::Other("Artifact format version is invalid".into()))?,
+            plaintext_hash: self.plaintext_hash.clone(),
+            ciphertext_hash: self.ciphertext_hash.clone(),
+            plaintext_size: u64::try_from(self.plaintext_size)
+                .map_err(|_| AppError::Other("Artifact plaintext size is invalid".into()))?,
+            size: u64::try_from(self.size)
+                .map_err(|_| AppError::Other("Artifact size is invalid".into()))?,
+            encryption_scheme: self.encryption_scheme.clone(),
+            key_version: self.key_version,
+            chunk_size: u32::try_from(self.chunk_size)
+                .map_err(|_| AppError::Other("Artifact chunk size is invalid".into()))?,
+            chunk_count: u64::try_from(self.chunk_count)
+                .map_err(|_| AppError::Other("Artifact chunk count is invalid".into()))?,
+            created_at: self.created_at.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UpsertArtifactManifest {
     pub manifest: ArtifactManifest,

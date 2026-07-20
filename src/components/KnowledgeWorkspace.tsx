@@ -3,10 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   BookOpen,
+  CloudUpload,
   FilePlus2,
   Files,
   FolderPlus,
   LoaderCircle,
+  MonitorSmartphone,
   Search,
 } from "lucide-react";
 import { useAgentStore } from "../store/useAgentStore";
@@ -28,6 +30,12 @@ interface DocumentRow {
   status: string;
   current_version_id: string | null;
   chunk_count: number;
+  embedded_chunk_count: number;
+  artifact_id: string | null;
+  artifact_status: string | null;
+  ready_replica_count: number;
+  device_artifact_status: string | null;
+  device_artifact_error: string | null;
   updated_at: string;
 }
 
@@ -46,6 +54,49 @@ interface KnowledgeVectorizationResult {
   model_ref: string;
 }
 
+interface KnowledgeArtifactPublishResult {
+  artifactId: string;
+  reused: boolean;
+  readyReplicaCount: number;
+}
+
+interface KnowledgeArtifactDeviceCoverage {
+  deviceId: string;
+  deviceName: string | null;
+  current: boolean;
+  observedLogicalVersion: number;
+  installedArtifactId: string | null;
+  localStatus: string;
+  checkedAt: number;
+  errorCode: string | null;
+}
+
+interface KnowledgeArtifactCoverage {
+  artifactId: string;
+  logicalVersion: number;
+  readyReplicaCount: number;
+  devices: KnowledgeArtifactDeviceCoverage[];
+}
+
+const deviceStatusLabel = (status: string) => {
+  switch (status) {
+    case "installed":
+      return "已安装";
+    case "downloading":
+      return "下载中";
+    case "verifying":
+      return "校验中";
+    case "missing":
+      return "缺少副本";
+    case "incompatible":
+      return "版本不兼容";
+    case "failed":
+      return "失败";
+    default:
+      return status;
+  }
+};
+
 export const KnowledgeWorkspace: React.FC = () => {
   const activeAgentId = useAgentStore((state) => state.activeAgentId);
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -57,6 +108,11 @@ export const KnowledgeWorkspace: React.FC = () => {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [indexStatus, setIndexStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [publishingDocumentId, setPublishingDocumentId] = useState<string | null>(null);
+  const [coverageDocumentId, setCoverageDocumentId] = useState<string | null>(null);
+  const [coverageByDocument, setCoverageByDocument] = useState<
+    Record<string, KnowledgeArtifactCoverage>
+  >({});
   const [error, setError] = useState<string | null>(null);
 
   const loadCollections = async () => {
@@ -176,10 +232,61 @@ export const KnowledgeWorkspace: React.FC = () => {
           ? `向量索引已是最新状态（${result.model_ref}）`
           : `已建立 ${result.indexed_now} 个向量（${result.model_ref}）`,
       );
+      await loadDocuments(selectedCollectionId);
     } catch (reason) {
       setError(String(reason));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const publishArtifact = async (document: DocumentRow) => {
+    if (!activeAgentId || !selectedCollectionId || !document.current_version_id) return;
+
+    setPublishingDocumentId(document.id);
+    setError(null);
+    try {
+      const result = await invoke<KnowledgeArtifactPublishResult>(
+        "publish_knowledge_artifact",
+        {
+          collectionId: selectedCollectionId,
+          agentId: activeAgentId,
+          documentId: document.id,
+        },
+      );
+      setIndexStatus(
+        result.reused
+          ? `已复用知识制品 ${result.artifactId}（${result.readyReplicaCount} 个副本）`
+          : `知识制品已发布（${result.readyReplicaCount} 个副本）`,
+      );
+      await loadDocuments(selectedCollectionId);
+      await loadArtifactCoverage(document.id);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setPublishingDocumentId(null);
+    }
+  };
+
+  const loadArtifactCoverage = async (documentId: string) => {
+    if (!activeAgentId || !selectedCollectionId) return;
+
+    setCoverageDocumentId(documentId);
+    setError(null);
+    try {
+      const coverage = await invoke<KnowledgeArtifactCoverage>(
+        "get_knowledge_artifact_coverage",
+        {
+          collectionId: selectedCollectionId,
+          agentId: activeAgentId,
+          documentId,
+        },
+      );
+      setCoverageByDocument((current) => ({ ...current, [documentId]: coverage }));
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setCoverageDocumentId(null);
     }
   };
 
@@ -367,19 +474,99 @@ export const KnowledgeWorkspace: React.FC = () => {
                 <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-stone-400">
                   已索引文档
                 </div>
-                <div className="space-y-1">
-                  {documents.map((document) => (
-                    <div
-                      key={document.id}
-                      className="flex items-center gap-2 rounded-lg px-2 py-2 text-xs text-stone-600"
-                    >
-                      <Files className="h-3.5 w-3.5 text-stone-400" />
-                      <span className="flex-1 truncate">{document.title}</span>
-                      <span className="text-[10px] text-stone-400">
-                        {document.chunk_count} chunks
-                      </span>
-                    </div>
-                  ))}
+                <div className="space-y-2">
+                  {documents.map((document) => {
+                    const vectorReady =
+                      document.chunk_count > 0 &&
+                      document.embedded_chunk_count === document.chunk_count;
+                    const coverage = coverageByDocument[document.id];
+                    return (
+                      <div
+                        key={document.id}
+                        className="rounded-xl border border-stone-200 bg-white px-3 py-2.5 shadow-sm"
+                      >
+                        <div className="flex items-center gap-2 text-xs text-stone-600">
+                          <Files className="h-3.5 w-3.5 shrink-0 text-stone-400" />
+                          <span className="min-w-0 flex-1 truncate font-medium text-stone-700">
+                            {document.title}
+                          </span>
+                          <span className="text-[10px] text-stone-400">
+                            {document.embedded_chunk_count}/{document.chunk_count} 向量
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] ${
+                              document.ready_replica_count > 0
+                                ? "bg-emerald-50 text-emerald-700"
+                                : vectorReady
+                                  ? "bg-amber-50 text-amber-700"
+                                  : "bg-stone-100 text-stone-500"
+                            }`}
+                          >
+                            {document.ready_replica_count > 0
+                              ? `${document.ready_replica_count} 个副本`
+                              : vectorReady
+                                ? "待发布"
+                                : "待向量化"}
+                          </span>
+                          <button
+                            disabled={!vectorReady || publishingDocumentId === document.id}
+                            onClick={() => void publishArtifact(document)}
+                            className="flex items-center gap-1 rounded-lg border border-stone-200 px-2 py-1 text-[10px] font-semibold text-stone-600 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            title="发布加密知识制品"
+                          >
+                            {publishingDocumentId === document.id ? (
+                              <LoaderCircle className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <CloudUpload className="h-3 w-3" />
+                            )}
+                            发布
+                          </button>
+                          <button
+                            disabled={!document.artifact_id || coverageDocumentId === document.id}
+                            onClick={() => void loadArtifactCoverage(document.id)}
+                            className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold text-stone-500 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            title="查看设备覆盖"
+                          >
+                            {coverageDocumentId === document.id ? (
+                              <LoaderCircle className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <MonitorSmartphone className="h-3 w-3" />
+                            )}
+                            设备
+                          </button>
+                        </div>
+                        {document.device_artifact_error && (
+                          <p className="mt-1 pl-5 text-[10px] text-rose-600">
+                            本机：{document.device_artifact_error}
+                          </p>
+                        )}
+                        {coverage && (
+                          <div className="mt-2 space-y-1 border-t border-stone-100 pt-2 pl-5">
+                            {coverage.devices.length > 0 ? (
+                              coverage.devices.map((device) => (
+                                <div
+                                  key={device.deviceId}
+                                  className="flex items-center gap-2 text-[10px] text-stone-500"
+                                >
+                                  <MonitorSmartphone className="h-3 w-3" />
+                                  <span className="min-w-0 flex-1 truncate">
+                                    {device.deviceName ?? device.deviceId}
+                                    {device.current ? "（本机）" : ""}
+                                  </span>
+                                  <span>{deviceStatusLabel(device.localStatus)}</span>
+                                  {device.errorCode && (
+                                    <span className="text-rose-600">{device.errorCode}</span>
+                                  )}
+                                </div>
+                              ))
+                            ) : (
+                              <p className="text-[10px] text-stone-400">暂无设备上报状态。</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
