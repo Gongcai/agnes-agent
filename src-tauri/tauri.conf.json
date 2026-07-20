@@ -55,7 +55,8 @@
     "active": true,
     "targets": "all",
     "externalBin": [
-      "binaries/agentd"
+      "binaries/agentd",
+      "binaries/document-parserd"
     ],
     "icon": [
       "icons/icon.png"

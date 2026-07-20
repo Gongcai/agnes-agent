@@ -113,10 +113,31 @@ pub struct NewKnowledgeCollection {
 }
 
 #[derive(Debug, Clone)]
+pub struct DocumentParserProfile {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub options_hash: String,
+}
+
+impl DocumentParserProfile {
+    pub fn builtin_text() -> Self {
+        Self {
+            id: DEFAULT_PARSER_PROFILE_ID.into(),
+            name: "utf8_text".into(),
+            version: "1".into(),
+            options_hash: "builtin".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct NewDocumentChunk {
     pub content: String,
+    pub page: Option<i64>,
     pub section_path: Option<String>,
     pub token_count: i64,
+    pub metadata: String,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +149,7 @@ pub struct NewLocalDocument {
     pub local_path: String,
     pub plaintext_hash: String,
     pub size: i64,
+    pub parser_profile: DocumentParserProfile,
     pub chunks: Vec<NewDocumentChunk>,
 }
 
@@ -355,6 +377,47 @@ fn ensure_builtin_profiles(tx: &Transaction<'_>, timestamp: &str) -> AppResult<(
     Ok(())
 }
 
+fn ensure_parser_profile(
+    tx: &Transaction<'_>,
+    profile: &DocumentParserProfile,
+    timestamp: &str,
+) -> AppResult<()> {
+    if profile.id.trim().is_empty()
+        || profile.name.trim().is_empty()
+        || profile.version.trim().is_empty()
+        || profile.options_hash.trim().is_empty()
+    {
+        return Err(AppError::Other("Document parser profile is invalid".into()));
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO parser_profiles (id, parser_name, parser_version, options_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            profile.id,
+            profile.name,
+            profile.version,
+            profile.options_hash,
+            timestamp
+        ],
+    )?;
+    let stored: (String, String, String) = tx.query_row(
+        "SELECT parser_name, parser_version, options_hash FROM parser_profiles WHERE id = ?1",
+        [&profile.id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if stored
+        != (
+            profile.name.clone(),
+            profile.version.clone(),
+            profile.options_hash.clone(),
+        )
+    {
+        return Err(AppError::Other(
+            "Document parser profile identifier conflicts with an existing profile".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn import_local_document(
     conn: &mut Connection,
     input: &NewLocalDocument,
@@ -364,6 +427,13 @@ pub fn import_local_document(
             "Document contains no indexable text".into(),
         ));
     }
+    if input.chunks.iter().any(|chunk| {
+        chunk.content.trim().is_empty()
+            || chunk.token_count <= 0
+            || serde_json::from_str::<serde_json::Value>(&chunk.metadata).is_err()
+    }) {
+        return Err(AppError::Other("Document chunk metadata is invalid".into()));
+    }
     if !can_write_collection(conn, &input.collection_id, &input.agent_id)? {
         return Err(AppError::Other(
             "No write permission for this knowledge collection".into(),
@@ -371,24 +441,50 @@ pub fn import_local_document(
     }
 
     let timestamp = now();
-    let existing: Option<(String, Option<String>, i64, Option<String>)> = conn
+    let existing: Option<(
+        String,
+        Option<String>,
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = conn
         .query_row(
             r#"SELECT d.id, d.current_version_id,
                  COALESCE((SELECT MAX(v.logical_version) FROM document_versions v WHERE v.document_id = d.id), 0),
-                 (SELECT v.plaintext_hash FROM document_versions v WHERE v.id = d.current_version_id)
+                 (SELECT v.plaintext_hash FROM document_versions v WHERE v.id = d.current_version_id),
+                 (SELECT v.parser_profile_id FROM document_versions v WHERE v.id = d.current_version_id),
+                 (SELECT v.media_type FROM document_versions v WHERE v.id = d.current_version_id)
                FROM documents d
                JOIN document_sources s ON s.document_id = d.id
                JOIN document_local_bindings b ON b.source_id = s.id
                WHERE d.collection_id = ?1 AND b.local_path = ?2
                ORDER BY CAST(s.observed_at AS INTEGER) DESC LIMIT 1"#,
             params![input.collection_id, input.local_path],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
         )
         .optional()?;
 
     let (document_id, source_id, logical_version, current_version_id, unchanged) = match existing {
-        Some((document_id, current_version_id, logical_version, current_hash))
-            if current_hash.as_deref() == Some(input.plaintext_hash.as_str()) =>
+        Some((
+            document_id,
+            current_version_id,
+            logical_version,
+            current_hash,
+            current_parser_profile_id,
+            current_media_type,
+        )) if current_hash.as_deref() == Some(input.plaintext_hash.as_str())
+            && current_parser_profile_id.as_deref() == Some(input.parser_profile.id.as_str())
+            && current_media_type.as_deref() == Some(input.media_type.as_str()) =>
         {
             let source_id: String = conn.query_row(
                 "SELECT s.id FROM document_sources s JOIN document_local_bindings b ON b.source_id = s.id WHERE s.document_id = ?1 AND b.local_path = ?2 LIMIT 1",
@@ -403,7 +499,7 @@ pub fn import_local_document(
                 true,
             )
         }
-        Some((document_id, current_version_id, logical_version, _)) => {
+        Some((document_id, current_version_id, logical_version, _, _, _)) => {
             let source_id: String = conn.query_row(
                 "SELECT s.id FROM document_sources s JOIN document_local_bindings b ON b.source_id = s.id WHERE s.document_id = ?1 AND b.local_path = ?2 LIMIT 1",
                 params![document_id, input.local_path],
@@ -452,6 +548,7 @@ pub fn import_local_document(
     let version_id = uuid::Uuid::new_v4().to_string();
     let tx = conn.transaction()?;
     ensure_builtin_profiles(&tx, &timestamp)?;
+    ensure_parser_profile(&tx, &input.parser_profile, &timestamp)?;
     if current_version_id.is_none() {
         tx.execute(
             "INSERT INTO documents (id, collection_id, title, media_type, current_version_id, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?6)",
@@ -481,20 +578,22 @@ pub fn import_local_document(
     }
     tx.execute(
         "INSERT INTO document_versions (id, document_id, logical_version, plaintext_hash, size, media_type, parser_profile_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![version_id, document_id, logical_version + 1, input.plaintext_hash, input.size, input.media_type, DEFAULT_PARSER_PROFILE_ID, timestamp],
+        params![version_id, document_id, logical_version + 1, input.plaintext_hash, input.size, input.media_type, input.parser_profile.id, timestamp],
     )?;
     for (ordinal, chunk) in input.chunks.iter().enumerate() {
         let chunk_id = uuid::Uuid::new_v4().to_string();
         tx.execute(
-            "INSERT INTO document_chunks (id, document_version_id, ordinal, content, content_hash, section_path, token_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO document_chunks (id, document_version_id, ordinal, content, content_hash, page, section_path, token_count, metadata) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 chunk_id,
                 version_id,
                 ordinal as i64,
                 chunk.content,
                 hash_text(&chunk.content),
+                chunk.page,
                 chunk.section_path,
-                chunk.token_count
+                chunk.token_count,
+                chunk.metadata
             ],
         )?;
         tx.execute(
@@ -1291,15 +1390,31 @@ mod tests {
             local_path: "/tmp/gardening.md".into(),
             plaintext_hash: hash_text("Rhubarb prefers cool weather."),
             size: 29,
+            parser_profile: DocumentParserProfile::builtin_text(),
             chunks: vec![NewDocumentChunk {
                 content: "Rhubarb prefers cool weather.".into(),
+                page: Some(12),
                 section_path: Some("Garden".into()),
                 token_count: 4,
+                metadata: r#"{"kind":"paragraph"}"#.into(),
             }],
         };
         let imported = import_local_document(&mut conn, &input).unwrap();
         assert!(!imported.unchanged);
         assert_eq!(imported.indexed_chunks, 1);
+        let (page, metadata, parser_profile_id): (Option<i64>, String, Option<String>) = conn
+            .query_row(
+                "SELECT ch.page, ch.metadata, v.parser_profile_id FROM document_chunks ch JOIN document_versions v ON v.id = ch.document_version_id WHERE v.id = ?1",
+                [&imported.document_version_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(page, Some(12));
+        assert_eq!(metadata, r#"{"kind":"paragraph"}"#);
+        assert_eq!(
+            parser_profile_id.as_deref(),
+            Some(DEFAULT_PARSER_PROFILE_ID)
+        );
 
         let results = search(&conn, "agnes", "rhubarb", None, 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -1315,6 +1430,20 @@ mod tests {
         assert_eq!(
             list_documents(&conn, "collection-1", "agnes").unwrap()[0].chunk_count,
             1
+        );
+
+        let mut reparsed = input.clone();
+        reparsed.parser_profile = DocumentParserProfile {
+            id: "test-parser-v2".into(),
+            name: "test_parser".into(),
+            version: "2".into(),
+            options_hash: "updated-options".into(),
+        };
+        let reparsed_result = import_local_document(&mut conn, &reparsed).unwrap();
+        assert!(!reparsed_result.unchanged);
+        assert_ne!(
+            reparsed_result.document_version_id,
+            imported.document_version_id
         );
     }
 
@@ -1365,10 +1494,13 @@ mod tests {
                     local_path: path.into(),
                     plaintext_hash: hash_text(content),
                     size: content.len() as i64,
+                    parser_profile: DocumentParserProfile::builtin_text(),
                     chunks: vec![NewDocumentChunk {
                         content: content.into(),
+                        page: None,
                         section_path: None,
                         token_count: 5,
+                        metadata: "{}".into(),
                     }],
                 },
             )
@@ -1526,10 +1658,13 @@ mod tests {
                 local_path: "/tmp/portable.txt".into(),
                 plaintext_hash: hash_text("Portable rhubarb knowledge."),
                 size: 28,
+                parser_profile: DocumentParserProfile::builtin_text(),
                 chunks: vec![NewDocumentChunk {
                     content: "Portable rhubarb knowledge.".into(),
+                    page: Some(7),
                     section_path: Some("Portable".into()),
                     token_count: 3,
+                    metadata: r#"{"kind":"table","sheet":"Portable"}"#.into(),
                 }],
             },
         )
@@ -1550,6 +1685,11 @@ mod tests {
         let snapshot = export_artifact_snapshot(&source, &imported.document_version_id).unwrap();
         assert_eq!(snapshot.chunks.len(), 1);
         assert_eq!(snapshot.chunks[0].vector, vec![1.0, 0.0, 0.0]);
+        assert_eq!(snapshot.chunks[0].page, Some(7));
+        assert_eq!(
+            snapshot.chunks[0].metadata,
+            r#"{"kind":"table","sheet":"Portable"}"#
+        );
 
         let mut target = Connection::open_in_memory().unwrap();
         crate::db::migrations::apply(&mut target).unwrap();
@@ -1564,6 +1704,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(import_artifact_snapshot(&mut target, &snapshot).unwrap(), 1);
+        let (page, metadata): (Option<i64>, String) = target
+            .query_row(
+                "SELECT page, metadata FROM document_chunks WHERE document_version_id = ?1",
+                [&snapshot.source_version_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(page, Some(7));
+        assert_eq!(metadata, snapshot.chunks[0].metadata);
         assert_eq!(
             search(&target, "agnes", "rhubarb", None, 5).unwrap().len(),
             1
@@ -1685,10 +1834,13 @@ mod tests {
                 local_path: "/tmp/private-book.epub".into(),
                 plaintext_hash: hash_text("Private reading passage about rhubarb."),
                 size: 38,
+                parser_profile: DocumentParserProfile::builtin_text(),
                 chunks: vec![NewDocumentChunk {
                     content: "Private reading passage about rhubarb.".into(),
+                    page: None,
                     section_path: Some("Chapter 1".into()),
                     token_count: 5,
+                    metadata: "{}".into(),
                 }],
             },
         )

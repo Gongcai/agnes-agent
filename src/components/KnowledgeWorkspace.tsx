@@ -183,11 +183,22 @@ export const KnowledgeWorkspace: React.FC = () => {
 
     const selected = await open({
       multiple: true,
-      title: "导入本地文本",
+      title: "导入知识文档",
       filters: [
         {
-          name: "文本与 Markdown",
-          extensions: ["md", "markdown", "txt", "rst", "log", "csv", "json"],
+          name: "知识文档",
+          extensions: [
+            "md",
+            "markdown",
+            "txt",
+            "rst",
+            "log",
+            "csv",
+            "json",
+            "docx",
+            "pptx",
+            "xlsx",
+          ],
         },
       ],
     });
@@ -465,7 +476,7 @@ export const KnowledgeWorkspace: React.FC = () => {
               <div className="rounded-2xl border border-dashed border-stone-200 px-6 py-12 text-center text-sm text-stone-400">
                 {documents.length > 0
                   ? "输入关键词，检索当前知识库。"
-                  : "导入 Markdown、文本、CSV 或 JSON 文件后，即可在本地检索。"}
+                  : "导入文本、DOCX、PPTX 或 XLSX 文档后，即可在本地检索。"}
               </div>
             )}
 

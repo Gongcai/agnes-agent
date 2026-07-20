@@ -11,6 +11,7 @@ use crate::sync::engine::SyncService;
 
 /// 应用托管的全局状态（经 Tauri `State` 注入命令）。
 pub struct AppState {
+    pub app_handle: tauri::AppHandle,
     pub data_dir: PathBuf,
     pub db: DbActorHandle,
     pub agent: Arc<AgentManager>,

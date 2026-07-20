@@ -4,6 +4,7 @@ mod agent;
 mod browser;
 mod commands;
 mod db;
+mod document_parser;
 mod embeddings;
 mod error;
 mod mcp;
@@ -288,6 +289,7 @@ fn main() {
             }
 
             app.manage(AppState {
+                app_handle: app.handle().clone(),
                 data_dir,
                 db,
                 agent,

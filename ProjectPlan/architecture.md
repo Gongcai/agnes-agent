@@ -60,6 +60,11 @@ agnes-agent/
 │   │   ├── memory_extract.py # 记忆抽取*建议*（写回 memory_store）
 │   │   └── models.py         # LiteLLM + 模型注册表
 │   └── tests/
+├── document-parser/      # 隔离文档解析 sidecar（Office 轻量后端，按需启动）
+│   ├── pyproject.toml
+│   ├── document_parserd.py
+│   ├── app/parser.py
+│   └── tests/
 ├── shared/               # 协议文档 / schema（Agent Protocol 唯一真相源文档）
 │   └── protocol.md
 ├── workers/              # Cloudflare Worker（V0.3 再加）
@@ -70,7 +75,7 @@ agnes-agent/
 
 - 不用 `src/src` 嵌套；`src/` 即 React 源码根（与 `index.html` 同级）。
 - 包管理：**pnpm workspace**（不用 npm workspace，不用 turborepo）。注：当前环境尚未安装 pnpm，脚手架时需先装。
-- `agent/` 用 `uv` 单独管；`workers/` 后续加。
+- `agent/` 与 `document-parser/` 分别用独立 `uv` 环境管理；`workers/` 后续加。
 
 ---
 
@@ -320,7 +325,7 @@ settings(key PK, value TEXT)
 ## 9. 配置与密钥
 
 - 用户设置存 `settings` 表；模型 API Key 等敏感信息存 **OS Keyring**（Tauri keyring 插件），不落明文、不进同步。
-- 构建配置 `src-tauri/tauri.conf.json`；sidecar 发布态走 `bundle.externalBin`。
+- 构建配置 `src-tauri/tauri.conf.json`；`agentd` 和 `document-parserd` 发布态均走 `bundle.externalBin`。
 
 ---
 
@@ -342,7 +347,7 @@ settings(key PK, value TEXT)
 ## 12. 测试策略
 
 - Rust：`cargo test` 覆盖 DbActor、Agent Protocol 编解码、ToolExecutor（含 policy 判定）、memory_search。
-- Python：`pytest` 覆盖 graph、prompt 预算/压缩、memory_extract、tools schema。
+- Python：`pytest` 覆盖 graph、prompt 预算/压缩、memory_extract、tools schema，以及 DOCX/PPTX/XLSX 的结构化解析。
 - 前端：`vitest` + RTL 覆盖组件与 IPC 封装。
 - 契约测试：Agent Protocol 消息 Rust⇄Python 往返一致性。
 
@@ -353,7 +358,7 @@ settings(key PK, value TEXT)
 ```bash
 # 前端 + Rust + 启动 Python sidecar（dev，AgentLauncher=DevUvLauncher）
 pnpm tauri dev
-# 打包（release，自动冻结并验证 agentd → Tauri externalBin）
+# 打包（release，自动冻结并验证 agentd/document-parserd → Tauri externalBin）
 pnpm tauri build
 # 仅冻结并执行 sidecar 协议握手测试
 pnpm build:sidecar
@@ -362,10 +367,12 @@ cargo build / cargo test          # src-tauri
 # Python sidecar（uv）
 cd agent && uv sync && uv run python -m app.main
 uv run pytest                     # agent/tests
+# 文档解析 sidecar（uv）
+cd ../document-parser && uv sync && uv run pytest
 # 前端单测
 pnpm test                         # vitest
 ```
-> 注：`agentd` 由 PyInstaller 在目标平台原生构建，不能直接跨平台冻结；交叉编译 Tauri 时需通过 `AGNES_SIDECAR_BINARY` 提供与目标 triple 匹配的预构建文件。
+> 注：两个 sidecar 都由 PyInstaller 在目标平台原生构建，不能直接跨平台冻结；交叉编译 Tauri 时需通过 `AGNES_SIDECAR_BINARY` 和 `AGNES_DOCUMENT_PARSER_BINARY` 提供与目标 triple 匹配的预构建文件。
 
 ---
 

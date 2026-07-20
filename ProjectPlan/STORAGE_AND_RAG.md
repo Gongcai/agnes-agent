@@ -545,6 +545,7 @@ tasks
 - OAuth access/refresh token、网盘 Cookie、R2/S3 凭证和 E2EE 主密钥只进入 OS Keyring / Android Keystore。
 - 前端只看到 Provider 是否已授权、账户显示名和错误状态，不存在读取已保存 secret 的 IPC。
 - 文档解析器作为不可信输入边界：限制文件大小、解压比、嵌套层数、页数、总字符和处理时间。
+- Office 结构化解析、独立 sidecar、解析协议与 PDF 可选模型包详见 `ProjectPlan/DOCUMENT_PARSING.md`。
 - RAG 返回必须带来源引用，不将召回文本作为高优先级 prompt。
 - 本地索引不等于内容绝不外发：选择远程嵌入模型时，chunk 会发送给该模型服务；选择远程主模型时，被召回的 chunk 会随本次对话发送。界面必须明确提示此边界。
 

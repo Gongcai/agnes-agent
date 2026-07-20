@@ -2266,7 +2266,7 @@ pub async fn delete_memory(
     Ok(())
 }
 
-const MAX_LOCAL_KNOWLEDGE_DOCUMENT_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_LOCAL_KNOWLEDGE_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_LOCAL_CHAT_ATTACHMENT_BYTES: u64 = 512 * 1024;
 const MAX_CHAT_ATTACHMENT_TOTAL_BYTES: u64 = 1024 * 1024;
 const MAX_CHAT_ATTACHMENTS: usize = 8;
@@ -2503,7 +2503,9 @@ fn chunk_local_text(content: &str) -> Vec<crate::db::repo::knowledge::NewDocumen
             chunks.push(crate::db::repo::knowledge::NewDocumentChunk {
                 token_count: content.split_whitespace().count().max(1) as i64,
                 content: content.clone(),
+                page: None,
                 section_path: section_path.clone(),
+                metadata: r#"{"kind":"text"}"#.into(),
             });
             current = trailing_chars(&content, KNOWLEDGE_CHUNK_OVERLAP);
         }
@@ -2519,7 +2521,9 @@ fn chunk_local_text(content: &str) -> Vec<crate::db::repo::knowledge::NewDocumen
             chunks.push(crate::db::repo::knowledge::NewDocumentChunk {
                 token_count: content.split_whitespace().count().max(1) as i64,
                 content: content.clone(),
+                page: None,
                 section_path: section_path.clone(),
+                metadata: r#"{"kind":"text"}"#.into(),
             });
             let overlap = trailing_chars(head, KNOWLEDGE_CHUNK_OVERLAP);
             remainder = &remainder[head.len()..];
@@ -2536,26 +2540,26 @@ fn chunk_local_text(content: &str) -> Vec<crate::db::repo::knowledge::NewDocumen
         chunks.push(crate::db::repo::knowledge::NewDocumentChunk {
             token_count: content.split_whitespace().count().max(1) as i64,
             content,
+            page: None,
             section_path,
+            metadata: r#"{"kind":"text"}"#.into(),
         });
     }
     chunks
 }
 
-fn read_local_knowledge_document(
-    path: String,
-) -> AppResult<(
-    String,
-    String,
-    String,
-    i64,
-    Vec<crate::db::repo::knowledge::NewDocumentChunk>,
-)> {
-    read_knowledge_document(path, None, None)
+struct ParsedKnowledgeDocument {
+    title: String,
+    media_type: String,
+    source_hash: String,
+    size: i64,
+    parser_profile: crate::db::repo::knowledge::DocumentParserProfile,
+    chunks: Vec<crate::db::repo::knowledge::NewDocumentChunk>,
 }
 
 fn knowledge_media_type(
     path: &std::path::Path,
+    title_hint: Option<&str>,
     remote_media_type: Option<&str>,
 ) -> AppResult<String> {
     let normalized = remote_media_type
@@ -2571,30 +2575,48 @@ fn knowledge_media_type(
             Some("application/json")
         }
         Some("text/markdown" | "text/plain" | "text/csv" | "application/json") => normalized,
+        Some(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ) => normalized,
         Some("application/octet-stream") | None => None,
         Some(_) => None,
     };
     media_type
         .map(str::to_string)
-        .or_else(|| text_media_type(path).ok().map(str::to_string))
+        .or_else(|| {
+            let extension_path = title_hint.map(std::path::Path::new).unwrap_or(path);
+            match extension_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(|extension| extension.to_ascii_lowercase())
+                .as_deref()
+            {
+                Some("docx") => Some(
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        .into(),
+                ),
+                Some("pptx") => Some(
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                        .into(),
+                ),
+                Some("xlsx") => {
+                    Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into())
+                }
+                _ => text_media_type(extension_path).ok().map(str::to_string),
+            }
+        })
         .ok_or_else(|| {
-            AppError::Other(
-                "当前仅支持 UTF-8 的 Markdown、文本、CSV、JSON 和可导出的 Google 文档".into(),
-            )
+            AppError::Other("当前支持 UTF-8 文本、DOCX、PPTX、XLSX 和可导出的 Google 文档".into())
         })
 }
 
-fn read_knowledge_document(
+fn read_text_knowledge_document(
     path: String,
     title_hint: Option<String>,
     remote_media_type: Option<String>,
-) -> AppResult<(
-    String,
-    String,
-    String,
-    i64,
-    Vec<crate::db::repo::knowledge::NewDocumentChunk>,
-)> {
+) -> AppResult<ParsedKnowledgeDocument> {
     let path = std::path::PathBuf::from(path);
     let metadata = std::fs::metadata(&path)?;
     if !metadata.is_file() {
@@ -2606,7 +2628,8 @@ fn read_knowledge_document(
             MAX_LOCAL_KNOWLEDGE_DOCUMENT_BYTES / 1024 / 1024
         )));
     }
-    let media_type = knowledge_media_type(&path, remote_media_type.as_deref())?;
+    let media_type =
+        knowledge_media_type(&path, title_hint.as_deref(), remote_media_type.as_deref())?;
     let bytes = std::fs::read(&path)?;
     let content = std::str::from_utf8(&bytes)
         .map_err(|_| AppError::Other("仅支持 UTF-8 编码的文本文件".into()))?
@@ -2627,8 +2650,71 @@ fn read_knowledge_document(
                 .filter(|name| !name.is_empty())
         })
         .unwrap_or_else(|| "未命名文档".into());
-    let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
-    Ok((title, media_type, hash, bytes.len() as i64, chunks))
+    let hash = format!("{:x}", Sha256::digest(&bytes));
+    Ok(ParsedKnowledgeDocument {
+        title,
+        media_type,
+        source_hash: hash,
+        size: bytes.len() as i64,
+        parser_profile: crate::db::repo::knowledge::DocumentParserProfile::builtin_text(),
+        chunks,
+    })
+}
+
+async fn read_knowledge_document(
+    state: &AppState,
+    path: String,
+    title_hint: Option<String>,
+    remote_media_type: Option<String>,
+) -> AppResult<ParsedKnowledgeDocument> {
+    let path_buf = std::path::PathBuf::from(&path);
+    let media_type = knowledge_media_type(
+        &path_buf,
+        title_hint.as_deref(),
+        remote_media_type.as_deref(),
+    )?;
+    let is_office = matches!(
+        media_type.as_str(),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    if is_office {
+        let parsed = crate::document_parser::parse_office_document(
+            &state.app_handle,
+            &path_buf,
+            title_hint.as_deref(),
+            &media_type,
+        )
+        .await?;
+        let parser_profile = parsed.profile();
+        let title = parsed.title.clone();
+        let parsed_media_type = parsed.media_type.clone();
+        let source_hash = parsed.source_hash.clone();
+        let size = parsed.size;
+        let chunks = parsed.into_chunks()?;
+        return Ok(ParsedKnowledgeDocument {
+            title,
+            media_type: parsed_media_type,
+            source_hash,
+            size,
+            parser_profile,
+            chunks,
+        });
+    }
+
+    tokio::task::spawn_blocking(move || {
+        read_text_knowledge_document(path, title_hint, remote_media_type)
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("知识库文本解析任务异常中止：{error}")))?
+}
+
+async fn read_local_knowledge_document(
+    state: &AppState,
+    path: String,
+) -> AppResult<ParsedKnowledgeDocument> {
+    read_knowledge_document(state, path, None, None).await
 }
 
 fn knowledge_storage_path(
@@ -2834,6 +2920,7 @@ async fn import_reading_book_from_path(
                 local_path: stored_path.to_string_lossy().to_string(),
                 plaintext_hash: source_hash.clone(),
                 size: std::fs::metadata(&stored_path)?.len() as i64,
+                parser_profile: crate::db::repo::knowledge::DocumentParserProfile::builtin_text(),
                 chunks,
             })
             .await?;
@@ -3143,22 +3230,19 @@ pub async fn import_local_knowledge_document(
     agent_id: String,
     path: String,
 ) -> AppResult<crate::db::repo::knowledge::ImportDocumentResult> {
-    let path_for_read = path.clone();
-    let (title, media_type, plaintext_hash, size, chunks) =
-        tokio::task::spawn_blocking(move || read_local_knowledge_document(path_for_read))
-            .await
-            .map_err(|error| AppError::Other(format!("知识库导入任务异常中止：{error}")))??;
+    let parsed = read_local_knowledge_document(&state, path.clone()).await?;
     state
         .db
         .import_local_knowledge_document(crate::db::repo::knowledge::NewLocalDocument {
             collection_id,
             agent_id,
-            title,
-            media_type,
+            title: parsed.title,
+            media_type: parsed.media_type,
             local_path: path,
-            plaintext_hash,
-            size,
-            chunks,
+            plaintext_hash: parsed.source_hash,
+            size: parsed.size,
+            parser_profile: parsed.parser_profile,
+            chunks: parsed.chunks,
         })
         .await
 }
@@ -3191,12 +3275,9 @@ pub async fn import_storage_knowledge_document(
     let remote_name = staged.remote_file.name.clone();
     let remote_media_type = staged.remote_file.media_type.clone();
     let outcome = async {
-        let parsed = tokio::task::spawn_blocking(move || {
-            read_knowledge_document(parse_path, Some(remote_name), remote_media_type)
-        })
-        .await
-        .map_err(|error| AppError::Other(format!("知识库网盘导入任务异常中止：{error}")))??;
-        let (title, media_type, plaintext_hash, size, chunks) = parsed;
+        let parsed =
+            read_knowledge_document(&state, parse_path, Some(remote_name), remote_media_type)
+                .await?;
         let install = tokio::task::spawn_blocking({
             let source = staged.local_path.clone();
             let target = stable_path.clone();
@@ -3209,12 +3290,13 @@ pub async fn import_storage_knowledge_document(
             .import_local_knowledge_document(crate::db::repo::knowledge::NewLocalDocument {
                 collection_id,
                 agent_id,
-                title,
-                media_type,
+                title: parsed.title,
+                media_type: parsed.media_type,
                 local_path: stable_path.to_string_lossy().to_string(),
-                plaintext_hash,
-                size,
-                chunks,
+                plaintext_hash: parsed.source_hash,
+                size: parsed.size,
+                parser_profile: parsed.parser_profile,
+                chunks: parsed.chunks,
             })
             .await;
         match result {
@@ -4905,7 +4987,7 @@ mod tests {
     use super::{
         commit_managed_file, install_managed_file, is_automatic_session_title, latest_user_query,
         normalize_default_max_output_tokens, normalize_session_title,
-        persist_search_provider_settings, read_knowledge_document, read_local_chat_attachment,
+        persist_search_provider_settings, read_local_chat_attachment, read_text_knowledge_document,
         rollback_managed_file, saved_provider_endpoint_matches, CalendarEventUpdatePayload,
         SearchProviderSettingsInput, TaskUpdatePayload, DEFAULT_MAX_OUTPUT_TOKENS,
     };
@@ -5135,17 +5217,17 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("agnes-google-document-{}", uuid::Uuid::new_v4()));
         std::fs::write(&path, "# Roadmap\n\nDirect import content.").unwrap();
-        let (title, media_type, _, size, chunks) = read_knowledge_document(
+        let parsed = read_text_knowledge_document(
             path.to_string_lossy().to_string(),
             Some("Roadmap".into()),
             Some("application/vnd.google-apps.document".into()),
         )
         .unwrap();
-        assert_eq!(title, "Roadmap");
-        assert_eq!(media_type, "text/plain");
-        assert!(size > 0);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].section_path.as_deref(), Some("Roadmap"));
+        assert_eq!(parsed.title, "Roadmap");
+        assert_eq!(parsed.media_type, "text/plain");
+        assert!(parsed.size > 0);
+        assert_eq!(parsed.chunks.len(), 1);
+        assert_eq!(parsed.chunks[0].section_path.as_deref(), Some("Roadmap"));
         let _ = std::fs::remove_file(path);
     }
 
