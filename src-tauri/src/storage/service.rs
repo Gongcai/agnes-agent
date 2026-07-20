@@ -15,6 +15,7 @@ use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::sync::artifact::{install_artifact, ArtifactManifest, BuiltArtifact};
 use crate::sync::crypto::SyncMasterKey;
+use crate::sync::knowledge_artifact::{apply_verified_artifact, KNOWLEDGE_ARTIFACT_TYPE};
 
 use super::artifact_transfer;
 use super::domain::{
@@ -267,6 +268,9 @@ impl StorageService {
             }
         };
         let installed = install_artifact(&install_root, &verified)?;
+        if manifest.artifact_type == KNOWLEDGE_ARTIFACT_TYPE {
+            apply_verified_artifact(&self.db, &verified).await?;
+        }
         self.db
             .upsert_artifact_manifest(crate::db::repo::artifacts::UpsertArtifactManifest {
                 manifest,
@@ -319,6 +323,9 @@ impl StorageService {
         };
         let manifest = verified.manifest.clone();
         let installed = install_artifact(&install_root, &verified)?;
+        if manifest.artifact_type == KNOWLEDGE_ARTIFACT_TYPE {
+            apply_verified_artifact(&self.db, &verified).await?;
+        }
         self.db
             .upsert_artifact_manifest(crate::db::repo::artifacts::UpsertArtifactManifest {
                 manifest: manifest.clone(),

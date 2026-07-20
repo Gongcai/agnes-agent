@@ -584,6 +584,7 @@ tasks
 - [x] 实现 Range 断点下载、ciphertext/AEAD/内部 manifest/明文 entry Hash 验证、版本目录原子安装和失败回退；
 - [x] 接入 object manifest/change/device-state 控制面客户端，并为大对象维护独立于聊天同步的本地 cursor；
 - [x] 接入 artifact replication coordinator：后台有界拉取 object changes，按 key version 选择密钥和 ready replica，完成验证后原子安装并上报设备状态；失败、不兼容密钥和无副本不污染聊天同步游标；
+- [x] 将单个 document version 的 chunks 与同一 embedding profile 导出为加密 artifact，并在验证后事务性导入 FTS5、embedding metadata 与 sqlite-vec 分区；
 - 加入本地磁盘配额和 GC。
 
 ### Phase C：通用 Provider 基础与网盘页

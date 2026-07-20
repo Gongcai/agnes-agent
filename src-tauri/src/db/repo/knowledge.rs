@@ -52,6 +52,47 @@ pub struct KnowledgeChunkForEmbedding {
 }
 
 #[derive(Debug, Clone)]
+pub struct KnowledgeArtifactEmbeddingProfile {
+    pub id: String,
+    pub model_ref: String,
+    pub model_revision: Option<String>,
+    pub dims: usize,
+    pub normalized: bool,
+    pub instruction_hash: String,
+    pub tokenizer_ref: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct KnowledgeArtifactChunk {
+    pub id: String,
+    pub ordinal: i64,
+    pub content: String,
+    pub content_hash: String,
+    pub page: Option<i64>,
+    pub section_path: Option<String>,
+    pub token_count: i64,
+    pub metadata: String,
+    pub embedding_id: String,
+    pub vector: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct KnowledgeArtifactSnapshot {
+    pub source_version_id: String,
+    pub document_id: String,
+    pub collection_id: String,
+    pub title: String,
+    pub media_type: String,
+    pub source_plaintext_hash: String,
+    pub source_size: u64,
+    pub logical_version: i64,
+    pub parser_profile_id: Option<String>,
+    pub chunker_profile_id: String,
+    pub profile: KnowledgeArtifactEmbeddingProfile,
+    pub chunks: Vec<KnowledgeArtifactChunk>,
+}
+
+#[derive(Debug, Clone)]
 pub struct KnowledgeQueryEmbedding {
     pub model: String,
     pub vector: Vec<f32>,
@@ -102,6 +143,10 @@ fn now() -> String {
 fn hash_text(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
     format!("{digest:x}")
+}
+
+fn is_hash(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn embedding_profile_id(model: &str, dims: usize) -> String {
@@ -500,6 +545,482 @@ fn chunk_for_embedding_from_row(
     })
 }
 
+pub fn export_artifact_snapshot(
+    conn: &Connection,
+    source_version_id: &str,
+) -> AppResult<KnowledgeArtifactSnapshot> {
+    let source = conn
+        .query_row(
+            r#"SELECT d.id, d.collection_id, d.title, v.media_type, v.plaintext_hash,
+                 v.size, v.logical_version, v.parser_profile_id
+               FROM document_versions v
+               JOIN documents d ON d.id = v.document_id AND d.current_version_id = v.id
+               WHERE v.id = ?1 AND d.status = 'active' AND d.deleted_at IS NULL"#,
+            [source_version_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| AppError::Other("Knowledge source version is not current".into()))?;
+    let (
+        document_id,
+        collection_id,
+        title,
+        media_type,
+        plaintext_hash,
+        size,
+        logical_version,
+        parser_profile_id,
+    ) = source;
+    let source_size = u64::try_from(size)
+        .map_err(|_| AppError::Other("Knowledge source size is invalid".into()))?;
+
+    let profile = conn
+        .query_row(
+            r#"SELECT p.id, p.model_ref, p.model_revision, p.dims, p.normalized,
+                 p.instruction_hash, p.tokenizer_ref
+               FROM document_chunks ch
+               JOIN embedding_items e ON e.ref_type = 'document_chunk' AND e.ref_id = ch.id
+               JOIN embedding_profiles p ON p.id = e.embedding_profile_id
+               WHERE ch.document_version_id = ?1
+               ORDER BY ch.ordinal LIMIT 1"#,
+            [source_version_id],
+            |row| {
+                Ok(KnowledgeArtifactEmbeddingProfile {
+                    id: row.get(0)?,
+                    model_ref: row.get(1)?,
+                    model_revision: row.get(2)?,
+                    dims: row.get::<_, i64>(3)? as usize,
+                    normalized: row.get::<_, i64>(4)? != 0,
+                    instruction_hash: row.get(5)?,
+                    tokenizer_ref: row.get(6)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| {
+            AppError::Other("Knowledge source has no complete embedding profile".into())
+        })?;
+    if profile.model_ref.trim().is_empty()
+        || profile.instruction_hash.trim().is_empty()
+        || profile.dims == 0
+        || profile.dims > MAX_EMBEDDING_DIMS
+    {
+        return Err(AppError::Other(
+            "Knowledge embedding profile is invalid".into(),
+        ));
+    }
+    let table = rag_vector_table_name(profile.dims)?;
+    if !table_exists(conn, &table)? {
+        return Err(AppError::Other(
+            "Knowledge vector partition is missing".into(),
+        ));
+    }
+    let sql = format!(
+        r#"SELECT ch.id, ch.ordinal, ch.content, ch.content_hash, ch.page,
+             ch.section_path, ch.token_count, ch.metadata, e.id, e.collection_id,
+             e.embedding_profile_id, e.model, e.dims, e.content_hash, vec.vector
+           FROM document_chunks ch
+           JOIN embedding_items e ON e.ref_type = 'document_chunk' AND e.ref_id = ch.id
+           JOIN {table} vec ON vec.embedding_id = e.id
+           WHERE ch.document_version_id = ?1
+           ORDER BY ch.ordinal"#,
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map([source_version_id], |row| {
+        Ok((
+            KnowledgeArtifactChunk {
+                id: row.get(0)?,
+                ordinal: row.get(1)?,
+                content: row.get(2)?,
+                content_hash: row.get(3)?,
+                page: row.get(4)?,
+                section_path: row.get(5)?,
+                token_count: row.get(6)?,
+                metadata: row.get(7)?,
+                embedding_id: row.get(8)?,
+                vector: vector_from_bytes(&row.get::<_, Vec<u8>>(14)?, profile.dims)
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
+            },
+            row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
+            row.get::<_, String>(11)?,
+            row.get::<_, i64>(12)?,
+            row.get::<_, String>(13)?,
+        ))
+    })?;
+    let mut chunks = Vec::new();
+    for row in rows {
+        let (chunk, row_collection_id, profile_id, model, dims, embedding_hash) = row?;
+        if row_collection_id != collection_id
+            || profile_id != profile.id
+            || model != profile.model_ref
+            || dims != profile.dims as i64
+            || embedding_hash != chunk.content_hash
+            || hash_text(&chunk.content) != chunk.content_hash
+            || chunk.ordinal != chunks.len() as i64
+            || !valid_vector(&chunk.vector)
+        {
+            return Err(AppError::Other(
+                "Knowledge artifact source is internally inconsistent".into(),
+            ));
+        }
+        chunks.push(chunk);
+    }
+    let expected_chunks: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM document_chunks WHERE document_version_id = ?1",
+        [source_version_id],
+        |row| row.get(0),
+    )?;
+    if chunks.is_empty() || expected_chunks != chunks.len() as i64 {
+        return Err(AppError::Other(
+            "Knowledge source embeddings are incomplete".into(),
+        ));
+    }
+    Ok(KnowledgeArtifactSnapshot {
+        source_version_id: source_version_id.into(),
+        document_id,
+        collection_id,
+        title,
+        media_type,
+        source_plaintext_hash: plaintext_hash,
+        source_size,
+        logical_version,
+        parser_profile_id,
+        chunker_profile_id: DEFAULT_CHUNKER_PROFILE_ID.into(),
+        profile,
+        chunks,
+    })
+}
+
+fn vector_from_bytes(bytes: &[u8], dims: usize) -> AppResult<Vec<f32>> {
+    if bytes.len() != dims.saturating_mul(std::mem::size_of::<f32>()) {
+        return Err(AppError::Other(
+            "Knowledge vector byte length is invalid".into(),
+        ));
+    }
+    let vector = bytes
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("four-byte chunk")))
+        .collect::<Vec<_>>();
+    if !valid_vector(&vector) {
+        return Err(AppError::Other("Knowledge vector is invalid".into()));
+    }
+    Ok(vector)
+}
+
+pub fn import_artifact_snapshot(
+    conn: &mut Connection,
+    input: &KnowledgeArtifactSnapshot,
+) -> AppResult<usize> {
+    if input.source_version_id.trim().is_empty()
+        || input.document_id.trim().is_empty()
+        || input.collection_id.trim().is_empty()
+        || input.title.trim().is_empty()
+        || input.media_type.trim().is_empty()
+        || input.chunks.is_empty()
+        || !is_hash(&input.source_plaintext_hash)
+        || input.logical_version <= 0
+        || input.chunker_profile_id.trim().is_empty()
+        || input.profile.id.trim().is_empty()
+        || input.profile.model_ref.trim().is_empty()
+        || input.profile.instruction_hash.trim().is_empty()
+        || input.profile.dims == 0
+        || input.profile.dims > MAX_EMBEDDING_DIMS
+    {
+        return Err(AppError::Other(
+            "Knowledge artifact manifest is invalid".into(),
+        ));
+    }
+    let expected_profile_id = embedding_profile_id(&input.profile.model_ref, input.profile.dims);
+    if input.profile.id != expected_profile_id {
+        return Err(AppError::Other(
+            "Knowledge artifact embedding profile is invalid".into(),
+        ));
+    }
+    let table = rag_vector_table_name(input.profile.dims)?;
+    let timestamp = now();
+    let source_size = i64::try_from(input.source_size)
+        .map_err(|_| AppError::Other("Knowledge source size is invalid".into()))?;
+    let tx = conn.transaction()?;
+    let collection_exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM knowledge_collections WHERE id = ?1 AND deleted_at IS NULL)",
+        [&input.collection_id],
+        |row| row.get(0),
+    )?;
+    if !collection_exists {
+        return Err(AppError::Other(
+            "Knowledge collection is unavailable".into(),
+        ));
+    }
+    let existing_document: Option<(String, Option<String>, Option<i64>)> = tx
+        .query_row(
+            r#"SELECT d.collection_id, d.current_version_id, v.logical_version
+               FROM documents d
+               LEFT JOIN document_versions v ON v.id = d.current_version_id
+               WHERE d.id = ?1"#,
+            [&input.document_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    if existing_document
+        .as_ref()
+        .is_some_and(|(collection_id, _, _)| collection_id != &input.collection_id)
+    {
+        return Err(AppError::Other(
+            "Knowledge document belongs to a different collection".into(),
+        ));
+    }
+    let advance_current = match &existing_document {
+        None | Some((_, None, None)) => true,
+        Some((_, Some(current_version_id), Some(current_logical_version)))
+            if current_version_id == &input.source_version_id =>
+        {
+            true
+        }
+        Some((_, Some(_), Some(current_logical_version)))
+            if *current_logical_version < input.logical_version =>
+        {
+            true
+        }
+        Some((_, Some(_), Some(current_logical_version)))
+            if *current_logical_version == input.logical_version =>
+        {
+            return Err(AppError::Other(
+                "Knowledge document logical version conflicts with the current version".into(),
+            ));
+        }
+        Some((_, Some(_), Some(_))) => false,
+        Some(_) => {
+            return Err(AppError::Other(
+                "Knowledge document current version is invalid".into(),
+            ));
+        }
+    };
+    if existing_document.is_none() {
+        tx.execute(
+            "INSERT INTO documents (id, collection_id, title, media_type, current_version_id, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?6)",
+            params![
+                input.document_id,
+                input.collection_id,
+                input.title,
+                input.media_type,
+                input.source_version_id,
+                timestamp
+            ],
+        )?;
+    } else if advance_current {
+        tx.execute(
+            "UPDATE documents SET title = ?1, media_type = ?2, current_version_id = ?3, status = 'active', deleted_at = NULL, updated_at = ?4 WHERE id = ?5",
+            params![
+                input.title,
+                input.media_type,
+                input.source_version_id,
+                timestamp,
+                input.document_id
+            ],
+        )?;
+    }
+    let existing_version: Option<(String, i64, String, i64, String, Option<String>)> = tx
+        .query_row(
+            "SELECT document_id, logical_version, plaintext_hash, size, media_type, parser_profile_id FROM document_versions WHERE id = ?1",
+            [&input.source_version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    match existing_version {
+        Some((
+            document_id,
+            logical_version,
+            plaintext_hash,
+            size,
+            media_type,
+            parser_profile_id,
+        )) if document_id == input.document_id
+            && logical_version == input.logical_version
+            && plaintext_hash == input.source_plaintext_hash
+            && size == source_size
+            && media_type == input.media_type
+            && parser_profile_id == input.parser_profile_id => {}
+        Some(_) => {
+            return Err(AppError::Other(
+                "Knowledge source version is immutable and does not match".into(),
+            ));
+        }
+        None => {
+            tx.execute(
+                "INSERT INTO document_versions (id, document_id, logical_version, plaintext_hash, size, media_type, parser_profile_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    input.source_version_id,
+                    input.document_id,
+                    input.logical_version,
+                    input.source_plaintext_hash,
+                    source_size,
+                    input.media_type,
+                    input.parser_profile_id,
+                    timestamp
+                ],
+            )?;
+        }
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO document_sources (id, document_id, source_kind, observed_at) VALUES (?1, ?2, 'artifact', ?3)",
+        params![format!("artifact-source-{}", input.source_version_id), input.document_id, timestamp],
+    )?;
+    tx.execute(
+        "DELETE FROM document_chunks_fts WHERE document_version_id = ?1",
+        [&input.source_version_id],
+    )?;
+    let mut old_embeddings = Vec::new();
+    {
+        let mut statement = tx.prepare(
+            "SELECT e.id, e.dims FROM embedding_items e JOIN document_chunks ch ON ch.id = e.ref_id WHERE ch.document_version_id = ?1",
+        )?;
+        let rows = statement.query_map([&input.source_version_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            old_embeddings.push(row?);
+        }
+    }
+    for (embedding_id, dims) in old_embeddings {
+        let old_table = rag_vector_table_name(dims as usize)?;
+        if table_exists(&tx, &old_table)? {
+            tx.execute(
+                &format!("DELETE FROM {old_table} WHERE embedding_id = ?1"),
+                [&embedding_id],
+            )?;
+        }
+    }
+    tx.execute(
+        "DELETE FROM embedding_items WHERE ref_type = 'document_chunk' AND ref_id IN (SELECT id FROM document_chunks WHERE document_version_id = ?1)",
+        [&input.source_version_id],
+    )?;
+    tx.execute(
+        "DELETE FROM document_chunks WHERE document_version_id = ?1",
+        [&input.source_version_id],
+    )?;
+    ensure_rag_vector_table(&tx, input.profile.dims)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO embedding_profiles (id, model_ref, model_revision, dims, normalized, instruction_hash, tokenizer_ref, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            input.profile.id,
+            input.profile.model_ref,
+            input.profile.model_revision,
+            input.profile.dims as i64,
+            i64::from(input.profile.normalized),
+            input.profile.instruction_hash,
+            input.profile.tokenizer_ref,
+            timestamp
+        ],
+    )?;
+    let stored_profile: (String, Option<String>, i64, i64, String, Option<String>) = tx.query_row(
+        "SELECT model_ref, model_revision, dims, normalized, instruction_hash, tokenizer_ref FROM embedding_profiles WHERE id = ?1",
+        [&input.profile.id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+    )?;
+    if stored_profile.0 != input.profile.model_ref
+        || stored_profile.1 != input.profile.model_revision
+        || stored_profile.2 != input.profile.dims as i64
+        || stored_profile.3 != i64::from(input.profile.normalized)
+        || stored_profile.4 != input.profile.instruction_hash
+        || stored_profile.5 != input.profile.tokenizer_ref
+    {
+        return Err(AppError::Other(
+            "Knowledge embedding profile ID is bound to different metadata".into(),
+        ));
+    }
+    for (expected_ordinal, chunk) in input.chunks.iter().enumerate() {
+        if chunk.ordinal != expected_ordinal as i64
+            || chunk.id.trim().is_empty()
+            || chunk.embedding_id.trim().is_empty()
+            || hash_text(&chunk.content) != chunk.content_hash
+            || chunk.vector.len() != input.profile.dims
+            || !valid_vector(&chunk.vector)
+            || serde_json::from_str::<serde_json::Value>(&chunk.metadata).is_err()
+        {
+            return Err(AppError::Other(
+                "Knowledge artifact chunk or vector is invalid".into(),
+            ));
+        }
+        let embedding_owner: Option<String> = tx
+            .query_row(
+                "SELECT ref_id FROM embedding_items WHERE id = ?1",
+                [&chunk.embedding_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if embedding_owner.is_some_and(|owner| owner != chunk.id) {
+            return Err(AppError::Other(
+                "Knowledge artifact embedding ID is already in use".into(),
+            ));
+        }
+        tx.execute(
+            "INSERT INTO document_chunks (id, document_version_id, ordinal, content, content_hash, page, section_path, token_count, metadata) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                chunk.id,
+                input.source_version_id,
+                chunk.ordinal,
+                chunk.content,
+                chunk.content_hash,
+                chunk.page,
+                chunk.section_path,
+                chunk.token_count,
+                chunk.metadata
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO document_chunks_fts (chunk_id, document_id, document_version_id, title, content) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![chunk.id, input.document_id, input.source_version_id, input.title, chunk.content],
+        )?;
+        tx.execute(
+            "INSERT INTO embedding_items (id, ref_type, ref_id, collection_id, embedding_profile_id, model, dims, content_hash, created_at) VALUES (?1, 'document_chunk', ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                chunk.embedding_id,
+                chunk.id,
+                input.collection_id,
+                input.profile.id,
+                input.profile.model_ref,
+                input.profile.dims as i64,
+                chunk.content_hash,
+                timestamp
+            ],
+        )?;
+        tx.execute(
+            &format!(
+                "INSERT INTO {table} (embedding_id, collection_id, embedding_profile_id, vector) VALUES (?1, ?2, ?3, ?4)"
+            ),
+            params![
+                chunk.embedding_id,
+                input.collection_id,
+                input.profile.id,
+                f32_to_bytes(&chunk.vector)
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(input.chunks.len())
+}
+
 pub fn upsert_chunk_embedding(
     conn: &mut Connection,
     embedding_id: &str,
@@ -866,6 +1387,165 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+    }
+
+    #[test]
+    fn artifact_snapshot_round_trip_is_transactional_across_fts_and_vectors() {
+        unsafe {
+            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+        let mut source = Connection::open_in_memory().unwrap();
+        crate::db::migrations::apply(&mut source).unwrap();
+        create_collection(
+            &mut source,
+            &NewKnowledgeCollection {
+                id: "portable-collection".into(),
+                name: "Portable".into(),
+                scope: "agent_private".into(),
+                agent_id: "agnes".into(),
+            },
+        )
+        .unwrap();
+        let imported = import_local_document(
+            &mut source,
+            &NewLocalDocument {
+                collection_id: "portable-collection".into(),
+                agent_id: "agnes".into(),
+                title: "Portable rhubarb".into(),
+                media_type: "text/plain".into(),
+                local_path: "/tmp/portable.txt".into(),
+                plaintext_hash: hash_text("Portable rhubarb knowledge."),
+                size: 28,
+                chunks: vec![NewDocumentChunk {
+                    content: "Portable rhubarb knowledge.".into(),
+                    section_path: Some("Portable".into()),
+                    token_count: 3,
+                }],
+            },
+        )
+        .unwrap();
+        let chunk = chunks_needing_embeddings(&source, "test/embed", Some("portable-collection"))
+            .unwrap()
+            .remove(0);
+        assert!(upsert_chunk_embedding(
+            &mut source,
+            "portable-embedding",
+            &chunk.id,
+            &chunk.collection_id,
+            "test/embed",
+            &chunk.content_hash,
+            &[1.0, 0.0, 0.0],
+        )
+        .unwrap());
+        let snapshot = export_artifact_snapshot(&source, &imported.document_version_id).unwrap();
+        assert_eq!(snapshot.chunks.len(), 1);
+        assert_eq!(snapshot.chunks[0].vector, vec![1.0, 0.0, 0.0]);
+
+        let mut target = Connection::open_in_memory().unwrap();
+        crate::db::migrations::apply(&mut target).unwrap();
+        create_collection(
+            &mut target,
+            &NewKnowledgeCollection {
+                id: "portable-collection".into(),
+                name: "Portable".into(),
+                scope: "agent_private".into(),
+                agent_id: "agnes".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(import_artifact_snapshot(&mut target, &snapshot).unwrap(), 1);
+        assert_eq!(
+            search(&target, "agnes", "rhubarb", None, 5).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            search_vector(
+                &target,
+                "portable-collection",
+                &KnowledgeQueryEmbedding {
+                    model: "test/embed".into(),
+                    vector: vec![0.99, 0.01, 0.0],
+                },
+                5,
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+
+        let mut newer = snapshot.clone();
+        newer.source_version_id = "portable-version-2".into();
+        newer.title = "Newer portable".into();
+        newer.source_plaintext_hash = hash_text("newer portable source");
+        newer.source_size = 21;
+        newer.logical_version = 2;
+        newer.chunks[0].id = "portable-chunk-2".into();
+        newer.chunks[0].content = "Newer turnip knowledge.".into();
+        newer.chunks[0].content_hash = hash_text(&newer.chunks[0].content);
+        newer.chunks[0].embedding_id = "portable-embedding-2".into();
+        newer.chunks[0].vector = vec![0.0, 1.0, 0.0];
+        assert_eq!(import_artifact_snapshot(&mut target, &newer).unwrap(), 1);
+        assert_eq!(
+            target
+                .query_row(
+                    "SELECT current_version_id FROM documents WHERE id = ?1",
+                    [&snapshot.document_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            newer.source_version_id
+        );
+        assert_eq!(
+            search(&target, "agnes", "turnip", None, 5).unwrap().len(),
+            1
+        );
+        assert!(search(&target, "agnes", "rhubarb", None, 5)
+            .unwrap()
+            .is_empty());
+
+        assert_eq!(import_artifact_snapshot(&mut target, &snapshot).unwrap(), 1);
+        assert_eq!(
+            target
+                .query_row(
+                    "SELECT current_version_id FROM documents WHERE id = ?1",
+                    [&snapshot.document_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            newer.source_version_id
+        );
+        assert_eq!(
+            search(&target, "agnes", "turnip", None, 5).unwrap().len(),
+            1
+        );
+
+        let mut conflicting = newer.clone();
+        conflicting.source_version_id = "portable-version-conflict".into();
+        assert!(import_artifact_snapshot(&mut target, &conflicting).is_err());
+
+        let mut invalid = newer.clone();
+        invalid.chunks[0].content = "tampered".into();
+        assert!(import_artifact_snapshot(&mut target, &invalid).is_err());
+        assert_eq!(
+            search(&target, "agnes", "turnip", None, 5).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            search_vector(
+                &target,
+                "portable-collection",
+                &KnowledgeQueryEmbedding {
+                    model: "test/embed".into(),
+                    vector: vec![0.01, 0.99, 0.0],
+                },
+                5,
+            )
+            .unwrap()
+            .len(),
+            1
+        );
     }
 
     #[test]

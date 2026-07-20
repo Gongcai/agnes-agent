@@ -142,6 +142,14 @@ pub enum DbCommand {
         limit: usize,
         resp: oneshot::Sender<AppResult<Vec<repo::knowledge::KnowledgeSearchResult>>>,
     },
+    ExportKnowledgeArtifactSnapshot {
+        source_version_id: String,
+        resp: oneshot::Sender<AppResult<repo::knowledge::KnowledgeArtifactSnapshot>>,
+    },
+    ImportKnowledgeArtifactSnapshot {
+        snapshot: repo::knowledge::KnowledgeArtifactSnapshot,
+        resp: oneshot::Sender<AppResult<usize>>,
+    },
     GetArtifactManifest {
         artifact_id: String,
         resp: oneshot::Sender<AppResult<Option<repo::artifacts::ArtifactManifestRow>>>,
@@ -985,6 +993,29 @@ impl DbActorHandle {
             limit,
             resp,
         })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn export_knowledge_artifact_snapshot(
+        &self,
+        source_version_id: String,
+    ) -> AppResult<repo::knowledge::KnowledgeArtifactSnapshot> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ExportKnowledgeArtifactSnapshot {
+            source_version_id,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn import_knowledge_artifact_snapshot(
+        &self,
+        snapshot: repo::knowledge::KnowledgeArtifactSnapshot,
+    ) -> AppResult<usize> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ImportKnowledgeArtifactSnapshot { snapshot, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -2426,6 +2457,20 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         &collection_id,
                         &query,
                         limit,
+                    ));
+                }
+                DbCommand::ExportKnowledgeArtifactSnapshot {
+                    source_version_id,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::knowledge::export_artifact_snapshot(
+                        &conn,
+                        &source_version_id,
+                    ));
+                }
+                DbCommand::ImportKnowledgeArtifactSnapshot { snapshot, resp } => {
+                    let _ = resp.send(repo::knowledge::import_artifact_snapshot(
+                        &mut conn, &snapshot,
                     ));
                 }
                 DbCommand::GetArtifactManifest { artifact_id, resp } => {
