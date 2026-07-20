@@ -370,7 +370,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
         <div className="flex items-center gap-2">
           <div
-            className="flex items-center gap-2 rounded-lg border border-stone-200 bg-white/70 px-2.5 py-1"
+            className="agnes-chat-context flex items-center gap-2 rounded-lg border border-stone-200 bg-white/70 px-2.5 py-1 transition-colors"
             title={`上下文 ${contextTokens.toLocaleString()} / ${contextLimit.toLocaleString()} Token；总结阈值 ${summaryTriggerTokens.toLocaleString()} Token`}
           >
             <span className="text-[10px] text-stone-500">上下文</span>
@@ -386,7 +386,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           </div>
           <button
             onClick={() => onOpenSettings("audit")}
-            className="flex items-center gap-1.5 text-[11px] text-stone-600 hover:text-stone-900 bg-white px-2.5 py-1 rounded-lg border border-stone-200 shadow-sm transition-colors"
+            className="agnes-chat-audit-button flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[11px] text-stone-600 shadow-sm transition-colors hover:text-stone-900"
           >
             <ShieldCheck className="h-3.5 w-3.5 text-[#8CA38A]" />
             <span>审计流水</span>

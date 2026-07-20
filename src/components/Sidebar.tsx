@@ -294,11 +294,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
 
+      <div className={isOpen ? "px-3 pt-3" : "px-2 pt-3"}>
+        <button
+          type="button"
+          onClick={handleAddStandaloneSession}
+          disabled={!activeAgentId}
+          className={`agnes-sidebar-primary-action flex w-full items-center disabled:cursor-not-allowed disabled:opacity-40 ${
+            isOpen ? "gap-2 px-3" : "justify-center"
+          }`}
+          title={isOpen ? undefined : "新建对话"}
+        >
+          <Plus className="h-4 w-4 shrink-0" />
+          {isOpen && <span>新建对话</span>}
+        </button>
+      </div>
+
       {/* Feature navigation remains visible in compact mode. */}
-      <nav className={`shrink-0 border-b border-stone-200/80 ${isOpen ? "p-3" : "px-2 py-3"}`} aria-label="子功能">
+      <nav className={`shrink-0 border-b border-stone-200/80 ${isOpen ? "p-3" : "px-2 py-3"}`} aria-label="功能">
         {isOpen && (
-          <div className="mb-1.5 px-2 text-[10px] font-bold uppercase tracking-wider text-stone-400">
-            子功能
+          <div className="mb-1.5 px-2 text-[10px] font-medium text-stone-400">
+            功能
           </div>
         )}
         <div className="relative space-y-1">
@@ -336,7 +351,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {isOpen && (
         <div className="agnes-session-list flex-1 space-y-4 overflow-y-auto p-4">
           <section>
-            <div className="mb-2 flex items-center gap-1 px-1 text-[10px] font-bold uppercase tracking-wider text-stone-400">
+            <div className="mb-2 flex items-center gap-1 px-1 text-[10px] font-medium text-stone-400">
               <button
                 onClick={() => setStandaloneExpanded((expanded) => !expanded)}
                 className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left hover:bg-stone-200/50 hover:text-stone-600"
@@ -361,7 +376,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </section>
 
           <section>
-            <div className="mb-2 flex items-center gap-1 px-1 text-[10px] font-bold uppercase tracking-wider text-stone-400">
+            <div className="mb-2 flex items-center gap-1 px-1 text-[10px] font-medium text-stone-400">
               <button
                 onClick={() => setWorkspacesExpanded((expanded) => !expanded)}
                 className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left hover:bg-stone-200/50 hover:text-stone-600"

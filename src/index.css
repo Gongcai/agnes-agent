@@ -351,19 +351,19 @@ body.quick-window-body #root {
   font-size: 1.02em;
 }
 
-/* ============ Claude Desktop visual system ============ */
+/* ============ Warm, flat desktop visual system ============ */
 :root {
   --claude-canvas: #faf9f5;
-  --claude-sidebar: #f5f3ed;
+  --claude-sidebar: #f7f6f0;
   --claude-surface: #ffffff;
-  --claude-surface-soft: #f0ede6;
-  --claude-surface-strong: #e8e4db;
-  --claude-ink: #1f1e1b;
-  --claude-body: #3d3b36;
-  --claude-muted: #77736a;
-  --claude-muted-soft: #9a968c;
-  --claude-border: rgba(51, 48, 42, 0.13);
-  --claude-border-strong: rgba(51, 48, 42, 0.22);
+  --claude-surface-soft: #efeee8;
+  --claude-surface-strong: #e7e5dc;
+  --claude-ink: #141413;
+  --claude-body: #3d3d3a;
+  --claude-muted: #747269;
+  --claude-muted-soft: #96938a;
+  --claude-border: rgba(31, 30, 27, 0.15);
+  --claude-border-strong: rgba(31, 30, 27, 0.3);
   --claude-clay: #d97757;
   --claude-clay-dark: #b95f43;
   --claude-clay-soft: #f5e2da;
@@ -375,7 +375,7 @@ body.quick-window-body #root {
   --claude-header-soft: rgba(250, 249, 245, 0.96);
   --claude-overlay: rgba(31, 30, 27, 0.34);
   --claude-shadow: rgba(31, 30, 27, 0.16);
-  --claude-ui-font: Georgia, "Noto Serif SC", "Noto Serif CJK SC", "Noto Serif", "Songti SC", "Times New Roman", serif;
+  --claude-ui-font: "Outfit", "Inter", "Noto Sans SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --claude-mono-font: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
 }
 
@@ -504,7 +504,7 @@ pre,
 }
 
 .agnes-sidebar {
-  width: 276px !important;
+  width: 264px !important;
   background: var(--claude-sidebar) !important;
   border-color: var(--claude-border) !important;
   backdrop-filter: none !important;
@@ -541,7 +541,7 @@ pre,
 .agnes-sidebar .agnes-session-item[class*="bg-white"] {
   background: rgba(51, 48, 42, 0.075) !important;
   color: var(--claude-ink) !important;
-  font-weight: 600;
+  font-weight: 500;
   box-shadow: none !important;
   ring: 0 !important;
 }
@@ -552,20 +552,9 @@ pre,
 
 .agnes-feature-highlight {
   background: rgba(51, 48, 42, 0.075);
-  box-shadow: 0 1px 2px rgba(31, 30, 27, 0.04);
+  box-shadow: none;
   transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms ease;
   will-change: transform;
-}
-
-.agnes-feature-highlight::before {
-  position: absolute;
-  inset: 50% auto auto 0;
-  width: 2px;
-  height: 20px;
-  border-radius: 0 999px 999px 0;
-  background: var(--claude-clay);
-  content: "";
-  transform: translateY(-50%);
 }
 
 .agnes-sidebar .agnes-feature-item[aria-current="page"] {
@@ -584,8 +573,27 @@ pre,
 .agnes-sidebar .agnes-session-list section > div:first-child {
   color: var(--claude-muted) !important;
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0;
+}
+
+.agnes-sidebar-primary-action {
+  min-height: 36px;
+  border: 0.5px solid var(--claude-border) !important;
+  border-radius: 8px !important;
+  background: var(--claude-surface) !important;
+  color: var(--claude-ink) !important;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+
+.agnes-sidebar-primary-action:hover {
+  background: var(--claude-surface-soft) !important;
+}
+
+.agnes-sidebar-primary-action:active {
+  transform: scale(0.985);
 }
 
 .agnes-sidebar .text-emerald-700,
@@ -606,7 +614,7 @@ pre,
 }
 
 .agnes-chat-header {
-  height: 58px !important;
+  height: 56px !important;
   padding-inline: 24px !important;
   background: var(--claude-header) !important;
   border-color: var(--claude-border) !important;
@@ -616,16 +624,26 @@ pre,
 .agnes-chat-header > div:first-child span:first-child {
   color: var(--claude-ink) !important;
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .agnes-chat-header button,
 .agnes-chat-header > div:last-child > div {
   border-color: var(--claude-border) !important;
-  background: var(--claude-canvas) !important;
+  background: transparent !important;
   color: var(--claude-body) !important;
   box-shadow: none !important;
   border-radius: 8px !important;
+}
+
+.agnes-chat-context {
+  border-color: transparent !important;
+  background: transparent !important;
+}
+
+.agnes-chat-context:hover,
+.agnes-chat-audit-button:hover {
+  background: var(--claude-surface-soft) !important;
 }
 
 .agnes-chat-header .bg-\[\#8CA38A\] {
@@ -634,8 +652,8 @@ pre,
 
 .agnes-chat-messages {
   width: 100%;
-  max-width: 760px !important;
-  padding: 30px 32px 170px !important;
+  max-width: 768px !important;
+  padding: 36px 32px 170px !important;
 }
 
 .agnes-chat-messages .agnes-message-row {
@@ -703,9 +721,9 @@ pre,
 .agnes-chat-composer-box {
   width: 100%;
   max-width: 744px !important;
-  border: 1px solid var(--claude-border-strong) !important;
+  border: 0.5px solid var(--claude-border-strong) !important;
   border-radius: 16px !important;
-  background: var(--claude-canvas) !important;
+  background: var(--claude-surface) !important;
   padding: 5px !important;
   box-shadow: 0 1px 2px rgba(31, 30, 27, 0.03) !important;
 }
@@ -713,11 +731,11 @@ pre,
 .agnes-chat-composer-box--empty {
   max-width: 680px !important;
   border-radius: 20px !important;
-  box-shadow: 0 16px 48px rgba(31, 30, 27, 0.08) !important;
+  box-shadow: 0 1px 2px rgba(31, 30, 27, 0.04) !important;
 }
 
 :root[data-agnes-theme="dark"] .agnes-chat-composer-box--empty {
-  box-shadow: 0 18px 56px rgba(0, 0, 0, 0.26) !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22) !important;
 }
 
 .agnes-chat-composer-box:focus-within {
@@ -775,7 +793,7 @@ pre,
 .agnes-app .markdown-body h4 {
   color: var(--claude-ink);
   font-family: var(--claude-ui-font);
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0;
 }
 
