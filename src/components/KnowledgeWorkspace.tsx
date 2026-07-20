@@ -236,6 +236,7 @@ export const KnowledgeWorkspace: React.FC = () => {
             "log",
             "csv",
             "json",
+            "pdf",
             "docx",
             "pptx",
             "xlsx",
@@ -612,7 +613,7 @@ export const KnowledgeWorkspace: React.FC = () => {
               <div className="rounded-2xl border border-dashed border-stone-200 px-6 py-12 text-center text-sm text-stone-400">
                 {documents.length > 0
                   ? "输入关键词，检索当前知识库。"
-                  : "导入文本、DOCX、PPTX 或 XLSX 文档后，即可在本地检索。"}
+                  : "导入文本、PDF、DOCX、PPTX 或 XLSX 文档后，即可在本地检索。"}
               </div>
             )}
 

@@ -11,13 +11,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from xml.etree import ElementTree
 
-from docling.backend.msexcel_backend import MsExcelDocumentBackend
-from docling.backend.mspowerpoint_backend import MsPowerpointDocumentBackend
-from docling.backend.msword_backend import MsWordDocumentBackend
-from docling.datamodel.backend_options import (
-    MsExcelBackendOptions,
-    MsPowerpointBackendOptions,
-)
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.document import InputDocument
 from docling_core.types.doc import DoclingDocument, GroupItem, TableItem
@@ -47,9 +40,6 @@ def _configure_frozen_docx_templates() -> None:
     FooterPart._default_footer_xml = classmethod(lambda _cls: footer)
     CommentsPart._default_comments_xml = classmethod(lambda _cls: comments)
 
-
-_configure_frozen_docx_templates()
-
 SCHEMA_VERSION = 1
 DOCLING_VERSION = "2.113.0"
 MAX_FILE_BYTES = 50 * 1024 * 1024
@@ -58,6 +48,7 @@ MAX_ZIP_MEMBERS = 20_000
 MAX_PPTX_SLIDES = 1_000
 MAX_XLSX_WORKSHEETS = 256
 MAX_XLSX_CELLS = 2_000_000
+MAX_PDF_PAGES = 2_000
 MAX_CHUNK_CHARS = 1_200
 CHUNK_OVERLAP_CHARS = 200
 MAX_TABLE_ROWS_PER_CHUNK = 40
@@ -66,6 +57,7 @@ MEDIA_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pdf": "application/pdf",
 }
 
 PROFILE_OPTIONS = {
@@ -83,6 +75,23 @@ PARSER_PROFILE = {
     "name": "docling_office",
     "version": DOCLING_VERSION,
     "options_hash": PROFILE_OPTIONS_HASH,
+}
+PDF_PROFILE_OPTIONS = {
+    **PROFILE_OPTIONS,
+    "max_pages": MAX_PDF_PAGES,
+    "ocr": "rapidocr-onnxruntime-chinese-english",
+    "table_mode": "fast",
+    "remote_services": False,
+    "external_plugins": False,
+}
+PDF_PROFILE_OPTIONS_HASH = hashlib.sha256(
+    json.dumps(PDF_PROFILE_OPTIONS, sort_keys=True, separators=(",", ":")).encode()
+).hexdigest()
+PDF_PARSER_PROFILE = {
+    "id": f"docling-pdf-{DOCLING_VERSION}-local-v1",
+    "name": "docling_pdf_local",
+    "version": DOCLING_VERSION,
+    "options_hash": PDF_PROFILE_OPTIONS_HASH,
 }
 
 
@@ -187,6 +196,26 @@ def _preflight_ooxml(path: Path, suffix: str) -> None:
             _xlsx_cell_count(archive, worksheets)
 
 
+def _preflight_pdf(path: Path) -> None:
+    size = path.stat().st_size
+    if size > MAX_FILE_BYTES:
+        raise DocumentParseError("文件超过 50 MiB 的 PDF 导入上限")
+    try:
+        import pypdfium2 as pdfium
+
+        document = pdfium.PdfDocument(path)
+        try:
+            page_count = len(document)
+        finally:
+            document.close()
+    except Exception as error:
+        raise DocumentParseError("PDF 文件损坏、加密或无法读取") from error
+    if page_count <= 0:
+        raise DocumentParseError("PDF 文件不包含可解析页面")
+    if page_count > MAX_PDF_PAGES:
+        raise DocumentParseError("PDF 超过 2,000 页上限")
+
+
 def _suffix_for(path: Path, media_type_hint: str | None) -> str:
     suffix = path.suffix.lower()
     if suffix in MEDIA_TYPES:
@@ -200,11 +229,20 @@ def _suffix_for(path: Path, media_type_hint: str | None) -> str:
 
 def _backend_for(suffix: str):
     if suffix == ".docx":
+        _configure_frozen_docx_templates()
+        from docling.backend.msword_backend import MsWordDocumentBackend
+
         return InputFormat.DOCX, MsWordDocumentBackend, None
     if suffix == ".pptx":
+        from docling.backend.mspowerpoint_backend import MsPowerpointDocumentBackend
+        from docling.datamodel.backend_options import MsPowerpointBackendOptions
+
         options = MsPowerpointBackendOptions(render_chart_images=False)
         return InputFormat.PPTX, MsPowerpointDocumentBackend, options
     if suffix == ".xlsx":
+        from docling.backend.msexcel_backend import MsExcelDocumentBackend
+        from docling.datamodel.backend_options import MsExcelBackendOptions
+
         options = MsExcelBackendOptions(
             treat_singleton_as_text=True,
             parse_charts=True,
@@ -231,6 +269,66 @@ def _convert(path: Path, suffix: str) -> DoclingDocument:
         return backend.convert()
     finally:
         backend.unload()
+
+
+def _convert_pdf(path: Path, artifacts_path_value: str | None) -> DoclingDocument:
+    if not artifacts_path_value:
+        raise DocumentParseError("PDF 解析模型包尚未安装")
+    artifacts_path = Path(artifacts_path_value).resolve()
+    if not artifacts_path.is_dir():
+        raise DocumentParseError("PDF 解析模型目录不存在或已损坏")
+    try:
+        from docling.datamodel.base_models import ConversionStatus
+        from docling.datamodel.pipeline_options import (
+            PdfPipelineOptions,
+            RapidOcrOptions,
+            TableFormerMode,
+            TableStructureOptions,
+        )
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+
+        options = PdfPipelineOptions(
+            artifacts_path=artifacts_path,
+            enable_remote_services=False,
+            allow_external_plugins=False,
+            do_ocr=True,
+            ocr_options=RapidOcrOptions(
+                lang=["chinese", "english"],
+                backend="onnxruntime",
+            ),
+            do_table_structure=True,
+            table_structure_options=TableStructureOptions(mode=TableFormerMode.FAST),
+            do_code_enrichment=False,
+            do_formula_enrichment=False,
+            do_picture_classification=False,
+            do_picture_description=False,
+            do_chart_extraction=False,
+            generate_page_images=False,
+            generate_picture_images=False,
+            generate_table_images=False,
+        )
+        converter = DocumentConverter(
+            allowed_formats=[InputFormat.PDF],
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=options),
+            },
+        )
+        result = converter.convert(
+            path,
+            raises_on_error=False,
+            max_num_pages=MAX_PDF_PAGES,
+            max_file_size=MAX_FILE_BYTES,
+        )
+    except ImportError as error:
+        raise DocumentParseError("PDF 解析运行时不完整，请重新安装模型包") from error
+    except Exception as error:
+        raise DocumentParseError(f"PDF 结构解析失败：{error}") from error
+    if result.status not in {
+        ConversionStatus.SUCCESS,
+        ConversionStatus.PARTIAL_SUCCESS,
+    }:
+        raise DocumentParseError("PDF 文件无法完成结构化解析")
+    return result.document
 
 
 def _page_number(item: Any) -> int | None:
@@ -398,6 +496,7 @@ def parse_document(
     title_hint: str | None = None,
     media_type_hint: str | None = None,
     progress: ProgressCallback | None = None,
+    artifacts_path: str | None = None,
 ) -> dict[str, Any]:
     report = progress or (lambda _stage, _percent, _message: None)
     report("validating", 10, "正在检查文档")
@@ -407,9 +506,16 @@ def parse_document(
     suffix = _suffix_for(path, media_type_hint)
     if suffix not in MEDIA_TYPES:
         raise DocumentParseError("当前仅支持 DOCX、PPTX 和 XLSX 文件")
-    _preflight_ooxml(path, suffix)
+    if suffix == ".pdf":
+        _preflight_pdf(path)
+    else:
+        _preflight_ooxml(path, suffix)
     report("converting", 45, "正在解析文档结构")
-    document = _convert(path, suffix)
+    document = (
+        _convert_pdf(path, artifacts_path)
+        if suffix == ".pdf"
+        else _convert(path, suffix)
+    )
     report("chunking", 80, "正在生成索引分块")
     chunks = _document_chunks(document, suffix)
     if not chunks:
@@ -424,6 +530,6 @@ def parse_document(
         "media_type": MEDIA_TYPES.get(suffix) or mimetypes.guess_type(path.name)[0],
         "source_hash": source_hash,
         "size": path.stat().st_size,
-        "parser_profile": PARSER_PROFILE,
+        "parser_profile": PDF_PARSER_PROFILE if suffix == ".pdf" else PARSER_PROFILE,
         "chunks": [chunk.to_dict() for chunk in chunks],
     }

@@ -20,6 +20,7 @@ def main() -> int:
     parser.add_argument("--path", required=True)
     parser.add_argument("--title")
     parser.add_argument("--media-type")
+    parser.add_argument("--artifacts-path")
     args = parser.parse_args()
     try:
         result = parse_document(
@@ -34,6 +35,7 @@ def main() -> int:
                     "message": message,
                 }
             ),
+            artifacts_path=args.artifacts_path,
         )
     except (DocumentParseError, OSError, ValueError, zipfile.BadZipFile) as error:
         emit({"type": "error", "error": str(error)})

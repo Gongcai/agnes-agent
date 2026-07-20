@@ -6,6 +6,7 @@ use crate::db::DbActorHandle;
 use crate::document_parser::DocumentParserManager;
 use crate::mcp::McpManager;
 use crate::notifications::NotificationService;
+use crate::pdf_models::PdfModelPackageManager;
 use crate::secrets::SecretStore;
 use crate::storage::StorageService;
 use crate::sync::engine::SyncService;
@@ -22,5 +23,6 @@ pub struct AppState {
     pub sync: Arc<SyncService>,
     pub notifications: Arc<NotificationService>,
     pub document_parser: Arc<DocumentParserManager>,
+    pub pdf_models: Arc<PdfModelPackageManager>,
     pub secret_store_startup_error: Option<String>,
 }

@@ -17,6 +17,12 @@ document-parser/.venv
 document-parser/.sidecar-build
 document-parser/.sidecar-dist
 document-parser/*.spec
+pdf-parser/.venv
+pdf-parser/.models*
+pdf-parser/.sidecar-build
+pdf-parser/.sidecar-dist
+pdf-parser/.package-dist
+pdf-parser/*.spec
 agent/__pycache__
 **/__pycache__
 *.pyc

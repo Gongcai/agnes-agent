@@ -11,6 +11,7 @@ mod mcp;
 mod memory;
 mod model_registry;
 mod notifications;
+mod pdf_models;
 mod reading;
 mod reading_context_menu;
 mod secrets;
@@ -288,6 +289,7 @@ fn main() {
                 }
             }
 
+            let pdf_models = Arc::new(pdf_models::PdfModelPackageManager::new(&data_dir));
             app.manage(AppState {
                 app_handle: app.handle().clone(),
                 data_dir,
@@ -299,6 +301,7 @@ fn main() {
                 sync,
                 notifications,
                 document_parser: Arc::new(document_parser::DocumentParserManager::default()),
+                pdf_models,
                 secret_store_startup_error,
             });
 
@@ -362,6 +365,9 @@ fn main() {
             commands::list_knowledge_documents,
             commands::import_local_knowledge_document,
             commands::cancel_knowledge_import,
+            commands::get_pdf_model_package_status,
+            commands::install_pdf_model_package,
+            commands::remove_pdf_model_package,
             commands::import_storage_knowledge_document,
             commands::search_knowledge,
             commands::vectorize_knowledge,

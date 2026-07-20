@@ -2578,7 +2578,8 @@ fn knowledge_media_type(
         Some(
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/pdf",
         ) => normalized,
         Some("application/octet-stream") | None => None,
         Some(_) => None,
@@ -2604,11 +2605,14 @@ fn knowledge_media_type(
                 Some("xlsx") => {
                     Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into())
                 }
+                Some("pdf") => Some("application/pdf".into()),
                 _ => text_media_type(extension_path).ok().map(str::to_string),
             }
         })
         .ok_or_else(|| {
-            AppError::Other("当前支持 UTF-8 文本、DOCX、PPTX、XLSX 和可导出的 Google 文档".into())
+            AppError::Other(
+                "当前支持 UTF-8 文本、PDF、DOCX、PPTX、XLSX 和可导出的 Google 文档".into(),
+            )
         })
 }
 
@@ -2676,18 +2680,32 @@ async fn read_knowledge_document(
         title_hint.as_deref(),
         remote_media_type.as_deref(),
     )?;
-    let is_office = matches!(
+    let is_structured = matches!(
         media_type.as_str(),
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
             | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/pdf"
     );
-    if is_office {
-        let parsed = crate::document_parser::parse_office_document(
+    if is_structured {
+        let pdf_runtime = if media_type == "application/pdf" {
+            #[cfg(debug_assertions)]
+            {
+                state.pdf_models.runtime().ok()
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                Some(state.pdf_models.runtime()?)
+            }
+        } else {
+            None
+        };
+        let parsed = crate::document_parser::parse_structured_document(
             &state.app_handle,
             &path_buf,
             title_hint.as_deref(),
             &media_type,
+            pdf_runtime.as_ref(),
             context,
             cancellation,
         )
@@ -3327,6 +3345,32 @@ pub async fn cancel_knowledge_import(
 ) -> AppResult<()> {
     uuid::Uuid::parse_str(&job_id).map_err(|_| AppError::Other("文档导入任务 ID 无效".into()))?;
     state.document_parser.cancel(&job_id)
+}
+
+#[tauri::command]
+pub async fn get_pdf_model_package_status(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::pdf_models::PdfModelPackageStatus> {
+    Ok(state.pdf_models.status())
+}
+
+#[tauri::command]
+pub async fn install_pdf_model_package(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> AppResult<crate::pdf_models::PdfModelPackageStatus> {
+    let manager = state.pdf_models.clone();
+    tokio::task::spawn_blocking(move || manager.install_archive(std::path::Path::new(&path)))
+        .await
+        .map_err(|error| AppError::Other(format!("PDF 模型包安装任务异常中止：{error}")))?
+}
+
+#[tauri::command]
+pub async fn remove_pdf_model_package(state: tauri::State<'_, AppState>) -> AppResult<()> {
+    let manager = state.pdf_models.clone();
+    tokio::task::spawn_blocking(move || manager.remove())
+        .await
+        .map_err(|error| AppError::Other(format!("PDF 模型包移除任务异常中止：{error}")))?
 }
 
 #[tauri::command]

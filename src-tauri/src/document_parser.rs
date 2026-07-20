@@ -16,6 +16,7 @@ use crate::db::repo::knowledge::{DocumentParserProfile, NewDocumentChunk};
 use crate::error::{AppError, AppResult};
 
 const DOCUMENT_PARSER_TIMEOUT: Duration = Duration::from_secs(180);
+const PDF_PARSER_TIMEOUT: Duration = Duration::from_secs(600);
 const DOCUMENT_PARSER_SCHEMA_VERSION: u32 = 1;
 const MAX_SOURCE_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_PARSER_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
@@ -236,13 +237,22 @@ impl ParsedDocument {
     }
 }
 
-fn parser_arguments(path: &Path, title_hint: Option<&str>, media_type: &str) -> Vec<String> {
+fn parser_arguments(
+    path: &Path,
+    title_hint: Option<&str>,
+    media_type: &str,
+    artifacts_path: Option<&Path>,
+) -> Vec<String> {
     let mut arguments = vec!["--path".into(), path.to_string_lossy().into_owned()];
     arguments.push("--media-type".into());
     arguments.push(media_type.into());
     if let Some(title) = title_hint.map(str::trim).filter(|title| !title.is_empty()) {
         arguments.push("--title".into());
         arguments.push(title.into());
+    }
+    if let Some(artifacts_path) = artifacts_path {
+        arguments.push("--artifacts-path".into());
+        arguments.push(artifacts_path.to_string_lossy().into_owned());
     }
     arguments
 }
@@ -335,28 +345,23 @@ impl ParserOutput {
     }
 }
 
-#[cfg(debug_assertions)]
-async fn run_parser(
+async fn run_tokio_parser(
     app_handle: &AppHandle,
-    path: &Path,
-    title_hint: Option<&str>,
-    media_type: &str,
+    mut command: tokio::process::Command,
+    timeout_duration: Duration,
+    startup_error_hint: &str,
     context: Option<&DocumentImportContext>,
     cancellation: &mut watch::Receiver<bool>,
 ) -> AppResult<(i32, ParserOutput, Vec<u8>)> {
     use tokio::io::{AsyncReadExt, BufReader};
     ensure_not_cancelled(cancellation)?;
-    let mut command = tokio::process::Command::new("uv");
     command
-        .args(["run", "python", "document_parserd.py"])
-        .args(parser_arguments(path, title_hint, media_type))
-        .current_dir(resolve_document_parser_dir())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     let mut child = command.spawn().map_err(|error| {
         AppError::Other(format!(
-            "启动文档解析器失败：{error}（确认 uv 在 PATH 且 document-parser/ 存在）"
+            "启动文档解析器失败：{error}（{startup_error_hint}）"
         ))
     })?;
     let stdout = child
@@ -379,7 +384,7 @@ async fn run_parser(
     let mut output = ParserOutput::default();
     let mut buffer = [0_u8; 16 * 1024];
     let mut stdout_open = true;
-    let timeout = tokio::time::sleep(DOCUMENT_PARSER_TIMEOUT);
+    let timeout = tokio::time::sleep(timeout_duration);
     tokio::pin!(timeout);
     let status = loop {
         tokio::select! {
@@ -412,7 +417,10 @@ async fn run_parser(
             _ = &mut timeout => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                return Err(AppError::Other("文档解析超过 180 秒，已终止".into()));
+                return Err(AppError::Other(format!(
+                    "文档解析超过 {} 秒，已终止",
+                    timeout_duration.as_secs()
+                )));
             }
         }
     };
@@ -423,8 +431,110 @@ async fn run_parser(
     Ok((status, output, stderr))
 }
 
+#[cfg(debug_assertions)]
+fn development_pdf_paths() -> Option<(PathBuf, PathBuf, PathBuf)> {
+    let project_root = if Path::new("pdf-parser").exists() {
+        PathBuf::from(".")
+    } else if Path::new("../pdf-parser").exists() {
+        PathBuf::from("..")
+    } else {
+        return None;
+    };
+    let pdf_project = project_root.join("pdf-parser");
+    let parser_entry = project_root
+        .join("document-parser")
+        .join("document_parserd.py");
+    let models = pdf_project.join(".models");
+    if parser_entry.is_file() && models.is_dir() {
+        Some((pdf_project, parser_entry, models))
+    } else {
+        None
+    }
+}
+
+async fn run_pdf_parser(
+    app_handle: &AppHandle,
+    path: &Path,
+    title_hint: Option<&str>,
+    media_type: &str,
+    runtime: Option<&crate::pdf_models::PdfParserRuntime>,
+    context: Option<&DocumentImportContext>,
+    cancellation: &mut watch::Receiver<bool>,
+) -> AppResult<(i32, ParserOutput, Vec<u8>)> {
+    if let Some(runtime) = runtime {
+        let mut command = tokio::process::Command::new(&runtime.executable);
+        command.args(parser_arguments(
+            path,
+            title_hint,
+            media_type,
+            Some(&runtime.artifacts_path),
+        ));
+        return run_tokio_parser(
+            app_handle,
+            command,
+            PDF_PARSER_TIMEOUT,
+            "请重新安装 PDF 模型包",
+            context,
+            cancellation,
+        )
+        .await;
+    }
+    #[cfg(debug_assertions)]
+    if let Some((pdf_project, parser_entry, models)) = development_pdf_paths() {
+        let mut command = tokio::process::Command::new("uv");
+        command
+            .args(["run", "--project"])
+            .arg(&pdf_project)
+            .arg("python")
+            .arg(&parser_entry)
+            .args(parser_arguments(
+                path,
+                title_hint,
+                media_type,
+                Some(&models),
+            ));
+        return run_tokio_parser(
+            app_handle,
+            command,
+            PDF_PARSER_TIMEOUT,
+            "确认 uv、pdf-parser/ 和本地模型存在",
+            context,
+            cancellation,
+        )
+        .await;
+    }
+    Err(AppError::Other(
+        "PDF 解析模型包尚未安装，请先在设置中安装".into(),
+    ))
+}
+
+#[cfg(debug_assertions)]
+async fn run_office_parser(
+    app_handle: &AppHandle,
+    path: &Path,
+    title_hint: Option<&str>,
+    media_type: &str,
+    context: Option<&DocumentImportContext>,
+    cancellation: &mut watch::Receiver<bool>,
+) -> AppResult<(i32, ParserOutput, Vec<u8>)> {
+    let mut command = tokio::process::Command::new("uv");
+    command
+        .args(["run", "python", "document_parserd.py"])
+        .args(parser_arguments(path, title_hint, media_type, None))
+        .current_dir(resolve_document_parser_dir());
+    run_tokio_parser(
+        app_handle,
+        command,
+        DOCUMENT_PARSER_TIMEOUT,
+        "确认 uv 在 PATH 且 document-parser/ 存在",
+        context,
+        cancellation,
+    )
+    .await
+}
+
 #[cfg(not(debug_assertions))]
-async fn run_parser(
+async fn run_office_parser(
     app_handle: &AppHandle,
     path: &Path,
     title_hint: Option<&str>,
@@ -437,7 +547,7 @@ async fn run_parser(
         .shell()
         .sidecar("document-parserd")
         .map_err(|error| AppError::Other(format!("解析内置文档解析器失败：{error}")))?
-        .args(parser_arguments(path, title_hint, media_type));
+        .args(parser_arguments(path, title_hint, media_type, None));
     let (mut events, child) = command
         .spawn()
         .map_err(|error| AppError::Other(format!("启动内置文档解析器失败：{error}")))?;
@@ -499,11 +609,12 @@ async fn run_parser(
     }
 }
 
-pub async fn parse_office_document(
+pub async fn parse_structured_document(
     app_handle: &AppHandle,
     path: &Path,
     title_hint: Option<&str>,
     media_type: &str,
+    pdf_runtime: Option<&crate::pdf_models::PdfParserRuntime>,
     context: Option<&DocumentImportContext>,
     mut cancellation: watch::Receiver<bool>,
 ) -> AppResult<ParsedDocument> {
@@ -514,22 +625,35 @@ pub async fn parse_office_document(
         return Err(AppError::Other("知识库导入路径必须是普通文件".into()));
     }
     if metadata.len() > MAX_SOURCE_BYTES {
-        return Err(AppError::Other("文件超过 50 MiB 的 Office 导入上限".into()));
+        return Err(AppError::Other("文件超过 50 MiB 的文档导入上限".into()));
     }
     let source = tokio::fs::read(&path).await?;
     let expected_size =
         i64::try_from(source.len()).map_err(|_| AppError::Other("文档大小超过支持范围".into()))?;
     let expected_hash = format!("{:x}", Sha256::digest(&source));
     drop(source);
-    let (status, mut output, stderr) = run_parser(
-        app_handle,
-        &path,
-        title_hint,
-        media_type,
-        context,
-        &mut cancellation,
-    )
-    .await?;
+    let (status, mut output, stderr) = if media_type == "application/pdf" {
+        run_pdf_parser(
+            app_handle,
+            &path,
+            title_hint,
+            media_type,
+            pdf_runtime,
+            context,
+            &mut cancellation,
+        )
+        .await?
+    } else {
+        run_office_parser(
+            app_handle,
+            &path,
+            title_hint,
+            media_type,
+            context,
+            &mut cancellation,
+        )
+        .await?
+    };
     if status != 0 {
         if let Some(error) = output.error {
             return Err(AppError::Other(error));

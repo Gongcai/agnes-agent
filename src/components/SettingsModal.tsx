@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Moon, Sun, HardDrive, Eraser, Gauge, Puzzle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
   AgentSummary,
@@ -130,6 +131,15 @@ interface ArtifactGcResult {
   reconciledRecords: number;
   failedPaths: number;
   status: ArtifactStorageStatus;
+}
+
+interface PdfModelPackageStatus {
+  supported: boolean;
+  installed: boolean;
+  packageVersion: string | null;
+  doclingVersion: string | null;
+  sizeBytes: number;
+  error: string | null;
 }
 
 interface MemoryFormValues {
@@ -612,6 +622,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [modelRoleForm, setModelRoleForm] = useState<ModelRoleAssignments>(modelRoles);
   const [isSavingModelRoles, setIsSavingModelRoles] = useState(false);
   const [modelRoleMessage, setModelRoleMessage] = useState<{ success: boolean; text: string } | null>(null);
+  const [pdfModelStatus, setPdfModelStatus] = useState<PdfModelPackageStatus | null>(null);
+  const [pdfModelBusy, setPdfModelBusy] = useState(false);
+  const [pdfModelMessage, setPdfModelMessage] = useState<{ success: boolean; text: string } | null>(null);
   const [secretStoreStatus, setSecretStoreStatus] = useState<SecretStoreStatus | null>(null);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [mcpForm, setMcpForm] = useState<McpFormValues>(EMPTY_MCP_FORM);
@@ -960,6 +973,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       .finally(() => setTokenUsageLoading(false));
   }, [activeAgentId, tokenUsageScope]);
 
+  const loadPdfModelStatus = React.useCallback(() => {
+    return invoke<PdfModelPackageStatus>("get_pdf_model_package_status")
+      .then(setPdfModelStatus)
+      .catch((error) => {
+        setPdfModelStatus(null);
+        setPdfModelMessage({ success: false, text: String(error) });
+      });
+  }, []);
+
   useEffect(() => {
     if (!isOpen || activeTab !== "tokens") return;
     void loadTokenUsageStats();
@@ -967,16 +989,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Load providers when LLM tab is activated
   useEffect(() => {
-    if (activeTab === "llm") {
+    if (isOpen && activeTab === "llm") {
       loadProviders();
       loadModelRoles();
+      void loadPdfModelStatus();
       invoke<SecretStoreStatus>("get_secret_store_status")
         .then(setSecretStoreStatus)
         .catch((error) => {
           setSecretStoreStatus({ available: false, backend: "OS Keyring", error: String(error) });
         });
     }
-  }, [activeTab, loadProviders, loadModelRoles]);
+  }, [activeTab, isOpen, loadProviders, loadModelRoles, loadPdfModelStatus]);
 
   const loadMcpServers = React.useCallback(() => {
     return invoke<McpServer[]>("list_mcp_servers")
@@ -1875,6 +1898,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setModelRoleMessage({ success: false, text: String(error) });
     } finally {
       setIsSavingModelRoles(false);
+    }
+  };
+
+  const handleInstallPdfModelPackage = async () => {
+    const selected = await open({
+      multiple: false,
+      title: "选择 PDF 本地模型包",
+      filters: [{ name: "PDF 模型包", extensions: ["zip"] }],
+    });
+    if (!selected || Array.isArray(selected)) return;
+
+    setPdfModelBusy(true);
+    setPdfModelMessage(null);
+    try {
+      const status = await invoke<PdfModelPackageStatus>("install_pdf_model_package", {
+        path: selected,
+      });
+      setPdfModelStatus(status);
+      setPdfModelMessage({ success: true, text: "PDF 本地模型包已安装" });
+    } catch (error) {
+      setPdfModelMessage({ success: false, text: String(error) });
+      await loadPdfModelStatus();
+    } finally {
+      setPdfModelBusy(false);
+    }
+  };
+
+  const handleRemovePdfModelPackage = async () => {
+    if (!window.confirm("移除 PDF 本地模型包后，将无法导入 PDF。确定继续吗？")) return;
+
+    setPdfModelBusy(true);
+    setPdfModelMessage(null);
+    try {
+      await invoke("remove_pdf_model_package");
+      await loadPdfModelStatus();
+      setPdfModelMessage({ success: true, text: "PDF 本地模型包已移除" });
+    } catch (error) {
+      setPdfModelMessage({ success: false, text: String(error) });
+    } finally {
+      setPdfModelBusy(false);
     }
   };
 
@@ -2798,6 +2861,68 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* 3. LLM TAB */}
             {activeTab === "llm" && (
               <div className="space-y-5">
+                {/* Local document models */}
+                <div className="rounded-xl border border-stone-200 bg-[#FAF9F5]/30 p-5 shadow-sm">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-semibold text-stone-850">本地文档模型</h3>
+                        <span className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold ${
+                          pdfModelStatus?.installed
+                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                            : "border-stone-200 bg-stone-50 text-stone-500"
+                        }`}>
+                          {pdfModelStatus?.supported === false
+                            ? "不支持"
+                            : pdfModelStatus?.installed
+                              ? "已安装"
+                              : pdfModelStatus
+                                ? "未安装"
+                                : "检查中"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-stone-400">
+                        PDF 解析模型为可选离线包。安装后，版面分析、表格识别和 OCR 均在本机完成。
+                      </p>
+                      {pdfModelStatus?.installed && (
+                        <p className="mt-2 text-[10px] text-stone-500">
+                          包版本 {pdfModelStatus.packageVersion ?? "—"} · Docling {pdfModelStatus.doclingVersion ?? "—"} · {formatLocalStorageBytes(pdfModelStatus.sizeBytes)}
+                        </p>
+                      )}
+                      {pdfModelStatus?.error && (
+                        <p className="mt-2 text-[10px] text-red-600">{pdfModelStatus.error}</p>
+                      )}
+                      {pdfModelMessage && (
+                        <p className={`mt-2 text-[10px] ${pdfModelMessage.success ? "text-emerald-700" : "text-red-600"}`}>
+                          {pdfModelMessage.text}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {pdfModelStatus?.installed && (
+                        <button
+                          type="button"
+                          disabled={pdfModelBusy}
+                          onClick={() => void handleRemovePdfModelPackage()}
+                          className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          移除
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={pdfModelBusy || pdfModelStatus?.supported === false}
+                        onClick={() => void handleInstallPdfModelPackage()}
+                        className="flex items-center gap-1.5 rounded-lg bg-[#8CA38A] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#7A917A] disabled:opacity-50"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        {pdfModelBusy ? "处理中..." : pdfModelStatus?.installed ? "重新导入" : "导入模型包"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
                 {/* Model role routing */}
                 <div className="border border-stone-200 bg-[#FAF9F5]/30 rounded-xl p-5 space-y-4 shadow-sm">
                   <div className="flex items-start justify-between gap-4">
