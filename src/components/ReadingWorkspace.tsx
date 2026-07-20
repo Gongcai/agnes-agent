@@ -234,6 +234,8 @@ const EpubPane: React.FC<{
     const hookedContents = new WeakSet<object>();
     const hookedFrames = new WeakSet<HTMLIFrameElement>();
     let contextObserver: MutationObserver | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    let resizeTimer: number | null = null;
 
     const applyHighlights = () => {
       if (!rendered) return;
@@ -396,6 +398,17 @@ const EpubPane: React.FC<{
         });
         await rendered.display(book.progress_cfi || undefined);
         if (!disposed) {
+          resizeObserver = new ResizeObserver(() => {
+            if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+            resizeTimer = window.setTimeout(() => {
+              resizeTimer = null;
+              if (disposed || !rendered) return;
+              const width = host.clientWidth;
+              const height = host.clientHeight;
+              if (width > 0 && height > 0) rendered.resize(width, height);
+            }, 80);
+          });
+          resizeObserver.observe(host);
           const currentContents = rendered.getContents() as unknown as Contents[];
           currentContents.forEach(attachContextMenu);
           scanIframes();
@@ -415,6 +428,9 @@ const EpubPane: React.FC<{
       disposed = true;
       contextObserver?.disconnect();
       contextObserver = null;
+      resizeObserver?.disconnect();
+      resizeObserver = null;
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
       renditionRef.current?.destroy();
       bookRef.current?.destroy();
       renditionRef.current = null;
@@ -770,8 +786,15 @@ export const ReadingWorkspace: React.FC = () => {
             onOpenSelectionMenu={openSelectionMenu}
           />
 
-          {isDiscussionOpen ? (
-            <aside className="flex h-[42%] min-h-64 w-full shrink-0 flex-col border-t border-stone-200 bg-white lg:h-auto lg:w-[min(32vw,400px)] lg:min-w-80 lg:border-l lg:border-t-0">
+          <aside
+            className={`flex w-full shrink-0 flex-col overflow-hidden border-t border-stone-200 bg-white transition-[width,min-width,height,min-height] duration-300 ease-out motion-reduce:transition-none lg:h-auto lg:min-h-0 lg:border-l lg:border-t-0 ${
+              isDiscussionOpen
+                ? "h-[42%] min-h-64 lg:w-[min(32vw,400px)] lg:min-w-80"
+                : "h-10 min-h-10 lg:w-9 lg:min-w-9"
+            }`}
+          >
+            {isDiscussionOpen ? (
+              <>
               <header className="relative border-b border-stone-200">
                 <div className="flex h-12 items-center gap-2 px-4">
                   <MessageCircleMore className="h-4 w-4 text-emerald-700" />
@@ -825,7 +848,7 @@ export const ReadingWorkspace: React.FC = () => {
                     <Plus className="h-4 w-4" />
                   </button>
                   <button onClick={() => setIsDiscussionOptionsOpen((open) => !open)} className={`rounded p-1 ${isDiscussionOptionsOpen ? "bg-stone-100 text-stone-700" : "text-stone-400 hover:bg-stone-100 hover:text-stone-700"}`} title="讨论设置"><SlidersHorizontal className="h-4 w-4" /></button>
-                  <button onClick={() => setIsDiscussionOpen(false)} className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700" title="收起讨论"><PanelRightClose className="h-4 w-4" /></button>
+                  <button onClick={() => setIsDiscussionOpen(false)} className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700" title="收起讨论" aria-expanded="true"><PanelRightClose className="h-4 w-4" /></button>
                 </div>
                 {isConversationHistoryOpen && (
                   <>
@@ -985,10 +1008,18 @@ export const ReadingWorkspace: React.FC = () => {
                 <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); ask(); } }} placeholder="问问这本书..." className="h-20 w-full resize-none rounded-md border border-stone-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" />
                 <button onClick={ask} disabled={!question.trim() || isStreaming || !conversationReady} className="mt-2 flex w-full items-center justify-center gap-2 rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"><Send className="h-3.5 w-3.5" />发送</button>
               </div>
-            </aside>
-          ) : (
-            <button onClick={() => setIsDiscussionOpen(true)} className="hidden w-9 shrink-0 items-start justify-center border-l border-stone-200 bg-white pt-4 text-stone-400 hover:bg-stone-50 hover:text-stone-700 lg:flex" title="展开讨论"><PanelRightOpen className="h-4 w-4" /></button>
-          )}
+              </>
+            ) : (
+              <button
+                onClick={() => setIsDiscussionOpen(true)}
+                className="flex h-full w-full items-center justify-center text-stone-400 hover:bg-stone-50 hover:text-stone-700 lg:items-start lg:pt-4"
+                title="展开讨论"
+                aria-expanded="false"
+              >
+                <PanelRightOpen className="h-4 w-4" />
+              </button>
+            )}
+          </aside>
         </div>
       ) : (
         <section className="flex min-w-0 flex-1 flex-col bg-[#fbfaf6]">
