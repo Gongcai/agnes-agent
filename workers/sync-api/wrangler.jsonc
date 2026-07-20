@@ -5,7 +5,9 @@
   "compatibility_date": "2026-07-16",
   "workers_dev": true,
   "vars": {
-    "AUTH_MODE": "bearer"
+    "AUTH_MODE": "bearer",
+    "R2_ORPHAN_GRACE_MS": "604800000",
+    "R2_ORPHAN_GC_BATCH_SIZE": "50"
   },
   "d1_databases": [
     {

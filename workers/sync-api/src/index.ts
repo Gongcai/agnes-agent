@@ -16,6 +16,7 @@ import {
 import { ack, bootstrap, pull, push } from "./routes/sync";
 import {
   abortObjectUpload,
+  cleanupOrphanedObjects,
   cleanupObjectUploads,
   completeObjectUpload,
   createObjectUpload,
@@ -100,12 +101,18 @@ export default {
   fetch: app.fetch,
   scheduled(_controller, env, context) {
     context.waitUntil(
-      Promise.all([
-        env.SYNC_DB.prepare("DELETE FROM pairing_sessions WHERE expires_at <= ?")
-          .bind(Date.now())
-          .run(),
-        cleanupObjectUploads(env),
-      ]),
+      (async () => {
+        const [, , objectGc] = await Promise.all([
+          env.SYNC_DB.prepare("DELETE FROM pairing_sessions WHERE expires_at <= ?")
+            .bind(Date.now())
+            .run(),
+          cleanupObjectUploads(env),
+          cleanupOrphanedObjects(env),
+        ]);
+        if (objectGc.candidates > 0 || objectGc.failed > 0) {
+          console.log("artifact object gc", JSON.stringify(objectGc));
+        }
+      })(),
     );
   },
 } satisfies ExportedHandler<AppEnv["Bindings"]>;

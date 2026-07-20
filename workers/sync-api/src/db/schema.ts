@@ -159,6 +159,8 @@ export const objectReplicas = sqliteTable(
     size: integer("size").notNull(),
     status: text("status").notNull(),
     updatedAt: integer("updated_at").notNull(),
+    orphanedAt: integer("orphaned_at"),
+    gcStartedAt: integer("gc_started_at"),
   },
   (table) => [
     primaryKey({
@@ -166,6 +168,12 @@ export const objectReplicas = sqliteTable(
     }),
     uniqueIndex("object_replicas_opaque_key_unique").on(table.opaqueServerKey),
     index("idx_object_replicas_owner_status").on(table.ownerId, table.status, table.updatedAt),
+    index("idx_object_replicas_gc").on(
+      table.providerKind,
+      table.status,
+      table.orphanedAt,
+      table.gcStartedAt,
+    ),
   ],
 );
 

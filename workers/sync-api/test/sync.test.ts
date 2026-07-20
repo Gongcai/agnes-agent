@@ -1,6 +1,8 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { cleanupOrphanedObjects } from "../src/routes/objects";
+
 const DEVICE_A = "00000000-0000-4000-8000-000000000001";
 const DEVICE_B = "00000000-0000-4000-8000-000000000002";
 const OTHER_OWNER_DEVICE = "00000000-0000-4000-8000-000000000003";
@@ -753,6 +755,25 @@ describe("encrypted artifact objects", () => {
     });
   }
 
+  async function publishArtifact(
+    bytes: Uint8Array,
+    overrides: Partial<{
+      objectId: string;
+      artifactId: string;
+      logicalVersion: number;
+    }> = {},
+  ): Promise<void> {
+    const checksum = await sha256Bytes(bytes);
+    const created = await createUpload(bytes, overrides);
+    expect(created.status).toBe(201);
+    const { uploadSessionId } = (await created.json()) as { uploadSessionId: string };
+    expect((await putPart(uploadSessionId, bytes, checksum)).status).toBe(200);
+    expect(
+      (await request(`/v1/objects/uploads/${uploadSessionId}/complete`, TOKEN_A, { method: "POST" }))
+        .status,
+    ).toBe(200);
+  }
+
   it("publishes only a verified multipart object and supports isolated range downloads", async () => {
     const bytes = new TextEncoder().encode("opaque encrypted artifact bytes for range download");
     const checksum = await sha256Bytes(bytes);
@@ -893,6 +914,147 @@ describe("encrypted artifact objects", () => {
          (SELECT COUNT(*) FROM object_changes) AS changes`,
     ).first();
     expect(counts).toEqual({ manifests: 1, replicas: 1, changes: 1 });
+  });
+
+  it("garbage collects superseded R2 replicas only after grace and recovers stale claims", async () => {
+    const firstArtifactId = "artifact-00000000-0000-4000-8000-000000000011";
+    const secondArtifactId = "artifact-00000000-0000-4000-8000-000000000012";
+    await publishArtifact(new TextEncoder().encode("ciphertext-generation-1"), {
+      artifactId: firstArtifactId,
+      logicalVersion: 1,
+    });
+    await publishArtifact(new TextEncoder().encode("ciphertext-generation-2"), {
+      artifactId: secondArtifactId,
+      logicalVersion: 2,
+    });
+
+    const first = await env.SYNC_DB.prepare(
+      `SELECT opaque_server_key, orphaned_at, gc_started_at, status
+       FROM object_replicas WHERE owner_id = 'owner-a' AND artifact_id = ?`,
+    )
+      .bind(firstArtifactId)
+      .first<{
+        opaque_server_key: string;
+        orphaned_at: number;
+        gc_started_at: number | null;
+        status: string;
+      }>();
+    const second = await env.SYNC_DB.prepare(
+      `SELECT opaque_server_key, orphaned_at, status
+       FROM object_replicas WHERE owner_id = 'owner-a' AND artifact_id = ?`,
+    )
+      .bind(secondArtifactId)
+      .first<{ opaque_server_key: string; orphaned_at: number | null; status: string }>();
+    expect(first).toMatchObject({ status: "ready", gc_started_at: null });
+    expect(first?.orphaned_at).toEqual(expect.any(Number));
+    expect(second).toMatchObject({ status: "ready", orphaned_at: null });
+
+    const orphanedAt = first!.orphaned_at;
+    const beforeGrace = await cleanupOrphanedObjects(env, {
+      now: orphanedAt + 999,
+      graceMs: 1_000,
+      batchSize: 10,
+      claimRetryMs: 500,
+    });
+    expect(beforeGrace).toMatchObject({ candidates: 0, deleted: 0 });
+    expect(await env.ARTIFACT_OBJECTS.head(first!.opaque_server_key)).not.toBeNull();
+
+    const claimTime = orphanedAt + 2_000;
+    await env.SYNC_DB.prepare(
+      "UPDATE object_replicas SET gc_started_at = ? WHERE owner_id = 'owner-a' AND artifact_id = ?",
+    )
+      .bind(claimTime, firstArtifactId)
+      .run();
+    const freshClaim = await cleanupOrphanedObjects(env, {
+      now: claimTime,
+      graceMs: 1_000,
+      batchSize: 10,
+      claimRetryMs: 500,
+    });
+    expect(freshClaim).toMatchObject({ candidates: 0, deleted: 0 });
+
+    const retried = await cleanupOrphanedObjects(env, {
+      now: claimTime + 501,
+      graceMs: 1_000,
+      batchSize: 10,
+      claimRetryMs: 500,
+    });
+    expect(retried).toMatchObject({ candidates: 1, claimed: 1, deleted: 1, failed: 0 });
+    expect(await env.ARTIFACT_OBJECTS.head(first!.opaque_server_key)).toBeNull();
+    expect(await env.ARTIFACT_OBJECTS.head(second!.opaque_server_key)).not.toBeNull();
+    const states = await env.SYNC_DB.prepare(
+      "SELECT artifact_id, status FROM object_replicas ORDER BY artifact_id",
+    ).all<{ artifact_id: string; status: string }>();
+    expect(states.results).toEqual([
+      { artifact_id: firstArtifactId, status: "deleted" },
+      { artifact_id: secondArtifactId, status: "ready" },
+    ]);
+  });
+
+  it("bounds each orphan cleanup run and never removes the current manifest replica", async () => {
+    const ids = [
+      "artifact-00000000-0000-4000-8000-000000000021",
+      "artifact-00000000-0000-4000-8000-000000000022",
+      "artifact-00000000-0000-4000-8000-000000000023",
+    ];
+    await publishArtifact(new TextEncoder().encode("ciphertext-batch-0"), {
+      artifactId: ids[0],
+      logicalVersion: 1,
+    });
+    await publishArtifact(new TextEncoder().encode("ciphertext-batch-1"), {
+      artifactId: ids[1],
+      logicalVersion: 2,
+    });
+    await env.SYNC_DB.prepare(
+      "UPDATE object_replicas SET orphaned_at = NULL WHERE artifact_id = ?",
+    )
+      .bind(ids[0])
+      .run();
+    await publishArtifact(new TextEncoder().encode("ciphertext-batch-2"), {
+      artifactId: ids[2],
+      logicalVersion: 3,
+    });
+    const reconciled = await env.SYNC_DB.prepare(
+      "SELECT artifact_id, orphaned_at FROM object_replicas ORDER BY artifact_id",
+    ).all<{ artifact_id: string; orphaned_at: number | null }>();
+    expect(reconciled.results).toEqual([
+      { artifact_id: ids[0], orphaned_at: expect.any(Number) },
+      { artifact_id: ids[1], orphaned_at: expect.any(Number) },
+      { artifact_id: ids[2], orphaned_at: null },
+    ]);
+    const orphan = await env.SYNC_DB.prepare(
+      "SELECT MIN(orphaned_at) AS orphaned_at FROM object_replicas WHERE orphaned_at IS NOT NULL",
+    ).first<{ orphaned_at: number }>();
+    await env.SYNC_DB.prepare(
+      "UPDATE object_replicas SET orphaned_at = ? WHERE artifact_id = ?",
+    )
+      .bind(orphan!.orphaned_at, ids[2])
+      .run();
+    const now = orphan!.orphaned_at + 2_000;
+    const firstRun = await cleanupOrphanedObjects(env, {
+      now,
+      graceMs: 1_000,
+      batchSize: 1,
+    });
+    const secondRun = await cleanupOrphanedObjects(env, {
+      now: now + 1,
+      graceMs: 1_000,
+      batchSize: 1,
+    });
+    const thirdRun = await cleanupOrphanedObjects(env, {
+      now: now + 2,
+      graceMs: 1_000,
+      batchSize: 1,
+    });
+    expect(firstRun.deleted).toBe(1);
+    expect(secondRun.deleted).toBe(1);
+    expect(thirdRun).toMatchObject({ candidates: 0, deleted: 0 });
+    const current = await env.SYNC_DB.prepare(
+      "SELECT status FROM object_replicas WHERE artifact_id = ?",
+    )
+      .bind(ids[2])
+      .first<{ status: string }>();
+    expect(current?.status).toBe("ready");
   });
 });
 

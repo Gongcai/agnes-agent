@@ -5,6 +5,8 @@ export interface Bindings {
   SYNC_DEVICE_IDENTITIES?: string;
   SYNC_TEST_IDENTITIES?: string;
   R2_OWNER_QUOTA_BYTES?: string;
+  R2_ORPHAN_GRACE_MS?: string;
+  R2_ORPHAN_GC_BATCH_SIZE?: string;
 }
 
 export interface AuthIdentity {

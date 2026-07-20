@@ -10,6 +10,12 @@ const MAX_PART_BYTES = 64 * 1024 * 1024;
 const MIN_MULTIPART_PART_BYTES = 5 * 1024 * 1024;
 const UPLOAD_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_QUOTA_BYTES = 5_000_000_000_000;
+const DEFAULT_ORPHAN_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+const MIN_ORPHAN_GRACE_MS = 24 * 60 * 60 * 1000;
+const MAX_ORPHAN_GRACE_MS = 90 * 24 * 60 * 60 * 1000;
+const DEFAULT_ORPHAN_GC_BATCH_SIZE = 50;
+const MAX_ORPHAN_GC_BATCH_SIZE = 100;
+const GC_CLAIM_RETRY_MS = 60 * 60 * 1000;
 const opaqueIdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const uploadRequestSchema = z
@@ -101,6 +107,21 @@ interface DeviceStateRow {
   error_code: string | null;
 }
 
+interface OrphanReplicaRow {
+  owner_id: string;
+  artifact_id: string;
+  opaque_server_key: string;
+  orphaned_at: number;
+}
+
+export interface ObjectGcReport {
+  candidates: number;
+  claimed: number;
+  deleted: number;
+  failed: number;
+  skipped: number;
+}
+
 function ownerNotFound(): ApiError {
   return new ApiError(404, "OBJECT_NOT_FOUND", "The requested object does not exist");
 }
@@ -111,6 +132,21 @@ function quotaBytes(value: string | undefined): number {
   }
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_QUOTA_BYTES;
+}
+
+function boundedInteger(
+  value: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  if (!value || !/^\d+$/.test(value)) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum
+    ? parsed
+    : fallback;
 }
 
 function routeParam(context: Context<AppEnv>, name: string): string {
@@ -487,12 +523,14 @@ export async function completeObjectUpload(context: Context<AppEnv>): Promise<Re
     context.env.SYNC_DB.prepare(
       `INSERT INTO object_replicas
        (owner_id, artifact_id, provider_kind, provider_account_id, opaque_server_key,
-        encrypted_locator, provider_revision, etag, ciphertext_hash, size, status, updated_at)
-       VALUES (?, ?, 'r2', 'r2', ?, NULL, ?, ?, ?, ?, 'ready', ?)
+        encrypted_locator, provider_revision, etag, ciphertext_hash, size, status, updated_at,
+        orphaned_at, gc_started_at)
+       VALUES (?, ?, 'r2', 'r2', ?, NULL, ?, ?, ?, ?, 'ready', ?, NULL, NULL)
        ON CONFLICT(owner_id, artifact_id, provider_kind, provider_account_id) DO UPDATE SET
          opaque_server_key = excluded.opaque_server_key, provider_revision = excluded.provider_revision,
          etag = excluded.etag, ciphertext_hash = excluded.ciphertext_hash, size = excluded.size,
-         status = 'ready', updated_at = excluded.updated_at`,
+         status = 'ready', updated_at = excluded.updated_at, orphaned_at = NULL,
+         gc_started_at = NULL`,
     ).bind(
       upload.owner_id,
       upload.artifact_id,
@@ -537,8 +575,27 @@ export async function completeObjectUpload(context: Context<AppEnv>): Promise<Re
       context.env.SYNC_DB.prepare(
         `INSERT INTO object_changes
          (owner_id, object_id, artifact_id, operation, logical_version, changed_at)
-         VALUES (?, ?, ?, 'upsert', ?, ?)`,
+       VALUES (?, ?, ?, 'upsert', ?, ?)`,
       ).bind(upload.owner_id, upload.object_id, upload.artifact_id, upload.logical_version, now),
+    );
+    statements.push(
+      context.env.SYNC_DB.prepare(
+        `UPDATE object_replicas SET orphaned_at = COALESCE(orphaned_at, ?), gc_started_at = NULL
+         WHERE owner_id = ? AND status = 'ready'
+           AND EXISTS (
+             SELECT 1 FROM object_changes historical_change
+             WHERE historical_change.owner_id = object_replicas.owner_id
+               AND historical_change.object_id = ?
+               AND historical_change.artifact_id = object_replicas.artifact_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM object_manifests current_manifest
+             WHERE current_manifest.owner_id = object_replicas.owner_id
+               AND current_manifest.object_id = ?
+               AND current_manifest.latest_artifact_id = object_replicas.artifact_id
+               AND current_manifest.deleted_at IS NULL
+           )`,
+      ).bind(now, upload.owner_id, upload.object_id, upload.object_id),
     );
   }
   await context.env.SYNC_DB.batch(statements);
@@ -800,7 +857,7 @@ export async function deleteObject(context: Context<AppEnv>): Promise<Response> 
   const replica = await findReadyReplica(context, artifactId);
   await context.env.ARTIFACT_OBJECTS.delete(replica.opaque_server_key!);
   await context.env.SYNC_DB.prepare(
-    `UPDATE object_replicas SET status = 'deleted', updated_at = ?
+    `UPDATE object_replicas SET status = 'deleted', updated_at = ?, gc_started_at = NULL
      WHERE owner_id = ? AND artifact_id = ? AND provider_kind = 'r2'`,
   )
     .bind(Date.now(), identity.ownerId, artifactId)
@@ -833,4 +890,114 @@ export async function cleanupObjectUploads(env: AppEnv["Bindings"]): Promise<voi
   )
     .bind(Date.now() - 7 * 24 * 60 * 60 * 1000)
     .run();
+}
+
+export async function cleanupOrphanedObjects(
+  env: AppEnv["Bindings"],
+  options: {
+    now?: number;
+    graceMs?: number;
+    batchSize?: number;
+    claimRetryMs?: number;
+  } = {},
+): Promise<ObjectGcReport> {
+  const now = options.now ?? Date.now();
+  const graceMs = options.graceMs ?? boundedInteger(
+    env.R2_ORPHAN_GRACE_MS,
+    DEFAULT_ORPHAN_GRACE_MS,
+    MIN_ORPHAN_GRACE_MS,
+    MAX_ORPHAN_GRACE_MS,
+  );
+  const batchSize = options.batchSize ?? boundedInteger(
+    env.R2_ORPHAN_GC_BATCH_SIZE,
+    DEFAULT_ORPHAN_GC_BATCH_SIZE,
+    1,
+    MAX_ORPHAN_GC_BATCH_SIZE,
+  );
+  const claimRetryMs = options.claimRetryMs ?? GC_CLAIM_RETRY_MS;
+  const orphanCutoff = now - graceMs;
+  const staleClaimCutoff = now - claimRetryMs;
+  const candidates = await env.SYNC_DB.prepare(
+    `SELECT owner_id, artifact_id, opaque_server_key, orphaned_at
+     FROM object_replicas replica
+     WHERE provider_kind = 'r2' AND status = 'ready' AND opaque_server_key IS NOT NULL
+       AND orphaned_at IS NOT NULL AND orphaned_at <= ?
+       AND (gc_started_at IS NULL OR gc_started_at <= ?)
+       AND NOT EXISTS (
+         SELECT 1 FROM object_manifests manifest
+         WHERE manifest.owner_id = replica.owner_id
+           AND manifest.latest_artifact_id = replica.artifact_id
+           AND manifest.deleted_at IS NULL
+       )
+     ORDER BY orphaned_at, owner_id, artifact_id
+     LIMIT ?`,
+  )
+    .bind(orphanCutoff, staleClaimCutoff, Math.min(batchSize, MAX_ORPHAN_GC_BATCH_SIZE))
+    .all<OrphanReplicaRow>();
+  const report: ObjectGcReport = {
+    candidates: candidates.results.length,
+    claimed: 0,
+    deleted: 0,
+    failed: 0,
+    skipped: 0,
+  };
+  for (const candidate of candidates.results) {
+    const claim = await env.SYNC_DB.prepare(
+      `UPDATE object_replicas SET gc_started_at = ?
+       WHERE owner_id = ? AND artifact_id = ? AND provider_kind = 'r2'
+         AND status = 'ready' AND opaque_server_key = ?
+         AND orphaned_at IS NOT NULL AND orphaned_at <= ?
+         AND (gc_started_at IS NULL OR gc_started_at <= ?)
+         AND NOT EXISTS (
+           SELECT 1 FROM object_manifests manifest
+           WHERE manifest.owner_id = object_replicas.owner_id
+             AND manifest.latest_artifact_id = object_replicas.artifact_id
+             AND manifest.deleted_at IS NULL
+         )`,
+    )
+      .bind(
+        now,
+        candidate.owner_id,
+        candidate.artifact_id,
+        candidate.opaque_server_key,
+        orphanCutoff,
+        staleClaimCutoff,
+      )
+      .run();
+    if (claim.meta.changes !== 1) {
+      report.skipped += 1;
+      continue;
+    }
+    report.claimed += 1;
+    try {
+      await env.ARTIFACT_OBJECTS.delete(candidate.opaque_server_key);
+      const finalized = await env.SYNC_DB.prepare(
+        `UPDATE object_replicas SET status = 'deleted', updated_at = ?, gc_started_at = NULL
+         WHERE owner_id = ? AND artifact_id = ? AND provider_kind = 'r2'
+           AND status = 'ready' AND opaque_server_key = ? AND gc_started_at = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM object_manifests manifest
+             WHERE manifest.owner_id = object_replicas.owner_id
+               AND manifest.latest_artifact_id = object_replicas.artifact_id
+               AND manifest.deleted_at IS NULL
+           )`,
+      )
+        .bind(
+          now,
+          candidate.owner_id,
+          candidate.artifact_id,
+          candidate.opaque_server_key,
+          now,
+        )
+        .run();
+      if (finalized.meta.changes === 1) {
+        report.deleted += 1;
+      } else {
+        report.skipped += 1;
+      }
+    } catch {
+      report.failed += 1;
+    }
+  }
+  return report;
 }
