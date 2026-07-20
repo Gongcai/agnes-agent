@@ -29,6 +29,7 @@ import {
   X,
 } from "lucide-react";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { ThoughtDetails } from "./ThoughtDetails";
 import { useAgentStore } from "../store/useAgentStore";
 import {
   getCachedAutoExpandThoughts,
@@ -947,7 +948,7 @@ export const ReadingWorkspace: React.FC = () => {
                 )}
               </header>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5">
-                {conversationReady && messages.map((message) => (
+                {conversationReady && messages.map((message, messageIndex) => (
                   <div key={message.id} className={message.role === "user" ? "ml-6" : "mr-3"}>
                     <div className={`rounded-md px-3 py-2 text-sm ${message.role === "user" ? "bg-emerald-50 text-stone-800" : "border border-stone-200 bg-white text-stone-700"}`}>
                       <div className="space-y-2.5">
@@ -961,19 +962,29 @@ export const ReadingWorkspace: React.FC = () => {
                             );
                           }
                           if (part.kind === "thought") {
+                            const isLiveThought = isStreaming
+                              && messageIndex === messages.length - 1
+                              && message.status !== "complete"
+                              && message._streamingInThought === true;
                             return (
-                              <details
-                                key={`${part._renderKey ?? part.id}:${autoExpandThoughts}`}
-                                open={autoExpandThoughts}
+                              <ThoughtDetails
+                                key={part._renderKey ?? part.id}
+                                defaultOpen={autoExpandThoughts}
                                 className="group rounded-r-md border-l-2 border-emerald-600 bg-stone-50 px-2.5 py-2"
                               >
                                 <summary className="flex cursor-pointer select-none items-center gap-2 text-[11px] font-semibold text-emerald-700">
                                   <Brain className="h-3.5 w-3.5" />
                                   <span>思考过程</span>
+                                  {isLiveThought && (
+                                    <span className="ml-1 flex items-center gap-1 text-[9px] font-normal text-stone-400">
+                                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-600" />
+                                      思考中
+                                    </span>
+                                  )}
                                   <ChevronDown className="ml-auto h-3 w-3 transition-transform group-open:rotate-180" />
                                 </summary>
                                 <p className="mt-2 whitespace-pre-wrap border-t border-stone-200/70 pt-2 font-mono text-[11px] leading-relaxed text-stone-500">{part.content}</p>
-                              </details>
+                              </ThoughtDetails>
                             );
                           }
                           if (part.kind !== "text") return null;

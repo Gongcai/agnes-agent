@@ -23,6 +23,7 @@ import type { PermissionMode, ToolCall } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ModifyMemoryModal } from "./ModifyMemoryModal";
+import { ThoughtDetails } from "./ThoughtDetails";
 import {
   getCachedAutoExpandThoughts,
   subscribeUIPreferenceChanges,
@@ -475,21 +476,28 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       }
                       // 1. Thought Process (reasoning)
                       if (part.kind === "thought") {
+                        const isLiveThought = isLiveAssistant && message._streamingInThought === true;
                         return (
-                          <details
-                            key={`${part._renderKey ?? part.id}:${autoExpandThoughts}`}
-                            open={autoExpandThoughts}
+                          <ThoughtDetails
+                            key={part._renderKey ?? part.id}
+                            defaultOpen={autoExpandThoughts}
                             className="group border-l-2 border-[#8CA38A] bg-stone-100/60 rounded-r-xl p-3 transition-colors"
                           >
                             <summary className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-[#6C806A] select-none hover:text-[#556654]">
                               <Cpu className="h-3.5 w-3.5" />
                               <span>Agent 思维过程 (Thought)</span>
+                              {isLiveThought && (
+                                <span className="ml-1 flex items-center gap-1 text-[10px] font-normal text-stone-400">
+                                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#8CA38A]" />
+                                  思考中
+                                </span>
+                              )}
                               <ChevronDown className="h-3 w-3 ml-auto group-open:rotate-180 transition-transform" />
                             </summary>
                             <p className="text-xs text-stone-600 mt-2 font-mono leading-relaxed pl-5 whitespace-pre-wrap border-t border-stone-200/40 pt-2">
                               {part.content}
                             </p>
-                          </details>
+                          </ThoughtDetails>
                         );
                       }
 
