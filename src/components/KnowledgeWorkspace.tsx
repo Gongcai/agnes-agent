@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   BookOpen,
@@ -10,6 +11,7 @@ import {
   LoaderCircle,
   MonitorSmartphone,
   Search,
+  Square,
 } from "lucide-react";
 import { useAgentStore } from "../store/useAgentStore";
 
@@ -78,6 +80,14 @@ interface KnowledgeArtifactCoverage {
   devices: KnowledgeArtifactDeviceCoverage[];
 }
 
+interface KnowledgeImportProgress {
+  jobId: string;
+  fileName: string;
+  stage: string;
+  percent: number;
+  message: string;
+}
+
 const deviceStatusLabel = (status: string) => {
   switch (status) {
     case "installed":
@@ -114,6 +124,12 @@ export const KnowledgeWorkspace: React.FC = () => {
     Record<string, KnowledgeArtifactCoverage>
   >({});
   const [error, setError] = useState<string | null>(null);
+  const [importProgress, setImportProgress] =
+    useState<KnowledgeImportProgress | null>(null);
+  const [importPosition, setImportPosition] = useState({ current: 0, total: 0 });
+  const [cancellingImport, setCancellingImport] = useState(false);
+  const activeImportJobRef = useRef<string | null>(null);
+  const importCancelledRef = useRef(false);
 
   const loadCollections = async () => {
     if (!activeAgentId) {
@@ -154,6 +170,31 @@ export const KnowledgeWorkspace: React.FC = () => {
   useEffect(() => {
     loadDocuments(selectedCollectionId).catch((reason) => setError(String(reason)));
   }, [activeAgentId, selectedCollectionId]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<KnowledgeImportProgress>(
+      "knowledge://import-progress",
+      (event) => {
+        if (event.payload.jobId === activeImportJobRef.current) {
+          setImportProgress(event.payload);
+        }
+      },
+    ).then((dispose) => {
+      if (disposed) {
+        dispose();
+      } else {
+        unlisten = dispose;
+      }
+    }).catch((reason) => {
+      if (!disposed) setError(String(reason));
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   const createCollection = async () => {
     if (!activeAgentId) return;
@@ -208,20 +249,65 @@ export const KnowledgeWorkspace: React.FC = () => {
     setLoading(true);
     setError(null);
     setIndexStatus(null);
+    setCancellingImport(false);
+    importCancelledRef.current = false;
+    let importedCount = 0;
     try {
-      for (const path of paths) {
+      for (const [index, path] of paths.entries()) {
+        if (importCancelledRef.current) break;
+        const jobId = crypto.randomUUID();
+        const fileName = path.split(/[\\/]/).pop() || "未命名文档";
+        activeImportJobRef.current = jobId;
+        setImportPosition({ current: index + 1, total: paths.length });
+        setImportProgress({
+          jobId,
+          fileName,
+          stage: "queued",
+          percent: 0,
+          message: "等待开始导入",
+        });
         await invoke("import_local_knowledge_document", {
           collectionId: selectedCollectionId,
           agentId: activeAgentId,
           path,
+          jobId,
         });
+        importedCount += 1;
       }
       await loadCollections();
       await loadDocuments(selectedCollectionId);
+      setIndexStatus(
+        importCancelledRef.current
+          ? `已取消导入，已完成 ${importedCount}/${paths.length} 个文档`
+          : `已导入 ${importedCount} 个文档`,
+      );
+    } catch (reason) {
+      if (importCancelledRef.current) {
+        await loadCollections();
+        await loadDocuments(selectedCollectionId);
+        setIndexStatus(`已取消导入，已完成 ${importedCount}/${paths.length} 个文档`);
+      } else {
+        setError(String(reason));
+      }
+    } finally {
+      activeImportJobRef.current = null;
+      setImportProgress(null);
+      setImportPosition({ current: 0, total: 0 });
+      setCancellingImport(false);
+      setLoading(false);
+    }
+  };
+
+  const cancelImport = async () => {
+    const jobId = activeImportJobRef.current;
+    if (!jobId || cancellingImport) return;
+    importCancelledRef.current = true;
+    setCancellingImport(true);
+    try {
+      await invoke("cancel_knowledge_import", { jobId });
     } catch (reason) {
       setError(String(reason));
-    } finally {
-      setLoading(false);
+      setCancellingImport(false);
     }
   };
 
@@ -442,6 +528,56 @@ export const KnowledgeWorkspace: React.FC = () => {
             {indexStatus && (
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
                 {indexStatus}
+              </div>
+            )}
+            {importProgress && (
+              <div className="rounded-xl border border-stone-200 bg-white px-4 py-3 shadow-sm">
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <div className="min-w-0">
+                    <div className="truncate font-semibold text-stone-700">
+                      {importProgress.fileName}
+                    </div>
+                    <div className="mt-1 text-[11px] text-stone-500">
+                      {importProgress.message} · {importPosition.current}/
+                      {importPosition.total}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3">
+                    <span className="tabular-nums text-stone-500">
+                      {Math.round(importProgress.percent)}%
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void cancelImport()}
+                      disabled={cancellingImport || importProgress.percent >= 98}
+                      className="flex items-center gap-1 rounded-lg border border-stone-200 px-2 py-1 text-[10px] font-semibold text-stone-600 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {cancellingImport ? (
+                        <LoaderCircle className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Square className="h-3 w-3" />
+                      )}
+                      {cancellingImport
+                        ? "取消中"
+                        : importProgress.percent >= 98
+                          ? "完成中"
+                          : "取消"}
+                    </button>
+                  </div>
+                </div>
+                <div
+                  className="mt-3 h-1.5 overflow-hidden rounded-full bg-stone-100"
+                  role="progressbar"
+                  aria-label={`${importProgress.fileName} 导入进度`}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(importProgress.percent)}
+                >
+                  <div
+                    className="h-full rounded-full bg-[#8CA38A] transition-[width] duration-300"
+                    style={{ width: `${importProgress.percent}%` }}
+                  />
+                </div>
               </div>
             )}
             {error && (

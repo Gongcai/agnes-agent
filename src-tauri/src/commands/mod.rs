@@ -2666,7 +2666,10 @@ async fn read_knowledge_document(
     path: String,
     title_hint: Option<String>,
     remote_media_type: Option<String>,
+    context: Option<&crate::document_parser::DocumentImportContext>,
+    cancellation: tokio::sync::watch::Receiver<bool>,
 ) -> AppResult<ParsedKnowledgeDocument> {
+    crate::document_parser::ensure_not_cancelled(&cancellation)?;
     let path_buf = std::path::PathBuf::from(&path);
     let media_type = knowledge_media_type(
         &path_buf,
@@ -2685,6 +2688,8 @@ async fn read_knowledge_document(
             &path_buf,
             title_hint.as_deref(),
             &media_type,
+            context,
+            cancellation,
         )
         .await?;
         let parser_profile = parsed.profile();
@@ -2703,18 +2708,27 @@ async fn read_knowledge_document(
         });
     }
 
-    tokio::task::spawn_blocking(move || {
+    crate::document_parser::emit_import_progress(
+        &state.app_handle,
+        context,
+        "reading",
+        35,
+        "正在读取文本内容",
+    );
+    let parsed = tokio::task::spawn_blocking(move || {
         read_text_knowledge_document(path, title_hint, remote_media_type)
     })
     .await
-    .map_err(|error| AppError::Other(format!("知识库文本解析任务异常中止：{error}")))?
-}
-
-async fn read_local_knowledge_document(
-    state: &AppState,
-    path: String,
-) -> AppResult<ParsedKnowledgeDocument> {
-    read_knowledge_document(state, path, None, None).await
+    .map_err(|error| AppError::Other(format!("知识库文本解析任务异常中止：{error}")))??;
+    crate::document_parser::ensure_not_cancelled(&cancellation)?;
+    crate::document_parser::emit_import_progress(
+        &state.app_handle,
+        context,
+        "chunking",
+        80,
+        "文本分块已生成",
+    );
+    Ok(parsed)
 }
 
 fn knowledge_storage_path(
@@ -3229,22 +3243,90 @@ pub async fn import_local_knowledge_document(
     collection_id: String,
     agent_id: String,
     path: String,
+    job_id: Option<String>,
 ) -> AppResult<crate::db::repo::knowledge::ImportDocumentResult> {
-    let parsed = read_local_knowledge_document(&state, path.clone()).await?;
-    state
-        .db
-        .import_local_knowledge_document(crate::db::repo::knowledge::NewLocalDocument {
-            collection_id,
-            agent_id,
-            title: parsed.title,
-            media_type: parsed.media_type,
-            local_path: path,
-            plaintext_hash: parsed.source_hash,
-            size: parsed.size,
-            parser_profile: parsed.parser_profile,
-            chunks: parsed.chunks,
+    let context = if let Some(job_id) = job_id.as_deref() {
+        uuid::Uuid::parse_str(job_id)
+            .map_err(|_| AppError::Other("文档导入任务 ID 无效".into()))?;
+        let file_name = std::path::Path::new(&path)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "未命名文档".into());
+        Some(crate::document_parser::DocumentImportContext {
+            job_id: job_id.to_string(),
+            file_name,
         })
-        .await
+    } else {
+        None
+    };
+    let cancellation = if let Some(context) = context.as_ref() {
+        state.document_parser.register(&context.job_id)?
+    } else {
+        crate::document_parser::detached_cancellation()
+    };
+    crate::document_parser::emit_import_progress(
+        &state.app_handle,
+        context.as_ref(),
+        "validating",
+        10,
+        "正在检查导入文件",
+    );
+    let outcome = async {
+        let parsed = read_knowledge_document(
+            &state,
+            path.clone(),
+            None,
+            None,
+            context.as_ref(),
+            cancellation.clone(),
+        )
+        .await?;
+        crate::document_parser::ensure_not_cancelled(&cancellation)?;
+        crate::document_parser::emit_import_progress(
+            &state.app_handle,
+            context.as_ref(),
+            "storing",
+            98,
+            "正在写入知识库",
+        );
+        let result = state
+            .db
+            .import_local_knowledge_document(crate::db::repo::knowledge::NewLocalDocument {
+                collection_id,
+                agent_id,
+                title: parsed.title,
+                media_type: parsed.media_type,
+                local_path: path,
+                plaintext_hash: parsed.source_hash,
+                size: parsed.size,
+                parser_profile: parsed.parser_profile,
+                chunks: parsed.chunks,
+            })
+            .await?;
+        crate::document_parser::emit_import_progress(
+            &state.app_handle,
+            context.as_ref(),
+            "completed",
+            100,
+            "文档导入完成",
+        );
+        Ok(result)
+    }
+    .await;
+    if let Some(context) = context.as_ref() {
+        state.document_parser.finish(&context.job_id);
+    }
+    outcome
+}
+
+#[tauri::command]
+pub async fn cancel_knowledge_import(
+    state: tauri::State<'_, AppState>,
+    job_id: String,
+) -> AppResult<()> {
+    uuid::Uuid::parse_str(&job_id).map_err(|_| AppError::Other("文档导入任务 ID 无效".into()))?;
+    state.document_parser.cancel(&job_id)
 }
 
 #[tauri::command]
@@ -3275,9 +3357,15 @@ pub async fn import_storage_knowledge_document(
     let remote_name = staged.remote_file.name.clone();
     let remote_media_type = staged.remote_file.media_type.clone();
     let outcome = async {
-        let parsed =
-            read_knowledge_document(&state, parse_path, Some(remote_name), remote_media_type)
-                .await?;
+        let parsed = read_knowledge_document(
+            &state,
+            parse_path,
+            Some(remote_name),
+            remote_media_type,
+            None,
+            crate::document_parser::detached_cancellation(),
+        )
+        .await?;
         let install = tokio::task::spawn_blocking({
             let source = staged.local_path.clone();
             let target = stable_path.clone();

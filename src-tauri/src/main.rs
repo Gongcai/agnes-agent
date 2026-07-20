@@ -298,6 +298,7 @@ fn main() {
                 storage,
                 sync,
                 notifications,
+                document_parser: Arc::new(document_parser::DocumentParserManager::default()),
                 secret_store_startup_error,
             });
 
@@ -360,6 +361,7 @@ fn main() {
             commands::create_knowledge_collection,
             commands::list_knowledge_documents,
             commands::import_local_knowledge_document,
+            commands::cancel_knowledge_import,
             commands::import_storage_knowledge_document,
             commands::search_knowledge,
             commands::vectorize_knowledge,

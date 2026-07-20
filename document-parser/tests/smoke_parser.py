@@ -21,7 +21,14 @@ def run_parser(binary: Path, source: Path) -> dict:
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout)
-    return json.loads(result.stdout)
+    messages = [json.loads(line) for line in result.stdout.splitlines()]
+    progress = [message for message in messages if message.get("type") == "progress"]
+    payloads = [
+        message["payload"] for message in messages if message.get("type") == "result"
+    ]
+    if not progress or len(payloads) != 1:
+        raise RuntimeError("document-parserd returned an invalid JSONL event stream")
+    return payloads[0]
 
 
 def main() -> int:

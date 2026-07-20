@@ -8,7 +8,8 @@ import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
+from xml.etree import ElementTree
 
 from docling.backend.msexcel_backend import MsExcelDocumentBackend
 from docling.backend.mspowerpoint_backend import MsPowerpointDocumentBackend
@@ -54,6 +55,9 @@ DOCLING_VERSION = "2.113.0"
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
 MAX_ZIP_MEMBERS = 20_000
+MAX_PPTX_SLIDES = 1_000
+MAX_XLSX_WORKSHEETS = 256
+MAX_XLSX_CELLS = 2_000_000
 MAX_CHUNK_CHARS = 1_200
 CHUNK_OVERLAP_CHARS = 200
 MAX_TABLE_ROWS_PER_CHUNK = 40
@@ -86,6 +90,9 @@ class DocumentParseError(ValueError):
     pass
 
 
+ProgressCallback = Callable[[str, int, str], None]
+
+
 @dataclass
 class ParsedChunk:
     content: str
@@ -109,7 +116,41 @@ def estimate_tokens(content: str) -> int:
     return max(1, word_estimate, character_estimate)
 
 
-def _preflight_ooxml(path: Path) -> None:
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _xlsx_cell_count(archive: zipfile.ZipFile, worksheets: list[zipfile.ZipInfo]) -> int:
+    cell_count = 0
+    try:
+        for worksheet in worksheets:
+            with archive.open(worksheet) as source:
+                for _, element in ElementTree.iterparse(source, events=("end",)):
+                    if _xml_local_name(element.tag) == "c":
+                        cell_count += 1
+                        if cell_count > MAX_XLSX_CELLS:
+                            raise DocumentParseError(
+                                "XLSX 实际单元格数超过 2,000,000 个上限"
+                            )
+                    element.clear()
+    except ElementTree.ParseError as error:
+        raise DocumentParseError("XLSX 工作表 XML 损坏，无法解析") from error
+    return cell_count
+
+
+def _direct_xml_members(
+    members: list[zipfile.ZipInfo], directory: str
+) -> list[zipfile.ZipInfo]:
+    parent = PurePosixPath(directory)
+    return [
+        member
+        for member in members
+        if PurePosixPath(member.filename).parent == parent
+        and PurePosixPath(member.filename).suffix.lower() == ".xml"
+    ]
+
+
+def _preflight_ooxml(path: Path, suffix: str) -> None:
     size = path.stat().st_size
     if size > MAX_FILE_BYTES:
         raise DocumentParseError("文件超过 50 MiB 的 Office 导入上限")
@@ -133,6 +174,17 @@ def _preflight_ooxml(path: Path) -> None:
                 raise DocumentParseError("Office 文件包含异常压缩成员")
             if member.compress_size > 0 and member.file_size / member.compress_size > 2_000:
                 raise DocumentParseError("Office 文件压缩比异常，已拒绝解析")
+
+        if suffix == ".pptx":
+            slides = _direct_xml_members(members, "ppt/slides")
+            if len(slides) > MAX_PPTX_SLIDES:
+                raise DocumentParseError("PPTX 幻灯片超过 1,000 页上限")
+
+        if suffix == ".xlsx":
+            worksheets = _direct_xml_members(members, "xl/worksheets")
+            if len(worksheets) > MAX_XLSX_WORKSHEETS:
+                raise DocumentParseError("XLSX 工作表超过 256 个上限")
+            _xlsx_cell_count(archive, worksheets)
 
 
 def _suffix_for(path: Path, media_type_hint: str | None) -> str:
@@ -345,20 +397,26 @@ def parse_document(
     path_value: str,
     title_hint: str | None = None,
     media_type_hint: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    report = progress or (lambda _stage, _percent, _message: None)
+    report("validating", 10, "正在检查文档")
     path = Path(path_value).resolve()
     if not path.is_file():
         raise DocumentParseError("知识库导入路径必须是普通文件")
     suffix = _suffix_for(path, media_type_hint)
     if suffix not in MEDIA_TYPES:
         raise DocumentParseError("当前仅支持 DOCX、PPTX 和 XLSX 文件")
-    _preflight_ooxml(path)
+    _preflight_ooxml(path, suffix)
+    report("converting", 45, "正在解析文档结构")
     document = _convert(path, suffix)
+    report("chunking", 80, "正在生成索引分块")
     chunks = _document_chunks(document, suffix)
     if not chunks:
         raise DocumentParseError("文件没有可索引的文本内容")
 
     title = (title_hint or "").strip() or path.stem.strip() or "未命名文档"
+    report("finalizing", 95, "正在校验解析结果")
     source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     return {
         "schema_version": SCHEMA_VERSION,

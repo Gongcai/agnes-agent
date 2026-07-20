@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::agent::AgentManager;
 use crate::db::DbActorHandle;
+use crate::document_parser::DocumentParserManager;
 use crate::mcp::McpManager;
 use crate::notifications::NotificationService;
 use crate::secrets::SecretStore;
@@ -20,5 +21,6 @@ pub struct AppState {
     pub storage: Arc<StorageService>,
     pub sync: Arc<SyncService>,
     pub notifications: Arc<NotificationService>,
+    pub document_parser: Arc<DocumentParserManager>,
     pub secret_store_startup_error: Option<String>,
 }

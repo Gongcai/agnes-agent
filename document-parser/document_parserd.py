@@ -8,6 +8,13 @@ import zipfile
 from app.parser import DocumentParseError, parse_document
 
 
+def emit(payload: dict[str, object]) -> None:
+    print(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Parse an Office document for Agnes")
     parser.add_argument("--path", required=True)
@@ -15,14 +22,26 @@ def main() -> int:
     parser.add_argument("--media-type")
     args = parser.parse_args()
     try:
-        result = parse_document(args.path, args.title, args.media_type)
+        result = parse_document(
+            args.path,
+            args.title,
+            args.media_type,
+            progress=lambda stage, percent, message: emit(
+                {
+                    "type": "progress",
+                    "stage": stage,
+                    "percent": percent,
+                    "message": message,
+                }
+            ),
+        )
     except (DocumentParseError, OSError, ValueError, zipfile.BadZipFile) as error:
-        print(json.dumps({"error": str(error)}, ensure_ascii=False))
+        emit({"type": "error", "error": str(error)})
         return 2
     except Exception as error:
-        print(json.dumps({"error": f"文档解析失败：{error}"}, ensure_ascii=False))
+        emit({"type": "error", "error": f"文档解析失败：{error}"})
         return 1
-    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    emit({"type": "result", "payload": result})
     return 0
 
 
