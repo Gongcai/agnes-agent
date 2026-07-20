@@ -375,7 +375,7 @@ body.quick-window-body #root {
   --claude-header-soft: rgba(250, 249, 245, 0.96);
   --claude-overlay: rgba(31, 30, 27, 0.34);
   --claude-shadow: rgba(31, 30, 27, 0.16);
-  --claude-ui-font: "Outfit", "Inter", "Noto Sans SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --claude-ui-font: "Noto Serif", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
   --claude-mono-font: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
 }
 
