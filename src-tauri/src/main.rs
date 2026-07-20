@@ -13,6 +13,7 @@ mod notifications;
 mod reading;
 mod reading_context_menu;
 mod secrets;
+mod skills;
 mod state;
 mod storage;
 pub mod sync;
@@ -410,6 +411,12 @@ fn main() {
             commands::get_search_provider_settings,
             commands::set_search_provider_settings,
             commands::test_search_provider,
+            commands::list_installed_skills,
+            commands::install_skills_from_path,
+            commands::install_skills_from_git,
+            commands::set_skill_enabled,
+            commands::uninstall_skill,
+            commands::open_skill_directory,
             commands::get_secret_store_status,
             commands::test_provider,
             commands::fetch_provider_models,

@@ -10,6 +10,8 @@ Read With AI 的 EPUB、划线与讨论上下文边界详见 `ProjectPlan/READ_W
 
 联网搜索、网页读取与 MCP 分阶段设计详见 `ProjectPlan/WEB_AND_MCP.md`。
 
+Skills 的目录格式、安装、运行时加载与安全边界详见 `ProjectPlan/SKILLS.md`。
+
 大文件、RAG、加密向量制品、多网盘、日历和待办详见 `ProjectPlan/STORAGE_AND_RAG.md`。
 
 同步 E2EE 的密码学格式、AAD、keyset 与上线门禁详见 `ProjectPlan/E2EE.md`。
@@ -148,6 +150,7 @@ System Prompt
 ↓ MEMORY.md              （per-Agent，每次必注入，ai+用户可改）
 ↓ [仅工作区会话] 编码工作流（工作区范围、先读项目指令、工具与验证纪律）
 ↓ 当前项目上下文
+↓ [按本轮选择] Active Skills（低于系统安全规则与 Tool Policy）
 ↓ ② Conversation Summary
 ↓ ① Recent Context
 ↓ [按需] AI 调 memory_search（限定 agent_id）→ 检索结果作工具返回拼入
@@ -180,7 +183,7 @@ System Prompt
 | V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 已完成：摘要、抽取、结构化字段、AI 创建/更新、记忆决策提示词、`MEMORY.md` 专用工具、动态维度 sqlite-vec + RRF 混合检索；已使用 Qwen3-Embedding-8B 完成真实服务端到端验证，手动向量化、覆盖率统计与检索链路均可用 |
 | V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | Phase 0-4 已完成：密文传输、SPAKE2 新设备配对、两阶段密钥轮换、Recovery Bundle 多版本恢复和线上日志审计均已完成；Worker `7316feb3-48b1-4635-8363-a83e78e7dc33` 已部署，production D1 五张相关表均为空。本轮未上传业务数据 |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 暂缓：先稳定桌面客户端与本地 Agent 能力，再启动 Android 客户端 |
-| V0.5 | MCP + diff review + workspace sandbox + tool audit + 多模型 fallback | 进行中：工具、审批、Linux 沙箱、审计、模型路由、内置 `web_search/web_fetch/browser_open`、可配置 SearXNG/Brave Search Provider、MCP Client 与主模型零输出故障回退已完成；浏览器为隔离无登录的严格只读渲染能力。diff review 待后续补齐 |
+| V0.5 | MCP + Skills + diff review + workspace sandbox + tool audit + 多模型 fallback | 进行中：工具、审批、Linux 沙箱、审计、模型路由、内置 `web_search/web_fetch/browser_open`、可配置 SearXNG/Brave Search Provider、MCP Client、主模型零输出故障回退，以及兼容 `SKILL.md` 的本地/Git 安装、管理、聊天选择、运行时注入和资源读取边界已完成；浏览器为隔离无登录的严格只读渲染能力。diff review 待后续补齐 |
 | V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + 通用网盘 Provider | 进行中：本地 RAG、chunks/embeddings artifact 导出与事务性 sqlite-vec 导入、artifact v1 加密/校验/原子安装、SQLite manifest/replica/device 状态、Google Drive 对象副本编排、R2 Worker Multipart/Range 数据面、Rust object 控制面客户端及独立 artifact replication coordinator 已完成；知识库支持按文档构建、缓存和发布 R2 加密向量制品，失败重试复用同一 artifact，并在页面展示向量覆盖、ready 副本和远端设备安装状态；本地制品存储提供默认 2 GiB 配额、容量统计、手动清理和定时安全 GC，只回收已有 ready 远端副本的缓存或旧安装目录；聊天 pull cursor 与 object cursor 已分离。Worker 已接入 R2 孤儿副本对账、7 天宽限期、有界定时 GC 与中断重试，契约测试覆盖分片校验、owner 隔离、逻辑版本 CAS、幂等重放、设备落地状态、过期上传和孤儿回收。真实 Google 账户、R2 bucket 和端到端多设备验收仍待部署凭证，后者将在安卓端完成后统一验证 |
 | V0.7 | 本地日历 + 待办 | 已完成：本地域模型、Local Provider、受审批约束的 Agent 工具、完整桌面工作区、本地统一通知服务和 D1 E2EE 同步均已完成。日历支持月/周/日/议程、多日历叠加、当天议程、待办图层及重复 occurrence 例外；待办支持五类智能视图、自定义列表、重要/我的一天、日期或精确时间、步骤和完成后生成下一重复实例；通知中心覆盖 AI 回复/许可、任务到期和日历事件。Google Calendar / Google Tasks / CalDAV 不纳入默认路线图，未来仅按实际需求作为可选扩展评估。 |
 | V0.8 | Read With AI | 已完成本地优先 v1：EPUB 2/3 导入与原样渲染、阅读进度、CFI 划线、用户级书架、按书籍 × Agent 隔离的连续讨论、已知书籍模式，以及未知书籍首次书内检索授权。原始 EPUB 的加密大对象与跨设备同步留待 V0.6 数据层完成后接入。 |

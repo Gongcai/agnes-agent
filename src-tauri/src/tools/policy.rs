@@ -190,7 +190,7 @@ impl Default for FilePolicy {
         FilePolicy {
             enabled: true,
             approval: ApprovalTier::OnWrite,
-            allowed_roots: vec!["~/Projects".into(), "~/.agnes".into()],
+            allowed_roots: vec!["~/Projects".into()],
         }
     }
 }

@@ -89,9 +89,10 @@ impl ToolExecutor {
         // B. Resolve the workspace cwd through the device-local binding.
         let workspace_cwd =
             crate::tools::workspace::resolve_workspace_cwd(&self.db, session_id).await;
+        let skill_roots = resolve_selected_skill_roots(&self.db, session_id).await;
 
-        // C. 合并有效 policy：workspace 自动加入 allowed_cwd / allowed_roots
-        let effective_policy = effective_policy(policy, &workspace_cwd);
+        // C. Merge workspace and selected read-only Skill roots into the effective policy.
+        let effective_policy = effective_policy(policy, &workspace_cwd, &skill_roots);
         let sandbox =
             crate::tools::sandbox::PolicySandbox::new(&effective_policy, workspace_cwd.as_deref());
 
@@ -157,8 +158,24 @@ impl ToolExecutor {
     }
 }
 
-/// 把 workspace 目录合并进 policy 的 allowed_cwd / allowed_roots，使 workspace 成为合法工作环境。
-fn effective_policy(policy: &ToolPolicy, workspace_cwd: &Option<PathBuf>) -> ToolPolicy {
+/// Resolve the installed Skill roots selected on the latest user message.
+async fn resolve_selected_skill_roots(db: &DbActorHandle, session_id: &str) -> Vec<PathBuf> {
+    let Ok(path) = db.list_active_with_parts(session_id.to_string()).await else {
+        return Vec::new();
+    };
+    path.messages
+        .iter()
+        .rev()
+        .find(|message| message.message.role == "user")
+        .map(|message| crate::skills::selected_skill_roots(&message.parts))
+        .unwrap_or_default()
+}
+
+fn effective_policy(
+    policy: &ToolPolicy,
+    workspace_cwd: &Option<PathBuf>,
+    skill_roots: &[PathBuf],
+) -> ToolPolicy {
     let mut p = policy.clone();
     if let Some(ws) = workspace_cwd {
         let ws_str = ws.to_string_lossy().to_string();
@@ -167,6 +184,12 @@ fn effective_policy(policy: &ToolPolicy, workspace_cwd: &Option<PathBuf>) -> Too
         }
         if !p.file.allowed_roots.contains(&ws_str) {
             p.file.allowed_roots.push(ws_str);
+        }
+    }
+    for root in skill_roots {
+        let root = root.to_string_lossy().to_string();
+        if !p.file.allowed_roots.contains(&root) {
+            p.file.allowed_roots.push(root);
         }
     }
     p
@@ -181,6 +204,20 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    #[test]
+    fn selected_skill_roots_extend_file_reads_without_becoming_shell_cwds() {
+        let policy = ToolPolicy::default();
+        let skill_root = PathBuf::from("/tmp/agnes-skill-test");
+        let effective = effective_policy(&policy, &None, std::slice::from_ref(&skill_root));
+        assert!(effective
+            .file
+            .allowed_roots
+            .contains(&skill_root.to_string_lossy().to_string()));
+        assert!(!effective
+            .shell
+            .allowed_cwd
+            .contains(&skill_root.to_string_lossy().to_string()));
+    }
     fn new_agent(id: &str, name: &str) -> crate::db::repo::agents::NewAgent {
         crate::db::repo::agents::NewAgent {
             id: id.into(),

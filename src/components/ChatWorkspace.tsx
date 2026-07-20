@@ -36,6 +36,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ModifyMemoryModal } from "./ModifyMemoryModal";
 import { ThoughtDetails } from "./ThoughtDetails";
+import { listInstalledSkills, type InstalledSkill } from "../lib/skills";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   getCachedAutoFollowStreaming,
@@ -303,7 +304,7 @@ const ToolCallCard: React.FC<{
 });
 
 interface ChatWorkspaceProps {
-  onOpenSettings: (tab: "agents" | "memory" | "llm" | "tokens" | "audit" | "debug") => void;
+  onOpenSettings: (tab: "agents" | "memory" | "llm" | "tokens" | "skills" | "audit" | "debug") => void;
 }
 
 export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
@@ -335,10 +336,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const messageEndRef = useRef<HTMLDivElement>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [permissionPickerOpen, setPermissionPickerOpen] = useState(false);
-  const [attachmentPicker, setAttachmentPicker] = useState<"menu" | "knowledge" | null>(null);
+  const [attachmentPicker, setAttachmentPicker] = useState<"menu" | "knowledge" | "skill" | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [knowledgeCollections, setKnowledgeCollections] = useState<KnowledgeCollectionOption[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [installedSkills, setInstalledSkills] = useState<InstalledSkill[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
@@ -436,6 +439,41 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       },
     ]);
     setAttachmentPicker(null);
+    setAttachmentError(null);
+  };
+
+  const openSkillPicker = async () => {
+    setAttachmentPicker("skill");
+    setAttachmentError(null);
+    setSkillsLoading(true);
+    try {
+      const skills = await listInstalledSkills();
+      setInstalledSkills(skills.filter((skill) => skill.enabled));
+    } catch (reason) {
+      setAttachmentError(String(reason));
+      setInstalledSkills([]);
+    } finally {
+      setSkillsLoading(false);
+    }
+  };
+
+  const toggleSkillAttachment = (skill: InstalledSkill) => {
+    setAttachments((current) => {
+      const selected = current.some((item) => item.kind === "skill" && item.skillId === skill.id);
+      if (selected) {
+        return current.filter((item) => item.kind !== "skill" || item.skillId !== skill.id);
+      }
+      if (current.length >= 8) return current;
+      return [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          kind: "skill",
+          name: skill.name,
+          skillId: skill.id,
+        },
+      ];
+    });
     setAttachmentError(null);
   };
 
@@ -942,22 +980,19 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           </button>
                           <button
                             type="button"
-                            disabled
-                            className="flex w-full cursor-not-allowed items-center gap-3 rounded-xl px-3 py-2.5 text-left text-stone-400 opacity-70"
+                            onClick={() => void openSkillPicker()}
+                            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-stone-700 transition-colors hover:bg-stone-100"
                           >
-                            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-50 text-violet-400">
+                            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-50 text-violet-600">
                               <PuzzlePiece className="h-4 w-4" />
                             </span>
                             <span className="min-w-0 flex-1">
-                              <span className="flex items-center gap-2 text-[12px] font-semibold">
-                                Skills
-                                <span className="rounded bg-stone-100 px-1.5 py-0.5 text-[8px] font-medium text-stone-400">即将支持</span>
-                              </span>
-                              <span className="block text-[10px] text-stone-400">接口已预留</span>
+                              <span className="block text-[12px] font-semibold">Skills</span>
+                              <span className="block text-[10px] text-stone-400">为本轮加载已安装的工作流能力</span>
                             </span>
                           </button>
                         </div>
-                      ) : (
+                      ) : attachmentPicker === "knowledge" ? (
                         <div>
                           <div className="flex items-center gap-2 border-b border-stone-100 px-3 py-2.5">
                             <button
@@ -996,6 +1031,76 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                                   )}
                                 </button>
                               ))
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="flex items-center gap-2 border-b border-stone-100 px-3 py-2.5">
+                            <button
+                              type="button"
+                              onClick={() => setAttachmentPicker("menu")}
+                              className="rounded-lg p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                              title="返回"
+                            >
+                              <ChevronDown className="h-3.5 w-3.5 rotate-90" />
+                            </button>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[12px] font-semibold text-stone-700">选择 Skills</div>
+                              <div className="text-[9px] text-stone-400">可多选，仅对本轮消息生效</div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAttachmentPicker(null);
+                                onOpenSettings("skills");
+                              }}
+                              className="rounded-lg px-2 py-1 text-[9px] font-semibold text-violet-600 hover:bg-violet-50"
+                            >
+                              管理
+                            </button>
+                          </div>
+                          <div className="max-h-64 overflow-y-auto p-2">
+                            {skillsLoading ? (
+                              <div className="px-3 py-8 text-center text-[10px] text-stone-400">正在加载 Skills…</div>
+                            ) : installedSkills.length === 0 ? (
+                              <div className="px-4 py-8 text-center">
+                                <PuzzlePiece className="mx-auto mb-2 h-5 w-5 text-stone-300" />
+                                <div className="text-[10px] font-semibold text-stone-500">暂无已启用的 Skill</div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setAttachmentPicker(null);
+                                    onOpenSettings("skills");
+                                  }}
+                                  className="mt-2 rounded-lg bg-violet-50 px-2.5 py-1.5 text-[9px] font-semibold text-violet-700 hover:bg-violet-100"
+                                >
+                                  前往安装
+                                </button>
+                              </div>
+                            ) : (
+                              installedSkills.map((skill) => {
+                                const selected = attachments.some(
+                                  (item) => item.kind === "skill" && item.skillId === skill.id,
+                                );
+                                return (
+                                  <button
+                                    key={skill.id}
+                                    type="button"
+                                    onClick={() => toggleSkillAttachment(skill)}
+                                    className={`flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${
+                                      selected ? "bg-violet-50" : "hover:bg-stone-100"
+                                    }`}
+                                  >
+                                    <PuzzlePiece className={`mt-0.5 h-4 w-4 shrink-0 ${selected ? "text-violet-600" : "text-stone-400"}`} />
+                                    <span className="min-w-0 flex-1">
+                                      <span className="block truncate text-[11px] font-semibold text-stone-700">{skill.name}</span>
+                                      <span className="mt-0.5 line-clamp-2 block text-[9px] leading-relaxed text-stone-400">{skill.description}</span>
+                                    </span>
+                                    {selected && <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-600" />}
+                                  </button>
+                                );
+                              })
                             )}
                           </div>
                         </div>

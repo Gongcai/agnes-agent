@@ -206,7 +206,7 @@ Python 本轮内只做：prompt 拼装 / 模型调用 / 工具决策 / 记忆抽
   },
   "file": {
     "enabled": true, "approval": "write",
-    "allowedRoots": ["~/Projects", "~/.agnes"]
+    "allowedRoots": ["~/Projects"]
   },
   "git": { "enabled": true, "approval": "push" }
 }

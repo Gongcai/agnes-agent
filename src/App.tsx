@@ -34,7 +34,7 @@ export default function App() {
   const [requestedPlannerTaskId, setRequestedPlannerTaskId] = useState<string | null>(null);
   const [requestedPlannerEventId, setRequestedPlannerEventId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
-  const [settingsTab, setSettingsTab] = useState<"general" | "agents" | "memory" | "llm" | "tokens" | "mcp" | "audit" | "debug">("agents");
+  const [settingsTab, setSettingsTab] = useState<"general" | "agents" | "memory" | "llm" | "tokens" | "mcp" | "skills" | "audit" | "debug">("agents");
 
   // 启动时初始化：恢复上次 agent/session 或按设置新建，并绑定 Tauri 事件桥
   useEffect(() => {
@@ -69,7 +69,7 @@ export default function App() {
     return () => { active = false; };
   }, []);
 
-  const handleOpenSettings = (tab: "general" | "agents" | "memory" | "llm" | "tokens" | "mcp" | "audit" | "debug" = "agents") => {
+  const handleOpenSettings = (tab: "general" | "agents" | "memory" | "llm" | "tokens" | "mcp" | "skills" | "audit" | "debug" = "agents") => {
     setSettingsTab(tab);
     setIsSettingsOpen(true);
   };

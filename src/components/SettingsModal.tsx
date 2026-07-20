@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Moon, Sun, HardDrive, Eraser, Gauge } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Moon, Sun, HardDrive, Eraser, Gauge, Puzzle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -11,6 +11,7 @@ import type {
   ModelRoleAssignments,
 } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
+import { SkillSettingsTab } from "./SkillSettingsTab";
 import {
   embeddingModelName,
   formatMemoryTime,
@@ -65,7 +66,7 @@ import {
   type ColorScheme,
 } from "../lib/uiPreferences";
 
-type SettingsTab = "general" | "agents" | "memory" | "storage" | "llm" | "tokens" | "web" | "mcp" | "audit" | "debug";
+type SettingsTab = "general" | "agents" | "memory" | "storage" | "llm" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -573,6 +574,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     deleteAgent,
   } = useAgentStore();
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
+
+  useEffect(() => {
+    if (isOpen) setActiveTab(initialTab);
+  }, [initialTab, isOpen]);
   
   // Memory MD state
   const [userMdText, setUserMdText] = useState("");
@@ -1905,7 +1910,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         {/* Main Content Body */}
         <div className="flex flex-1 overflow-hidden">
           {/* Navigation Sidebar */}
-          <nav className="agnes-settings-nav w-56 border-r border-stone-200 bg-stone-50/50 p-3 flex flex-col gap-1 shrink-0">
+          <nav className="agnes-settings-nav w-56 overflow-y-auto border-r border-stone-200 bg-stone-50/50 p-3 flex flex-col gap-1 shrink-0">
             <button
               onClick={() => setActiveTab("general")}
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
@@ -1995,6 +2000,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>MCP 外部工具</span>
             </button>
             <button
+              onClick={() => setActiveTab("skills")}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                activeTab === "skills"
+                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
+                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+              }`}
+            >
+              <Puzzle className="h-4 w-4 text-stone-500" />
+              <span>Skills</span>
+            </button>
+            <button
               onClick={() => setActiveTab("audit")}
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "audit"
@@ -2027,6 +2043,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             {activeTab === "storage" && (
               <ArtifactStorageTab />
+            )}
+
+            {activeTab === "skills" && (
+              <SkillSettingsTab />
             )}
 
             {/* 1. AGENTS TAB */}

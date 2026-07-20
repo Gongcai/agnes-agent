@@ -126,7 +126,6 @@ pub struct MessagePartDto {
 pub struct ChatAttachmentInput {
     pub id: String,
     pub kind: String,
-    pub name: String,
     pub path: Option<String>,
     pub collection_id: Option<String>,
     pub skill_id: Option<String>,
@@ -876,7 +875,7 @@ pub async fn get_debug_prompt(
                 .rev()
                 .find(|(message, _)| message.role == "user")
             {
-                (attachments_context, attached_collection_id) = chat_attachment_context(parts);
+                (attachments_context, attached_collection_id) = chat_attachment_context(parts)?;
             }
             for (m, parts) in history {
                 let mut parts_json = Vec::new();
@@ -1720,7 +1719,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
 
 fn chat_attachment_context(
     parts: &[crate::db::repo::messages::MessagePartRow],
-) -> (Vec<serde_json::Value>, Option<String>) {
+) -> AppResult<(Vec<serde_json::Value>, Option<String>)> {
     let mut context = Vec::new();
     let mut collection_id = None;
     for part in parts.iter().filter(|part| part.kind == "attachment") {
@@ -1755,10 +1754,24 @@ fn chat_attachment_context(
                     }));
                 }
             }
+            Some("skill") => {
+                if let Some(id) = metadata.get("skillId").and_then(serde_json::Value::as_str) {
+                    let skill = crate::skills::load_for_prompt(id)?;
+                    context.push(json!({
+                        "kind": "skill",
+                        "id": skill.id,
+                        "name": skill.name,
+                        "description": skill.description,
+                        "instructions": skill.instructions,
+                        "rootPath": skill.root_path,
+                        "resources": skill.resources,
+                    }));
+                }
+            }
             _ => {}
         }
     }
-    (context, collection_id)
+    Ok((context, collection_id))
 }
 
 /// 用已解析配置启动一次 agent 运行：构建活动路径历史（跳过 pending assistant）→
@@ -1782,13 +1795,15 @@ async fn start_agent_run(
         .list_active_with_parts(session_id.to_string())
         .await?;
     eprintln!("[agent][run] Active history loaded session={session_id}");
-    let (attachments_context, attached_collection_id) = path
+    let (attachments_context, attached_collection_id) = match path
         .messages
         .iter()
         .rev()
         .find(|message| message.message.role == "user")
-        .map(|message| chat_attachment_context(&message.parts))
-        .unwrap_or_default();
+    {
+        Some(message) => chat_attachment_context(&message.parts)?,
+        None => (Vec::new(), None),
+    };
     let mut history_json = Vec::new();
     for am in path.messages {
         // 跳过 pending assistant 占位消息，只把完整历史发给 Python
@@ -2413,21 +2428,30 @@ async fn prepare_chat_attachment_parts(
                 });
             }
             "skill" => {
-                let label = attachment.name.trim();
-                let skill_id = attachment.skill_id.as_deref().unwrap_or_default();
-                return Err(AppError::Other(format!(
-                    "Skill 附件尚未启用：{}{}",
-                    if label.is_empty() {
-                        "未命名 Skill"
-                    } else {
-                        label
-                    },
-                    if skill_id.is_empty() {
-                        ""
-                    } else {
-                        "（接口已预留）"
-                    }
-                )));
+                let skill_id = attachment
+                    .skill_id
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| AppError::Other("Skill 附件缺少标识".into()))?;
+                let skill = crate::skills::get_installed(&skill_id)?;
+                if !skill.enabled {
+                    return Err(AppError::Other(format!("Skill 已停用：{}", skill.name)));
+                }
+                parts.push(NewUserMessagePart {
+                    kind: "attachment".into(),
+                    mime_type: Some("application/x-agnes-skill".into()),
+                    content: String::new(),
+                    metadata: Some(
+                        json!({
+                            "attachmentKind": "skill",
+                            "id": attachment.id,
+                            "name": skill.name,
+                            "skillId": skill.id,
+                            "description": skill.description,
+                            "version": skill.version,
+                        })
+                        .to_string(),
+                    ),
+                });
             }
             _ => return Err(AppError::Other("不支持的附件类型".into())),
         }
@@ -4800,6 +4824,51 @@ pub async fn fetch_provider_models(
     }
 
     Ok(normalize_model_catalog(models, &kind))
+}
+
+#[tauri::command]
+pub async fn list_installed_skills() -> AppResult<Vec<crate::skills::InstalledSkill>> {
+    tokio::task::spawn_blocking(crate::skills::list_installed)
+        .await
+        .map_err(|error| AppError::Other(format!("Skill 列表任务异常中止：{error}")))?
+}
+
+#[tauri::command]
+pub async fn install_skills_from_path(
+    path: String,
+) -> AppResult<Vec<crate::skills::InstalledSkill>> {
+    tokio::task::spawn_blocking(move || crate::skills::install_from_path(path))
+        .await
+        .map_err(|error| AppError::Other(format!("Skill 安装任务异常中止：{error}")))?
+}
+
+#[tauri::command]
+pub async fn install_skills_from_git(url: String) -> AppResult<Vec<crate::skills::InstalledSkill>> {
+    crate::skills::install_from_git(url).await
+}
+
+#[tauri::command]
+pub async fn set_skill_enabled(
+    skill_id: String,
+    enabled: bool,
+) -> AppResult<crate::skills::InstalledSkill> {
+    tokio::task::spawn_blocking(move || crate::skills::set_enabled(&skill_id, enabled))
+        .await
+        .map_err(|error| AppError::Other(format!("Skill 状态更新任务异常中止：{error}")))?
+}
+
+#[tauri::command]
+pub async fn uninstall_skill(skill_id: String) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || crate::skills::uninstall(&skill_id))
+        .await
+        .map_err(|error| AppError::Other(format!("Skill 卸载任务异常中止：{error}")))?
+}
+
+#[tauri::command]
+pub async fn open_skill_directory(skill_id: String) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || crate::skills::open_directory(&skill_id))
+        .await
+        .map_err(|error| AppError::Other(format!("Skill 目录打开任务异常中止：{error}")))?
 }
 
 /// 读取一个 settings 键值（供前端持久化 UI 状态，如上次选中的 agent/session）。

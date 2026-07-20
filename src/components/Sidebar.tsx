@@ -28,7 +28,7 @@ import { useAgentStore } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
 import { NotificationCenter, type AppNotification } from "./NotificationCenter";
 
-type SettingsTab = "general" | "agents" | "memory" | "llm" | "tokens" | "mcp" | "audit" | "debug";
+type SettingsTab = "general" | "agents" | "memory" | "llm" | "tokens" | "mcp" | "skills" | "audit" | "debug";
 
 interface SidebarProps {
   isOpen: boolean;
