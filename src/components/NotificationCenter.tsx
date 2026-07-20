@@ -136,15 +136,28 @@ export function NotificationCenter({ onNavigate, className }: NotificationCenter
     };
   }, [open]);
 
+  const popoverStyle = anchor ? (() => {
+    const viewportHeight = window.innerHeight;
+    const availableAbove = Math.max(0, anchor.top - 16);
+    const availableBelow = Math.max(0, viewportHeight - anchor.bottom - 16);
+    const openUpward = availableAbove > availableBelow;
+    const availableHeight = openUpward ? availableAbove : availableBelow;
+    const verticalPosition = openUpward
+      ? { bottom: Math.max(8, viewportHeight - anchor.top + 8) }
+      : { top: anchor.bottom + 8 };
+
+    return {
+      ...verticalPosition,
+      left: Math.min(Math.max(anchor.left, 8), Math.max(8, window.innerWidth - 408)),
+      maxHeight: Math.max(48, Math.min(520, availableHeight)),
+    };
+  })() : undefined;
+
   const popover = open && anchor && (
     <section
       ref={popoverRef}
       className="claude-popover fixed z-[100] flex w-[min(25rem,calc(100vw-1rem))] flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-2xl"
-      style={{
-        top: Math.min(anchor.bottom + 8, window.innerHeight - 72),
-        left: Math.min(Math.max(anchor.left, 8), Math.max(8, window.innerWidth - 408)),
-        maxHeight: Math.max(160, window.innerHeight - Math.min(anchor.bottom + 8, window.innerHeight - 72) - 8),
-      }}
+      style={popoverStyle}
       aria-label="通知中心内容"
     >
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-stone-200 px-4">
