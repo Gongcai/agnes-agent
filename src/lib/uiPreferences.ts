@@ -1,5 +1,9 @@
 export const UI_COLOR_SCHEME_KEY = "ui:color_scheme";
 export const UI_AUTO_EXPAND_THOUGHTS_KEY = "ui:auto_expand_thoughts";
+export const UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY = "ui:default_max_output_tokens";
+export const DEFAULT_MAX_OUTPUT_TOKENS = 131_072;
+export const MIN_MAX_OUTPUT_TOKENS = 128;
+export const MAX_MAX_OUTPUT_TOKENS = 1_048_576;
 
 export type ColorScheme = "light" | "dark";
 
@@ -23,6 +27,17 @@ export function normalizeBooleanPreference(
   if (value === true || value === "true" || value === "1") return true;
   if (value === false || value === "false" || value === "0") return false;
   return fallback;
+}
+
+export function normalizeMaxOutputTokens(value: string | number | null | undefined): number {
+  if (value === null || value === undefined) return DEFAULT_MAX_OUTPUT_TOKENS;
+  if (typeof value === "string" && value.trim() === "") return DEFAULT_MAX_OUTPUT_TOKENS;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_MAX_OUTPUT_TOKENS;
+  return Math.min(
+    MAX_MAX_OUTPUT_TOKENS,
+    Math.max(MIN_MAX_OUTPUT_TOKENS, Math.round(parsed)),
+  );
 }
 
 function readCache(key: string): string | null {

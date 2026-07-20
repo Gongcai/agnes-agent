@@ -32,6 +32,7 @@ import { MarkdownMessage } from "./MarkdownMessage";
 import { ThoughtDetails } from "./ThoughtDetails";
 import { useAgentStore } from "../store/useAgentStore";
 import {
+  DEFAULT_MAX_OUTPUT_TOKENS,
   getCachedAutoExpandThoughts,
   getCachedColorScheme,
   subscribeUIPreferenceChanges,
@@ -537,7 +538,7 @@ export const ReadingWorkspace: React.FC = () => {
     [books, selectedBookId],
   );
   const readingSession = sessions.find((session) => session.id === readingSessionId);
-  const readingMaxTokens = readingSession?.max_tokens ?? 2048;
+  const readingMaxTokens = readingSession?.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const readingModelRef = readingSession?.model ?? "";
   const readingModelSeparator = readingModelRef.indexOf("/");
   const readingProviderId = readingModelSeparator >= 0 ? readingModelRef.slice(0, readingModelSeparator) : "";
@@ -903,7 +904,7 @@ export const ReadingWorkspace: React.FC = () => {
                         }}
                         onBlur={(event) => {
                           if (!readingSessionId || !readingSession) return;
-                          const value = Math.min(1048576, Math.max(128, Number(event.currentTarget.value) || 2048));
+                          const value = Math.min(1048576, Math.max(128, Number(event.currentTarget.value) || DEFAULT_MAX_OUTPUT_TOKENS));
                           event.currentTarget.value = String(value);
                           if (value !== readingMaxTokens) {
                             void setSessionLlm(

@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { AgentAvatar } from "./AgentAvatar";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { DEFAULT_MAX_OUTPUT_TOKENS } from "../lib/uiPreferences";
 import { setupTauriEventListeners, useAgentStore } from "../store/useAgentStore";
 
 const QUICK_SESSION_SETTING = "ui:quick_session_id";
@@ -98,7 +99,7 @@ async function activateQuickSession(forceNew = false): Promise<void> {
       quickModel,
       session.thinking_mode || agent?.thinking_mode || "off",
       session.thinking_budget || agent?.thinking_budget || 0,
-      session.max_tokens || 2048,
+      session.max_tokens || DEFAULT_MAX_OUTPUT_TOKENS,
     );
   }
 }

@@ -25,6 +25,7 @@ import { MarkdownMessage } from "./MarkdownMessage";
 import { ModifyMemoryModal } from "./ModifyMemoryModal";
 import { ThoughtDetails } from "./ThoughtDetails";
 import {
+  DEFAULT_MAX_OUTPUT_TOKENS,
   getCachedAutoExpandThoughts,
   subscribeUIPreferenceChanges,
 } from "../lib/uiPreferences";
@@ -312,7 +313,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
   // 当前生效的思考模式（会话级优先，回退角色卡）
   const currentThinkingMode = activeSession?.thinking_mode || activeAgent?.thinking_mode || "off";
-  const currentMaxTokens = activeSession?.max_tokens ?? 2048;
+  const currentMaxTokens = activeSession?.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const contextLimit = activeSession?.context_limit ?? currentModel?.descriptor?.context_window ?? 8192;
   const currentCompressThreshold = activeSession?.compress_threshold ?? 0.85;
   const latestAssistant = [...messages]
@@ -879,7 +880,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                             if (event.key === "Enter") event.currentTarget.blur();
                           }}
                           onBlur={(event) => {
-                            const value = Math.min(1048576, Math.max(128, Number(event.currentTarget.value) || 2048));
+                            const value = Math.min(1048576, Math.max(128, Number(event.currentTarget.value) || DEFAULT_MAX_OUTPUT_TOKENS));
                             event.currentTarget.value = String(value);
                             if (value !== currentMaxTokens) {
                               applySessionLlm(effectiveModel, currentThinkingMode, 0, value);

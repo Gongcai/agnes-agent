@@ -20,6 +20,23 @@ use crate::sync::auth::SyncCredential;
 use crate::tools::ToolPolicy;
 
 const MAX_OUTPUT_TOKENS: i64 = 1_048_576;
+const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 131_072;
+const DEFAULT_MAX_OUTPUT_TOKENS_SETTING: &str = "ui:default_max_output_tokens";
+
+fn normalize_default_max_output_tokens(value: Option<&str>) -> i64 {
+    value
+        .and_then(|raw| raw.parse::<i64>().ok())
+        .map(|value| value.clamp(128, MAX_OUTPUT_TOKENS))
+        .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
+}
+
+async fn load_default_max_output_tokens(state: &AppState) -> AppResult<i64> {
+    let value = state
+        .db
+        .get_setting(DEFAULT_MAX_OUTPUT_TOKENS_SETTING.to_string())
+        .await?;
+    Ok(normalize_default_max_output_tokens(value.as_deref()))
+}
 
 fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
@@ -283,8 +300,9 @@ pub async fn create_session(
     title: String,
     workspace_id: Option<String>,
 ) -> AppResult<String> {
-    // 新会话沿用角色卡的默认模型与思考配置，输入框可随后覆盖
+    // New sessions inherit the agent model and application output-token default.
     let agents = state.db.list_agents().await?;
+    let default_max_output_tokens = load_default_max_output_tokens(&state).await?;
     let default_agent = agents.iter().find(|a| a.id == agent_id);
     let (default_model, default_thinking_mode, default_thinking_budget) = match default_agent {
         Some(a) => (a.model.clone(), a.thinking_mode.clone(), a.thinking_budget),
@@ -299,7 +317,7 @@ pub async fn create_session(
         context_limit: None,
         compress_threshold: None,
         recency_window: None,
-        reserved_output_tokens: None,
+        reserved_output_tokens: Some(default_max_output_tokens),
         summarizer_model: None,
         model: if default_model.is_empty() {
             None
@@ -332,6 +350,7 @@ pub async fn list_sessions(
     agent_id: String,
 ) -> AppResult<Vec<SessionDto>> {
     let rows = state.db.list_sessions(agent_id).await?;
+    let default_max_output_tokens = load_default_max_output_tokens(&state).await?;
     Ok(rows
         .into_iter()
         .map(|r| SessionDto {
@@ -345,7 +364,9 @@ pub async fn list_sessions(
             model: r.model.unwrap_or_default(),
             thinking_mode: r.thinking_mode.unwrap_or_default(),
             thinking_budget: r.thinking_budget.unwrap_or(0),
-            max_tokens: r.reserved_output_tokens.unwrap_or(2048),
+            max_tokens: r
+                .reserved_output_tokens
+                .unwrap_or(default_max_output_tokens),
             context_limit: r.context_limit,
             compress_threshold: r.compress_threshold,
             permission_mode: r.permission_mode,
@@ -783,10 +804,11 @@ pub async fn get_debug_prompt(
         .and_then(|s| s.thinking_budget)
         .or(Some(agent.thinking_budget))
         .unwrap_or(0);
+    let default_max_output_tokens = load_default_max_output_tokens(&state).await?;
     let effective_max_tokens = session_opt
         .as_ref()
         .and_then(|session| session.reserved_output_tokens)
-        .unwrap_or(2048)
+        .unwrap_or(default_max_output_tokens)
         .clamp(128, MAX_OUTPUT_TOKENS);
 
     // 复用 send_message 的 LLM 配置解析逻辑
@@ -1604,9 +1626,10 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         .thinking_budget
         .or(Some(agent.thinking_budget))
         .unwrap_or(0);
+    let default_max_output_tokens = load_default_max_output_tokens(state).await?;
     let max_tokens = session
         .reserved_output_tokens
-        .unwrap_or(2048)
+        .unwrap_or(default_max_output_tokens)
         .clamp(128, MAX_OUTPUT_TOKENS);
 
     let task_llm_configs = resolve_task_llm_configs(state, &model_roles).await?;
@@ -2595,6 +2618,7 @@ pub async fn open_reading_book_conversation(
         .into_iter()
         .find(|book| book.id == book_id)
         .ok_or_else(|| AppError::Other("Reading book not found".into()))?;
+    let default_max_output_tokens = load_default_max_output_tokens(&state).await?;
     let session_id = uuid::Uuid::new_v4().to_string();
     state
         .db
@@ -2605,7 +2629,7 @@ pub async fn open_reading_book_conversation(
             context_limit: None,
             compress_threshold: None,
             recency_window: None,
-            reserved_output_tokens: None,
+            reserved_output_tokens: Some(default_max_output_tokens),
             summarizer_model: None,
             model: None,
             thinking_mode: None,
@@ -2667,6 +2691,7 @@ pub async fn new_reading_book_conversation(
         .into_iter()
         .find(|book| book.id == book_id)
         .ok_or_else(|| AppError::Other("Reading book not found".into()))?;
+    let default_max_output_tokens = load_default_max_output_tokens(&state).await?;
     let session_id = uuid::Uuid::new_v4().to_string();
     state
         .db
@@ -2677,7 +2702,7 @@ pub async fn new_reading_book_conversation(
             context_limit: None,
             compress_threshold: None,
             recency_window: None,
-            reserved_output_tokens: None,
+            reserved_output_tokens: Some(default_max_output_tokens),
             summarizer_model: None,
             model: None,
             thinking_mode: None,
@@ -4528,13 +4553,28 @@ pub async fn set_setting(
 mod tests {
     use super::{
         commit_managed_file, install_managed_file, is_automatic_session_title, latest_user_query,
-        normalize_session_title, persist_search_provider_settings, read_knowledge_document,
-        rollback_managed_file, saved_provider_endpoint_matches, CalendarEventUpdatePayload,
-        SearchProviderSettingsInput, TaskUpdatePayload,
+        normalize_default_max_output_tokens, normalize_session_title,
+        persist_search_provider_settings, read_knowledge_document, rollback_managed_file,
+        saved_provider_endpoint_matches, CalendarEventUpdatePayload, SearchProviderSettingsInput,
+        TaskUpdatePayload, DEFAULT_MAX_OUTPUT_TOKENS,
     };
     use crate::secrets::{InMemorySecretStore, SecretStore};
 
     struct UnavailableSecretStore;
+
+    #[test]
+    fn default_max_output_tokens_are_128k_and_clamp_settings() {
+        assert_eq!(
+            normalize_default_max_output_tokens(None),
+            DEFAULT_MAX_OUTPUT_TOKENS
+        );
+        assert_eq!(normalize_default_max_output_tokens(Some("131072")), 131_072);
+        assert_eq!(normalize_default_max_output_tokens(Some("127")), 128);
+        assert_eq!(
+            normalize_default_max_output_tokens(Some("invalid")),
+            DEFAULT_MAX_OUTPUT_TOKENS
+        );
+    }
 
     #[async_trait::async_trait]
     impl SecretStore for UnavailableSecretStore {

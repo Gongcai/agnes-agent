@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Moon, Sun, HardDrive, Eraser } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Moon, Sun, HardDrive, Eraser, Gauge } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -49,11 +49,16 @@ import {
   applyColorScheme,
   getCachedAutoExpandThoughts,
   getCachedColorScheme,
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  MAX_MAX_OUTPUT_TOKENS,
+  MIN_MAX_OUTPUT_TOKENS,
   normalizeBooleanPreference,
   normalizeColorScheme,
+  normalizeMaxOutputTokens,
   setAutoExpandThoughts,
   UI_AUTO_EXPAND_THOUGHTS_KEY,
   UI_COLOR_SCHEME_KEY,
+  UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY,
   type ColorScheme,
 } from "../lib/uiPreferences";
 
@@ -4968,6 +4973,7 @@ const GeneralTab: React.FC = () => {
   const [translationLanguage, setTranslationLanguage] = useState<"中文" | "English">("中文");
   const [colorScheme, setColorScheme] = useState<ColorScheme>(getCachedColorScheme);
   const [autoExpandThoughts, setAutoExpandThoughtsState] = useState(getCachedAutoExpandThoughts);
+  const [defaultMaxOutputTokens, setDefaultMaxOutputTokens] = useState(String(DEFAULT_MAX_OUTPUT_TOKENS));
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -4976,14 +4982,16 @@ const GeneralTab: React.FC = () => {
       invoke<string | null>("get_setting", { key: "ui:translation_target_language" }),
       invoke<string | null>("get_setting", { key: UI_COLOR_SCHEME_KEY }),
       invoke<string | null>("get_setting", { key: UI_AUTO_EXPAND_THOUGHTS_KEY }),
+      invoke<string | null>("get_setting", { key: UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY }),
     ])
-      .then(([openModeValue, languageValue, colorSchemeValue, autoExpandThoughtsValue]) => {
+      .then(([openModeValue, languageValue, colorSchemeValue, autoExpandThoughtsValue, maxOutputTokensValue]) => {
         const nextColorScheme = normalizeColorScheme(colorSchemeValue);
         const nextAutoExpandThoughts = normalizeBooleanPreference(autoExpandThoughtsValue, true);
         setOpenMode(openModeValue ?? "last");
         if (languageValue === "中文" || languageValue === "English") setTranslationLanguage(languageValue);
         setColorScheme(nextColorScheme);
         setAutoExpandThoughtsState(nextAutoExpandThoughts);
+        setDefaultMaxOutputTokens(String(normalizeMaxOutputTokens(maxOutputTokensValue)));
         applyColorScheme(nextColorScheme);
         setAutoExpandThoughts(nextAutoExpandThoughts);
         announceUIPreferenceChange({
@@ -5048,6 +5056,21 @@ const GeneralTab: React.FC = () => {
     }
   };
 
+  const updateDefaultMaxOutputTokens = async () => {
+    const previous = defaultMaxOutputTokens;
+    const next = normalizeMaxOutputTokens(defaultMaxOutputTokens);
+    setDefaultMaxOutputTokens(String(next));
+    try {
+      await invoke("set_setting", {
+        key: UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY,
+        value: String(next),
+      });
+    } catch (e) {
+      setDefaultMaxOutputTokens(previous);
+      console.error("保存默认最大输出 Token 失败", e);
+    }
+  };
+
   return (
     <div className="space-y-6 max-w-xl">
       <div>
@@ -5087,28 +5110,54 @@ const GeneralTab: React.FC = () => {
 
       <div>
         <label className="mb-2 block font-semibold text-stone-500">对话</label>
-        <div className="flex items-center gap-3 rounded-lg border border-stone-200 bg-stone-50 px-3.5 py-3">
-          <Brain className="h-4 w-4 shrink-0 text-stone-500" />
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-semibold text-stone-700">自动展开思考过程</p>
-            <p className="mt-0.5 text-[10px] text-stone-400">新显示的思考内容默认保持展开，仍可手动收起。</p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={autoExpandThoughts}
-            disabled={!loaded}
-            onClick={() => void updateAutoExpandThoughts(!autoExpandThoughts)}
-            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-              autoExpandThoughts ? "bg-[#8CA38A]" : "bg-stone-300"
-            }`}
-          >
-            <span
-              className={`agnes-toggle-thumb absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
-                autoExpandThoughts ? "agnes-toggle-thumb--on" : "agnes-toggle-thumb--off"
+        <div className="space-y-2">
+          <div className="flex items-center gap-3 rounded-lg border border-stone-200 bg-stone-50 px-3.5 py-3">
+            <Brain className="h-4 w-4 shrink-0 text-stone-500" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-stone-700">自动展开思考过程</p>
+              <p className="mt-0.5 text-[10px] text-stone-400">新显示的思考内容默认保持展开，仍可手动收起。</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoExpandThoughts}
+              disabled={!loaded}
+              onClick={() => void updateAutoExpandThoughts(!autoExpandThoughts)}
+              className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+                autoExpandThoughts ? "bg-[#8CA38A]" : "bg-stone-300"
               }`}
+            >
+              <span
+                className={`agnes-toggle-thumb absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                  autoExpandThoughts ? "agnes-toggle-thumb--on" : "agnes-toggle-thumb--off"
+                }`}
+              />
+            </button>
+          </div>
+          <div className="flex items-center gap-3 rounded-lg border border-stone-200 bg-stone-50 px-3.5 py-3">
+            <Gauge className="h-4 w-4 shrink-0 text-stone-500" />
+            <div className="min-w-0 flex-1">
+              <label htmlFor="default-max-output-tokens" className="text-xs font-semibold text-stone-700">
+                默认最大输出 Token
+              </label>
+              <p className="mt-0.5 text-[10px] text-stone-400">新会话默认使用；每个会话仍可在模型菜单中单独覆盖。</p>
+            </div>
+            <input
+              id="default-max-output-tokens"
+              type="number"
+              min={MIN_MAX_OUTPUT_TOKENS}
+              max={MAX_MAX_OUTPUT_TOKENS}
+              step={1024}
+              value={defaultMaxOutputTokens}
+              disabled={!loaded}
+              onChange={(event) => setDefaultMaxOutputTokens(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+              onBlur={() => void updateDefaultMaxOutputTokens()}
+              className="h-8 w-28 rounded-md border border-stone-200 bg-white px-2 text-right font-mono text-[11px] tabular-nums text-stone-700 outline-none focus:border-[#8CA38A] disabled:opacity-50"
             />
-          </button>
+          </div>
         </div>
       </div>
 
