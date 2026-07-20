@@ -72,11 +72,45 @@ interface ToolCallEventPayload {
 
 export interface MessagePart {
   id: string;
-  kind: "text" | "thought" | "tool_call" | "tool_result" | "model_fallback";
+  kind: "text" | "thought" | "tool_call" | "tool_result" | "model_fallback" | "attachment";
   content: string;
+  mime_type?: string | null;
+  metadata?: ChatAttachmentMetadata | null;
   tool_call?: ToolCall;
   /** Stable React key retained when a live temporary part is replaced by its DB row. */
   _renderKey?: string;
+}
+
+export type ChatAttachment =
+  | {
+      id: string;
+      kind: "local_file";
+      name: string;
+      path: string;
+      mediaType?: string;
+    }
+  | {
+      id: string;
+      kind: "knowledge_collection";
+      name: string;
+      collectionId: string;
+    }
+  | {
+      id: string;
+      kind: "skill";
+      name: string;
+      skillId: string;
+    };
+
+export interface ChatAttachmentMetadata {
+  attachmentKind: ChatAttachment["kind"];
+  id: string;
+  name: string;
+  path?: string;
+  collectionId?: string;
+  skillId?: string;
+  mediaType?: string;
+  size?: number;
 }
 
 export interface Message {
@@ -254,7 +288,12 @@ interface AgentState {
   createWorkspace: (agentId: string, name: string, folderPath: string) => Promise<string>;
   renameWorkspace: (workspaceId: string, name: string) => Promise<void>;
   deleteWorkspace: (workspaceId: string) => Promise<void>;
-  sendMessage: (sessionId: string, text: string, readingBookId?: string) => Promise<void>;
+  sendMessage: (
+    sessionId: string,
+    text: string,
+    readingBookId?: string,
+    attachments?: ChatAttachment[],
+  ) => Promise<void>;
   cancelRun: (sessionId: string) => Promise<void>;
   approveTool: (toolCallId: string, approved: boolean) => Promise<void>;
   setActiveAgentId: (agentId: string) => Promise<void>;
@@ -507,7 +546,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  sendMessage: async (sessionId: string, text: string, readingBookId?: string) => {
+  sendMessage: async (
+    sessionId: string,
+    text: string,
+    readingBookId?: string,
+    attachments: ChatAttachment[] = [],
+  ) => {
     if (get().isStreaming) return;
     
     // 1. Instantly append a local user message and a pending assistant message for responsive UI
@@ -517,7 +561,24 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       role: "user",
       seq: get().messages.length,
       status: "complete",
-      parts: [{ id: `p_u_${Date.now()}`, kind: "text", content: text }],
+      parts: [
+        { id: `p_u_${Date.now()}`, kind: "text", content: text },
+        ...attachments.map((attachment, index): MessagePart => ({
+          id: `p_a_${Date.now()}_${index}`,
+          kind: "attachment",
+          content: "",
+          metadata: {
+            attachmentKind: attachment.kind,
+            id: attachment.id,
+            name: attachment.name,
+            ...(attachment.kind === "local_file"
+              ? { path: attachment.path, mediaType: attachment.mediaType }
+              : attachment.kind === "knowledge_collection"
+                ? { collectionId: attachment.collectionId }
+                : { skillId: attachment.skillId }),
+          },
+        })),
+      ],
       created_at: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
       parent_id: get().messages.length > 0 ? get().messages[get().messages.length - 1].id : null,
       version_index: 0,
@@ -553,7 +614,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     });
 
     try {
-      await invoke("send_message", { sessionId, text, readingBookId: readingBookId ?? null });
+      await invoke("send_message", {
+        sessionId,
+        text,
+        readingBookId: readingBookId ?? null,
+        attachments,
+      });
     } catch (e) {
       console.error("Failed to send message", e);
       // The backend may have persisted a failed assistant message with its
@@ -565,6 +631,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       if (get().activeSessionId === sessionId) {
         await get().loadMessages(sessionId, true);
       }
+      throw e;
     }
   },
 

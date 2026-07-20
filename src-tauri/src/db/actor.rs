@@ -549,7 +549,7 @@ pub enum DbCommand {
     AppendUserAndAssistant {
         session_id: String,
         parent_id: Option<String>,
-        user_text: String,
+        user_parts: Vec<repo::messages::NewUserMessagePart>,
         model: String,
         resp: oneshot::Sender<AppResult<(String, String)>>,
     },
@@ -1948,14 +1948,14 @@ impl DbActorHandle {
         &self,
         session_id: String,
         parent_id: Option<String>,
-        user_text: String,
+        user_parts: Vec<repo::messages::NewUserMessagePart>,
         model: String,
     ) -> AppResult<(String, String)> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::AppendUserAndAssistant {
             session_id,
             parent_id,
-            user_text,
+            user_parts,
             model,
             resp,
         })?;
@@ -3043,7 +3043,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::AppendUserAndAssistant {
                     session_id,
                     parent_id,
-                    user_text,
+                    user_parts,
                     model,
                     resp,
                 } => {
@@ -3067,20 +3067,21 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                                 selected_child_id: None,
                             },
                         )?;
-                        let user_part_id = uuid::Uuid::new_v4().to_string();
-                        repo::messages::insert_part(
-                            &tx,
-                            &repo::messages::NewMessagePart {
-                                id: user_part_id,
-                                message_id: user_id.clone(),
-                                kind: "text".into(),
-                                ordinal: 0,
-                                mime_type: None,
-                                tool_call_id: None,
-                                content: user_text,
-                                metadata: None,
-                            },
-                        )?;
+                        for (ordinal, part) in user_parts.into_iter().enumerate() {
+                            repo::messages::insert_part(
+                                &tx,
+                                &repo::messages::NewMessagePart {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    message_id: user_id.clone(),
+                                    kind: part.kind,
+                                    ordinal: ordinal as i32,
+                                    mime_type: part.mime_type,
+                                    tool_call_id: None,
+                                    content: part.content,
+                                    metadata: part.metadata,
+                                },
+                            )?;
+                        }
                         let ai_id = uuid::Uuid::new_v4().to_string();
                         let seq_a = repo::messages::get_next_seq(&tx, &session_id)?;
                         repo::messages::insert(

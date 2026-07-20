@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   Warning as AlertTriangle,
   Brain,
@@ -6,8 +8,12 @@ import {
   CaretDown as ChevronDown,
   Copy,
   Cpu,
+  Books,
+  FileText,
   GitBranch,
   PencilSimple as Pencil,
+  Plus,
+  PuzzlePiece,
   ArrowsClockwise as RefreshCw,
   ArrowUp as Send,
   HardDrives as Server,
@@ -16,10 +22,16 @@ import {
   Square,
   TerminalWindow as Terminal,
   Trash as Trash2,
+  X,
 } from "@phosphor-icons/react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
-import type { PermissionMode, ToolCall } from "../store/useAgentStore";
+import type {
+  ChatAttachment,
+  ChatAttachmentMetadata,
+  PermissionMode,
+  ToolCall,
+} from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ModifyMemoryModal } from "./ModifyMemoryModal";
@@ -85,6 +97,52 @@ const TOOL_STATUS_LABEL: Record<string, string> = {
   succeeded: "已完成",
   denied: "已拒绝",
   failed: "执行失败",
+};
+
+interface KnowledgeCollectionOption {
+  id: string;
+  name: string;
+  scope: string;
+  permission: string;
+  document_count: number;
+}
+
+function attachmentIcon(kind: ChatAttachment["kind"] | ChatAttachmentMetadata["attachmentKind"]) {
+  if (kind === "knowledge_collection") return Books;
+  if (kind === "skill") return PuzzlePiece;
+  return FileText;
+}
+
+const AttachmentChip: React.FC<{
+  metadata: ChatAttachmentMetadata;
+  onRemove?: () => void;
+}> = ({ metadata, onRemove }) => {
+  const Icon = attachmentIcon(metadata.attachmentKind);
+  const typeLabel = metadata.attachmentKind === "knowledge_collection"
+    ? "知识库"
+    : metadata.attachmentKind === "skill"
+      ? "Skill"
+      : "本地文件";
+  return (
+    <span
+      className="inline-flex max-w-64 items-center gap-1.5 rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 text-[10px] text-stone-600"
+      title={`${typeLabel}：${metadata.name}`}
+    >
+      <Icon className="h-3.5 w-3.5 shrink-0 text-[#6C806A]" />
+      <span className="truncate font-medium">{metadata.name}</span>
+      <span className="shrink-0 text-[9px] text-stone-400">{typeLabel}</span>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="-mr-1 rounded p-0.5 text-stone-400 transition-colors hover:bg-stone-200 hover:text-stone-700"
+          title="移除附件"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
+    </span>
+  );
 };
 
 function parseToolArgs(args: string): unknown {
@@ -277,6 +335,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const messageEndRef = useRef<HTMLDivElement>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [permissionPickerOpen, setPermissionPickerOpen] = useState(false);
+  const [attachmentPicker, setAttachmentPicker] = useState<"menu" | "knowledge" | null>(null);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [knowledgeCollections, setKnowledgeCollections] = useState<KnowledgeCollectionOption[]>([]);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [memoryEditMsgId, setMemoryEditMsgId] = useState<string | null>(null);
@@ -300,6 +363,81 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       setAutoFollowStreaming(change.autoFollowStreaming);
     }
   }), []);
+
+  useEffect(() => {
+    setAttachments([]);
+    setAttachmentPicker(null);
+    setAttachmentError(null);
+  }, [activeSessionId]);
+
+  const addLocalFiles = async () => {
+    setAttachmentPicker(null);
+    setAttachmentError(null);
+    try {
+      const selected = await open({
+        multiple: true,
+        title: "添加本地文本附件",
+        filters: [
+          {
+            name: "文本、Markdown、CSV 与 JSON",
+            extensions: ["md", "markdown", "txt", "rst", "log", "csv", "json"],
+          },
+        ],
+      });
+      const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+      if (paths.length === 0) return;
+      setAttachments((current) => {
+        const existingPaths = new Set(
+          current
+            .filter((item): item is Extract<ChatAttachment, { kind: "local_file" }> => item.kind === "local_file")
+            .map((item) => item.path),
+        );
+        const additions = paths
+          .filter((path) => !existingPaths.has(path))
+          .map((path): ChatAttachment => ({
+            id: crypto.randomUUID(),
+            kind: "local_file",
+            name: path.split(/[\\/]/).pop() || "未命名附件",
+            path,
+          }));
+        return [...current, ...additions].slice(0, 8);
+      });
+    } catch (reason) {
+      setAttachmentError(String(reason));
+    }
+  };
+
+  const openKnowledgePicker = async () => {
+    if (!activeAgentId) return;
+    setAttachmentPicker("knowledge");
+    setAttachmentError(null);
+    setKnowledgeLoading(true);
+    try {
+      const collections = await invoke<KnowledgeCollectionOption[]>("list_knowledge_collections", {
+        agentId: activeAgentId,
+      });
+      setKnowledgeCollections(collections);
+    } catch (reason) {
+      setAttachmentError(String(reason));
+      setKnowledgeCollections([]);
+    } finally {
+      setKnowledgeLoading(false);
+    }
+  };
+
+  const selectKnowledgeCollection = (collection: KnowledgeCollectionOption) => {
+    setAttachments((current) => [
+      ...current.filter((item) => item.kind !== "knowledge_collection"),
+      {
+        id: crypto.randomUUID(),
+        kind: "knowledge_collection",
+        name: collection.name,
+        collectionId: collection.id,
+      },
+    ]);
+    setAttachmentPicker(null);
+    setAttachmentError(null);
+  };
 
   // 当前生效的模型：优先会话级覆盖，回退角色卡默认（形如 "provider_id/model_name"）
   const effectiveModel = activeSession?.model || activeAgent?.model || modelRoles.main_model || "";
@@ -352,10 +490,18 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     messageEndRef.current?.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" });
   }, [messages, isStreaming, autoFollowStreaming]);
 
-  const handleSend = () => {
-    if (!inputVal.trim() || isStreaming || !activeSessionId) return;
-    sendMessage(activeSessionId, inputVal.trim()).catch(console.error);
-    setInputVal("");
+  const handleSend = async () => {
+    if ((!inputVal.trim() && attachments.length === 0) || isStreaming || !activeSessionId) return;
+    const text = inputVal.trim() || "请查看附件。";
+    setAttachmentError(null);
+    try {
+      await sendMessage(activeSessionId, text, undefined, attachments);
+      setInputVal("");
+      setAttachments([]);
+      setAttachmentPicker(null);
+    } catch (reason) {
+      setAttachmentError(String(reason));
+    }
   };
 
   return (
@@ -412,6 +558,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       >
         {messages.map((message, messageIndex) => {
           const isUser = message.role === "user";
+          const messageText = message.parts
+            .filter((part) => part.kind === "text")
+            .map((part) => part.content)
+            .join("");
+          const messageAttachments = message.parts.filter(
+            (part) => part.kind === "attachment" && part.metadata,
+          );
           const isLiveAssistant = isStreaming
             && !isUser
             && messageIndex === messages.length - 1
@@ -458,10 +611,17 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <div className="agnes-user-bubble rounded-2xl rounded-tr-sm bg-[#F1F5F0]/70 px-4 py-2.5 text-sm text-stone-900 border border-[#DFE7DD] shadow-sm">
-                      <p className="whitespace-pre-wrap leading-relaxed">
-                        {message.parts.map((p) => p.content).join("")}
-                      </p>
+                    <div className="agnes-user-bubble space-y-2 rounded-2xl rounded-tr-sm border border-[#DFE7DD] bg-[#F1F5F0]/70 px-4 py-2.5 text-sm text-stone-900 shadow-sm">
+                      {messageAttachments.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {messageAttachments.map((part) => (
+                            <AttachmentChip key={part.id} metadata={part.metadata!} />
+                          ))}
+                        </div>
+                      )}
+                      {messageText && (
+                        <p className="whitespace-pre-wrap leading-relaxed">{messageText}</p>
+                      )}
                     </div>
                   )
                 ) : (
@@ -538,8 +698,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                     <button
                       onClick={() => {
-                        const text = message.parts.map((p) => p.content).join("");
-                        navigator.clipboard?.writeText(text).catch(console.error);
+                        navigator.clipboard?.writeText(messageText).catch(console.error);
                       }}
                       className="rounded p-1 text-stone-400 hover:bg-stone-200/60 hover:text-stone-700"
                       title="复制消息"
@@ -550,7 +709,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       <button
                         onClick={() => {
                           setEditingMsgId(message.id);
-                          setEditingText(message.parts.map((p) => p.content).join(""));
+                          setEditingText(messageText);
                         }}
                         className="rounded p-1 text-stone-400 hover:bg-stone-200/60 hover:text-stone-700"
                         title="编辑并重发"
@@ -680,6 +839,26 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           </div>
         </div>
         <div className={`agnes-chat-composer-box relative mx-auto max-w-4xl rounded-xl border border-stone-300/80 bg-white p-2.5 shadow-sm transition-[max-width,border-radius,box-shadow] duration-500 focus-within:border-stone-400 ${isEmptyConversation ? "agnes-chat-composer-box--empty" : ""}`}>
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-2 pb-2">
+              {attachments.map((attachment) => (
+                <AttachmentChip
+                  key={attachment.id}
+                  metadata={{
+                    attachmentKind: attachment.kind,
+                    id: attachment.id,
+                    name: attachment.name,
+                    ...(attachment.kind === "local_file"
+                      ? { path: attachment.path, mediaType: attachment.mediaType }
+                      : attachment.kind === "knowledge_collection"
+                        ? { collectionId: attachment.collectionId }
+                        : { skillId: attachment.skillId }),
+                  }}
+                  onRemove={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                />
+              ))}
+            </div>
+          )}
           <textarea
             value={inputVal}
             onChange={(e) => setInputVal(e.target.value)}
@@ -698,12 +877,141 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             }
             className="w-full resize-none bg-transparent px-3 py-1 text-sm text-stone-900 placeholder:text-stone-450 focus:outline-none h-12"
           />
+          {attachmentError && (
+            <div className="mx-2 mb-2 rounded-md bg-rose-50 px-2 py-1.5 text-[10px] text-rose-700">
+              {attachmentError}
+            </div>
+          )}
           <div className="flex items-center justify-between border-t border-stone-100 pt-2 px-1 text-[10px] text-stone-400">
-            <span>
-              {currentPermissionMode === "full_access"
-                ? "完全访问已开启：文件与网络沙箱限制已放宽"
-                : "Agent 本地执行受系统沙箱安全策略保护"}
-            </span>
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="relative shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAttachmentPicker((current) => current ? null : "menu");
+                    setModelPickerOpen(false);
+                    setPermissionPickerOpen(false);
+                    setAttachmentError(null);
+                  }}
+                  disabled={!activeSessionId || isStreaming}
+                  className={`flex h-7 w-7 items-center justify-center rounded-lg border transition-all disabled:opacity-40 ${
+                    attachmentPicker
+                      ? "rotate-45 border-stone-300 bg-stone-100 text-stone-800"
+                      : "border-stone-200 bg-white text-stone-500 hover:border-stone-300 hover:bg-stone-50 hover:text-stone-900"
+                  }`}
+                  title="添加附件"
+                  aria-label="添加附件"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+
+                {attachmentPicker && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setAttachmentPicker(null)} />
+                    <div className="absolute bottom-full left-0 z-50 mb-2 w-80 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-2xl">
+                      {attachmentPicker === "menu" ? (
+                        <div className="p-2">
+                          <div className="px-2 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-stone-400">
+                            添加到对话
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void addLocalFiles()}
+                            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-stone-700 transition-colors hover:bg-stone-100"
+                          >
+                            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#8CA38A]/10 text-[#5F735D]">
+                              <FileText className="h-4 w-4" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-[12px] font-semibold">本地文件</span>
+                              <span className="block text-[10px] text-stone-400">UTF-8 文本，单个最大 512 KiB</span>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void openKnowledgePicker()}
+                            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-stone-700 transition-colors hover:bg-stone-100"
+                          >
+                            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-50 text-amber-700">
+                              <Books className="h-4 w-4" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-[12px] font-semibold">指定知识库</span>
+                              <span className="block text-[10px] text-stone-400">将本轮检索限定在选中的知识库</span>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled
+                            className="flex w-full cursor-not-allowed items-center gap-3 rounded-xl px-3 py-2.5 text-left text-stone-400 opacity-70"
+                          >
+                            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-50 text-violet-400">
+                              <PuzzlePiece className="h-4 w-4" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="flex items-center gap-2 text-[12px] font-semibold">
+                                Skills
+                                <span className="rounded bg-stone-100 px-1.5 py-0.5 text-[8px] font-medium text-stone-400">即将支持</span>
+                              </span>
+                              <span className="block text-[10px] text-stone-400">接口已预留</span>
+                            </span>
+                          </button>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="flex items-center gap-2 border-b border-stone-100 px-3 py-2.5">
+                            <button
+                              type="button"
+                              onClick={() => setAttachmentPicker("menu")}
+                              className="rounded-lg p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                              title="返回"
+                            >
+                              <ChevronDown className="h-3.5 w-3.5 rotate-90" />
+                            </button>
+                            <div>
+                              <div className="text-[12px] font-semibold text-stone-700">选择知识库</div>
+                              <div className="text-[9px] text-stone-400">每条消息可指定一个知识库</div>
+                            </div>
+                          </div>
+                          <div className="max-h-64 overflow-y-auto p-2">
+                            {knowledgeLoading ? (
+                              <div className="px-3 py-8 text-center text-[10px] text-stone-400">正在加载知识库…</div>
+                            ) : knowledgeCollections.length === 0 ? (
+                              <div className="px-3 py-8 text-center text-[10px] text-stone-400">暂无可用知识库</div>
+                            ) : (
+                              knowledgeCollections.map((collection) => (
+                                <button
+                                  key={collection.id}
+                                  type="button"
+                                  onClick={() => selectKnowledgeCollection(collection)}
+                                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-stone-100"
+                                >
+                                  <Books className="h-4 w-4 shrink-0 text-amber-700" />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-[11px] font-semibold text-stone-700">{collection.name}</span>
+                                    <span className="block text-[9px] text-stone-400">{collection.document_count} 个文档</span>
+                                  </span>
+                                  {attachments.some((item) => item.kind === "knowledge_collection" && item.collectionId === collection.id) && (
+                                    <Check className="h-3.5 w-3.5 text-[#6C806A]" />
+                                  )}
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+              <span className="truncate">
+                {currentPermissionMode === "full_access"
+                  ? "完全访问已开启：文件与网络沙箱限制已放宽"
+                  : attachments.length > 0
+                    ? `${attachments.length} 个附件将随本条消息发送`
+                    : "Agent 本地执行受系统沙箱安全策略保护"}
+              </span>
+            </div>
             <div className="flex items-center gap-2">
               {/* Session permission mode switcher */}
               <div className="relative">
@@ -711,6 +1019,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   onClick={() => {
                     setPermissionPickerOpen((open) => !open);
                     setModelPickerOpen(false);
+                    setAttachmentPicker(null);
                   }}
                   disabled={!activeSessionId || isStreaming}
                   className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[10px] transition-colors disabled:opacity-40 ${
@@ -777,6 +1086,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   onClick={() => {
                     setModelPickerOpen((v) => !v);
                     setPermissionPickerOpen(false);
+                    setAttachmentPicker(null);
                   }}
                   className="flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[10px] text-stone-600 hover:text-stone-900 hover:bg-stone-50 transition-colors"
                   title="切换模型"
@@ -944,7 +1254,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               ) : (
                 <Button
                   onClick={handleSend}
-                  disabled={!inputVal.trim() || !activeSessionId}
+                  disabled={(!inputVal.trim() && attachments.length === 0) || !activeSessionId}
                   className="rounded-lg bg-stone-900 hover:bg-stone-850 text-white px-3.5 py-1 h-6 text-[10px] font-semibold shadow-sm"
                 >
                   <Send className="h-3 w-3 mr-1" />

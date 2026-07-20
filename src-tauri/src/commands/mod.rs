@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
@@ -7,7 +7,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::agent::protocol::{msg_type, Envelope};
 use crate::db::repo::agents::{AgentRow, AgentUpdate, NewAgent};
-use crate::db::repo::messages::NewMessagePart;
+use crate::db::repo::messages::{NewMessagePart, NewUserMessagePart};
 use crate::db::repo::sessions::NewSession;
 use crate::error::{AppError, AppResult};
 use crate::model_registry::{
@@ -114,9 +114,22 @@ pub struct ToolCallDto {
 #[derive(Serialize)]
 pub struct MessagePartDto {
     pub id: String,
-    pub kind: String, // "text" | "thought" | "tool_call" | "tool_result" | "model_fallback"
+    pub kind: String, // "text" | "thought" | "tool_call" | "tool_result" | "model_fallback" | "attachment"
     pub content: String,
+    pub mime_type: Option<String>,
+    pub metadata: Option<serde_json::Value>,
     pub tool_call: Option<ToolCallDto>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAttachmentInput {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub path: Option<String>,
+    pub collection_id: Option<String>,
+    pub skill_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -851,11 +864,20 @@ pub async fn get_debug_prompt(
     // 读取会话历史与摘要（如有）
     let mut history_json = Vec::new();
     let mut summary = None;
+    let mut attachments_context = Vec::new();
+    let mut attached_collection_id = None;
     if let Some(ref sid) = session_id {
         if let Ok(Some(sess)) = state.db.get_session(sid.clone()).await {
             summary = sess.summary.clone();
         }
         if let Ok(history) = state.db.list_messages_with_parts(sid.clone()).await {
+            if let Some((_, parts)) = history
+                .iter()
+                .rev()
+                .find(|(message, _)| message.role == "user")
+            {
+                (attachments_context, attached_collection_id) = chat_attachment_context(parts);
+            }
             for (m, parts) in history {
                 let mut parts_json = Vec::new();
                 for p in parts {
@@ -897,15 +919,18 @@ pub async fn get_debug_prompt(
         .as_ref()
         .filter(|book| !book.model_knows_content && book.content_context_allowed)
         .map(|book| book.collection_id.as_str());
-    let retrieved_knowledge = if reading_book.is_some() && reading_collection_id.is_none() {
+    let retrieval_collection_id = attached_collection_id.as_deref().or(reading_collection_id);
+    let allow_hidden_collection =
+        attached_collection_id.is_none() && reading_collection_id.is_some();
+    let retrieved_knowledge = if reading_book.is_some() && retrieval_collection_id.is_none() {
         Vec::new()
     } else {
         retrieve_knowledge_for_history(
             &state,
             &agent.id,
             &history_json,
-            reading_collection_id,
-            reading_collection_id.is_some(),
+            retrieval_collection_id,
+            allow_hidden_collection,
         )
         .await
     };
@@ -960,7 +985,8 @@ pub async fn get_debug_prompt(
             "retrievedKnowledge": retrieved_knowledge,
             "readingContext": reading_book.as_ref().map(reading_prompt_context),
             "workspace": workspace_context,
-            "projectContext": []
+            "projectContext": [],
+            "attachmentsContext": attachments_context
         }
     });
 
@@ -1070,6 +1096,7 @@ pub async fn list_messages(
             }
 
             // 将数据库的 "reasoning" 种类翻译为前端的 "thought"
+            let is_attachment = p.kind == "attachment";
             let kind_mapped = if p.kind == "reasoning" {
                 "thought".to_string()
             } else {
@@ -1079,7 +1106,16 @@ pub async fn list_messages(
             parts_dto.push(MessagePartDto {
                 id: p.id,
                 kind: kind_mapped,
-                content: p.content,
+                content: if is_attachment {
+                    String::new()
+                } else {
+                    p.content
+                },
+                mime_type: p.mime_type,
+                metadata: p
+                    .metadata
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str(value).ok()),
                 tool_call: tool_call_dto,
             });
         }
@@ -1226,12 +1262,33 @@ pub async fn edit_and_resend(
     }
     let cfg = resolve_llm(&state, &msg.session_id).await?;
     let parent_id = msg.parent_id.clone();
+    let retained_attachments = state
+        .db
+        .list_messages_with_parts(msg.session_id.clone())
+        .await?
+        .into_iter()
+        .find(|(message, _)| message.id == message_id)
+        .map(|(_, parts)| {
+            parts
+                .into_iter()
+                .filter(|part| part.kind == "attachment")
+                .map(|part| NewUserMessagePart {
+                    kind: part.kind,
+                    mime_type: part.mime_type,
+                    content: part.content,
+                    metadata: part.metadata,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut user_parts = vec![text_user_message_part(text)];
+    user_parts.extend(retained_attachments);
     let (_user_id, assistant_msg_id) = state
         .db
         .append_user_and_assistant(
             msg.session_id.clone(),
             parent_id,
-            text,
+            user_parts,
             cfg.model_name.clone(),
         )
         .await?;
@@ -1661,6 +1718,49 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
     })
 }
 
+fn chat_attachment_context(
+    parts: &[crate::db::repo::messages::MessagePartRow],
+) -> (Vec<serde_json::Value>, Option<String>) {
+    let mut context = Vec::new();
+    let mut collection_id = None;
+    for part in parts.iter().filter(|part| part.kind == "attachment") {
+        let Some(metadata) = part
+            .metadata
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        else {
+            continue;
+        };
+        match metadata
+            .get("attachmentKind")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("local_file") => context.push(json!({
+                "kind": "local_file",
+                "name": metadata.get("name").and_then(serde_json::Value::as_str).unwrap_or("未命名附件"),
+                "path": metadata.get("path").and_then(serde_json::Value::as_str),
+                "mediaType": part.mime_type.as_deref(),
+                "content": part.content,
+            })),
+            Some("knowledge_collection") => {
+                if let Some(id) = metadata
+                    .get("collectionId")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    collection_id = Some(id.to_string());
+                    context.push(json!({
+                        "kind": "knowledge_collection",
+                        "name": metadata.get("name").and_then(serde_json::Value::as_str).unwrap_or("未命名知识库"),
+                        "collectionId": id,
+                    }));
+                }
+            }
+            _ => {}
+        }
+    }
+    (context, collection_id)
+}
+
 /// 用已解析配置启动一次 agent 运行：构建活动路径历史（跳过 pending assistant）→
 /// 编译 snapshot（input="" 避免与 recentMessages 重复）→ 注册 run_id → 发 RUN_REQUEST。
 async fn start_agent_run(
@@ -1682,6 +1782,13 @@ async fn start_agent_run(
         .list_active_with_parts(session_id.to_string())
         .await?;
     eprintln!("[agent][run] Active history loaded session={session_id}");
+    let (attachments_context, attached_collection_id) = path
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.message.role == "user")
+        .map(|message| chat_attachment_context(&message.parts))
+        .unwrap_or_default();
     let mut history_json = Vec::new();
     for am in path.messages {
         // 跳过 pending assistant 占位消息，只把完整历史发给 Python
@@ -1738,15 +1845,18 @@ async fn start_agent_run(
         .as_ref()
         .filter(|book| !book.model_knows_content && book.content_context_allowed)
         .map(|book| book.collection_id.as_str());
-    let retrieved_knowledge = if reading_book.is_some() && reading_collection_id.is_none() {
+    let retrieval_collection_id = attached_collection_id.as_deref().or(reading_collection_id);
+    let allow_hidden_collection =
+        attached_collection_id.is_none() && reading_collection_id.is_some();
+    let retrieved_knowledge = if reading_book.is_some() && retrieval_collection_id.is_none() {
         Vec::new()
     } else {
         let retrieval = retrieve_knowledge_for_history(
             state,
             &cfg.agent.id,
             &history_json,
-            reading_collection_id,
-            reading_collection_id.is_some(),
+            retrieval_collection_id,
+            allow_hidden_collection,
         );
         match tokio::time::timeout(std::time::Duration::from_secs(5), retrieval).await {
             Ok(results) => results,
@@ -1825,7 +1935,8 @@ async fn start_agent_run(
             "retrievedKnowledge": retrieved_knowledge,
             "readingContext": reading_book.as_ref().map(reading_prompt_context),
             "workspace": workspace_context,
-            "projectContext": []
+            "projectContext": [],
+            "attachmentsContext": attachments_context
         }
     });
 
@@ -1902,8 +2013,11 @@ pub async fn send_message(
     session_id: String,
     text: String,
     reading_book_id: Option<String>,
+    attachments: Vec<ChatAttachmentInput>,
 ) -> AppResult<()> {
     let cfg = resolve_llm(&state, &session_id).await?;
+    let mut user_parts = vec![text_user_message_part(text.clone())];
+    user_parts.extend(prepare_chat_attachment_parts(&state, &cfg.agent.id, attachments).await?);
 
     // 取当前活动叶子作为新 user 消息的 parent（首条消息时为 None）
     let path = state.db.list_active_with_parts(session_id.clone()).await?;
@@ -1951,7 +2065,12 @@ pub async fn send_message(
     // 原子插入 user + pending assistant 并链接版本树
     let (_user_id, assistant_msg_id) = state
         .db
-        .append_user_and_assistant(session_id.clone(), leaf_id, text, cfg.model_name.clone())
+        .append_user_and_assistant(
+            session_id.clone(),
+            leaf_id,
+            user_parts,
+            cfg.model_name.clone(),
+        )
         .await?;
     state.sync.schedule();
 
@@ -2133,6 +2252,9 @@ pub async fn delete_memory(
 }
 
 const MAX_LOCAL_KNOWLEDGE_DOCUMENT_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_LOCAL_CHAT_ATTACHMENT_BYTES: u64 = 512 * 1024;
+const MAX_CHAT_ATTACHMENT_TOTAL_BYTES: u64 = 1024 * 1024;
+const MAX_CHAT_ATTACHMENTS: usize = 8;
 const KNOWLEDGE_CHUNK_SIZE: usize = 1200;
 const KNOWLEDGE_CHUNK_OVERLAP: usize = 200;
 
@@ -2151,6 +2273,166 @@ fn text_media_type(path: &std::path::Path) -> AppResult<&'static str> {
             "当前仅支持 UTF-8 的 Markdown、文本、CSV 和 JSON 文件".into(),
         )),
     }
+}
+
+fn read_local_chat_attachment(path: String) -> AppResult<(String, String, i64, String)> {
+    let path = std::path::PathBuf::from(path);
+    let metadata = std::fs::metadata(&path)?;
+    if !metadata.is_file() {
+        return Err(AppError::Other("附件路径必须是普通文件".into()));
+    }
+    if metadata.len() > MAX_LOCAL_CHAT_ATTACHMENT_BYTES {
+        return Err(AppError::Other(format!(
+            "单个附件不能超过 {} KiB；较大的资料请导入知识库后再附加",
+            MAX_LOCAL_CHAT_ATTACHMENT_BYTES / 1024
+        )));
+    }
+    let media_type = text_media_type(&path)?.to_string();
+    let bytes = std::fs::read(&path)?;
+    let content = std::str::from_utf8(&bytes)
+        .map_err(|_| AppError::Other("附件目前仅支持 UTF-8 编码的文本文件".into()))?
+        .trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n");
+    if content.contains('\0') {
+        return Err(AppError::Other("附件包含 NUL 字符，已拒绝读取".into()));
+    }
+    if content.trim().is_empty() {
+        return Err(AppError::Other("附件没有可读取的文本内容".into()));
+    }
+    let name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "未命名附件".into());
+    Ok((name, media_type, bytes.len() as i64, content))
+}
+
+fn text_user_message_part(text: String) -> NewUserMessagePart {
+    NewUserMessagePart {
+        kind: "text".into(),
+        mime_type: Some("text/plain".into()),
+        content: text,
+        metadata: None,
+    }
+}
+
+async fn prepare_chat_attachment_parts(
+    state: &AppState,
+    agent_id: &str,
+    attachments: Vec<ChatAttachmentInput>,
+) -> AppResult<Vec<NewUserMessagePart>> {
+    if attachments.len() > MAX_CHAT_ATTACHMENTS {
+        return Err(AppError::Other(format!(
+            "每条消息最多添加 {MAX_CHAT_ATTACHMENTS} 个附件"
+        )));
+    }
+
+    let mut ids = HashSet::new();
+    let mut total_bytes = 0_u64;
+    let mut parts = Vec::with_capacity(attachments.len());
+    let mut visible_collections = None;
+    let mut selected_collection = false;
+
+    for attachment in attachments {
+        if attachment.id.trim().is_empty() || !ids.insert(attachment.id.clone()) {
+            return Err(AppError::Other("附件标识为空或重复".into()));
+        }
+        match attachment.kind.as_str() {
+            "local_file" => {
+                let path = attachment
+                    .path
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| AppError::Other("本地文件附件缺少路径".into()))?;
+                let stored_path = path.clone();
+                let (name, media_type, size, content) =
+                    tokio::task::spawn_blocking(move || read_local_chat_attachment(path))
+                        .await
+                        .map_err(|error| {
+                            AppError::Other(format!("附件读取任务异常中止：{error}"))
+                        })??;
+                total_bytes = total_bytes.saturating_add(size as u64);
+                if total_bytes > MAX_CHAT_ATTACHMENT_TOTAL_BYTES {
+                    return Err(AppError::Other(format!(
+                        "单条消息的本地附件总大小不能超过 {} MiB",
+                        MAX_CHAT_ATTACHMENT_TOTAL_BYTES / 1024 / 1024
+                    )));
+                }
+                parts.push(NewUserMessagePart {
+                    kind: "attachment".into(),
+                    mime_type: Some(media_type.clone()),
+                    content,
+                    metadata: Some(
+                        json!({
+                            "attachmentKind": "local_file",
+                            "id": attachment.id,
+                            "name": name,
+                            "path": stored_path,
+                            "mediaType": media_type,
+                            "size": size,
+                        })
+                        .to_string(),
+                    ),
+                });
+            }
+            "knowledge_collection" => {
+                if selected_collection {
+                    return Err(AppError::Other("每条消息目前只能指定一个知识库".into()));
+                }
+                let collection_id = attachment
+                    .collection_id
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| AppError::Other("知识库附件缺少集合标识".into()))?;
+                if visible_collections.is_none() {
+                    visible_collections = Some(
+                        state
+                            .db
+                            .list_knowledge_collections(agent_id.to_string())
+                            .await?,
+                    );
+                }
+                let collection = visible_collections
+                    .as_ref()
+                    .and_then(|items| items.iter().find(|item| item.id == collection_id))
+                    .ok_or_else(|| {
+                        AppError::Other("指定知识库不存在或当前 Agent 无权访问".into())
+                    })?;
+                selected_collection = true;
+                parts.push(NewUserMessagePart {
+                    kind: "attachment".into(),
+                    mime_type: Some("application/x-agnes-knowledge-collection".into()),
+                    content: String::new(),
+                    metadata: Some(
+                        json!({
+                            "attachmentKind": "knowledge_collection",
+                            "id": attachment.id,
+                            "name": collection.name,
+                            "collectionId": collection.id,
+                        })
+                        .to_string(),
+                    ),
+                });
+            }
+            "skill" => {
+                let label = attachment.name.trim();
+                let skill_id = attachment.skill_id.as_deref().unwrap_or_default();
+                return Err(AppError::Other(format!(
+                    "Skill 附件尚未启用：{}{}",
+                    if label.is_empty() {
+                        "未命名 Skill"
+                    } else {
+                        label
+                    },
+                    if skill_id.is_empty() {
+                        ""
+                    } else {
+                        "（接口已预留）"
+                    }
+                )));
+            }
+            _ => return Err(AppError::Other("不支持的附件类型".into())),
+        }
+    }
+    Ok(parts)
 }
 
 fn trim_to_char_boundary(value: &str, max_chars: usize) -> &str {
@@ -4554,9 +4836,9 @@ mod tests {
     use super::{
         commit_managed_file, install_managed_file, is_automatic_session_title, latest_user_query,
         normalize_default_max_output_tokens, normalize_session_title,
-        persist_search_provider_settings, read_knowledge_document, rollback_managed_file,
-        saved_provider_endpoint_matches, CalendarEventUpdatePayload, SearchProviderSettingsInput,
-        TaskUpdatePayload, DEFAULT_MAX_OUTPUT_TOKENS,
+        persist_search_provider_settings, read_knowledge_document, read_local_chat_attachment,
+        rollback_managed_file, saved_provider_endpoint_matches, CalendarEventUpdatePayload,
+        SearchProviderSettingsInput, TaskUpdatePayload, DEFAULT_MAX_OUTPUT_TOKENS,
     };
     use crate::secrets::{InMemorySecretStore, SecretStore};
 
@@ -4795,6 +5077,20 @@ mod tests {
         assert!(size > 0);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].section_path.as_deref(), Some("Roadmap"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn local_chat_attachment_reads_supported_utf8_text() {
+        let path =
+            std::env::temp_dir().join(format!("agnes-chat-attachment-{}.md", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "# Notes\r\n\r\nReference content.").unwrap();
+        let (name, media_type, size, content) =
+            read_local_chat_attachment(path.to_string_lossy().to_string()).unwrap();
+        assert!(name.ends_with(".md"));
+        assert_eq!(media_type, "text/markdown");
+        assert!(size > 0);
+        assert_eq!(content, "# Notes\n\nReference content.");
         let _ = std::fs::remove_file(path);
     }
 

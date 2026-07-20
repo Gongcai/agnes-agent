@@ -61,6 +61,14 @@ pub struct NewMessagePart {
     pub metadata: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct NewUserMessagePart {
+    pub kind: String,
+    pub mime_type: Option<String>,
+    pub content: String,
+    pub metadata: Option<String>,
+}
+
 fn now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
