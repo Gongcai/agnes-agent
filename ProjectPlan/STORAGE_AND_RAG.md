@@ -586,7 +586,7 @@ tasks
 - [x] 接入 artifact replication coordinator：后台有界拉取 object changes，按 key version 选择密钥和 ready replica，完成验证后原子安装并上报设备状态；失败、不兼容密钥和无副本不污染聊天同步游标；
 - [x] 将单个 document version 的 chunks 与同一 embedding profile 导出为加密 artifact，并在验证后事务性导入 FTS5、embedding metadata 与 sqlite-vec 分区；
 - [x] 完成知识制品发布编排：稳定 build fingerprint 和 object ID、原子密文 outbox 缓存、失败重试复用同一 artifact ID/HLC，并发布到 R2 后回写本机安装状态；
-- 加入本地磁盘配额和 GC。
+- [x] 加入本地制品磁盘配额和 GC：默认 2 GiB、设置页可调整并手动清理，每 6 小时及发布后自动检查；只有 ready 远端副本的 outbox 或非当前安装目录可回收，当前安装目录、唯一副本和 24 小时内临时文件均受保护。
 
 ### Phase C：通用 Provider 基础与网盘页
 

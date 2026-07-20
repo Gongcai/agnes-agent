@@ -3034,6 +3034,12 @@ pub async fn publish_knowledge_artifact(
             state.data_dir.join("artifacts").join("outbox"),
         )
         .await?;
+    if let Err(error) =
+        crate::storage::artifact_cache::enforce_quota(&state.db, state.data_dir.join("artifacts"))
+            .await
+    {
+        eprintln!("[artifact-gc] post-publish cleanup failed: {error}");
+    }
     Ok(KnowledgeArtifactPublishResult {
         artifact_id: prepared.artifact_id,
         reused: prepared.reused,
@@ -3451,6 +3457,33 @@ pub async fn remove_storage_account(
     account_id: String,
 ) -> AppResult<()> {
     state.storage.remove_account(account_id).await
+}
+
+#[tauri::command]
+pub async fn get_artifact_storage_status(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::storage::artifact_cache::ArtifactStorageStatus> {
+    crate::storage::artifact_cache::status(&state.db, state.data_dir.join("artifacts")).await
+}
+
+#[tauri::command]
+pub async fn set_artifact_storage_quota(
+    state: tauri::State<'_, AppState>,
+    quota_bytes: u64,
+) -> AppResult<crate::storage::artifact_cache::ArtifactGcResult> {
+    crate::storage::artifact_cache::set_quota(
+        &state.db,
+        state.data_dir.join("artifacts"),
+        quota_bytes,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn cleanup_artifact_storage(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::storage::artifact_cache::ArtifactGcResult> {
+    crate::storage::artifact_cache::cleanup(&state.db, state.data_dir.join("artifacts")).await
 }
 
 #[tauri::command]

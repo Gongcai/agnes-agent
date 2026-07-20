@@ -1,6 +1,7 @@
 // Write/download ports are consumed by provider adapters in the next phase.
 #![allow(dead_code)]
 
+pub mod artifact_cache;
 pub mod artifact_transfer;
 pub mod credentials;
 pub mod domain;

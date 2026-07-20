@@ -85,6 +85,15 @@ pub struct DeviceArtifactStateRow {
     pub last_error_code: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactGcCandidateRow {
+    pub artifact_id: String,
+    pub local_path: String,
+    pub created_at: String,
+    pub has_ready_replica: bool,
+    pub current_source_version: bool,
+}
+
 const MANIFEST_SELECT: &str = "SELECT id,artifact_type,source_version_id,build_fingerprint,\
   format_version,plaintext_hash,ciphertext_hash,plaintext_size,size,encryption_scheme,\
   key_version,chunk_size,chunk_count,local_path,local_status,created_at,installed_at \
@@ -213,6 +222,43 @@ pub fn list_replicas(conn: &Connection, artifact_id: &str) -> AppResult<Vec<Arti
     )?;
     let rows = statement.query_map([artifact_id], replica_from_row)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+pub fn list_gc_candidates(conn: &Connection) -> AppResult<Vec<ArtifactGcCandidateRow>> {
+    let mut statement = conn.prepare(
+        "SELECT m.id,m.local_path,m.created_at, \
+           EXISTS(SELECT 1 FROM artifact_replicas r \
+                  WHERE r.artifact_id=m.id AND r.status='ready'), \
+           EXISTS(SELECT 1 FROM documents d \
+                  WHERE d.current_version_id=m.source_version_id AND d.deleted_at IS NULL) \
+         FROM artifact_manifests m WHERE m.local_path IS NOT NULL \
+         ORDER BY CAST(m.created_at AS INTEGER),m.id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(ArtifactGcCandidateRow {
+            artifact_id: row.get(0)?,
+            local_path: row.get(1)?,
+            created_at: row.get(2)?,
+            has_ready_replica: row.get(3)?,
+            current_source_version: row.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+pub fn clear_local_path(
+    conn: &Connection,
+    artifact_id: &str,
+    expected_path: &str,
+) -> AppResult<bool> {
+    let changed = conn.execute(
+        "UPDATE artifact_manifests SET local_path=NULL \
+         WHERE id=?1 AND local_path=?2 \
+           AND EXISTS(SELECT 1 FROM artifact_replicas r \
+                      WHERE r.artifact_id=artifact_manifests.id AND r.status='ready')",
+        params![artifact_id, expected_path],
+    )?;
+    Ok(changed == 1)
 }
 
 pub fn upsert_device_state(conn: &Connection, input: &DeviceArtifactStateRow) -> AppResult<()> {
@@ -400,7 +446,10 @@ mod tests {
     fn connection() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection
-            .execute_batch(crate::db::schema::ARTIFACT_SCHEMA)
+            .execute_batch(&format!(
+                "CREATE TABLE documents (id TEXT PRIMARY KEY, current_version_id TEXT, deleted_at TEXT);{}",
+                crate::db::schema::ARTIFACT_SCHEMA
+            ))
             .unwrap();
         connection
     }
@@ -499,5 +548,55 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state, (3, "installed".into()));
+    }
+
+    #[test]
+    fn gc_candidates_require_ready_replicas_before_clearing_local_paths() {
+        let connection = connection();
+        upsert_manifest(
+            &connection,
+            &UpsertArtifactManifest {
+                manifest: manifest("artifact-gc"),
+                local_path: Some("/tmp/artifact-gc".into()),
+                local_status: "installed".into(),
+                installed_at: Some("2".into()),
+            },
+        )
+        .unwrap();
+        connection
+            .execute(
+                "INSERT INTO documents (id,current_version_id,deleted_at) VALUES ('doc-1','version-1',NULL)",
+                [],
+            )
+            .unwrap();
+        let candidates = list_gc_candidates(&connection).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert!(!candidates[0].has_ready_replica);
+        assert!(candidates[0].current_source_version);
+        assert!(!clear_local_path(&connection, "artifact-gc", "/tmp/artifact-gc").unwrap());
+
+        upsert_replica(
+            &connection,
+            &ArtifactReplicaRow {
+                artifact_id: "artifact-gc".into(),
+                provider_account_id: "r2-managed".into(),
+                provider_kind: "r2".into(),
+                encrypted_locator: "{}".into(),
+                provider_revision: None,
+                etag: None,
+                ciphertext_hash: "c".repeat(64),
+                size: 20,
+                status: "ready".into(),
+                last_error_code: None,
+                updated_at: "3".into(),
+            },
+        )
+        .unwrap();
+        assert!(clear_local_path(&connection, "artifact-gc", "/tmp/artifact-gc").unwrap());
+        assert!(get_manifest(&connection, "artifact-gc")
+            .unwrap()
+            .unwrap()
+            .local_path
+            .is_none());
     }
 }

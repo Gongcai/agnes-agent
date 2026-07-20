@@ -265,6 +265,7 @@ fn main() {
             }
             sync.clone()
                 .start_artifact_replication_background(storage.clone(), data_dir.join("artifacts"));
+            storage::artifact_cache::start_background(db.clone(), data_dir.join("artifacts"));
 
             // 2) 启动 AgentManager：Rust 起 WS Server + 拉起 Python sidecar。
             //    非致命：失败仅日志，不阻断 UI 启动。
@@ -376,6 +377,9 @@ fn main() {
             commands::refresh_storage_quota,
             commands::list_storage_transfers,
             commands::remove_storage_account,
+            commands::get_artifact_storage_status,
+            commands::set_artifact_storage_quota,
+            commands::cleanup_artifact_storage,
             commands::list_calendars,
             commands::create_calendar,
             commands::list_calendar_events,

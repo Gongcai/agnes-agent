@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Moon, Sun } from "lucide-react";
+import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Moon, Sun, HardDrive, Eraser } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -57,7 +57,7 @@ import {
   type ColorScheme,
 } from "../lib/uiPreferences";
 
-type SettingsTab = "general" | "agents" | "memory" | "llm" | "tokens" | "web" | "mcp" | "audit" | "debug";
+type SettingsTab = "general" | "agents" | "memory" | "storage" | "llm" | "tokens" | "web" | "mcp" | "audit" | "debug";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -102,6 +102,25 @@ interface MemoryEmbeddingStatus {
 interface MemoryVectorizationResult {
   indexed_now: number;
   status: MemoryEmbeddingStatus;
+}
+
+interface ArtifactStorageStatus {
+  quotaBytes: number;
+  usedBytes: number;
+  outboxBytes: number;
+  installedBytes: number;
+  temporaryBytes: number;
+  reclaimableBytes: number;
+  localArtifactCount: number;
+  overQuota: boolean;
+}
+
+interface ArtifactGcResult {
+  reclaimedBytes: number;
+  removedPaths: number;
+  reconciledRecords: number;
+  failedPaths: number;
+  status: ArtifactStorageStatus;
 }
 
 interface MemoryFormValues {
@@ -1913,6 +1932,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>记忆编辑器 (Memory)</span>
             </button>
             <button
+              onClick={() => setActiveTab("storage")}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                activeTab === "storage"
+                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
+                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+              }`}
+            >
+              <HardDrive className="h-4 w-4 text-stone-500" />
+              <span>本地存储</span>
+            </button>
+            <button
               onClick={() => setActiveTab("llm")}
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "llm"
@@ -1985,6 +2015,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* 0. GENERAL TAB */}
             {activeTab === "general" && (
               <GeneralTab />
+            )}
+
+            {activeTab === "storage" && (
+              <ArtifactStorageTab />
             )}
 
             {/* 1. AGENTS TAB */}
@@ -5116,6 +5150,214 @@ const GeneralTab: React.FC = () => {
           <option value="中文">中文</option>
           <option value="English">English</option>
         </select>
+      </div>
+    </div>
+  );
+};
+
+const ARTIFACT_QUOTA_OPTIONS = [0.25, 0.5, 1, 2, 5, 10, 20, 50, 100];
+
+function formatLocalStorageBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** unitIndex;
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+const ArtifactStorageTab: React.FC = () => {
+  const [status, setStatus] = useState<ArtifactStorageStatus | null>(null);
+  const [quotaGiB, setQuotaGiB] = useState("2");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadStatus = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const next = await invoke<ArtifactStorageStatus>("get_artifact_storage_status");
+      setStatus(next);
+      setQuotaGiB(String(next.quotaBytes / 1024 ** 3));
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadStatus();
+  }, []);
+
+  const saveQuota = async () => {
+    const quotaBytes = Math.round(Number(quotaGiB) * 1024 ** 3);
+    if (!Number.isSafeInteger(quotaBytes)) return;
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await invoke<ArtifactGcResult>("set_artifact_storage_quota", {
+        quotaBytes,
+      });
+      setStatus(result.status);
+      setMessage(
+        result.reclaimedBytes > 0
+          ? `配额已保存，并自动释放 ${formatLocalStorageBytes(result.reclaimedBytes)}。`
+          : "配额已保存。",
+      );
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cleanup = async () => {
+    if (!window.confirm("清理已有远端副本的本地制品缓存和过期临时文件？当前安装目录与唯一副本不会删除。")) {
+      return;
+    }
+    setCleaning(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await invoke<ArtifactGcResult>("cleanup_artifact_storage");
+      setStatus(result.status);
+      setMessage(
+        `已释放 ${formatLocalStorageBytes(result.reclaimedBytes)}，清理 ${result.removedPaths} 个路径` +
+          (result.failedPaths > 0 ? `，${result.failedPaths} 个路径清理失败。` : "。"),
+      );
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setCleaning(false);
+    }
+  };
+
+  const usagePercent = status && status.quotaBytes > 0
+    ? Math.min(100, (status.usedBytes / status.quotaBytes) * 100)
+    : 0;
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      <div className="flex items-start justify-between gap-4 border-b border-stone-200 pb-3">
+        <div>
+          <h3 className="text-sm font-semibold text-stone-850">本地制品存储</h3>
+          <p className="mt-1 text-[11px] text-stone-400">
+            管理知识库加密上传缓存、跨设备安装制品和中断后留下的临时文件。
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadStatus()}
+          disabled={loading}
+          title="刷新容量统计"
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-stone-200 text-stone-500 hover:bg-stone-50 disabled:opacity-40"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+
+      {error && (
+        <div className="border-y border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+          {error}
+        </div>
+      )}
+      {message && (
+        <div className="border-y border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+          {message}
+        </div>
+      )}
+
+      <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold text-stone-700">本地占用</p>
+            <p className="mt-1 font-mono text-lg font-semibold tabular-nums text-stone-850">
+              {status ? formatLocalStorageBytes(status.usedBytes) : "—"}
+              <span className="ml-1 text-xs font-normal text-stone-400">
+                / {status ? formatLocalStorageBytes(status.quotaBytes) : "—"}
+              </span>
+            </p>
+          </div>
+          {status?.overQuota && (
+            <span className="rounded-full bg-rose-50 px-2.5 py-1 text-[10px] font-semibold text-rose-700">
+              已超出配额
+            </span>
+          )}
+        </div>
+        <div className="mt-3 h-2 overflow-hidden rounded-full bg-stone-200">
+          <div
+            className={`h-full rounded-full transition-all ${status?.overQuota ? "bg-rose-500" : "bg-[#8CA38A]"}`}
+            style={{ width: `${usagePercent}%` }}
+          />
+        </div>
+        <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 text-[11px]">
+          {[
+            ["加密上传缓存", status?.outboxBytes ?? 0],
+            ["本地安装制品", status?.installedBytes ?? 0],
+            ["临时文件", status?.temporaryBytes ?? 0],
+            ["可安全释放", status?.reclaimableBytes ?? 0],
+          ].map(([label, value]) => (
+            <div key={String(label)} className="flex items-center justify-between gap-3 border-b border-stone-200 pb-2">
+              <dt className="text-stone-500">{label}</dt>
+              <dd className="font-mono font-semibold tabular-nums text-stone-700">
+                {formatLocalStorageBytes(Number(value))}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <p className="mt-3 text-[10px] text-stone-400">
+          当前记录 {status?.localArtifactCount ?? 0} 个本地制品。自动维护每 6 小时运行一次，只清理已有 ready 远端副本的缓存；当前文档安装目录和没有远端副本的制品始终保留。
+        </p>
+      </div>
+
+      <div className="space-y-3">
+        <label htmlFor="artifact-storage-quota" className="block text-xs font-semibold text-stone-600">
+          容量上限
+        </label>
+        <div className="flex items-center gap-2">
+          <select
+            id="artifact-storage-quota"
+            value={quotaGiB}
+            onChange={(event) => setQuotaGiB(event.target.value)}
+            disabled={loading || saving}
+            className="min-w-40 rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs text-stone-700 outline-none focus:border-[#8CA38A] disabled:opacity-50"
+          >
+            {ARTIFACT_QUOTA_OPTIONS.map((value) => (
+              <option key={value} value={String(value)}>
+                {value < 1 ? `${value * 1024} MiB` : `${value} GiB`}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => void saveQuota()}
+            disabled={loading || saving}
+            className="rounded-lg bg-stone-800 px-4 py-2 text-xs font-semibold text-white hover:bg-stone-900 disabled:opacity-40"
+          >
+            {saving ? "保存并检查中..." : "保存配额"}
+          </button>
+        </div>
+        <p className="text-[10px] text-stone-400">降低配额后会立即执行一次安全清理。</p>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 border-t border-stone-200 pt-4">
+        <div>
+          <p className="text-xs font-semibold text-stone-700">立即释放可回收空间</p>
+          <p className="mt-1 text-[10px] text-stone-400">不会删除知识库源文件、SQLite 向量或远端 R2 对象。</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void cleanup()}
+          disabled={loading || cleaning || (status?.reclaimableBytes ?? 0) === 0}
+          className="flex items-center gap-1.5 rounded-lg border border-stone-200 px-3 py-2 text-xs font-semibold text-stone-600 hover:bg-stone-50 disabled:opacity-40"
+        >
+          <Eraser className="h-3.5 w-3.5" />
+          {cleaning ? "清理中..." : "立即清理"}
+        </button>
       </div>
     </div>
   );

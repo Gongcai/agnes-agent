@@ -172,6 +172,14 @@ pub enum DbCommand {
         artifact_id: String,
         resp: oneshot::Sender<AppResult<Vec<repo::artifacts::ArtifactReplicaRow>>>,
     },
+    ListArtifactGcCandidates {
+        resp: oneshot::Sender<AppResult<Vec<repo::artifacts::ArtifactGcCandidateRow>>>,
+    },
+    ClearArtifactLocalPath {
+        artifact_id: String,
+        expected_path: String,
+        resp: oneshot::Sender<AppResult<bool>>,
+    },
     UpsertDeviceArtifactState {
         input: repo::artifacts::DeviceArtifactStateRow,
         resp: oneshot::Sender<AppResult<()>>,
@@ -1073,6 +1081,30 @@ impl DbActorHandle {
     ) -> AppResult<Vec<repo::artifacts::ArtifactReplicaRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListArtifactReplicas { artifact_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_artifact_gc_candidates(
+        &self,
+    ) -> AppResult<Vec<repo::artifacts::ArtifactGcCandidateRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListArtifactGcCandidates { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn clear_artifact_local_path(
+        &self,
+        artifact_id: String,
+        expected_path: String,
+    ) -> AppResult<bool> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ClearArtifactLocalPath {
+            artifact_id,
+            expected_path,
+            resp,
+        })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -2497,6 +2529,20 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::ListArtifactReplicas { artifact_id, resp } => {
                     let _ = resp.send(repo::artifacts::list_replicas(&conn, &artifact_id));
+                }
+                DbCommand::ListArtifactGcCandidates { resp } => {
+                    let _ = resp.send(repo::artifacts::list_gc_candidates(&conn));
+                }
+                DbCommand::ClearArtifactLocalPath {
+                    artifact_id,
+                    expected_path,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::artifacts::clear_local_path(
+                        &conn,
+                        &artifact_id,
+                        &expected_path,
+                    ));
                 }
                 DbCommand::UpsertDeviceArtifactState { input, resp } => {
                     let _ = resp.send(repo::artifacts::upsert_device_state(&conn, &input));
