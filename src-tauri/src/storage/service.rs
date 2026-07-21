@@ -540,6 +540,8 @@ impl StorageService {
         &self,
         account_id: String,
         file_id: String,
+        file_name: String,
+        file_media_type: Option<String>,
         expected_revision: Option<String>,
         expected_size: Option<u64>,
         destination_directory: std::path::PathBuf,
@@ -557,12 +559,32 @@ impl StorageService {
         let file_source = session.file_source().ok_or_else(|| {
             AppError::Other("Storage provider does not support file downloads".into())
         })?;
-        let remote_file = match file_source.get_file(&file_id).await {
-            Ok(file) => file,
-            Err(error) => {
-                self.update_provider_status(&row, Some(&error)).await;
-                return Err(provider_error(error));
-            }
+        let file_name = file_name.trim().to_string();
+        if file_name.is_empty()
+            || file_name.chars().count() > 1024
+            || file_name.chars().any(char::is_control)
+        {
+            return Err(AppError::Other("网盘导入文件名无效".into()));
+        }
+        let file_media_type = file_media_type
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if file_media_type
+            .as_ref()
+            .is_some_and(|value| value.chars().count() > 512 || value.chars().any(char::is_control))
+        {
+            return Err(AppError::Other("网盘导入文件类型无效".into()));
+        }
+        let remote_file = RemoteFileItem {
+            id: file_id.clone(),
+            parent_id: None,
+            name: file_name,
+            kind: RemoteFileKind::File,
+            media_type: file_media_type,
+            size: expected_size,
+            modified_at: None,
+            revision: expected_revision.clone(),
+            downloadable: true,
         };
         let destination = destination_directory.join(match kind {
             StorageImportKind::Knowledge => {
@@ -1865,25 +1887,22 @@ mod tests {
         }
 
         async fn get_file(&self, file_id: &str) -> ProviderResult<RemoteFileItem> {
-            let kind_mismatch = file_id == "provider-kind-mismatch";
+            if file_id == "provider-metadata-unavailable" {
+                return Err(ProviderError::new(
+                    ProviderErrorCategory::InvalidResponse,
+                    "provider detail endpoint returned unrelated metadata",
+                ));
+            }
             Ok(RemoteFileItem {
                 id: file_id.into(),
                 parent_id: None,
-                name: if kind_mismatch {
-                    "Report.pdf".into()
-                } else {
-                    "Notes.md".into()
-                },
-                kind: if kind_mismatch {
-                    RemoteFileKind::Folder
-                } else {
-                    RemoteFileKind::File
-                },
-                media_type: (!kind_mismatch).then(|| "text/markdown".into()),
+                name: "Notes.md".into(),
+                kind: RemoteFileKind::File,
+                media_type: Some("text/markdown".into()),
                 size: Some(128),
                 modified_at: None,
                 revision: Some("revision-1".into()),
-                downloadable: file_id != "remote-hint-disabled" && !kind_mismatch,
+                downloadable: file_id != "remote-hint-disabled",
             })
         }
 
@@ -2339,6 +2358,8 @@ mod tests {
             .stage_file_import(
                 "account-1".into(),
                 "remote-1".into(),
+                "Notes.md".into(),
+                Some("text/markdown".into()),
                 Some("revision-1".into()),
                 Some(128),
                 import_directory.clone(),
@@ -2364,7 +2385,9 @@ mod tests {
         let mismatched = service
             .stage_file_import(
                 "account-1".into(),
-                "provider-kind-mismatch".into(),
+                "provider-metadata-unavailable".into(),
+                "Report.pdf".into(),
+                None,
                 Some("revision-1".into()),
                 Some(128),
                 import_directory.clone(),
@@ -2378,6 +2401,17 @@ mod tests {
         assert_eq!(
             std::fs::read(&mismatched.local_path).unwrap(),
             vec![b'x'; 128]
+        );
+        assert_eq!(
+            service
+                .list_transfers(Some("account-1".into()), 10)
+                .await
+                .unwrap()
+                .iter()
+                .find(|transfer| transfer.id == mismatched.job_id)
+                .unwrap()
+                .display_name,
+            "Report.pdf"
         );
         service.finish_file_import(&mismatched, None).await.unwrap();
         let batch_directory = std::env::temp_dir().join(format!(

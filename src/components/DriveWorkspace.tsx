@@ -619,6 +619,8 @@ export function DriveWorkspace() {
       await invoke("import_storage_knowledge_document", {
         accountId: selectedAccount.id,
         fileId: item.id,
+        fileName: item.name,
+        fileMediaType: item.media_type,
         expectedRevision: item.revision,
         expectedSize: item.size,
         collectionId,
@@ -642,6 +644,8 @@ export function DriveWorkspace() {
       await invoke("import_storage_reading_book", {
         accountId: selectedAccount.id,
         fileId: item.id,
+        fileName: item.name,
+        fileMediaType: item.media_type,
         expectedRevision: item.revision,
         expectedSize: item.size,
         agentId: activeAgentId,

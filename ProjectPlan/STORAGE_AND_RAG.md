@@ -606,7 +606,7 @@ tasks
 - [x] 文件列表拦截默认右键菜单：文件可下载，文件夹可打开或递归批量下载；递归下载限制深度/条目数并处理重复、不安全本地名称；
 - [x] Google Drive `appDataFolder` 实现加密制品所需的 stat、Range download、resumable upload、断点 offset 和对象清理端口；用户文件管理另通过 `FileManagementProvider` 安全地移入回收站，上层 artifact manifest/加密编排仍在 Phase B；
 - [x] Google Drive 与夸克网盘文件可经应用私有暂存直接导入知识库和书架；知识库保留稳定托管源文件，书架复用 EPUB 解析、去重和本地托管链路，解析与数据库失败会回写统一传输任务；
-  网盘列表中的名称/MIME 只用于显示受支持格式的导入入口；点击后先按文件 ID 下载到私有暂存目录，再由知识库或书架领域入口统一校验类型、内容和大小。`StorageService` 不使用各 Provider 含义不一致的 `kind/file_type/downloadable` 元数据提前阻断导入。
+  网盘列表中的名称/MIME 只用于显示受支持格式的导入入口；点击后将已选文件的名称、MIME、大小和 revision 作为提示，直接按文件 ID 下载到私有暂存目录，不额外请求可能返回不同结构的 Provider 详情，再由知识库或书架领域入口统一校验类型、内容和大小。`StorageService` 不使用各 Provider 含义不一致的 `kind/file_type/downloadable` 元数据提前阻断导入。
 - [ ] 完成真实 Google 账户授权、目录、Workspace 文档导出、直导、下载和 token 刷新验收；
 - [x] 夸克以可替换的 Rust community adapter 实现 Cookie 授权、文件浏览、下载、Range 下载、配额和分片上传；Cookie 只存 Keyring，Provider 失效时只影响对应账户。
 - [x] 夸克文件移入回收站；
