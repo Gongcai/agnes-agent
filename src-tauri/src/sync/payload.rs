@@ -15,6 +15,8 @@ pub enum SyncEntityType {
     EventException,
     TaskList,
     Task,
+    ReadingBook,
+    ReadingHighlight,
 }
 
 impl SyncEntityType {
@@ -31,6 +33,8 @@ impl SyncEntityType {
             Self::EventException => "event_exception",
             Self::TaskList => "task_list",
             Self::Task => "task",
+            Self::ReadingBook => "reading_book",
+            Self::ReadingHighlight => "reading_highlight",
         }
     }
 }
@@ -205,6 +209,36 @@ pub fn project(entity_type: SyncEntityType, source: &Value) -> AppResult<Value> 
             "deleted_at",
             "origin_device_id",
         ],
+        SyncEntityType::ReadingBook => &[
+            "id",
+            "title",
+            "author",
+            "source_hash",
+            "model_knows_content",
+            "content_context_allowed",
+            "content_context_decided",
+            "progress_cfi",
+            "created_at",
+            "updated_at",
+            "version",
+            "deleted_at",
+            "origin_device_id",
+        ],
+        SyncEntityType::ReadingHighlight => &[
+            "id",
+            "book_id",
+            "cfi_range",
+            "quote",
+            "context_before",
+            "context_after",
+            "note",
+            "color",
+            "created_at",
+            "updated_at",
+            "version",
+            "deleted_at",
+            "origin_device_id",
+        ],
     };
 
     let mut payload = Map::new();
@@ -310,6 +344,8 @@ mod tests {
             SyncEntityType::EventException,
             SyncEntityType::TaskList,
             SyncEntityType::Task,
+            SyncEntityType::ReadingBook,
+            SyncEntityType::ReadingHighlight,
         ] {
             let encoded = project(entity_type, &source).unwrap().to_string();
             assert!(!encoded.contains("secret"));
@@ -361,6 +397,31 @@ mod tests {
                 "agent_id": "agent-1",
                 "name": "Project",
                 "version": 2
+            })
+        );
+    }
+
+    #[test]
+    fn reading_book_projection_never_contains_device_local_bindings() {
+        let source = json!({
+            "id": "book-1",
+            "collection_id": "local-collection",
+            "document_id": "local-document",
+            "local_path": "/home/user/book.epub",
+            "title": "Portable book",
+            "source_hash": "hash",
+            "progress_cfi": "epubcfi(/6/2)",
+            "version": 3
+        });
+
+        assert_eq!(
+            project(SyncEntityType::ReadingBook, &source).unwrap(),
+            json!({
+                "id": "book-1",
+                "title": "Portable book",
+                "source_hash": "hash",
+                "progress_cfi": "epubcfi(/6/2)",
+                "version": 3
             })
         );
     }

@@ -25,6 +25,8 @@ export const entityTypeSchema = z.enum([
   "event_exception",
   "task_list",
   "task",
+  "reading_book",
+  "reading_highlight",
 ]);
 
 export const operationSchema = z.enum(["upsert", "delete"]);

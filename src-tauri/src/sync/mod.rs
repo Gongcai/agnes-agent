@@ -9,5 +9,6 @@ pub mod merge;
 pub mod pairing;
 pub mod payload;
 pub mod protocol;
+pub mod reading_artifact;
 pub mod replication;
 pub mod settings;

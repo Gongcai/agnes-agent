@@ -167,6 +167,50 @@ fn ensure_reading_metadata(conn: &Connection) -> AppResult<()> {
         "content_context_decided",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
+    let local_path_not_null: bool = conn
+        .query_row(
+            "SELECT [notnull] FROM pragma_table_info('reading_books') WHERE name = 'local_path'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if local_path_not_null {
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             BEGIN IMMEDIATE;
+             CREATE TABLE new_reading_books (
+               id TEXT PRIMARY KEY,
+               collection_id TEXT REFERENCES knowledge_collections(id),
+               document_id TEXT REFERENCES documents(id),
+               local_path TEXT,
+               title TEXT NOT NULL,
+               author TEXT,
+               source_hash TEXT NOT NULL UNIQUE,
+               model_knows_content INTEGER NOT NULL DEFAULT 0 CHECK(model_knows_content IN (0, 1)),
+               content_context_allowed INTEGER NOT NULL DEFAULT 0 CHECK(content_context_allowed IN (0, 1)),
+               content_context_decided INTEGER NOT NULL DEFAULT 0 CHECK(content_context_decided IN (0, 1)),
+               progress_cfi TEXT,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               version INTEGER NOT NULL DEFAULT 1,
+               deleted_at TEXT,
+               origin_device_id TEXT
+             );
+             INSERT INTO new_reading_books
+               (id,collection_id,document_id,local_path,title,author,source_hash,model_knows_content,
+                content_context_allowed,content_context_decided,progress_cfi,created_at,updated_at,version,
+                deleted_at,origin_device_id)
+             SELECT id,collection_id,document_id,local_path,title,author,source_hash,model_knows_content,
+                    content_context_allowed,content_context_decided,progress_cfi,created_at,updated_at,version,
+                    deleted_at,origin_device_id FROM reading_books;
+             DROP TABLE reading_books;
+             ALTER TABLE new_reading_books RENAME TO reading_books;
+             CREATE INDEX IF NOT EXISTS idx_reading_books_updated
+               ON reading_books(updated_at DESC) WHERE deleted_at IS NULL;
+             COMMIT;
+             PRAGMA foreign_keys = ON;",
+        )?;
+    }
     conn.execute(
         "INSERT OR IGNORE INTO reading_book_conversation_sessions \
          (book_id, agent_id, session_id, created_at, updated_at) \
@@ -731,6 +775,7 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
     ensure_sync_runtime_state(conn)?;
     migrate_workspace_bindings(conn)?;
     migrate_explicit_memories(conn)?;
+    crate::db::repo::reading::enqueue_existing_sync_entities(conn)?;
 
     Ok(())
 }
@@ -738,6 +783,111 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::OptionalExtension;
+
+    #[test]
+    fn makes_reading_device_bindings_nullable_without_losing_children() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE knowledge_collections(id TEXT PRIMARY KEY);
+             CREATE TABLE documents(id TEXT PRIMARY KEY, collection_id TEXT);
+             CREATE TABLE sessions(
+               id TEXT PRIMARY KEY,
+               agent_id TEXT NOT NULL,
+               title TEXT,
+               created_at TEXT,
+               updated_at TEXT,
+               deleted_at TEXT
+             );
+             CREATE TABLE reading_books(
+               id TEXT PRIMARY KEY,
+               collection_id TEXT NOT NULL REFERENCES knowledge_collections(id),
+               document_id TEXT NOT NULL REFERENCES documents(id),
+               local_path TEXT NOT NULL,
+               title TEXT NOT NULL,
+               author TEXT,
+               source_hash TEXT NOT NULL UNIQUE,
+               model_knows_content INTEGER NOT NULL DEFAULT 0,
+               content_context_allowed INTEGER NOT NULL DEFAULT 0,
+               content_context_decided INTEGER NOT NULL DEFAULT 0,
+               progress_cfi TEXT,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               version INTEGER NOT NULL DEFAULT 1,
+               deleted_at TEXT,
+               origin_device_id TEXT
+             );
+             CREATE TABLE reading_book_conversations(
+               book_id TEXT NOT NULL REFERENCES reading_books(id) ON DELETE CASCADE,
+               agent_id TEXT NOT NULL,
+               session_id TEXT NOT NULL,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               PRIMARY KEY(book_id,agent_id)
+             );
+             CREATE TABLE reading_book_conversation_sessions(
+               book_id TEXT NOT NULL REFERENCES reading_books(id) ON DELETE CASCADE,
+               agent_id TEXT NOT NULL,
+               session_id TEXT NOT NULL,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               PRIMARY KEY(book_id,agent_id,session_id)
+             );
+             CREATE TABLE reading_highlights(
+               id TEXT PRIMARY KEY,
+               book_id TEXT NOT NULL REFERENCES reading_books(id) ON DELETE CASCADE,
+               cfi_range TEXT NOT NULL,
+               quote TEXT NOT NULL,
+               context_before TEXT NOT NULL DEFAULT '',
+               context_after TEXT NOT NULL DEFAULT '',
+               note TEXT,
+               color TEXT NOT NULL DEFAULT 'yellow',
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               version INTEGER NOT NULL DEFAULT 1,
+               deleted_at TEXT,
+               origin_device_id TEXT
+             );
+             INSERT INTO knowledge_collections VALUES ('collection');
+             INSERT INTO documents VALUES ('document','collection');
+             INSERT INTO reading_books
+               (id,collection_id,document_id,local_path,title,source_hash,created_at,updated_at)
+             VALUES ('book','collection','document','/tmp/book.epub','Book','hash','1','1');
+             INSERT INTO reading_highlights
+               (id,book_id,cfi_range,quote,created_at,updated_at)
+             VALUES ('highlight','book','epubcfi(/6/2)','Quote','1','1');",
+        )
+        .unwrap();
+
+        ensure_reading_metadata(&conn).unwrap();
+
+        let nullable: i64 = conn
+            .query_row(
+                "SELECT [notnull] FROM pragma_table_info('reading_books') WHERE name='local_path'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let child_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reading_highlights", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(nullable, 0);
+        assert_eq!(child_count, 1);
+        conn.execute(
+            "UPDATE reading_books SET local_path=NULL WHERE id='book'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row("PRAGMA foreign_key_check", [], |_| Ok(1))
+                .optional()
+                .unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn adds_permission_mode_to_existing_sessions() {

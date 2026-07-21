@@ -343,6 +343,44 @@ struct TaskPayload {
     _origin_device_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadingBookPayload {
+    id: String,
+    title: String,
+    author: Option<String>,
+    source_hash: String,
+    model_knows_content: bool,
+    content_context_allowed: bool,
+    content_context_decided: bool,
+    progress_cfi: Option<String>,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    #[serde(rename = "origin_device_id")]
+    _origin_device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadingHighlightPayload {
+    id: String,
+    book_id: String,
+    cfi_range: String,
+    quote: String,
+    context_before: String,
+    context_after: String,
+    note: Option<String>,
+    color: String,
+    created_at: String,
+    updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    #[serde(rename = "origin_device_id")]
+    _origin_device_id: Option<String>,
+}
+
 pub fn device_id(conn: &Connection) -> AppResult<String> {
     conn.query_row(
         "SELECT device_id FROM sync_runtime_state WHERE singleton = 1",
@@ -890,6 +928,8 @@ fn validate_remote_entity(entity: &RemoteEntityInput) -> AppResult<()> {
                 | "event_exception"
                 | "task_list"
                 | "task"
+                | "reading_book"
+                | "reading_highlight"
         )
     {
         return Err(AppError::Other(format!(
@@ -1020,6 +1060,10 @@ fn apply_remote_business_row(tx: &Transaction<'_>, entity: &RemoteEntityInput) -
         }
         "task_list" => apply_remote_task_list(tx, entity, serde_json::from_value(payload)?),
         "task" => apply_remote_task(tx, entity, serde_json::from_value(payload)?),
+        "reading_book" => apply_remote_reading_book(tx, entity, serde_json::from_value(payload)?),
+        "reading_highlight" => {
+            apply_remote_reading_highlight(tx, entity, serde_json::from_value(payload)?)
+        }
         other => Err(AppError::Other(format!(
             "remote entity type `{other}` is not enabled yet"
         ))),
@@ -1626,6 +1670,139 @@ fn apply_remote_task(
     Ok(())
 }
 
+fn apply_remote_reading_book(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    payload: ReadingBookPayload,
+) -> AppResult<()> {
+    validate_payload_identity(
+        entity,
+        &payload.id,
+        payload.version,
+        payload.deleted_at.as_deref(),
+    )?;
+    if payload.title.trim().is_empty()
+        || payload.title.chars().count() > 1_024
+        || !is_sha256_hex(&payload.source_hash)
+        || payload
+            .progress_cfi
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty() || value.len() > 4_096)
+        || payload
+            .author
+            .as_deref()
+            .is_some_and(|value| value.chars().count() > 1_024)
+    {
+        return Err(AppError::Other(format!(
+            "invalid reading book payload for `{}`",
+            entity.entity_id
+        )));
+    }
+    tx.execute(
+        "INSERT INTO reading_books
+         (id,collection_id,document_id,local_path,title,author,source_hash,model_knows_content,
+          content_context_allowed,content_context_decided,progress_cfi,created_at,updated_at,version,
+          deleted_at,origin_device_id)
+         VALUES (?1,NULL,NULL,NULL,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12)
+         ON CONFLICT(id) DO UPDATE SET title=excluded.title,author=excluded.author,
+         source_hash=excluded.source_hash,model_knows_content=excluded.model_knows_content,
+         content_context_allowed=excluded.content_context_allowed,
+         content_context_decided=excluded.content_context_decided,progress_cfi=excluded.progress_cfi,
+         created_at=excluded.created_at,updated_at=excluded.updated_at,version=excluded.version,
+         deleted_at=NULL,origin_device_id=excluded.origin_device_id",
+        params![
+            payload.id,
+            payload.title.trim(),
+            payload.author.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+            payload.source_hash,
+            i64::from(payload.model_knows_content),
+            i64::from(payload.content_context_allowed),
+            i64::from(payload.content_context_decided),
+            payload.progress_cfi,
+            payload.created_at,
+            payload.updated_at,
+            payload.version,
+            entity.origin_device_id,
+        ],
+    )?;
+    Ok(())
+}
+
+fn apply_remote_reading_highlight(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    payload: ReadingHighlightPayload,
+) -> AppResult<()> {
+    validate_payload_identity(
+        entity,
+        &payload.id,
+        payload.version,
+        payload.deleted_at.as_deref(),
+    )?;
+    if !is_valid_entity_id(&payload.book_id)
+        || payload.cfi_range.trim().is_empty()
+        || payload.cfi_range.len() > 8_192
+        || payload.quote.trim().is_empty()
+        || payload.quote.len() > 20_000
+        || payload.context_before.len() > 8_000
+        || payload.context_after.len() > 8_000
+        || payload
+            .note
+            .as_deref()
+            .is_some_and(|value| value.len() > 20_000)
+        || !matches!(payload.color.as_str(), "yellow" | "green" | "blue" | "pink")
+    {
+        return Err(AppError::Other(format!(
+            "invalid reading highlight payload for `{}`",
+            entity.entity_id
+        )));
+    }
+    let book_exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM reading_books WHERE id=?1 AND deleted_at IS NULL)",
+        [&payload.book_id],
+        |row| row.get(0),
+    )?;
+    if !book_exists {
+        return Err(AppError::Other(format!(
+            "reading highlight `{}` references a missing book",
+            entity.entity_id
+        )));
+    }
+    tx.execute(
+        "INSERT INTO reading_highlights
+         (id,book_id,cfi_range,quote,context_before,context_after,note,color,created_at,updated_at,
+          version,deleted_at,origin_device_id)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12)
+         ON CONFLICT(id) DO UPDATE SET book_id=excluded.book_id,cfi_range=excluded.cfi_range,
+         quote=excluded.quote,context_before=excluded.context_before,context_after=excluded.context_after,
+         note=excluded.note,color=excluded.color,created_at=excluded.created_at,
+         updated_at=excluded.updated_at,version=excluded.version,deleted_at=NULL,
+         origin_device_id=excluded.origin_device_id",
+        params![
+            payload.id,
+            payload.book_id,
+            payload.cfi_range,
+            payload.quote,
+            payload.context_before,
+            payload.context_after,
+            payload.note,
+            payload.color,
+            payload.created_at,
+            payload.updated_at,
+            payload.version,
+            entity.origin_device_id,
+        ],
+    )?;
+    Ok(())
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn apply_remote_delete(tx: &Transaction<'_>, entity: &RemoteEntityInput) -> AppResult<()> {
     let deleted_at = entity.updated_at.to_string();
     match entity.entity_type.as_str() {
@@ -1681,6 +1858,30 @@ fn apply_remote_delete(tx: &Transaction<'_>, entity: &RemoteEntityInput) -> AppR
             tx.execute(
                 "UPDATE messages SET deleted_at = ?1, updated_at = ?1, \
                  version = MAX(version + 1, ?2), origin_device_id = ?3 WHERE id = ?4",
+                params![
+                    deleted_at,
+                    entity.revision,
+                    entity.origin_device_id,
+                    entity.entity_id
+                ],
+            )?;
+        }
+        "reading_book" => {
+            tx.execute(
+                "UPDATE reading_books SET deleted_at=?1,updated_at=?1,
+                 version=MAX(version+1,?2),origin_device_id=?3 WHERE id=?4",
+                params![
+                    deleted_at,
+                    entity.revision,
+                    entity.origin_device_id,
+                    entity.entity_id
+                ],
+            )?;
+        }
+        "reading_highlight" => {
+            tx.execute(
+                "UPDATE reading_highlights SET deleted_at=?1,updated_at=?1,
+                 version=MAX(version+1,?2),origin_device_id=?3 WHERE id=?4",
                 params![
                     deleted_at,
                     entity.revision,
@@ -2417,6 +2618,8 @@ fn parse_sync_entity_type(value: &str) -> AppResult<SyncEntityType> {
         "event_exception" => Ok(SyncEntityType::EventException),
         "task_list" => Ok(SyncEntityType::TaskList),
         "task" => Ok(SyncEntityType::Task),
+        "reading_book" => Ok(SyncEntityType::ReadingBook),
+        "reading_highlight" => Ok(SyncEntityType::ReadingHighlight),
         _ => Err(AppError::Other(format!(
             "unsupported conflict entity type `{value}`"
         ))),

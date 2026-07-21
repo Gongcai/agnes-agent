@@ -917,7 +917,7 @@ pub async fn get_debug_prompt(
     let reading_collection_id = reading_book
         .as_ref()
         .filter(|book| !book.model_knows_content && book.content_context_allowed)
-        .map(|book| book.collection_id.as_str());
+        .and_then(|book| book.collection_id.as_deref());
     let retrieval_collection_id = attached_collection_id.as_deref().or(reading_collection_id);
     let allow_hidden_collection =
         attached_collection_id.is_none() && reading_collection_id.is_some();
@@ -1859,7 +1859,7 @@ async fn start_agent_run(
     let reading_collection_id = reading_book
         .as_ref()
         .filter(|book| !book.model_knows_content && book.content_context_allowed)
-        .map(|book| book.collection_id.as_str());
+        .and_then(|book| book.collection_id.as_deref());
     let retrieval_collection_id = attached_collection_id.as_deref().or(reading_collection_id);
     let allow_hidden_collection =
         attached_collection_id.is_none() && reading_collection_id.is_some();
@@ -2854,6 +2854,40 @@ pub async fn list_reading_books(
     state.db.list_reading_books().await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingEpubPublishResult {
+    pub artifact_id: String,
+    pub reused: bool,
+    pub ready_replica_count: usize,
+}
+
+#[tauri::command]
+pub async fn publish_reading_epub(
+    state: tauri::State<'_, AppState>,
+    book_id: String,
+) -> AppResult<ReadingEpubPublishResult> {
+    let outcome = state
+        .sync
+        .publish_reading_epub(
+            state.storage.clone(),
+            book_id,
+            state.data_dir.join("artifacts").join("outbox"),
+        )
+        .await?;
+    if let Err(error) =
+        crate::storage::artifact_cache::enforce_quota(&state.db, state.data_dir.join("artifacts"))
+            .await
+    {
+        eprintln!("[artifact-gc] post-publish cleanup failed: {error}");
+    }
+    Ok(ReadingEpubPublishResult {
+        artifact_id: outcome.artifact_id,
+        reused: outcome.reused,
+        ready_replica_count: outcome.ready_replica_count,
+    })
+}
+
 #[tauri::command]
 pub async fn import_reading_book(
     state: tauri::State<'_, AppState>,
@@ -2896,7 +2930,46 @@ async fn import_reading_book_from_path(
         .find_reading_book_by_source_hash(source_hash.clone())
         .await?
     {
-        return Ok(existing);
+        if existing
+            .local_path
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path).is_file())
+        {
+            return Ok(existing);
+        }
+        let known_agent = state
+            .db
+            .list_agents()
+            .await?
+            .into_iter()
+            .any(|agent| agent.id == agent_id);
+        if !known_agent {
+            return Err(AppError::Other("Agent not found".into()));
+        }
+        let stored_path = tokio::task::spawn_blocking({
+            let data_dir = state.data_dir.clone();
+            let book_id = existing.id.clone();
+            move || persist_reading_epub(data_dir, book_id, bytes)
+        })
+        .await
+        .map_err(|error| AppError::Other(format!("EPUB storage task aborted: {error}")))??;
+        state
+            .db
+            .bind_local_reading_epub(
+                existing.id.clone(),
+                source_hash,
+                stored_path.to_string_lossy().to_string(),
+            )
+            .await?;
+        if let Err(error) = ensure_local_reading_index(state, &existing.id, &agent_id).await {
+            let _ = std::fs::remove_file(&stored_path);
+            return Err(error);
+        }
+        return state
+            .db
+            .get_reading_book(existing.id)
+            .await?
+            .ok_or_else(|| AppError::Other("Reading book disappeared after import".into()));
     }
 
     let known_agent = state
@@ -3105,6 +3178,7 @@ pub async fn new_reading_book_conversation(
     book_id: String,
     agent_id: String,
 ) -> AppResult<String> {
+    ensure_local_reading_index(&state, &book_id, &agent_id).await?;
     state
         .db
         .grant_reading_book_agent_access(book_id.clone(), agent_id.clone())
@@ -3146,6 +3220,68 @@ pub async fn new_reading_book_conversation(
         return Err(error);
     }
     Ok(session_id)
+}
+
+async fn ensure_local_reading_index(
+    state: &AppState,
+    book_id: &str,
+    agent_id: &str,
+) -> AppResult<()> {
+    let book = state
+        .db
+        .get_reading_book(book_id.to_string())
+        .await?
+        .ok_or_else(|| AppError::Other("书籍不存在".into()))?;
+    if book.collection_id.is_some() && book.document_id.is_some() {
+        return Ok(());
+    }
+    let local_path = book
+        .local_path
+        .as_deref()
+        .filter(|path| std::path::Path::new(path).is_file())
+        .ok_or_else(|| AppError::Other("请先等待 EPUB 下载并安装到本机".into()))?;
+    let local_path_for_parse = local_path.to_string();
+    let parsed = tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(local_path_for_parse)?;
+        crate::reading::parse_epub_bytes(&bytes)
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("EPUB 索引任务异常中止：{error}")))??;
+    let collection_id = uuid::Uuid::new_v4().to_string();
+    state
+        .db
+        .create_knowledge_collection(crate::db::repo::knowledge::NewKnowledgeCollection {
+            id: collection_id.clone(),
+            name: format!("Read With AI · {}", book.title.trim()),
+            scope: "custom".into(),
+            agent_id: agent_id.into(),
+        })
+        .await?;
+    let mut chunks = Vec::new();
+    for chapter in &parsed.chapters {
+        for mut chunk in chunk_local_text(&chapter.text) {
+            chunk.section_path = Some(chapter.title.clone());
+            chunks.push(chunk);
+        }
+    }
+    let document = state
+        .db
+        .import_local_knowledge_document(crate::db::repo::knowledge::NewLocalDocument {
+            collection_id: collection_id.clone(),
+            agent_id: agent_id.into(),
+            title: book.title,
+            media_type: "application/epub+zip".into(),
+            local_path: local_path.into(),
+            plaintext_hash: book.source_hash,
+            size: std::fs::metadata(local_path)?.len() as i64,
+            parser_profile: crate::db::repo::knowledge::DocumentParserProfile::builtin_text(),
+            chunks,
+        })
+        .await?;
+    state
+        .db
+        .bind_local_reading_index(book_id.into(), collection_id, document.document_id)
+        .await
 }
 
 #[tauri::command]

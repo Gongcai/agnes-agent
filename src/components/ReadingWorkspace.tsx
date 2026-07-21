@@ -12,6 +12,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  CloudUpload,
   FileUp,
   Highlighter,
   History,
@@ -42,9 +43,9 @@ import {
 
 interface ReadingBook {
   id: string;
-  collection_id: string;
-  document_id: string;
-  local_path: string;
+  collection_id: string | null;
+  document_id: string | null;
+  local_path: string | null;
   title: string;
   author: string | null;
   source_hash: string;
@@ -54,6 +55,17 @@ interface ReadingBook {
   progress_cfi: string | null;
   created_at: string;
   updated_at: string;
+  artifact_id: string | null;
+  artifact_status: string | null;
+  ready_replica_count: number;
+  local_artifact_status: string | null;
+  local_artifact_error: string | null;
+}
+
+interface ReadingEpubPublishResult {
+  artifact_id: string;
+  reused: boolean;
+  ready_replica_count: number;
 }
 
 interface ReadingHighlight {
@@ -233,6 +245,11 @@ const EpubPane: React.FC<{
     if (!host) return;
     let disposed = false;
     let rendered: Rendition | null = null;
+    if (!book.local_path) {
+      setError("这本书正在等待 EPUB 下载到本机");
+      setLoading(false);
+      return;
+    }
     const source = convertFileSrc(book.local_path);
     const hookedContents = new WeakSet<object>();
     const hookedFrames = new WeakSet<HTMLIFrameElement>();
@@ -634,6 +651,19 @@ export const ReadingWorkspace: React.FC = () => {
       await loadBooks();
       setSelectedBookId(book.id);
       setIsDiscussionOpen(true);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const publishBook = async (bookId: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      await invoke<ReadingEpubPublishResult>("publish_reading_epub", { bookId });
+      await loadBooks();
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -1053,11 +1083,28 @@ export const ReadingWorkspace: React.FC = () => {
           {books.length ? (
             <div className="grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 overflow-y-auto p-5">
               {books.map((book) => (
-                <button key={book.id} onClick={() => openBook(book.id)} className="min-h-28 rounded-md border border-stone-200 bg-white p-4 text-left text-stone-600 hover:border-emerald-300 hover:bg-emerald-50/50 hover:text-emerald-950">
-                  <BookOpen className="mb-5 h-5 w-5 text-emerald-700" />
-                  <span className="block truncate text-sm font-semibold">{book.title}</span>
-                  <span className="mt-1 block truncate text-[11px] text-stone-400">{book.author || "未知作者"}</span>
-                </button>
+                <article key={book.id} className="group min-h-28 rounded-md border border-stone-200 bg-white p-4 text-left text-stone-600 transition-colors hover:border-emerald-300 hover:bg-emerald-50/50">
+                  <button onClick={() => book.local_path && openBook(book.id)} disabled={!book.local_path} className="block w-full text-left disabled:cursor-not-allowed disabled:opacity-55">
+                    <BookOpen className="mb-5 h-5 w-5 text-emerald-700" />
+                    <span className="block truncate text-sm font-semibold text-stone-700">{book.title}</span>
+                    <span className="mt-1 block truncate text-[11px] text-stone-400">{book.author || "未知作者"}</span>
+                    {!book.local_path && <span className="mt-2 block text-[10px] text-amber-700">等待 EPUB 下载</span>}
+                  </button>
+                  <div className="mt-3 flex items-center justify-between gap-2 border-t border-stone-100 pt-2">
+                    <span className="truncate text-[10px] text-stone-400">
+                      {book.ready_replica_count > 0 ? `已发布 · ${book.ready_replica_count} 个副本` : "仅本机"}
+                    </span>
+                    <button
+                      onClick={() => void publishBook(book.id)}
+                      disabled={!book.local_path || loading}
+                      title={book.ready_replica_count > 0 ? "重新确认 EPUB 云端副本" : "发布加密 EPUB"}
+                      className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:text-stone-300"
+                    >
+                      {loading ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <CloudUpload className="h-3 w-3" />}
+                      {book.ready_replica_count > 0 ? "已发布" : "发布"}
+                    </button>
+                  </div>
+                </article>
               ))}
             </div>
           ) : (

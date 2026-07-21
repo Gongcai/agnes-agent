@@ -548,9 +548,9 @@ CREATE INDEX IF NOT EXISTS idx_embedding_items_collection_profile
 pub const READING_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS reading_books (
   id TEXT PRIMARY KEY,
-  collection_id TEXT NOT NULL REFERENCES knowledge_collections(id),
-  document_id TEXT NOT NULL REFERENCES documents(id),
-  local_path TEXT NOT NULL,
+  collection_id TEXT REFERENCES knowledge_collections(id),
+  document_id TEXT REFERENCES documents(id),
+  local_path TEXT,
   title TEXT NOT NULL,
   author TEXT,
   source_hash TEXT NOT NULL UNIQUE,

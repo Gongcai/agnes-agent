@@ -227,6 +227,22 @@ pub enum DbCommand {
         source_hash: String,
         resp: oneshot::Sender<AppResult<Option<repo::reading::ReadingBookRow>>>,
     },
+    GetReadingBook {
+        book_id: String,
+        resp: oneshot::Sender<AppResult<Option<repo::reading::ReadingBookRow>>>,
+    },
+    BindLocalReadingEpub {
+        book_id: String,
+        source_hash: String,
+        local_path: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    BindLocalReadingIndex {
+        book_id: String,
+        collection_id: String,
+        document_id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ListReadingBooks {
         resp: oneshot::Sender<AppResult<Vec<repo::reading::ReadingBookRow>>>,
     },
@@ -1225,6 +1241,50 @@ impl DbActorHandle {
     ) -> AppResult<Option<repo::reading::ReadingBookRow>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::FindReadingBookBySourceHash { source_hash, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn get_reading_book(
+        &self,
+        book_id: String,
+    ) -> AppResult<Option<repo::reading::ReadingBookRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetReadingBook { book_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn bind_local_reading_epub(
+        &self,
+        book_id: String,
+        source_hash: String,
+        local_path: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::BindLocalReadingEpub {
+            book_id,
+            source_hash,
+            local_path,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn bind_local_reading_index(
+        &self,
+        book_id: String,
+        collection_id: String,
+        document_id: String,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::BindLocalReadingIndex {
+            book_id,
+            collection_id,
+            document_id,
+            resp,
+        })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -2607,6 +2667,35 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::FindReadingBookBySourceHash { source_hash, resp } => {
                     let _ = resp.send(repo::reading::find_by_source_hash(&conn, &source_hash));
+                }
+                DbCommand::GetReadingBook { book_id, resp } => {
+                    let _ = resp.send(repo::reading::get_book(&conn, &book_id));
+                }
+                DbCommand::BindLocalReadingEpub {
+                    book_id,
+                    source_hash,
+                    local_path,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::reading::bind_local_epub(
+                        &conn,
+                        &book_id,
+                        &source_hash,
+                        &local_path,
+                    ));
+                }
+                DbCommand::BindLocalReadingIndex {
+                    book_id,
+                    collection_id,
+                    document_id,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::reading::bind_local_index(
+                        &conn,
+                        &book_id,
+                        &collection_id,
+                        &document_id,
+                    ));
                 }
                 DbCommand::ListReadingBooks { resp } => {
                     let _ = resp.send(repo::reading::list_books(&conn));

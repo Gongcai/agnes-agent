@@ -16,6 +16,9 @@ use crate::error::{AppError, AppResult};
 use crate::sync::artifact::{install_artifact, ArtifactManifest, BuiltArtifact};
 use crate::sync::crypto::SyncMasterKey;
 use crate::sync::knowledge_artifact::{apply_verified_artifact, KNOWLEDGE_ARTIFACT_TYPE};
+use crate::sync::reading_artifact::{
+    decode as decode_reading_epub, install_epub, READING_EPUB_ARTIFACT_TYPE,
+};
 
 use super::artifact_transfer;
 use super::domain::{
@@ -325,6 +328,19 @@ impl StorageService {
         let installed = install_artifact(&install_root, &verified)?;
         if manifest.artifact_type == KNOWLEDGE_ARTIFACT_TYPE {
             apply_verified_artifact(&self.db, &verified).await?;
+        } else if manifest.artifact_type == READING_EPUB_ARTIFACT_TYPE {
+            let data_dir = install_root.parent().ok_or_else(|| {
+                AppError::Other("Artifact install root has no application data parent".into())
+            })?;
+            let (payload, epub) = decode_reading_epub(&verified)?;
+            let epub_path = install_epub(data_dir, &payload, &epub)?;
+            self.db
+                .bind_local_reading_epub(
+                    payload.book_id,
+                    payload.source_hash,
+                    epub_path.to_string_lossy().to_string(),
+                )
+                .await?;
         }
         self.db
             .upsert_artifact_manifest(crate::db::repo::artifacts::UpsertArtifactManifest {

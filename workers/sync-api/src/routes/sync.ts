@@ -96,6 +96,8 @@ const BOOTSTRAP_ENTITY_ORDER_SQL = `CASE entity_type
   WHEN 'event_exception' THEN 8
   WHEN 'task_list' THEN 9
   WHEN 'task' THEN 10
+  WHEN 'reading_book' THEN 11
+  WHEN 'reading_highlight' THEN 12
   ELSE 99 END`;
 
 function bootstrapEntityOrder(entityType: string): number {
@@ -122,6 +124,10 @@ function bootstrapEntityOrder(entityType: string): number {
       return 9;
     case "task":
       return 10;
+    case "reading_book":
+      return 11;
+    case "reading_highlight":
+      return 12;
     default:
       return -1;
   }

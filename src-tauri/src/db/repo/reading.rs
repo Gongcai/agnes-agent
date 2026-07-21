@@ -1,17 +1,18 @@
 //! Local Read With AI domain: user-level books and highlights, with one
 //! discussion session per book and agent.
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
+use crate::sync::payload::SyncEntityType;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReadingBookRow {
     pub id: String,
-    pub collection_id: String,
-    pub document_id: String,
-    pub local_path: String,
+    pub collection_id: Option<String>,
+    pub document_id: Option<String>,
+    pub local_path: Option<String>,
     pub title: String,
     pub author: Option<String>,
     pub source_hash: String,
@@ -21,6 +22,14 @@ pub struct ReadingBookRow {
     pub progress_cfi: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub version: i64,
+    pub deleted_at: Option<String>,
+    pub origin_device_id: Option<String>,
+    pub artifact_id: Option<String>,
+    pub artifact_status: Option<String>,
+    pub ready_replica_count: i64,
+    pub local_artifact_status: Option<String>,
+    pub local_artifact_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,6 +44,9 @@ pub struct ReadingHighlightRow {
     pub color: String,
     pub created_at: String,
     pub updated_at: String,
+    pub version: i64,
+    pub deleted_at: Option<String>,
+    pub origin_device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,16 +103,26 @@ fn reading_book_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReadingBoo
         progress_cfi: row.get(10)?,
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
+        version: row.get(13)?,
+        deleted_at: row.get(14)?,
+        origin_device_id: row.get(15)?,
+        artifact_id: None,
+        artifact_status: None,
+        ready_replica_count: 0,
+        local_artifact_status: None,
+        local_artifact_error: None,
     })
 }
 
 const BOOK_COLUMNS: &str =
     "id, collection_id, document_id, local_path, title, author, source_hash, \
-    model_knows_content, content_context_allowed, content_context_decided, progress_cfi, created_at, updated_at";
+    model_knows_content, content_context_allowed, content_context_decided, progress_cfi, created_at, updated_at, \
+    version, deleted_at, origin_device_id";
 
 const BOOK_COLUMNS_QUALIFIED: &str =
     "b.id, b.collection_id, b.document_id, b.local_path, b.title, b.author, b.source_hash, \
-    b.model_knows_content, b.content_context_allowed, b.content_context_decided, b.progress_cfi, b.created_at, b.updated_at";
+    b.model_knows_content, b.content_context_allowed, b.content_context_decided, b.progress_cfi, b.created_at, b.updated_at, \
+    b.version, b.deleted_at, b.origin_device_id";
 
 pub fn insert_book(conn: &mut Connection, input: &NewReadingBook) -> AppResult<ReadingBookRow> {
     if input.title.trim().is_empty() || input.source_hash.trim().is_empty() {
@@ -109,7 +131,8 @@ pub fn insert_book(conn: &mut Connection, input: &NewReadingBook) -> AppResult<R
         ));
     }
     let timestamp = now();
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
     let document_matches_collection: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM documents WHERE id = ?1 AND collection_id = ?2 AND deleted_at IS NULL)",
         params![input.document_id, input.collection_id],
@@ -122,8 +145,8 @@ pub fn insert_book(conn: &mut Connection, input: &NewReadingBook) -> AppResult<R
     }
     tx.execute(
         "INSERT INTO reading_books \
-         (id, collection_id, document_id, local_path, title, author, source_hash, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+         (id, collection_id, document_id, local_path, title, author, source_hash, created_at, updated_at, origin_device_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)",
         params![
             input.id,
             input.collection_id,
@@ -133,10 +156,12 @@ pub fn insert_book(conn: &mut Connection, input: &NewReadingBook) -> AppResult<R
             input.author.as_deref().map(str::trim).filter(|value| !value.is_empty()),
             input.source_hash,
             timestamp,
+            device_id,
         ],
     )?;
     let row = get_in_transaction(&tx, &input.id)?
         .ok_or_else(|| AppError::Other("Reading book disappeared during creation".into()))?;
+    enqueue_book(&tx, &row)?;
     tx.commit()?;
     Ok(row)
 }
@@ -154,13 +179,94 @@ pub fn find_by_source_hash(
     .map_err(Into::into)
 }
 
+pub fn get_book(conn: &Connection, book_id: &str) -> AppResult<Option<ReadingBookRow>> {
+    conn.query_row(
+        &format!("SELECT {BOOK_COLUMNS} FROM reading_books WHERE id = ?1 AND deleted_at IS NULL"),
+        [book_id],
+        reading_book_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn bind_local_epub(
+    conn: &Connection,
+    book_id: &str,
+    source_hash: &str,
+    local_path: &str,
+) -> AppResult<()> {
+    if !std::path::Path::new(local_path).is_absolute() || local_path.len() > 4_096 {
+        return Err(AppError::Other("Invalid local EPUB binding".into()));
+    }
+    let changed = conn.execute(
+        "UPDATE reading_books SET local_path = ?1 WHERE id = ?2 AND source_hash = ?3 AND deleted_at IS NULL",
+        params![local_path, book_id, source_hash],
+    )?;
+    if changed != 1 {
+        return Err(AppError::Other(
+            "Reading book metadata is unavailable or does not match the EPUB".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn bind_local_index(
+    conn: &Connection,
+    book_id: &str,
+    collection_id: &str,
+    document_id: &str,
+) -> AppResult<()> {
+    let matches: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM documents WHERE id=?1 AND collection_id=?2 AND deleted_at IS NULL)",
+        params![document_id, collection_id],
+        |row| row.get(0),
+    )?;
+    if !matches {
+        return Err(AppError::Other(
+            "Reading index document does not match its collection".into(),
+        ));
+    }
+    let changed = conn.execute(
+        "UPDATE reading_books SET collection_id=?1,document_id=?2 WHERE id=?3 AND deleted_at IS NULL",
+        params![collection_id, document_id, book_id],
+    )?;
+    if changed != 1 {
+        return Err(AppError::Other("Reading book not found".into()));
+    }
+    Ok(())
+}
+
 pub fn list_books(conn: &Connection) -> AppResult<Vec<ReadingBookRow>> {
     let mut statement = conn.prepare(&format!(
-        "SELECT {BOOK_COLUMNS} FROM reading_books WHERE deleted_at IS NULL \
+        "SELECT reading_books.id, reading_books.collection_id, reading_books.document_id, reading_books.local_path, \
+                reading_books.title, reading_books.author, reading_books.source_hash, reading_books.model_knows_content, \
+                reading_books.content_context_allowed, reading_books.content_context_decided, reading_books.progress_cfi, \
+                reading_books.created_at, reading_books.updated_at, reading_books.version, reading_books.deleted_at, \
+                reading_books.origin_device_id, am.id, am.local_status, \
+                COALESCE((SELECT COUNT(*) FROM artifact_replicas r WHERE r.artifact_id = am.id AND r.status = 'ready'), 0), \
+                das.local_status, das.last_error_code \
+         FROM reading_books \
+         LEFT JOIN artifact_manifests am ON am.id = ( \
+           SELECT candidate.id FROM artifact_manifests candidate \
+           WHERE candidate.artifact_type = 'reading_epub' AND candidate.source_version_id = reading_books.id \
+           ORDER BY CASE candidate.local_status WHEN 'installed' THEN 3 WHEN 'available' THEN 2 WHEN 'built' THEN 1 ELSE 0 END DESC, \
+                    CAST(candidate.created_at AS INTEGER) DESC, candidate.id DESC LIMIT 1 \
+         ) \
+         LEFT JOIN device_artifact_states das ON das.artifact_id = am.id \
+           AND das.device_id = (SELECT device_id FROM sync_runtime_state WHERE singleton = 1) \
+         WHERE reading_books.deleted_at IS NULL \
          ORDER BY CAST(updated_at AS INTEGER) DESC, title COLLATE NOCASE"
     ))?;
     let rows = statement
-        .query_map([], reading_book_from_row)?
+        .query_map([], |row| {
+            let mut book = reading_book_from_row(row)?;
+            book.artifact_id = row.get(16)?;
+            book.artifact_status = row.get(17)?;
+            book.ready_replica_count = row.get(18)?;
+            book.local_artifact_status = row.get(19)?;
+            book.local_artifact_error = row.get(20)?;
+            Ok(book)
+        })?
         .collect::<Result<Vec<_>, _>>()
         .map_err(Into::into);
     rows
@@ -343,17 +449,19 @@ pub fn update_book_mode(
     model_knows_content: bool,
 ) -> AppResult<ReadingBookRow> {
     let timestamp = now();
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
     let changed = tx.execute(
-        "UPDATE reading_books SET model_knows_content = ?1, updated_at = ?2, version = version + 1 \
-         WHERE id = ?3 AND deleted_at IS NULL",
-        params![i64::from(model_knows_content), timestamp, book_id],
+        "UPDATE reading_books SET model_knows_content = ?1, updated_at = ?2, version = version + 1, origin_device_id = ?3 \
+         WHERE id = ?4 AND deleted_at IS NULL",
+        params![i64::from(model_knows_content), timestamp, device_id, book_id],
     )?;
     if changed == 0 {
         return Err(AppError::Other("Reading book not found".into()));
     }
     let row = get_in_transaction(&tx, book_id)?
         .ok_or_else(|| AppError::Other("Reading book not found".into()))?;
+    enqueue_book(&tx, &row)?;
     tx.commit()?;
     Ok(row)
 }
@@ -364,17 +472,19 @@ pub fn set_content_context_allowed(
     allowed: bool,
 ) -> AppResult<ReadingBookRow> {
     let timestamp = now();
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
     let changed = tx.execute(
-        "UPDATE reading_books SET content_context_allowed = ?1, content_context_decided = 1, updated_at = ?2, version = version + 1 \
-         WHERE id = ?3 AND deleted_at IS NULL",
-        params![i64::from(allowed), timestamp, book_id],
+        "UPDATE reading_books SET content_context_allowed = ?1, content_context_decided = 1, updated_at = ?2, \
+         version = version + 1, origin_device_id = ?3 WHERE id = ?4 AND deleted_at IS NULL",
+        params![i64::from(allowed), timestamp, device_id, book_id],
     )?;
     if changed == 0 {
         return Err(AppError::Other("Reading book not found".into()));
     }
     let row = get_in_transaction(&tx, book_id)?
         .ok_or_else(|| AppError::Other("Reading book not found".into()))?;
+    enqueue_book(&tx, &row)?;
     tx.commit()?;
     Ok(row)
 }
@@ -384,36 +494,40 @@ pub fn update_progress(conn: &mut Connection, book_id: &str, cfi: &str) -> AppRe
     if cfi.is_empty() || cfi.len() > 4_096 {
         return Err(AppError::Other("Invalid EPUB reading position".into()));
     }
-    let changed = conn.execute(
-        "UPDATE reading_books SET progress_cfi = ?1, updated_at = ?2 WHERE id = ?3 AND deleted_at IS NULL",
-        params![cfi, now(), book_id],
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
+    let changed = tx.execute(
+        "UPDATE reading_books SET progress_cfi = ?1, updated_at = ?2, version = version + 1, origin_device_id = ?3 \
+         WHERE id = ?4 AND deleted_at IS NULL AND progress_cfi IS NOT ?1",
+        params![cfi, now(), device_id, book_id],
     )?;
     if changed == 0 {
-        return Err(AppError::Other("Reading book not found".into()));
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM reading_books WHERE id = ?1 AND deleted_at IS NULL)",
+            [book_id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(AppError::Other("Reading book not found".into()));
+        }
+        tx.commit()?;
+        return Ok(());
     }
+    let row = get_in_transaction(&tx, book_id)?
+        .ok_or_else(|| AppError::Other("Reading book not found".into()))?;
+    enqueue_book(&tx, &row)?;
+    tx.commit()?;
     Ok(())
 }
 
 pub fn list_highlights(conn: &Connection, book_id: &str) -> AppResult<Vec<ReadingHighlightRow>> {
     let mut statement = conn.prepare(
-        "SELECT id, book_id, cfi_range, quote, context_before, context_after, note, color, created_at, updated_at \
+        "SELECT id, book_id, cfi_range, quote, context_before, context_after, note, color, created_at, updated_at, \
+                version, deleted_at, origin_device_id \
          FROM reading_highlights WHERE book_id = ?1 AND deleted_at IS NULL ORDER BY created_at ASC, id ASC",
     )?;
     let rows = statement
-        .query_map([book_id], |row| {
-            Ok(ReadingHighlightRow {
-                id: row.get(0)?,
-                book_id: row.get(1)?,
-                cfi_range: row.get(2)?,
-                quote: row.get(3)?,
-                context_before: row.get(4)?,
-                context_after: row.get(5)?,
-                note: row.get(6)?,
-                color: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-            })
-        })?
+        .query_map([book_id], reading_highlight_from_row)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(Into::into);
     rows
@@ -429,7 +543,8 @@ pub fn insert_highlight(
         return Err(AppError::Other("Invalid reading highlight".into()));
     }
     let timestamp = now();
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
     let book_exists: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM reading_books WHERE id = ?1 AND deleted_at IS NULL)",
         [&input.book_id],
@@ -440,8 +555,8 @@ pub fn insert_highlight(
     }
     tx.execute(
         "INSERT INTO reading_highlights \
-         (id, book_id, cfi_range, quote, context_before, context_after, note, color, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+         (id, book_id, cfi_range, quote, context_before, context_after, note, color, created_at, updated_at, origin_device_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)",
         params![
             input.id,
             input.book_id,
@@ -452,29 +567,116 @@ pub fn insert_highlight(
             input.note.as_deref().map(str::trim).filter(|value| !value.is_empty()),
             normalize_color(&input.color),
             timestamp,
+            device_id,
         ],
     )?;
     let row = tx.query_row(
-        "SELECT id, book_id, cfi_range, quote, context_before, context_after, note, color, created_at, updated_at \
+        "SELECT id, book_id, cfi_range, quote, context_before, context_after, note, color, created_at, updated_at, \
+                version, deleted_at, origin_device_id \
          FROM reading_highlights WHERE id = ?1",
         [&input.id],
-        |row| {
-            Ok(ReadingHighlightRow {
-                id: row.get(0)?,
-                book_id: row.get(1)?,
-                cfi_range: row.get(2)?,
-                quote: row.get(3)?,
-                context_before: row.get(4)?,
-                context_after: row.get(5)?,
-                note: row.get(6)?,
-                color: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-            })
-        },
+        reading_highlight_from_row,
     )?;
+    enqueue_highlight(&tx, &row)?;
     tx.commit()?;
     Ok(row)
+}
+
+fn enqueue_book(conn: &Connection, row: &ReadingBookRow) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM sync_outbox WHERE entity_type = 'reading_book' AND entity_id = ?1 \
+         AND status = 'pending' AND payload_encoding = 'json'",
+        [&row.id],
+    )?;
+    super::sync::enqueue_projection(
+        conn,
+        SyncEntityType::ReadingBook,
+        &row.id,
+        row.version,
+        row.deleted_at.is_some(),
+        &serde_json::to_value(row)?,
+    )?;
+    Ok(())
+}
+
+fn enqueue_highlight(conn: &Connection, row: &ReadingHighlightRow) -> AppResult<()> {
+    super::sync::enqueue_projection(
+        conn,
+        SyncEntityType::ReadingHighlight,
+        &row.id,
+        row.version,
+        row.deleted_at.is_some(),
+        &serde_json::to_value(row)?,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn enqueue_existing_sync_entities(conn: &Connection) -> AppResult<()> {
+    let book_ids = {
+        let mut statement = conn.prepare(
+            "SELECT id FROM reading_books b WHERE NOT EXISTS (
+               SELECT 1 FROM sync_entity_state s WHERE s.entity_type='reading_book' AND s.entity_id=b.id
+             ) AND NOT EXISTS (
+               SELECT 1 FROM sync_outbox o WHERE o.entity_type='reading_book' AND o.entity_id=b.id
+                 AND o.status IN ('pending','in_flight','conflict','dead_letter')
+             ) ORDER BY id",
+        )?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids
+    };
+    for id in book_ids {
+        let row = conn.query_row(
+            &format!("SELECT {BOOK_COLUMNS} FROM reading_books WHERE id=?1"),
+            [&id],
+            reading_book_from_row,
+        )?;
+        enqueue_book(conn, &row)?;
+    }
+
+    let highlight_ids = {
+        let mut statement = conn.prepare(
+            "SELECT id FROM reading_highlights h WHERE NOT EXISTS (
+               SELECT 1 FROM sync_entity_state s WHERE s.entity_type='reading_highlight' AND s.entity_id=h.id
+             ) AND NOT EXISTS (
+               SELECT 1 FROM sync_outbox o WHERE o.entity_type='reading_highlight' AND o.entity_id=h.id
+                 AND o.status IN ('pending','in_flight','conflict','dead_letter')
+             ) ORDER BY id",
+        )?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids
+    };
+    for id in highlight_ids {
+        let row = conn.query_row(
+            "SELECT id,book_id,cfi_range,quote,context_before,context_after,note,color,created_at,
+                    updated_at,version,deleted_at,origin_device_id FROM reading_highlights WHERE id=?1",
+            [&id],
+            reading_highlight_from_row,
+        )?;
+        enqueue_highlight(conn, &row)?;
+    }
+    Ok(())
+}
+
+fn reading_highlight_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReadingHighlightRow> {
+    Ok(ReadingHighlightRow {
+        id: row.get(0)?,
+        book_id: row.get(1)?,
+        cfi_range: row.get(2)?,
+        quote: row.get(3)?,
+        context_before: row.get(4)?,
+        context_after: row.get(5)?,
+        note: row.get(6)?,
+        color: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        version: row.get(10)?,
+        deleted_at: row.get(11)?,
+        origin_device_id: row.get(12)?,
+    })
 }
 
 fn get_in_transaction(tx: &Transaction<'_>, book_id: &str) -> AppResult<Option<ReadingBookRow>> {
@@ -508,6 +710,13 @@ mod tests {
             .unwrap();
         conn.execute_batch(crate::db::schema::READING_SCHEMA)
             .unwrap();
+        conn.execute_batch(crate::db::schema::ARTIFACT_SCHEMA)
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sync_runtime_state (singleton, device_id) VALUES (1, ?1)",
+            [uuid::Uuid::new_v4().to_string()],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO agents (id, name) VALUES ('agent', 'Agent')",
             [],

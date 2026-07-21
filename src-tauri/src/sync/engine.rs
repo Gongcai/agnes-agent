@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use rand::Rng;
 use serde::Serialize;
+use sha2::Digest;
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
@@ -37,6 +38,11 @@ use crate::sync::protocol::{
     JoinPairingSessionRequest, ObjectLocalStatus, ObjectManifestResponse, ObjectStateRequest,
     PairingJoinResponse, PushRequest, PushResponse, RemoteChange, RemoteEntity,
     RevokeDeviceResponse, SyncDevice, DEFAULT_PAGE_LIMIT, PROTOCOL_VERSION,
+};
+use crate::sync::reading_artifact::{
+    build as build_reading_epub, build_fingerprint as reading_build_fingerprint,
+    cache_built_artifact as cache_reading_artifact, decode as decode_reading_epub,
+    READING_EPUB_ARTIFACT_TYPE,
 };
 use crate::sync::replication::{
     ArtifactInstaller, ArtifactReplicationCoordinator, ReplicationReport,
@@ -310,6 +316,176 @@ impl SyncService {
         Ok(KnowledgeArtifactPublicationOutcome {
             artifact_id: manifest.id,
             reused: reused_ready_replica,
+            ready_replica_count,
+        })
+    }
+
+    pub async fn publish_reading_epub(
+        &self,
+        storage: Arc<StorageService>,
+        book_id: String,
+        cache_root: std::path::PathBuf,
+    ) -> AppResult<KnowledgeArtifactPublicationOutcome> {
+        let _guard = self.artifact_publish_gate.lock().await;
+        let status = self.status().await?;
+        if !status.credential_configured {
+            return Err(AppError::Other("同步凭证尚未配置".into()));
+        }
+        if !status.e2ee.confirmed || !status.e2ee.transport_ready {
+            return Err(AppError::Other("同步端到端加密尚未就绪".into()));
+        }
+        // Remote devices need the reading_book entity before an object change can
+        // be installed, so publish its E2EE metadata ahead of the EPUB artifact.
+        self.sync_now().await?;
+        let keyset = self
+            .load_keyset()
+            .await?
+            .ok_or_else(|| AppError::Other("同步加密密钥尚未配置".into()))?;
+        let book = self
+            .db
+            .get_reading_book(book_id.clone())
+            .await?
+            .ok_or_else(|| AppError::Other("书籍不存在".into()))?;
+        let local_path = book
+            .local_path
+            .as_deref()
+            .filter(|path| std::path::Path::new(path).is_file())
+            .ok_or_else(|| AppError::Other("本机尚未安装该 EPUB".into()))?;
+        let epub = tokio::fs::read(local_path).await?;
+        let actual_hash = format!("{:x}", sha2::Sha256::digest(&epub));
+        if actual_hash != book.source_hash {
+            return Err(AppError::Other("本机 EPUB 与书籍元数据不匹配".into()));
+        }
+        crate::reading::parse_epub_bytes(&epub)?;
+
+        let fingerprint = reading_build_fingerprint(&book.source_hash)?;
+        let existing = self
+            .db
+            .find_artifact_manifest_by_fingerprint(
+                READING_EPUB_ARTIFACT_TYPE.into(),
+                book_id.clone(),
+                fingerprint,
+            )
+            .await?;
+        let object_id = format!("reading:{book_id}");
+        let logical_version = 1_u64;
+        let mut artifact = None;
+        let manifest;
+        let encrypted_cache_path;
+        let reused;
+
+        if let Some(existing) = existing {
+            manifest = existing.to_manifest()?;
+            let ready = self
+                .db
+                .list_artifact_replicas(existing.id.clone())
+                .await?
+                .into_iter()
+                .any(|replica| replica.status == "ready");
+            if ready {
+                encrypted_cache_path = existing.local_path;
+                reused = true;
+            } else {
+                let cache_path = existing
+                    .local_path
+                    .as_deref()
+                    .filter(|path| std::path::Path::new(path).is_file())
+                    .ok_or_else(|| AppError::Other("现有 EPUB 制品缺少可重试的密文缓存".into()))?;
+                let bytes = tokio::fs::read(cache_path).await?;
+                let key = keyset
+                    .key(existing.key_version)
+                    .ok_or_else(|| AppError::Other("缓存 EPUB 制品所需的历史密钥不可用".into()))?;
+                let verified = verify_artifact(key, &manifest, &bytes)?;
+                let (payload, _) = decode_reading_epub(&verified)?;
+                if payload.book_id != book_id || payload.source_hash != book.source_hash {
+                    return Err(AppError::Other("缓存 EPUB 制品与当前书籍不匹配".into()));
+                }
+                artifact = Some(BuiltArtifact {
+                    manifest: manifest.clone(),
+                    bytes,
+                });
+                encrypted_cache_path = Some(cache_path.into());
+                reused = false;
+            }
+        } else {
+            let built = build_reading_epub(
+                keyset.active_key(),
+                keyset.active_key_version(),
+                &book.id,
+                &book.title,
+                book.author.as_deref(),
+                &book.source_hash,
+                epub,
+            )?;
+            let cached = tokio::task::spawn_blocking({
+                let cache_root = cache_root.clone();
+                let built = built.clone();
+                move || cache_reading_artifact(&cache_root, &built)
+            })
+            .await
+            .map_err(|error| AppError::Other(format!("EPUB 制品缓存任务异常中止：{error}")))??;
+            manifest = built.manifest.clone();
+            encrypted_cache_path = Some(cached.to_string_lossy().to_string());
+            self.db
+                .upsert_artifact_manifest(crate::db::repo::artifacts::UpsertArtifactManifest {
+                    manifest: manifest.clone(),
+                    local_path: encrypted_cache_path.clone(),
+                    local_status: "built".into(),
+                    installed_at: None,
+                })
+                .await?;
+            artifact = Some(built);
+            reused = false;
+        }
+
+        if let Some(artifact) = artifact {
+            storage
+                .upload_artifact(
+                    crate::storage::MANAGED_R2_ACCOUNT_ID.into(),
+                    artifact,
+                    object_id.clone(),
+                    logical_version,
+                    knowledge_publish_hlc(&manifest, &status.database.device_id)?,
+                )
+                .await?;
+        }
+        let checked_at = current_unix_seconds_string();
+        self.db
+            .upsert_artifact_manifest(crate::db::repo::artifacts::UpsertArtifactManifest {
+                manifest: manifest.clone(),
+                local_path: encrypted_cache_path,
+                local_status: "installed".into(),
+                installed_at: Some(checked_at.clone()),
+            })
+            .await?;
+        self.db
+            .upsert_device_artifact_state(crate::db::repo::artifacts::DeviceArtifactStateRow {
+                device_id: status.database.device_id,
+                artifact_id: manifest.id.clone(),
+                observed_version: 1,
+                local_status: "installed".into(),
+                verified_hash: Some(manifest.ciphertext_hash.clone()),
+                last_checked_at: checked_at,
+                last_error_code: None,
+            })
+            .await?;
+        self.report_installed_object(
+            object_id,
+            1,
+            manifest.id.clone(),
+            manifest.ciphertext_hash.clone(),
+        )
+        .await?;
+        let ready_replica_count = self
+            .db
+            .list_artifact_replicas(manifest.id.clone())
+            .await?
+            .into_iter()
+            .filter(|replica| replica.status == "ready")
+            .count();
+        Ok(KnowledgeArtifactPublicationOutcome {
+            artifact_id: manifest.id,
+            reused,
             ready_replica_count,
         })
     }
