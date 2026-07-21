@@ -2476,6 +2476,24 @@ fn trailing_chars(value: &str, max_chars: usize) -> String {
     value[start..].to_string()
 }
 
+fn push_text_chunk(
+    chunks: &mut Vec<crate::db::repo::knowledge::NewDocumentChunk>,
+    content: String,
+    section_path: &Option<String>,
+) {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return;
+    }
+    chunks.push(crate::db::repo::knowledge::NewDocumentChunk {
+        token_count: content.split_whitespace().count().max(1) as i64,
+        content,
+        page: None,
+        section_path: section_path.clone(),
+        metadata: r#"{"kind":"text"}"#.into(),
+    });
+}
+
 fn chunk_local_text(content: &str) -> Vec<crate::db::repo::knowledge::NewDocumentChunk> {
     let mut chunks = Vec::new();
     let mut current = String::new();
@@ -2496,55 +2514,33 @@ fn chunk_local_text(content: &str) -> Vec<crate::db::repo::knowledge::NewDocumen
             section_path = Some(heading.to_string());
         }
 
-        let next_len =
-            current.chars().count() + usize::from(!current.is_empty()) + paragraph.chars().count();
-        if !current.is_empty() && next_len > KNOWLEDGE_CHUNK_SIZE {
-            let content = std::mem::take(&mut current);
-            chunks.push(crate::db::repo::knowledge::NewDocumentChunk {
-                token_count: content.split_whitespace().count().max(1) as i64,
-                content: content.clone(),
-                page: None,
-                section_path: section_path.clone(),
-                metadata: r#"{"kind":"text"}"#.into(),
-            });
-            current = trailing_chars(&content, KNOWLEDGE_CHUNK_OVERLAP);
-        }
-
         let mut remainder = paragraph;
-        while remainder.chars().count() > KNOWLEDGE_CHUNK_SIZE {
-            let head = trim_to_char_boundary(remainder, KNOWLEDGE_CHUNK_SIZE);
+        while !remainder.is_empty() {
+            let separator_len = usize::from(!current.is_empty());
+            let available =
+                KNOWLEDGE_CHUNK_SIZE.saturating_sub(current.chars().count() + separator_len);
+            if available == 0 {
+                let emitted = std::mem::take(&mut current);
+                current = trailing_chars(&emitted, KNOWLEDGE_CHUNK_OVERLAP);
+                push_text_chunk(&mut chunks, emitted, &section_path);
+                continue;
+            }
+
+            let head = trim_to_char_boundary(remainder, available);
             if !current.is_empty() {
                 current.push('\n');
             }
             current.push_str(head);
-            let content = std::mem::take(&mut current);
-            chunks.push(crate::db::repo::knowledge::NewDocumentChunk {
-                token_count: content.split_whitespace().count().max(1) as i64,
-                content: content.clone(),
-                page: None,
-                section_path: section_path.clone(),
-                metadata: r#"{"kind":"text"}"#.into(),
-            });
-            let overlap = trailing_chars(head, KNOWLEDGE_CHUNK_OVERLAP);
             remainder = &remainder[head.len()..];
-            current = overlap;
+            if !remainder.is_empty() {
+                let emitted = std::mem::take(&mut current);
+                current = trailing_chars(&emitted, KNOWLEDGE_CHUNK_OVERLAP);
+                push_text_chunk(&mut chunks, emitted, &section_path);
+            }
         }
-        if !current.is_empty() {
-            current.push('\n');
-        }
-        current.push_str(remainder);
     }
 
-    let content = current.trim().to_string();
-    if !content.is_empty() {
-        chunks.push(crate::db::repo::knowledge::NewDocumentChunk {
-            token_count: content.split_whitespace().count().max(1) as i64,
-            content,
-            page: None,
-            section_path,
-            metadata: r#"{"kind":"text"}"#.into(),
-        });
-    }
+    push_text_chunk(&mut chunks, current, &section_path);
     chunks
 }
 
@@ -5360,6 +5356,94 @@ mod tests {
         assert!(parsed.size > 0);
         assert_eq!(parsed.chunks.len(), 1);
         assert_eq!(parsed.chunks[0].section_path.as_deref(), Some("Roadmap"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn local_knowledge_parser_normalizes_text_and_tracks_markdown_section() {
+        let path = std::env::temp_dir().join(format!("agnes-text-{}.md", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &path,
+            "\u{feff}# Notes\r\n\r\nFirst paragraph.\r\n\r\nSecond paragraph.",
+        )
+        .unwrap();
+
+        let parsed =
+            read_text_knowledge_document(path.to_string_lossy().to_string(), None, None).unwrap();
+
+        assert_eq!(
+            parsed.title,
+            path.file_stem().unwrap().to_string_lossy().to_string()
+        );
+        assert_eq!(parsed.media_type, "text/markdown");
+        assert_eq!(parsed.chunks.len(), 1);
+        assert_eq!(parsed.chunks[0].section_path.as_deref(), Some("Notes"));
+        assert!(!parsed.chunks[0].content.contains('\r'));
+        assert!(parsed.chunks[0].content.contains("First paragraph."));
+        assert!(parsed.chunks[0].content.contains("Second paragraph."));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn local_knowledge_parser_rejects_invalid_text_and_empty_documents() {
+        let invalid =
+            std::env::temp_dir().join(format!("agnes-invalid-text-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&invalid, [0xff, 0xfe]).unwrap();
+        let error =
+            match read_text_knowledge_document(invalid.to_string_lossy().to_string(), None, None) {
+                Ok(_) => panic!("invalid UTF-8 should be rejected"),
+                Err(error) => error.to_string(),
+            };
+        assert!(error.contains("UTF-8"));
+        let _ = std::fs::remove_file(&invalid);
+
+        let nul = std::env::temp_dir().join(format!("agnes-nul-text-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&nul, b"valid\0content").unwrap();
+        let error =
+            match read_text_knowledge_document(nul.to_string_lossy().to_string(), None, None) {
+                Ok(_) => panic!("NUL content should be rejected"),
+                Err(error) => error.to_string(),
+            };
+        assert!(error.contains("NUL"));
+        let _ = std::fs::remove_file(&nul);
+
+        let empty =
+            std::env::temp_dir().join(format!("agnes-empty-text-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&empty, b"\r\n\n  \t").unwrap();
+        let error =
+            match read_text_knowledge_document(empty.to_string_lossy().to_string(), None, None) {
+                Ok(_) => panic!("empty content should be rejected"),
+                Err(error) => error.to_string(),
+            };
+        assert!(error.contains("没有可索引"));
+        let _ = std::fs::remove_file(empty);
+    }
+
+    #[test]
+    fn local_knowledge_parser_splits_large_paragraphs_with_metadata() {
+        let path =
+            std::env::temp_dir().join(format!("agnes-long-text-{}.md", uuid::Uuid::new_v4()));
+        let content = format!("# Long\n\n{}", "word ".repeat(2_000));
+        std::fs::write(&path, content).unwrap();
+
+        let parsed =
+            read_text_knowledge_document(path.to_string_lossy().to_string(), None, None).unwrap();
+
+        assert!(parsed.chunks.len() > 1);
+        assert!(parsed
+            .chunks
+            .iter()
+            .all(|chunk| chunk.metadata == r#"{"kind":"text"}"#));
+        assert!(parsed
+            .chunks
+            .iter()
+            .all(|chunk| chunk.section_path.as_deref() == Some("Long")));
+        assert!(parsed
+            .chunks
+            .iter()
+            .all(|chunk| chunk.content.chars().count() <= super::KNOWLEDGE_CHUNK_SIZE));
+
         let _ = std::fs::remove_file(path);
     }
 
