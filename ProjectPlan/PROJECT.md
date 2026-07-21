@@ -173,20 +173,20 @@ System Prompt
 
 - RAG 文档归属独立 `knowledge_collection`，通过授权分配给一个或多个 Agent，不按 Agent 重复存储源文件和向量。
 - D1 是文件/制品同步控制面；R2 / Google Drive 是加密大对象数据面；sqlite-vec 是本地检索引擎。
-- 网盘通过窄化的文件源、上传、文件管理、配额和对象存储 Provider 端口接入；Google Drive 使用官方 API，夸克通过可替换的 `quark_drive` community adapter 接入并要求用户显式启用。Google Drive 和夸克当前支持文件多选、批量移入回收站等安全管理操作；夸克支持文本/JSON Cookie、二维码授权、文件浏览、Range 下载、配额和分片上传，导入和对象副本继续按兼容性验证推进。R2 继续作为应用托管的加密对象副本。
+- 网盘通过窄化的文件源、上传、文件管理、配额和对象存储 Provider 端口接入；Google Drive 使用官方 API，夸克通过可替换的 `quark_drive` community adapter 接入并要求用户显式启用。Google Drive 和夸克均已完成真实账户授权、目录层级、上传下载、移入回收站和知识库/书架导入验收；Google Drive 支持 Workspace 文档导出，夸克另支持单项或批量移动。R2 继续作为应用托管的加密对象副本。
 - 日历和待办是用户级结构化数据，默认仅使用 Local Provider，Agent 读写受 tool policy 约束；外部 `CalendarProvider / TaskProvider` adapter 保留为未来按实际需求启用的扩展，不属于当前自用、国内本地优先路线。
 - 主界面侧边栏将调整为子功能列表 + 可折叠聊天会话 + 可折叠工作区会话，详见 `UI_DESIGN.md`。
 
 # 版本路线图与当前进度
 
-| 版本 | 范围 | 当前状态（2026-07-20） |
+| 版本 | 范围 | 当前状态（2026-07-21） |
 |---|---|---|
 | V0.1 | Tauri 2 + React 聊天 UI + SQLite + Python LangGraph sidecar + LiteLLM | 已完成：开发态通过 `uv` 启动，发布态使用 PyInstaller 冻结为按 target triple 命名的 `agentd` 并由 Tauri `externalBin` 内置；发布构建会自动执行独立 WebSocket 协议握手测试，安装后不依赖 Python 或 `uv` |
 | V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 已完成：摘要、抽取、结构化字段、AI 创建/更新、记忆决策提示词、`MEMORY.md` 专用工具、动态维度 sqlite-vec + RRF 混合检索；已使用 Qwen3-Embedding-8B 完成真实服务端到端验证，手动向量化、覆盖率统计与检索链路均可用 |
 | V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | Phase 0-4 已完成：密文传输、SPAKE2 新设备配对、两阶段密钥轮换、Recovery Bundle 多版本恢复和线上日志审计均已完成；Worker `7316feb3-48b1-4635-8363-a83e78e7dc33` 已部署，production D1 五张相关表均为空。本轮未上传业务数据 |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 暂缓：先稳定桌面客户端与本地 Agent 能力，再启动 Android 客户端 |
 | V0.5 | MCP + Skills + diff review + workspace sandbox + tool audit + 多模型 fallback | 已完成桌面端基础闭环：工具、审批、Linux 沙箱、审计、模型路由、内置 `web_search/web_fetch/browser_open`、可配置 SearXNG/Brave Search Provider、MCP Client、主模型零输出故障回退、兼容 `SKILL.md` 的本地/Git 安装与运行时资源边界，以及 `file_write/file_edit/apply_patch` 批准前变更预览均已接入；浏览器为隔离无登录的严格只读渲染能力。diff review 当前按整次文件工具调用批准或拒绝，不预测 Shell/Git/MCP 的任意副作用，也不提供逐 hunk 选择 |
-| V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + 通用网盘 Provider | 进行中：本地 RAG、chunks/embeddings artifact 导出与事务性 sqlite-vec 导入、artifact v1 加密/校验/原子安装、SQLite manifest/replica/device 状态、Google Drive 对象副本编排、R2 Worker Multipart/Range 数据面、Rust object 控制面客户端及独立 artifact replication coordinator 已完成；知识库已通过独立轻量 `document-parserd` 支持 DOCX/PPTX/XLSX 结构化解析，并通过显式安装的离线模型包支持 PDF 版面、表格和中英文 OCR，保留标题、页码、幻灯片、工作表、表格范围和解析器指纹；知识库支持按文档构建、缓存和发布 R2 加密向量制品，失败重试复用同一 artifact，并在页面展示向量覆盖、ready 副本和远端设备安装状态；本地制品存储提供默认 2 GiB 配额、容量统计、手动清理和定时安全 GC，只回收已有 ready 远端副本的缓存或旧安装目录；聊天 pull cursor 与 object cursor 已分离。Worker 已接入 R2 孤儿副本对账、7 天宽限期、有界定时 GC 与中断重试，契约测试覆盖分片校验、owner 隔离、逻辑版本 CAS、幂等重放、设备落地状态、过期上传和孤儿回收。真实 Google 账户、R2 bucket 和端到端多设备验收仍待部署凭证，后者将在安卓端完成后统一验证 |
+| V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + 通用网盘 Provider | 代码阶段已完成：本地 RAG、chunks/embeddings artifact 导出与事务性 sqlite-vec 导入、artifact v1 加密/校验/原子安装、SQLite manifest/replica/device 状态、Google Drive 对象副本编排、R2 Worker Multipart/Range 数据面、Rust object 控制面客户端及独立 artifact replication coordinator 已完成；知识库已通过独立轻量 `document-parserd` 支持 DOCX/PPTX/XLSX 结构化解析，并通过显式安装的离线模型包支持 PDF 版面、表格和中英文 OCR，保留标题、页码、幻灯片、工作表、表格范围和解析器指纹；知识库支持按文档构建、缓存和发布 R2 加密向量制品，失败重试复用同一 artifact，并在页面展示向量覆盖、ready 副本和远端设备安装状态；本地制品存储提供默认 2 GiB 配额、容量统计、手动清理和定时安全 GC，只回收已有 ready 远端副本的缓存或旧安装目录；聊天 pull cursor 与 object cursor 已分离。Worker 已接入 R2 孤儿副本对账、7 天宽限期、有界定时 GC 与中断重试，契约测试覆盖分片校验、owner 隔离、逻辑版本 CAS、幂等重放、设备落地状态、过期上传和孤儿回收。Google Drive 与夸克真实账户基础链路、文件管理和知识库/书架导入均已验收，Google Workspace 文档导出与 token 刷新也已通过；真实 R2 bucket 与端到端多设备验收仍待部署凭证，后者将在安卓端完成后统一验证 |
 | V0.7 | 本地日历 + 待办 | 已完成：本地域模型、Local Provider、受审批约束的 Agent 工具、完整桌面工作区、本地统一通知服务和 D1 E2EE 同步均已完成。日历支持月/周/日/议程、多日历叠加、当天议程、待办图层及重复 occurrence 例外；待办支持五类智能视图、自定义列表、重要/我的一天、日期或精确时间、步骤和完成后生成下一重复实例；通知中心覆盖 AI 回复/许可、任务到期和日历事件。Google Calendar / Google Tasks / CalDAV 不纳入默认路线图，未来仅按实际需求作为可选扩展评估。 |
 | V0.8 | Read With AI | 已完成本地优先 v1：EPUB 2/3 导入与原样渲染、阅读进度、CFI 划线、用户级书架、按书籍 × Agent 隔离的连续讨论、已知书籍模式，以及未知书籍首次书内检索授权。原始 EPUB 的加密大对象与跨设备同步留待 V0.6 数据层完成后接入。 |
 
