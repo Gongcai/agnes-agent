@@ -484,6 +484,13 @@ async fn handle_conn<R: tauri::Runtime>(
                     crate::tools::permissions::approval_decision(permission_mode, &tool_name, risk);
                 let workspace_cwd =
                     crate::tools::workspace::resolve_workspace_cwd(&db, &session_id).await;
+                let diff_preview = crate::tools::review::preview_tool_call(
+                    &tool_name,
+                    &args,
+                    workspace_cwd.as_deref(),
+                    &policy,
+                )
+                .await;
                 let effective_cwd = args
                     .get("cwd")
                     .and_then(|value| value.as_str())
@@ -513,6 +520,7 @@ async fn handle_conn<R: tauri::Runtime>(
                     "approval_reason": approval_decision.reason,
                     "is_secondary_confirmation": approval_decision.is_secondary_confirmation,
                     "role_policy_requires_approval": role_policy_requires_approval,
+                    "diff": diff_preview,
                     "status": if approval_decision.needs_approval { "pending_approval" } else { "running" },
                 }));
                 if approval_decision.needs_approval {

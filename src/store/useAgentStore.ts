@@ -52,6 +52,7 @@ export interface ToolCall {
   permissionMode?: PermissionMode;
   approvalReason?: string;
   isSecondaryConfirmation?: boolean;
+  diff?: string;
 }
 
 interface ToolCallEventPayload {
@@ -67,6 +68,7 @@ interface ToolCallEventPayload {
   permission_mode: PermissionMode;
   approval_reason: string;
   is_secondary_confirmation: boolean;
+  diff?: string;
   status: ToolCall["status"];
 }
 
@@ -1099,6 +1101,7 @@ export function setupTauriEventListeners() {
       permissionMode: payload.permission_mode,
       approvalReason: payload.approval_reason,
       isSecondaryConfirmation: payload.is_secondary_confirmation,
+      diff: payload.diff,
       status: payload.status || fallbackStatus,
     });
   };

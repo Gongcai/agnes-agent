@@ -2,6 +2,7 @@ pub mod builtin;
 pub mod executor;
 pub mod permissions;
 pub mod policy;
+pub mod review;
 pub mod sandbox;
 pub mod workspace;
 

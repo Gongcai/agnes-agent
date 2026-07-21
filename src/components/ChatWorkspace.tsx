@@ -259,6 +259,15 @@ const ToolCallCard: React.FC<{
             </div>
           )}
 
+          {tc.diff && (
+            <div>
+              <div className="mb-1 text-[10px] font-medium text-stone-400">变更预览</div>
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-stone-950 px-3 py-2 font-mono text-[10px] leading-relaxed text-stone-200">
+                {tc.diff}
+              </pre>
+            </div>
+          )}
+
           {isPending && (
             <div className={`flex items-start gap-2 rounded-md border bg-white p-2.5 ${
               tc.isSecondaryConfirmation ? "border-rose-200" : "border-amber-200"
