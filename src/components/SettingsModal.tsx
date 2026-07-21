@@ -66,6 +66,7 @@ import {
   UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY,
   type ColorScheme,
 } from "../lib/uiPreferences";
+import { syncE2eeStatusMessage } from "../lib/syncStatus";
 
 type SettingsTab = "general" | "agents" | "memory" | "storage" | "llm" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
 
@@ -3657,13 +3658,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 ? "text-amber-700"
                                 : "text-stone-500"
                             }`}>
-                              {syncStatus.e2ee.confirmed && !syncStatus.e2ee.transportReady
-                                ? "加密传输待接入"
-                                : syncStatus.e2ee.rotationPending
-                                  ? "保存新恢复材料并确认后才会启用新密钥"
-                                  : syncStatus.e2ee.keysetConfigured
-                                    ? "恢复材料尚未确认"
-                                  : "需要本机密钥与恢复材料"}
+                              {syncE2eeStatusMessage(syncStatus.e2ee)}
                             </span>
                             <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                               {!syncStatus.e2ee.keysetConfigured && (
