@@ -422,6 +422,7 @@ interface AgentFormValues {
       landlock: boolean;
       bwrap: "auto" | "disabled" | "required";
       rlimits: boolean;
+      writable_roots: string[];
       [key: string]: unknown;
     };
     [key: string]: unknown;
@@ -459,7 +460,12 @@ const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
   web: { enabled: true, approval: "never", search_provider: "auto", timeout_sec: 15 },
   mcp: { enabled: false, approval: "always", server_ids: [] },
   network: { allow: true },
-  sandbox: { landlock: true, bwrap: "auto", rlimits: true },
+  sandbox: {
+    landlock: true,
+    bwrap: "auto",
+    rlimits: true,
+    writable_roots: ["~/.cache", "~/.local", "~/.cargo", "~/.rustup"],
+  },
 };
 
 const APPROVAL_OPTIONS: { value: ApprovalTier; label: string }[] = [
@@ -555,6 +561,9 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
       ...(sandbox && typeof sandbox === "object" ? sandbox : {}),
       landlock: sandbox?.landlock !== false,
       rlimits: sandbox?.rlimits !== false,
+      writable_roots: Array.isArray(sandbox?.writable_roots)
+        ? sandbox.writable_roots.filter((path: unknown): path is string => typeof path === "string" && path.trim().length > 0)
+        : [...DEFAULT_TOOL_POLICY.sandbox.writable_roots],
       bwrap,
     };
   } catch {
@@ -2486,6 +2495,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             >
                               {agentForm.toolPolicy.network.allow ? "允许联网" : "隔离网络"}
                             </button>
+                          </div>
+                          <div className="border-b border-stone-100 py-2">
+                            <label className="mb-1 block text-xs text-stone-700">额外可写目录</label>
+                            <textarea
+                              value={agentForm.toolPolicy.sandbox.writable_roots.join("\n")}
+                              onChange={(event) =>
+                                setAgentForm((form) => ({
+                                  ...form,
+                                  toolPolicy: {
+                                    ...form.toolPolicy,
+                                    sandbox: {
+                                      ...form.toolPolicy.sandbox,
+                                      writable_roots: event.target.value
+                                        .split("\n")
+                                        .map((path) => path.trim())
+                                        .filter(Boolean),
+                                    },
+                                  },
+                                }))
+                              }
+                              rows={4}
+                              spellCheck={false}
+                              className="w-full resize-y rounded-md border border-stone-200 bg-white px-2 py-1.5 font-mono text-[10px] leading-5 text-stone-600 outline-none focus:border-stone-300"
+                            />
                           </div>
                           <div className="flex items-center justify-between py-1.5">
                             <span className="text-xs text-stone-700">进程沙箱</span>

@@ -65,6 +65,14 @@ pub struct PolicySandbox {
 
 impl PolicySandbox {
     pub fn new(policy: &ToolPolicy, workspace_cwd: Option<&Path>) -> Self {
+        let mut configured_write_roots = policy
+            .sandbox
+            .writable_roots
+            .iter()
+            .map(|path| normalize_root(&expand_home(path)))
+            .collect::<Vec<_>>();
+        deduplicate_paths(&mut configured_write_roots);
+
         let mut read_roots = policy
             .file
             .allowed_roots
@@ -84,10 +92,13 @@ impl PolicySandbox {
         if let Some(workspace) = workspace_cwd.map(normalize_root) {
             read_roots.push(workspace);
         }
+        read_roots.extend(configured_write_roots.iter().cloned());
         deduplicate_paths(&mut read_roots);
 
         let mut write_roots = if policy.shell.deny_write_outside_workspace {
-            primary_write_root.into_iter().collect::<Vec<_>>()
+            let mut roots = primary_write_root.into_iter().collect::<Vec<_>>();
+            roots.extend(configured_write_roots.iter().cloned());
+            roots
         } else {
             let mut roots = read_roots.clone();
             roots.extend(cwd_roots.iter().cloned());
@@ -100,13 +111,7 @@ impl PolicySandbox {
         process_read_only.extend(system_read_paths());
         deduplicate_paths(&mut process_read_only);
 
-        let mut process_read_write = if policy.shell.deny_write_outside_workspace {
-            write_roots.clone()
-        } else {
-            let mut roots = read_roots.clone();
-            roots.extend(cwd_roots.iter().cloned());
-            roots
-        };
+        let mut process_read_write = write_roots.clone();
         process_read_write.extend(temporary_write_paths());
         deduplicate_paths(&mut process_read_write);
 
@@ -668,6 +673,45 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn configured_writable_root_resolves_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("sandbox-writable-root-{}", uuid::Uuid::new_v4()));
+        let workspace = root.join("workspace");
+        let external_cache = root.join("external-cache");
+        let linked_cache = root.join("home-cache");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(external_cache.join("uv")).unwrap();
+        symlink(&external_cache, &linked_cache).unwrap();
+
+        let mut policy = ToolPolicy::default();
+        policy.file.allowed_roots = vec![workspace.to_string_lossy().to_string()];
+        policy.shell.allowed_cwd = vec![workspace.to_string_lossy().to_string()];
+        policy.sandbox.writable_roots = vec![linked_cache.to_string_lossy().to_string()];
+        let sandbox = PolicySandbox::new(&policy, Some(&workspace));
+
+        let cache_lock = linked_cache.join("uv/.lock");
+        assert!(policy
+            .check_file_write(&cache_lock.to_string_lossy())
+            .is_ok());
+        assert!(sandbox.check_read(&cache_lock).is_ok());
+        assert!(sandbox.check_write(&cache_lock).is_ok());
+        assert!(sandbox
+            .check_write(&root.join("unrelated/output.txt"))
+            .is_err());
+        assert!(sandbox
+            .process_spec
+            .read_write
+            .contains(&external_cache.canonicalize().unwrap()));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn network_fallback_rejects_known_network_commands() {
         let mut policy = ToolPolicy::default();
@@ -718,6 +762,47 @@ mod tests {
         assert!(!status.success());
         drop(listener);
         let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[cfg(all(target_os = "linux", unix))]
+    #[tokio::test]
+    async fn bubblewrap_mounts_symlinked_writable_roots_read_write() {
+        use std::os::unix::fs::symlink;
+
+        if detect_bwrap().is_none() {
+            return;
+        }
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("bwrap-writable-root-{}", uuid::Uuid::new_v4()));
+        let workspace = root.join("workspace");
+        let external_cache = root.join("external-cache");
+        let linked_cache = root.join("home-cache");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(external_cache.join("uv")).unwrap();
+        symlink(&external_cache, &linked_cache).unwrap();
+
+        let mut policy = ToolPolicy::default();
+        policy.sandbox.landlock = false;
+        policy.sandbox.rlimits = false;
+        policy.sandbox.writable_roots = vec![linked_cache.to_string_lossy().to_string()];
+        policy.shell.allowed_cwd = vec![workspace.to_string_lossy().to_string()];
+        policy.file.allowed_roots = vec![workspace.to_string_lossy().to_string()];
+        let sandbox = PolicySandbox::new(&policy, Some(&workspace));
+        let marker = linked_cache.join("uv/package-manager.lock");
+        let mut command = sandbox
+            .command(
+                "touch",
+                &[marker.to_string_lossy().to_string()],
+                &["PATH".to_string()],
+            )
+            .unwrap();
+        command.current_dir(&workspace);
+        assert!(command.status().await.unwrap().success());
+        assert!(external_cache.join("uv/package-manager.lock").is_file());
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(target_os = "linux")]

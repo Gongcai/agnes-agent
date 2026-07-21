@@ -209,6 +209,7 @@ pub struct SandboxPolicy {
     pub landlock: bool,
     pub bwrap: BwrapMode,
     pub rlimits: bool,
+    pub writable_roots: Vec<String>,
     pub cpu_time_sec: u64,
     pub memory_bytes: u64,
     pub file_size_bytes: u64,
@@ -272,6 +273,12 @@ impl Default for SandboxPolicy {
             landlock: true,
             bwrap: BwrapMode::Auto,
             rlimits: true,
+            writable_roots: vec![
+                "~/.cache".into(),
+                "~/.local".into(),
+                "~/.cargo".into(),
+                "~/.rustup".into(),
+            ],
             cpu_time_sec: 60,
             memory_bytes: 1024 * 1024 * 1024,
             file_size_bytes: 50 * 1024 * 1024,
@@ -362,10 +369,12 @@ impl ToolPolicy {
             return Err("文件工具已被禁用".into());
         }
         let file_path = PathBuf::from(path);
-        if !is_path_under_roots(&file_path, &self.file.allowed_roots) {
+        if !is_path_under_roots(&file_path, &self.file.allowed_roots)
+            && !is_path_under_roots(&file_path, &self.sandbox.writable_roots)
+        {
             return Err(format!(
-                "访问的路径 `{}` 不在允许的根目录列表内 ({:?})",
-                path, self.file.allowed_roots
+                "访问的路径 `{}` 不在允许的只读或可写根目录内",
+                path
             ));
         }
         Ok(())
@@ -472,6 +481,21 @@ mod tests {
         assert_eq!(value["git"]["timeout_sec"], 30);
         assert_eq!(value["network"]["allow"], true);
         assert_eq!(value["sandbox"]["bwrap"], "auto");
+        assert_eq!(
+            value["sandbox"]["writable_roots"],
+            serde_json::json!(["~/.cache", "~/.local", "~/.cargo", "~/.rustup"])
+        );
+    }
+
+    #[test]
+    fn legacy_sandbox_policy_gets_default_writable_roots() {
+        let policy: ToolPolicy =
+            serde_json::from_str(r#"{"sandbox":{"landlock":true,"bwrap":"auto","rlimits":true}}"#)
+                .unwrap();
+        assert_eq!(
+            policy.sandbox.writable_roots,
+            vec!["~/.cache", "~/.local", "~/.cargo", "~/.rustup"]
+        );
     }
 
     #[test]

@@ -125,12 +125,13 @@ match tier {
 ### 6.1 Landlock（主防线，Linux 5.13+，无外部二进制）
 crate `landlock`。对每个工具子进程（shell/git）与 file 工具操作应用 FS 访问规则：
 - **workspace 目录**：读 + 写 + 执行（遍历）。
+- **额外可写根目录**：`sandbox.writable_roots` 读 + 写；默认覆盖开发工具状态目录 `~/.cache`、`~/.local`、`~/.cargo`、`~/.rustup`，可在 Agent 工具策略中调整。
 - **只读根目录**（`policy.file.allowed_roots` 除 workspace）：只读。
 - **系统目录** `/usr` `/bin` `/lib*` `/etc`（必要部分）：只读。
 - **临时目录** `$TMPDIR`（或 `/tmp`）：读写（部分工具需要）。
 - **其它路径**：默认拒绝（Landlock 的 deny-by-default）。
 
-`shell`/`git` 通过当前桌面二进制的内部 helper 启动：helper 在单线程进程中应用 Landlock/rlimit 后 `exec` 目标程序，避免在 Tauri 多线程主进程的 `pre_exec` 阶段执行复杂逻辑。原生文件工具不把不可逆的 Landlock 规则施加到 Tauri 主线程，而是统一使用 symlink-aware 的规范化路径与 `SandboxGuard` 读写能力检查。
+额外可写根目录在授权前解析到真实路径，因此用户将开发缓存软链接到其他磁盘后，Landlock 与 Bubblewrap 授权的是同一个规范化目标。`shell`/`git` 通过当前桌面二进制的内部 helper 启动：helper 在单线程进程中应用 Landlock/rlimit 后 `exec` 目标程序，避免在 Tauri 多线程主进程的 `pre_exec` 阶段执行复杂逻辑。原生文件工具不把不可逆的 Landlock 规则施加到 Tauri 主线程，而是统一使用 symlink-aware 的规范化路径与 `SandboxGuard` 读写能力检查。
 
 Landlock 不可用（老内核/非 Linux）→ 降级为路径白名单（现状）+ 日志告警，不阻断。
 
@@ -143,7 +144,7 @@ pub struct NetworkPolicy { pub allow: bool }  // 默认 true（默认开）
 - `allow=false`（用户在角色工具策略里关闭）：shell/git 子进程用 **bubblewrap**（若可用）`--unshare-net` 隔离网络；bwrap 不可用则检测 `curl`/`wget`/`ssh`/`nc`/`git push` 等网络动作拒绝。
 - `git push` 始终受 `git.approval` tier 约束（与网络策略独立）。
 
-> bwrap 作为**可选增强**（更强隔离：只读根挂载 + workspace/tmp 可写绑定 + PID namespace）；存在且探测可用时自动启用。`allow=false` 时额外创建 net namespace；不存在则降级到 Landlock + 启发式网络拦截。不作为硬依赖。
+> bwrap 作为**可选增强**（更强隔离：只读根挂载 + workspace/tmp/额外可写根目录绑定 + PID namespace）；存在且探测可用时自动启用。`allow=false` 时额外创建 net namespace；不存在则降级到 Landlock + 启发式网络拦截。不作为硬依赖。
 
 ### 6.3 资源限额（setrlimit，crate `nix`）
 对 shell/git 子进程设：
@@ -208,6 +209,7 @@ pub struct SandboxPolicy {
     pub landlock: bool,
     pub bwrap: BwrapMode,             // Auto | Disabled | Required
     pub rlimits: bool,
+    pub writable_roots: Vec<String>,  // workspace 之外显式授权的读写根目录
     pub cpu_time_sec: u64,
     pub memory_bytes: u64,
     pub file_size_bytes: u64,
@@ -241,13 +243,14 @@ pub struct NetworkPolicy { pub allow: bool }
 
 - Phase A–E 已完成；对应提交：`4b4a056`、`1e65bcf`、`a02fa80`、`e070c4d`、`dc6cce5`。
 - Rust 内置工具共 24 个：基础文件/命令/Git 8 个、记忆 5 个、日历待办 8 个、联网研究 3 个；Python sidecar 已声明同一组 schema。记忆工具只访问当前 session 所属 Agent，不能接受任意路径或外部 `agent_id`。结构化记忆写工具固定由系统生成创建人和时间等字段。`web_search/web_fetch/browser_open` 仅访问公开网络，受 Web capability、总网络开关、SSRF 防护、响应/正文上限和提示词注入隔离共同约束；浏览器工具额外使用临时无登录 Profile 和只读请求拦截。
-- Linux 已验证 Landlock workspace 写边界、symlink 逃逸拒绝、rlimit 文件大小上限，以及 bubblewrap loopback 网络隔离。
+- Linux 已验证 Landlock workspace 写边界、symlink 逃逸拒绝、软链接额外可写根目录、rlimit 文件大小上限，以及 bubblewrap loopback 网络隔离。
 - 原生文件工具由路径能力层保护；Landlock 仅施加给 shell/git 子进程，避免污染桌面主进程。
 - 非 Linux 或 Landlock 不可用时，文件工具仍受严格路径检查；shell/git 的内核级文件隔离会降级。bubblewrap 不可用且网络关闭时仅能启发式拒绝已知网络动作，不能视为完整网络沙箱。
 - Windows Job Object / Restricted Token 仍属于 Phase F，不在本轮实现范围内。
 
 ## 已决策点
 - **沙箱主防线**：Landlock（Linux）；Windows 用路径白名单降级，后续 Phase F 引入 Job Object + Restricted Token。
+- **开发工具状态目录**：采用与 Codex `workspace-write + writable_roots` 相同的边界模型；包管理器和测试运行器使用真实用户缓存/工具链目录，不重定向到项目专属缓存。
 - **网络默认**：默认开（`allow=true`）；用户可在工作区策略关闭，关闭后用 bwrap `--unshare-net` 或启发式拦截。
 - **新工具范围**：file_edit + list_files + grep + apply_patch（codex 风格统一补丁）。
 
