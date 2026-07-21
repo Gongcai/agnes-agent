@@ -46,6 +46,7 @@ pub const SYNC_GATEWAY_URL: &str = "https://agnes-sync-api.caiwengong136.workers
 const MAX_BATCHES_PER_RUN: usize = 5;
 const MAX_PUSH_CHANGES: usize = 20;
 const MAX_REMOTE_PAGES_PER_RUN: usize = 5;
+const MAX_MANUAL_SYNC_RUNS: usize = 100;
 const E2EE_TRANSPORT_READY: bool = true;
 
 #[derive(Debug, Clone, Serialize)]
@@ -222,6 +223,21 @@ impl SyncService {
             return Ok(status);
         };
         self.run_with_encrypted_transport(&transport, &keyset).await
+    }
+
+    pub async fn sync_now(&self) -> AppResult<SyncStatus> {
+        let status = self.status().await?;
+        if !status.e2ee.confirmed || !status.e2ee.transport_ready {
+            return Ok(status);
+        }
+        let keyset = self
+            .load_keyset()
+            .await?
+            .ok_or_else(|| AppError::Other("Sync encryption keys are not configured".into()))?;
+        let Some(transport) = self.http_transport().await? else {
+            return Ok(status);
+        };
+        self.run_until_idle(&transport, Some(&keyset)).await
     }
 
     pub async fn publish_knowledge_artifact(
@@ -1302,6 +1318,52 @@ impl SyncService {
         };
         self.syncing.store(true, Ordering::SeqCst);
         let result = self.run_locked(transport, keyset).await;
+        self.syncing.store(false, Ordering::SeqCst);
+        result?;
+        self.status().await
+    }
+
+    async fn run_until_idle(
+        &self,
+        transport: &dyn SyncTransport,
+        keyset: Option<&SyncKeyset>,
+    ) -> AppResult<SyncStatus> {
+        let _guard = self.run_gate.lock().await;
+        self.syncing.store(true, Ordering::SeqCst);
+        let result = async {
+            for _ in 0..MAX_MANUAL_SYNC_RUNS {
+                let before = self.db.get_sync_status().await?;
+                if before
+                    .backoff_until
+                    .is_some_and(|value| value > unix_millis())
+                {
+                    break;
+                }
+                self.run_locked(transport, keyset).await?;
+                let after = self.db.get_sync_status().await?;
+                if after.pending_count == 0
+                    && after.in_flight_count == 0
+                    && after.bootstrap_state == "complete"
+                {
+                    break;
+                }
+                if after
+                    .backoff_until
+                    .is_some_and(|value| value > unix_millis())
+                {
+                    break;
+                }
+                if after.pending_count >= before.pending_count
+                    && after.in_flight_count >= before.in_flight_count
+                    && after.bootstrap_state == before.bootstrap_state
+                    && after.last_pull_cursor == before.last_pull_cursor
+                {
+                    break;
+                }
+            }
+            Ok::<(), AppError>(())
+        }
+        .await;
         self.syncing.store(false, Ordering::SeqCst);
         result?;
         self.status().await
@@ -2919,6 +2981,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn manual_sync_drains_more_than_one_bounded_run() {
+        let (path, service) = test_service("manual-drain");
+        let change_count = MAX_BATCHES_PER_RUN * MAX_PUSH_CHANGES + 1;
+        for index in 0..change_count {
+            service
+                .db
+                .insert_agent(new_agent(&format!("manual-drain-agent-{index}")))
+                .await
+                .unwrap();
+        }
+        let transport = AcceptTransport {
+            calls: AtomicUsize::new(0),
+            delay_ms: 0,
+        };
+
+        let status = service.run_until_idle(&transport, None).await.unwrap();
+
+        assert_eq!(status.database.pending_count, 0);
+        assert_eq!(status.database.in_flight_count, 0);
+        assert_eq!(
+            transport.calls.load(Ordering::SeqCst),
+            MAX_BATCHES_PER_RUN + 1
+        );
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn retryable_failure_restores_pending_with_backoff() {
         let (path, service) = test_service("retry");
         service
@@ -2927,7 +3017,7 @@ mod tests {
             .await
             .unwrap();
 
-        service.run_with_transport(&RetryTransport).await.unwrap();
+        service.run_until_idle(&RetryTransport, None).await.unwrap();
 
         let status = service.db.get_sync_status().await.unwrap();
         assert_eq!(status.pending_count, 1);

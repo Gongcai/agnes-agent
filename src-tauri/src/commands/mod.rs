@@ -600,7 +600,7 @@ pub async fn revoke_sync_device(
 pub async fn sync_now(
     state: tauri::State<'_, AppState>,
 ) -> AppResult<crate::sync::engine::SyncStatus> {
-    state.sync.run_once().await
+    state.sync.sync_now().await
 }
 
 #[tauri::command]
