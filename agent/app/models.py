@@ -8,6 +8,8 @@ import litellm
 
 
 MAX_EMBEDDING_DIMS = 8192
+# Several OpenAI-compatible embedding endpoints accept at most five inputs per call.
+MAX_EMBEDDING_BATCH_SIZE = 5
 
 # Model Registry mapping model names to their maximum context limits (in tokens)
 MODEL_CONTEXT_LIMITS: Dict[str, int] = {
@@ -246,42 +248,53 @@ def embed_texts(
         if llm_config.api_key:
             extra_kwargs["api_key"] = llm_config.api_key
 
-    response = litellm.embedding(
-        model=call_model,
-        input=inputs,
-        timeout=MODEL_REQUEST_TIMEOUT_SECONDS,
-        **extra_kwargs,
-    )
-    data = getattr(response, "data", None)
-    if data is None and isinstance(response, dict):
-        data = response.get("data")
-    if not isinstance(data, list):
-        raise ValueError("Embedding provider returned no data array")
-
-    ordered = sorted(
-        data,
-        key=lambda item: (
-            item.get("index", 0) if isinstance(item, dict) else getattr(item, "index", 0)
-        ),
-    )
     vectors: List[List[float]] = []
     expected_dims: Optional[int] = None
-    for item in ordered:
-        raw_vector = item.get("embedding") if isinstance(item, dict) else getattr(item, "embedding", None)
-        if not isinstance(raw_vector, list) or not raw_vector:
-            raise ValueError("Embedding provider returned an empty vector")
-        vector = [float(value) for value in raw_vector]
-        if len(vector) > MAX_EMBEDDING_DIMS:
-            raise ValueError(
-                f"Embedding provider returned more than {MAX_EMBEDDING_DIMS} dimensions"
+
+    for offset in range(0, len(inputs), MAX_EMBEDDING_BATCH_SIZE):
+        batch = inputs[offset : offset + MAX_EMBEDDING_BATCH_SIZE]
+        response = litellm.embedding(
+            model=call_model,
+            input=batch,
+            timeout=MODEL_REQUEST_TIMEOUT_SECONDS,
+            **extra_kwargs,
+        )
+        data = getattr(response, "data", None)
+        if data is None and isinstance(response, dict):
+            data = response.get("data")
+        if not isinstance(data, list):
+            raise ValueError("Embedding provider returned no data array")
+
+        ordered = sorted(
+            data,
+            key=lambda item: (
+                item.get("index", 0)
+                if isinstance(item, dict)
+                else getattr(item, "index", 0)
+            ),
+        )
+        if len(ordered) != len(batch):
+            raise ValueError("Embedding provider returned an unexpected vector count")
+        for item in ordered:
+            raw_vector = (
+                item.get("embedding")
+                if isinstance(item, dict)
+                else getattr(item, "embedding", None)
             )
-        if any(not math.isfinite(value) for value in vector):
-            raise ValueError("Embedding provider returned a non-finite vector")
-        if expected_dims is None:
-            expected_dims = len(vector)
-        elif len(vector) != expected_dims:
-            raise ValueError("Embedding provider returned inconsistent dimensions")
-        vectors.append(vector)
+            if not isinstance(raw_vector, list) or not raw_vector:
+                raise ValueError("Embedding provider returned an empty vector")
+            vector = [float(value) for value in raw_vector]
+            if len(vector) > MAX_EMBEDDING_DIMS:
+                raise ValueError(
+                    f"Embedding provider returned more than {MAX_EMBEDDING_DIMS} dimensions"
+                )
+            if any(not math.isfinite(value) for value in vector):
+                raise ValueError("Embedding provider returned a non-finite vector")
+            if expected_dims is None:
+                expected_dims = len(vector)
+            elif len(vector) != expected_dims:
+                raise ValueError("Embedding provider returned inconsistent dimensions")
+            vectors.append(vector)
 
     if len(vectors) != len(inputs):
         raise ValueError("Embedding provider returned an unexpected vector count")

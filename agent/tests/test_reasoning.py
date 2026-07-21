@@ -1205,6 +1205,28 @@ def test_embedding_wrapper_uses_config_and_validates_dimensions(monkeypatch):
     assert captured["timeout"] == MODEL_REQUEST_TIMEOUT_SECONDS
 
 
+def test_embedding_wrapper_splits_provider_batches(monkeypatch):
+    calls = []
+
+    def fake_embedding(**kwargs):
+        batch = kwargs["input"]
+        calls.append(batch)
+        return {
+            "data": [
+                {"index": index, "embedding": [float(index), 1.0]}
+                for index, _ in enumerate(batch)
+            ]
+        }
+
+    monkeypatch.setattr("app.models.litellm.embedding", fake_embedding)
+    inputs = [f"item-{index}" for index in range(6)]
+
+    vectors = embed_texts("embed-model", inputs)
+
+    assert [len(batch) for batch in calls] == [5, 1]
+    assert len(vectors) == len(inputs)
+
+
 def test_embedding_wrapper_rejects_sqlite_vec_oversized_vectors(monkeypatch):
     monkeypatch.setattr(
         "app.models.litellm.embedding",

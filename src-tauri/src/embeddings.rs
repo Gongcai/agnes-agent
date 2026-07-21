@@ -8,7 +8,9 @@ use crate::agent::AgentManager;
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 
-const EMBEDDING_BATCH_SIZE: usize = 64;
+// Keep requests within the smallest provider limit currently supported by the app.
+// Some OpenAI-compatible embedding endpoints reject more than five inputs.
+const EMBEDDING_BATCH_SIZE: usize = 5;
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 pub struct MemoryIndexStatus {
