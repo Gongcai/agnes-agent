@@ -1280,18 +1280,27 @@ fn remote_file_item(value: &Value, parent_id: Option<&str>) -> ProviderResult<Re
     let id = value_string(value, &["fid", "id"])
         .ok_or_else(|| invalid_response("夸克网盘项目缺少 fid"))?;
     let name = value_string(value, &["file_name", "name"]).unwrap_or_else(|| id.clone());
-    // Quark returns directory markers as booleans, numbers, or strings depending on the endpoint.
-    // Prefer explicit `dir` fields so a numeric zero is not mistaken for the legacy file_type=0 folder marker.
-    let folder = ["dir", "is_dir", "is_folder", "folder"]
-        .iter()
-        .find_map(|key| value.get(*key).and_then(value_as_boolish))
-        .or_else(|| value.get("file_type").and_then(file_type_is_folder))
-        .unwrap_or(false);
     let size = find_number(value, &["size", "file_size"]);
+    let media_type = value_string(value, &["mime_type", "format_type"]);
+    let revision = value_string(value, &["sha1", "md5"]);
+    // Quark's list and detail endpoints disagree on numeric `file_type` semantics. Explicit
+    // directory markers are authoritative; file metadata disambiguates detail responses.
+    let explicit_folder = ["dir", "is_dir", "is_folder", "folder"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(value_as_boolish));
+    let has_file_metadata = size.is_some_and(|value| value > 0)
+        || media_type.as_deref().is_some_and(|value| !value.is_empty())
+        || revision.is_some();
+    let folder = explicit_folder.unwrap_or_else(|| {
+        !has_file_metadata
+            && value
+                .get("file_type")
+                .and_then(file_type_is_folder)
+                .unwrap_or(false)
+    });
     let modified = value_string(value, &["updated_at", "modified_at", "update_time"]);
     // Quark does not expose a stable revision on every endpoint. Only hashes are safe for
     // optimistic validation; timestamps are kept as display metadata, never as revisions.
-    let revision = value_string(value, &["sha1", "md5"]);
     Ok(RemoteFileItem {
         id,
         parent_id: parent_id.map(ToOwned::to_owned),
@@ -1301,7 +1310,7 @@ fn remote_file_item(value: &Value, parent_id: Option<&str>) -> ProviderResult<Re
         } else {
             RemoteFileKind::File
         },
-        media_type: value_string(value, &["mime_type", "format_type"]),
+        media_type,
         size,
         modified_at: modified,
         revision,
@@ -1658,9 +1667,36 @@ mod tests {
         assert_eq!(numeric_folder.kind, RemoteFileKind::Folder);
         assert!(!numeric_folder.downloadable);
 
-        let timestamp_only_file = remote_file_item(
+        let ambiguous_detail_file = remote_file_item(
             &json!({
                 "fid": "file-2",
+                "file_name": "report.pdf",
+                "file_type": 0,
+                "size": 1024,
+                "format_type": "application/pdf"
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(ambiguous_detail_file.kind, RemoteFileKind::File);
+        assert!(ambiguous_detail_file.downloadable);
+
+        let legacy_folder = remote_file_item(
+            &json!({
+                "fid": "folder-3",
+                "file_name": "legacy-folder",
+                "file_type": 0,
+                "size": 0
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(legacy_folder.kind, RemoteFileKind::Folder);
+        assert!(!legacy_folder.downloadable);
+
+        let timestamp_only_file = remote_file_item(
+            &json!({
+                "fid": "file-3",
                 "file_name": "timestamped.bin",
                 "dir": false,
                 "updated_at": 123456

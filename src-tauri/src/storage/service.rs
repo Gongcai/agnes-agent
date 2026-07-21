@@ -565,9 +565,7 @@ impl StorageService {
             }
         };
         if remote_file.kind != RemoteFileKind::File {
-            return Err(AppError::Other(
-                "Only regular storage files can be imported".into(),
-            ));
+            return Err(AppError::Other("只能导入网盘中的普通文件".into()));
         }
         let destination = destination_directory.join(match kind {
             StorageImportKind::Knowledge => {
