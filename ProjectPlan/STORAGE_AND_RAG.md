@@ -622,7 +622,8 @@ tasks
 - [x] 实现 R2 孤儿副本对账与宽限期 GC：manifest 切换时原子标记旧副本，默认保留 7 天，定时任务按有界批次领取和删除；并发发布、当前 manifest 引用和 Worker 中断恢复均受 CAS 保护；
 - [x] 桌面端自动维护 `r2-managed` 账户，只读复用同步 Keyring 凭证，并兼容 Bearer 与 Cloudflare Access 鉴权；
 - [x] 只使用加密假数据完成 Worker 契约测试；真实 R2 bucket 已创建并完成 D1 migration/Worker 部署。
-- [ ] 使用测试知识库文档完成真实 R2 制品发布、Range 下载、manifest/replica/device state 回写、重复发布复用和远端设备安装验收；不上传真实个人业务内容。
+- [x] 使用测试知识库文档完成真实 R2 制品发布、manifest/replica/device state 回写和重复发布复用；直接下载的 59,271 字节密文对象 SHA-256 与 D1 manifest 一致，本机设备状态为 installed，未上传真实个人业务内容。
+- [ ] 在安卓或第二台设备完成 Range 下载、完整校验、原子安装及设备状态回写验收。
 
 ### Phase F：子功能 UI
 
