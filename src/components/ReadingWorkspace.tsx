@@ -107,8 +107,18 @@ const HIGHLIGHT_STYLES: Record<string, Record<string, string>> = {
   pink: { fill: "#e6a7c5", "fill-opacity": "0.42", "mix-blend-mode": "multiply" },
 };
 
+const APP_SERIF_FONT_FALLBACK =
+  '"Noto Serif", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", Georgia, serif';
+
+function appSerifFontFamily(): string {
+  return getComputedStyle(document.documentElement)
+    .getPropertyValue("--claude-ui-font")
+    .trim() || APP_SERIF_FONT_FALLBACK;
+}
+
 function epubTheme(colorScheme: ColorScheme): Record<string, Record<string, string>> {
   const dark = colorScheme === "dark";
+  const serifFont = `${appSerifFontFamily()} !important`;
   return {
     html: {
       background: dark ? "#1f1e1b" : "#fbfaf6",
@@ -117,9 +127,10 @@ function epubTheme(colorScheme: ColorScheme): Record<string, Record<string, stri
     body: {
       background: dark ? "#1f1e1b" : "#fbfaf6",
       color: dark ? "#dedad1" : "#282723",
-      "font-family": "Georgia, 'Noto Serif SC', serif",
+      "font-family": serifFont,
       "line-height": "1.8",
     },
+    "html body, html body *": { "font-family": serifFont },
     p: { "margin-bottom": "1em" },
     a: { color: dark ? "#ea9679" : "#b95f43" },
     img: { "max-width": "100%", height: "auto" },
