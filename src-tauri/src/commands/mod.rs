@@ -3981,6 +3981,19 @@ pub async fn trash_storage_files(
 }
 
 #[tauri::command]
+pub async fn move_storage_files(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    file_ids: Vec<String>,
+    target_folder_id: Option<String>,
+) -> AppResult<usize> {
+    state
+        .storage
+        .move_files(account_id, file_ids, target_folder_id)
+        .await
+}
+
+#[tauri::command]
 pub async fn refresh_storage_quota(
     state: tauri::State<'_, AppState>,
     account_id: String,

@@ -65,12 +65,13 @@ impl ProviderFactory for QuarkDriveFactory {
             display_name: "夸克网盘".into(),
             auth_kind: ProviderAuthKind::BrowserSession,
             stability: ProviderStability::Community,
-            implementation_version: "quark-pan-http-v2".into(),
+            implementation_version: "quark-pan-http-v3".into(),
             capabilities: StorageCapabilities {
                 browse_files: true,
                 read_files: true,
                 write_files: true,
                 delete_files: true,
+                move_files: true,
                 range_download: true,
                 resumable_upload: true,
                 quota: true,
@@ -637,6 +638,17 @@ impl FileManagementProvider for QuarkDriveSession {
             })),
         )
         .await?;
+        Ok(())
+    }
+
+    async fn move_files(
+        &self,
+        file_ids: Vec<String>,
+        target_folder_id: Option<String>,
+    ) -> ProviderResult<()> {
+        let body = move_files_request(file_ids, target_folder_id)?;
+        self.api(Method::POST, "file/move", Vec::new(), Some(body))
+            .await?;
         Ok(())
     }
 }
@@ -1367,6 +1379,29 @@ fn validate_upload_request(request: &BeginFileUploadRequest) -> ProviderResult<(
     Ok(())
 }
 
+fn move_files_request(
+    file_ids: Vec<String>,
+    target_folder_id: Option<String>,
+) -> ProviderResult<Value> {
+    if file_ids.is_empty() || file_ids.len() > 100 {
+        return Err(invalid_request("夸克网盘一次最多可移动 100 个项目"));
+    }
+    for file_id in &file_ids {
+        validate_id(file_id, "文件 ID")?;
+    }
+    let target_folder_id = target_folder_id.unwrap_or_else(|| "0".into());
+    validate_id(&target_folder_id, "目标文件夹 ID")?;
+    if file_ids.iter().any(|file_id| file_id == &target_folder_id) {
+        return Err(invalid_request("不能将文件夹移动到自身"));
+    }
+    Ok(json!({
+        "action_type": 1,
+        "to_pdir_fid": target_folder_id,
+        "filelist": file_ids,
+        "exclude_fids": []
+    }))
+}
+
 fn validate_cookie(cookie: &str) -> ProviderResult<()> {
     if cookie.is_empty() || cookie.len() > 64 * 1024 || cookie.chars().any(char::is_control) {
         return Err(ProviderError::new(
@@ -1717,5 +1752,27 @@ mod tests {
         );
         assert!(validate_bucket("ul-zb").is_ok());
         assert!(validate_bucket("evil.example.com").is_err());
+    }
+
+    #[test]
+    fn move_request_maps_root_and_validates_ids() {
+        assert_eq!(
+            move_files_request(vec!["file-2".into(), "file-1".into()], None).unwrap(),
+            json!({
+                "action_type": 1,
+                "to_pdir_fid": "0",
+                "filelist": ["file-2", "file-1"],
+                "exclude_fids": []
+            })
+        );
+        assert_eq!(
+            move_files_request(vec!["file-1".into()], Some("folder-1".into())).unwrap()
+                ["to_pdir_fid"],
+            "folder-1"
+        );
+        assert!(move_files_request(Vec::new(), None).is_err());
+        assert!(move_files_request(vec!["file-1".into(); 101], None).is_err());
+        assert!(move_files_request(vec!["bad\nid".into()], None).is_err());
+        assert!(move_files_request(vec!["folder-1".into()], Some("folder-1".into())).is_err());
     }
 }

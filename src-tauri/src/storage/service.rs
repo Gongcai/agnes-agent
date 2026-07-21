@@ -976,6 +976,59 @@ impl StorageService {
         }
     }
 
+    pub async fn move_files(
+        &self,
+        account_id: String,
+        file_ids: Vec<String>,
+        target_folder_id: Option<String>,
+    ) -> AppResult<usize> {
+        let mut unique_ids = file_ids
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        unique_ids.sort();
+        unique_ids.dedup();
+        if unique_ids.is_empty() || unique_ids.len() > 100 {
+            return Err(AppError::Other(
+                "移动文件需要提供 1 到 100 个文件 ID".into(),
+            ));
+        }
+        let target_folder_id = target_folder_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if target_folder_id
+            .as_ref()
+            .is_some_and(|target| unique_ids.contains(target))
+        {
+            return Err(AppError::Other("不能将文件夹移动到自身".into()));
+        }
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let descriptor = self
+            .registry
+            .descriptor(&row.provider_id)
+            .map_err(provider_error)?;
+        if !descriptor.capabilities.move_files {
+            return Err(AppError::Other("当前网盘不支持移动文件".into()));
+        }
+        let manager = session
+            .file_management()
+            .ok_or_else(|| AppError::Other("当前网盘未提供文件移动接口".into()))?;
+        match manager
+            .move_files(unique_ids.clone(), target_folder_id)
+            .await
+        {
+            Ok(()) => {
+                self.update_provider_status(&row, None).await;
+                Ok(unique_ids.len())
+            }
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                Err(provider_error(error))
+            }
+        }
+    }
+
     pub async fn authorize_account(
         &self,
         provider_id: String,
@@ -1977,6 +2030,16 @@ mod tests {
             assert_eq!(file_ids, vec!["remote-1"]);
             Ok(())
         }
+
+        async fn move_files(
+            &self,
+            file_ids: Vec<String>,
+            target_folder_id: Option<String>,
+        ) -> ProviderResult<()> {
+            assert_eq!(file_ids, vec!["folder-1", "remote-1"]);
+            assert_eq!(target_folder_id.as_deref(), Some("target-folder"));
+            Ok(())
+        }
     }
 
     #[derive(Clone, Copy)]
@@ -1986,6 +2049,7 @@ mod tests {
         ChangedFields,
         RateLimited,
         Resume,
+        ManagementFailure,
     }
 
     struct ContractDrive {
@@ -2064,6 +2128,31 @@ mod tests {
         fn file_source(&self) -> Option<&dyn FileSourceProvider> {
             Some(self)
         }
+
+        fn file_management(&self) -> Option<&dyn FileManagementProvider> {
+            Some(self)
+        }
+    }
+
+    #[async_trait]
+    impl FileManagementProvider for ContractDrive {
+        async fn trash_files(&self, _file_ids: Vec<String>) -> ProviderResult<()> {
+            Err(ProviderError::unsupported("moving files to trash"))
+        }
+
+        async fn move_files(
+            &self,
+            _file_ids: Vec<String>,
+            _target_folder_id: Option<String>,
+        ) -> ProviderResult<()> {
+            match self.scenario {
+                ContractScenario::ManagementFailure => Err(ProviderError::new(
+                    ProviderErrorCategory::Permission,
+                    "provider rejected file movement",
+                )),
+                _ => Ok(()),
+            }
+        }
     }
 
     struct ContractFactory {
@@ -2087,6 +2176,7 @@ mod tests {
                     range_download: matches!(self.scenario, ContractScenario::Resume),
                     stable_file_sizes: true,
                     user_authorization: true,
+                    move_files: matches!(self.scenario, ContractScenario::ManagementFailure),
                     ..StorageCapabilities::default()
                 },
             }
@@ -2244,6 +2334,7 @@ mod tests {
                     read_files: true,
                     write_files: true,
                     delete_files: true,
+                    move_files: true,
                     quota: true,
                     user_authorization: true,
                     ..StorageCapabilities::default()
@@ -2468,6 +2559,27 @@ mod tests {
                 .unwrap(),
             1
         );
+        assert_eq!(
+            service
+                .move_files(
+                    "account-1".into(),
+                    vec!["remote-1".into(), "folder-1".into(), "remote-1".into()],
+                    Some(" target-folder ".into()),
+                )
+                .await
+                .unwrap(),
+            2
+        );
+        assert!(service
+            .move_files(
+                "account-1".into(),
+                vec!["target-folder".into()],
+                Some("target-folder".into()),
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("自身"));
         let quota = service.refresh_quota("account-1".into()).await.unwrap();
         assert_eq!(quota.total_bytes, Some(1024));
         service.remove_account("account-1".into()).await.unwrap();
@@ -2516,6 +2628,7 @@ mod tests {
             ("contract_schema", ContractScenario::ChangedFields),
             ("contract_rate", ContractScenario::RateLimited),
             ("contract_resume", ContractScenario::Resume),
+            ("contract_management", ContractScenario::ManagementFailure),
         ];
         let mut sessions = std::collections::HashMap::new();
         for (provider_id, scenario) in scenarios {
@@ -2577,6 +2690,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(healthy.items.len(), 1);
+        assert!(service
+            .move_files(
+                "contract_healthy-account".into(),
+                vec!["contract-file".into()],
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("不支持"));
+        assert!(service
+            .move_files(
+                "contract_management-account".into(),
+                vec!["contract-file".into()],
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("permission"));
+        assert_eq!(
+            service
+                .list_files(
+                    "contract_healthy-account".into(),
+                    ListFilesRequest {
+                        parent_id: None,
+                        page_token: None,
+                        page_size: 10,
+                    },
+                )
+                .await
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
 
         assert!(service
             .list_files(
@@ -2605,6 +2754,15 @@ mod tests {
         assert_eq!(
             schema.account.last_error_category.as_deref(),
             Some("invalid_response")
+        );
+        let management = accounts
+            .iter()
+            .find(|account| account.account.id == "contract_management-account")
+            .unwrap();
+        assert_eq!(management.account.auth_state, "connected");
+        assert_eq!(
+            management.account.last_error_category.as_deref(),
+            Some("permission")
         );
 
         let directory = std::env::temp_dir().join(format!(

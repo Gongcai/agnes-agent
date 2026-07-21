@@ -310,7 +310,7 @@ pub trait ProviderFactory: Send + Sync {
 }
 ```
 
-`ProviderSession` 分别暴露可选的 `file_source()`、`file_upload()`、`file_management()`、`quota_source()` 与 `object_storage()` 窄端口。文件管理端口当前只提供可恢复的 `trash_files`，业务层不暴露永久删除。开放字符串 Provider ID 经过统一校验后注册到 `StorageProviderRegistry`，descriptor 在注册时冻结，新增 WebDAV/S3 等实现不需要扩充核心枚举或修改业务 `match`。`StorageService` 是 renderer、知识库、书架和后续 `ArtifactReplicationService` 的统一应用入口，负责账户状态、Keyring 写后校验、adapter 连接、配额缓存和归一化错误；传给 factory 的 `ProviderCredentialAccess` 已绑定当前 account ID，adapter 无法借此读取其他账户凭证。Provider 只负责远端 API，不得自建业务队列或复制同步策略。
+`ProviderSession` 分别暴露可选的 `file_source()`、`file_upload()`、`file_management()`、`quota_source()` 与 `object_storage()` 窄端口。文件管理端口提供可恢复的 `trash_files`，并允许 Provider 通过 capability 选择性开放 `move_files`，业务层不暴露永久删除。开放字符串 Provider ID 经过统一校验后注册到 `StorageProviderRegistry`，descriptor 在注册时冻结，新增 WebDAV/S3 等实现不需要扩充核心枚举或修改业务 `match`。`StorageService` 是 renderer、知识库、书架和后续 `ArtifactReplicationService` 的统一应用入口，负责账户状态、Keyring 写后校验、adapter 连接、配额缓存和归一化错误；传给 factory 的 `ProviderCredentialAccess` 已绑定当前 account ID，adapter 无法借此读取其他账户凭证。Provider 只负责远端 API，不得自建业务队列或复制同步策略。
 
 `StorageCapabilities` 至少声明：
 
@@ -319,6 +319,7 @@ pub trait ProviderFactory: Send + Sync {
 - 是否支持条件写和稳定 revision/etag；
 - 文件详情中的大小是否稳定、可用于传输完整性校验；
 - 是否支持将用户文件移入可恢复的回收站；
+- 是否支持在用户文件目录间移动文件；
 - 单对象限制和建议分片大小；
 - 是否需要每设备用户授权；
 - 是否可由 Worker 代理。
@@ -369,7 +370,7 @@ storage_transfer_jobs                      # 本机传输执行状态
 - 作为浏览器只读能力完成后的首批高优先级 Provider，解决 Linux 缺少官方客户端时的文件浏览、下载和上传需求。
 - 当前实现为 Rust `quark_drive` community adapter，参考 `lich0821/QuarkPan` 并持续对照仍在维护的 `luxiaosen8/quark-pan-uploader` 重实现 HTTP API 语义；业务层只依赖 `FileSourceProvider / FileUploadProvider / QuotaProvider`，不依赖逆向接口的数据结构，也不把夸克伪装成应用加密对象存储。
 - 新账户必须由用户显式启用，可粘贴文本 Cookie、导入浏览器/QuarkPan Cookie JSON，或使用夸克二维码登录；最终 Cookie 只进入账户级 OS Keyring，SQLite、D1 和日志不保存明文。连接时先调用容量接口验证 Cookie，失效后仅将该账户标记为 `auth_required`。
-- 当前支持目录分页、文件详情、下载链接、Range 下载、容量查询，以及预上传、MD5/SHA1 更新、4 MiB 分片 OSS 上传、合并、finish 和将文件移入回收站（`action_type=2`）。永久删除、移动到任意目录、知识库/书架导入和跨设备凭证同步留待后续迭代。
+- 当前支持目录分页、文件详情、下载链接、Range 下载、容量查询，以及预上传、MD5/SHA1 更新、4 MiB 分片 OSS 上传、合并、finish、移动到任意目录（`action_type=1`）和移入回收站（`action_type=2`）；网盘文件可经应用私有暂存导入知识库或书架。永久删除和跨设备凭证同步留待后续迭代。
 - Provider 明确标记为 `community`，UI 提示接口变更、风控和服务条款风险；任何夸克故障不得阻断本地文件、R2、Drive 或其他功能。
 
 WebDAV 和通用 S3 可作为比逆向网盘 API 更稳定的后续 Provider。
@@ -610,7 +611,7 @@ tasks
 - [ ] 完成真实 Google 账户授权、目录、Workspace 文档导出、直导、下载和 token 刷新验收；
 - [x] 夸克以可替换的 Rust community adapter 实现 Cookie 授权、文件浏览、下载、Range 下载、配额和分片上传；Cookie 只存 Keyring，Provider 失效时只影响对应账户。
 - [x] 夸克文件移入回收站；
-- [ ] 补齐夸克文件移动；
+- [x] 夸克支持单项或最多 100 项批量移动，目标目录由独立文件夹浏览器选择，Provider capability 控制入口可见性；
 - [x] 扩展统一 Provider 契约测试，覆盖授权丢失、接口字段变化、限流、Range 断点恢复和 Provider 切换；任一账户故障只更新自身状态和任务。
 
 ### Phase E：R2 Provider

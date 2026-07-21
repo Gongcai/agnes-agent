@@ -71,6 +71,14 @@ pub trait FileUploadProvider: Send + Sync {
 #[async_trait]
 pub trait FileManagementProvider: Send + Sync {
     async fn trash_files(&self, file_ids: Vec<String>) -> ProviderResult<()>;
+
+    async fn move_files(
+        &self,
+        _file_ids: Vec<String>,
+        _target_folder_id: Option<String>,
+    ) -> ProviderResult<()> {
+        Err(ProviderError::unsupported("moving files"))
+    }
 }
 
 #[async_trait]

@@ -13,6 +13,7 @@ import {
   File,
   Folder,
   FolderDown,
+  FolderInput,
   FolderOpen,
   HardDrive,
   LoaderCircle,
@@ -43,6 +44,7 @@ interface ProviderDescriptor {
     read_files: boolean;
     write_files: boolean;
     delete_files: boolean;
+    move_files: boolean;
     object_storage: boolean;
     user_authorization: boolean;
   };
@@ -107,6 +109,12 @@ interface FileContextMenu {
   item: RemoteFileItem;
   x: number;
   y: number;
+}
+
+interface MoveDialogState {
+  fileIds: string[];
+  sourceFolderId: string | null;
+  path: FolderLevel[];
 }
 
 type DriveView = "files" | "transfers";
@@ -186,7 +194,13 @@ export function DriveWorkspace() {
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
   const [knowledgeCollections, setKnowledgeCollections] = useState<KnowledgeCollection[]>([]);
   const [knowledgeImportItem, setKnowledgeImportItem] = useState<RemoteFileItem | null>(null);
+  const [moveDialog, setMoveDialog] = useState<MoveDialogState | null>(null);
+  const [moveFolders, setMoveFolders] = useState<RemoteFileItem[]>([]);
+  const [moveNextPageToken, setMoveNextPageToken] = useState<string | null>(null);
+  const [moveLoading, setMoveLoading] = useState(false);
+  const [moveSubmitting, setMoveSubmitting] = useState(false);
   const fileRequestId = useRef(0);
+  const moveRequestId = useRef(0);
   const transferSpeedSamples = useRef(new Map<string, TransferSpeedSample>());
 
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? null;
@@ -194,6 +208,9 @@ export function DriveWorkspace() {
     (provider) => provider.id === selectedAccount?.provider_id,
   );
   const currentFolder = folderPath[folderPath.length - 1];
+  const moveTargetIsSource = moveDialog
+    ? moveDialog.path[moveDialog.path.length - 1].id === moveDialog.sourceFolderId
+    : false;
   const accountIssue = selectedAccount
     ? !selectedAccount.provider_installed
       ? "当前版本未安装此 Provider adapter"
@@ -303,6 +320,8 @@ export function DriveWorkspace() {
     setFiles([]);
     setNextPageToken(null);
     setSelectedFileIds(new Set());
+    setMoveDialog(null);
+    moveRequestId.current += 1;
   }, [selectedAccountId]);
 
   useEffect(() => {
@@ -731,6 +750,108 @@ export function DriveWorkspace() {
     setSelectedFileIds(selected ? new Set(sortedFiles.map((item) => item.id)) : new Set());
   };
 
+  const loadMoveFolders = async (
+    dialog: MoveDialogState,
+    append: boolean,
+    pageToken: string | null = null,
+  ) => {
+    if (!selectedAccount) return;
+    const requestId = ++moveRequestId.current;
+    const target = dialog.path[dialog.path.length - 1];
+    setMoveLoading(true);
+    setError(null);
+    if (!append) {
+      setMoveFolders([]);
+      setMoveNextPageToken(null);
+    }
+    try {
+      const page = await invoke<RemoteFilePage>("list_storage_files", {
+        accountId: selectedAccount.id,
+        parentId: target.id,
+        pageToken,
+        pageSize: 100,
+      });
+      if (requestId !== moveRequestId.current) return;
+      const movingIds = new Set(dialog.fileIds);
+      const folders = page.items.filter(
+        (item) => item.kind === "folder" && !movingIds.has(item.id),
+      );
+      setMoveFolders((current) => append ? [...current, ...folders] : folders);
+      setMoveNextPageToken(page.next_page_token);
+    } catch (reason) {
+      if (requestId === moveRequestId.current) setError(String(reason));
+    } finally {
+      if (requestId === moveRequestId.current) setMoveLoading(false);
+    }
+  };
+
+  const openMoveDialog = (fileIds: string[]) => {
+    if (!selectedProvider?.capabilities.move_files) return;
+    const uniqueIds = [...new Set(fileIds.map((id) => id.trim()).filter(Boolean))];
+    if (uniqueIds.length === 0) return;
+    if (uniqueIds.length > 100) {
+      setError("一次最多移动 100 个项目");
+      return;
+    }
+    const dialog = {
+      fileIds: uniqueIds,
+      sourceFolderId: currentFolder.id,
+      path: [{ id: null, name: "根目录" }],
+    } satisfies MoveDialogState;
+    setFileContextMenu(null);
+    setMoveDialog(dialog);
+    void loadMoveFolders(dialog, false);
+  };
+
+  const openMoveFolder = (folder: RemoteFileItem) => {
+    if (!moveDialog || folder.kind !== "folder") return;
+    const nextDialog = {
+      ...moveDialog,
+      path: [...moveDialog.path, { id: folder.id, name: folder.name }],
+    };
+    setMoveDialog(nextDialog);
+    void loadMoveFolders(nextDialog, false);
+  };
+
+  const openMoveBreadcrumb = (index: number) => {
+    if (!moveDialog) return;
+    const nextDialog = { ...moveDialog, path: moveDialog.path.slice(0, index + 1) };
+    setMoveDialog(nextDialog);
+    void loadMoveFolders(nextDialog, false);
+  };
+
+  const closeMoveDialog = () => {
+    if (moveSubmitting) return;
+    moveRequestId.current += 1;
+    setMoveDialog(null);
+    setMoveFolders([]);
+    setMoveNextPageToken(null);
+    setMoveLoading(false);
+  };
+
+  const moveFiles = async () => {
+    if (!selectedAccount || !moveDialog || !selectedProvider?.capabilities.move_files) return;
+    const targetFolderId = moveDialog.path[moveDialog.path.length - 1].id;
+    if (targetFolderId === moveDialog.sourceFolderId) return;
+    try {
+      setMoveSubmitting(true);
+      setError(null);
+      await invoke("move_storage_files", {
+        accountId: selectedAccount.id,
+        fileIds: moveDialog.fileIds,
+        targetFolderId,
+      });
+      setMoveDialog(null);
+      setSelectedFileIds(new Set());
+      await loadShell();
+      await loadFiles(false);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setMoveSubmitting(false);
+    }
+  };
+
   const moveFilesToTrash = async (fileIds: string[]) => {
     if (!selectedAccount || !selectedProvider?.capabilities.delete_files || fileIds.length === 0) return;
     const count = fileIds.length;
@@ -758,7 +879,7 @@ export function DriveWorkspace() {
     event.stopPropagation();
     if (!selectedFileIds.has(item.id)) setSelectedFileIds(new Set([item.id]));
     const menuWidth = 196;
-    const menuHeight = item.kind === "folder" ? 132 : 252;
+    const menuHeight = item.kind === "folder" ? 180 : 300;
     setFileContextMenu({
       item,
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
@@ -947,15 +1068,29 @@ export function DriveWorkspace() {
                       <span>{selectedFileCount > 0 ? `已选 ${selectedFileCount} 项` : "名称"}</span>
                       <span>大小</span>
                       <span className="hidden sm:block">修改时间</span>
-                      {selectedFileCount > 0 && selectedProvider?.capabilities.delete_files ? (
-                        <button
-                          onClick={() => void moveFilesToTrash([...selectedFileIds])}
-                          disabled={loading}
-                          className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
-                          title="将选中项目移入回收站"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                      {selectedFileCount > 0 ? (
+                        <div className="flex items-center justify-end">
+                          {selectedProvider?.capabilities.move_files && (
+                            <button
+                              onClick={() => openMoveDialog([...selectedFileIds])}
+                              disabled={loading}
+                              className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-800 disabled:opacity-40"
+                              title="移动选中项目"
+                            >
+                              <FolderInput className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                          {selectedProvider?.capabilities.delete_files && (
+                            <button
+                              onClick={() => void moveFilesToTrash([...selectedFileIds])}
+                              disabled={loading}
+                              className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
+                              title="将选中项目移入回收站"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
                       ) : <span />}
                     </div>
                     {sortedFiles.map((item) => (
@@ -1174,21 +1309,139 @@ export function DriveWorkspace() {
                 )}
               </>
             )}
-            {selectedProvider?.capabilities.delete_files && (
+            {(selectedProvider?.capabilities.move_files || selectedProvider?.capabilities.delete_files) && (
               <>
                 <div className="my-1 border-t border-stone-100" />
-                <button
-                  onClick={() => void moveFilesToTrash(contextFileIds)}
-                  disabled={loading || contextFileIds.length === 0}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-rose-700 transition-colors hover:bg-rose-50 disabled:text-stone-300"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  移入回收站{contextFileIds.length > 1 ? `（${contextFileIds.length} 项）` : ""}
-                </button>
+                {selectedProvider?.capabilities.move_files && (
+                  <button
+                    onClick={() => openMoveDialog(contextFileIds)}
+                    disabled={loading || contextFileIds.length === 0}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
+                  >
+                    <FolderInput className="h-3.5 w-3.5" />
+                    移动到{contextFileIds.length > 1 ? `（${contextFileIds.length} 项）` : ""}
+                  </button>
+                )}
+                {selectedProvider?.capabilities.delete_files && (
+                  <button
+                    onClick={() => void moveFilesToTrash(contextFileIds)}
+                    disabled={loading || contextFileIds.length === 0}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-rose-700 transition-colors hover:bg-rose-50 disabled:text-stone-300"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    移入回收站{contextFileIds.length > 1 ? `（${contextFileIds.length} 项）` : ""}
+                  </button>
+                )}
               </>
             )}
           </div>
         </>
+      )}
+
+      {moveDialog && (
+        <div
+          className="fixed inset-0 z-[60] grid place-items-center bg-black/20 p-4 backdrop-blur-[1px]"
+          onClick={closeMoveDialog}
+        >
+          <div
+            className="flex max-h-[min(620px,calc(100vh-32px))] w-full max-w-lg flex-col overflow-hidden rounded-lg border border-stone-200 bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-stone-800">
+                  移动 {moveDialog.fileIds.length} 个项目
+                </div>
+                <div className="mt-0.5 truncate text-[11px] text-stone-400">
+                  选择目标文件夹
+                </div>
+              </div>
+              <button
+                onClick={closeMoveDialog}
+                disabled={moveSubmitting}
+                className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-700 disabled:opacity-40"
+                title="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex min-h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-stone-100 px-4 text-xs">
+              {moveDialog.path.map((level, index) => (
+                <div key={`${level.id ?? "root"}-${index}`} className="flex shrink-0 items-center gap-1">
+                  {index > 0 && <ChevronRight className="h-3 w-3 text-stone-300" />}
+                  <button
+                    onClick={() => openMoveBreadcrumb(index)}
+                    disabled={moveLoading || moveSubmitting || index === moveDialog.path.length - 1}
+                    className="max-w-40 truncate rounded px-1.5 py-1 text-stone-500 hover:bg-stone-100 hover:text-stone-800 disabled:text-stone-800"
+                    title={level.name}
+                  >
+                    {level.name}
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="min-h-64 flex-1 overflow-y-auto p-2">
+              {moveFolders.map((folder) => (
+                <button
+                  key={folder.id}
+                  onClick={() => openMoveFolder(folder)}
+                  disabled={moveLoading || moveSubmitting}
+                  className="flex h-10 w-full items-center gap-2 rounded-md px-3 text-left text-xs text-stone-700 hover:bg-stone-100 disabled:opacity-50"
+                >
+                  <Folder className="h-4 w-4 shrink-0 text-amber-500" />
+                  <span className="min-w-0 flex-1 truncate">{folder.name}</span>
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-stone-300" />
+                </button>
+              ))}
+              {moveLoading && moveFolders.length === 0 && (
+                <div className="grid min-h-56 place-items-center">
+                  <LoaderCircle className="h-5 w-5 animate-spin text-stone-400" />
+                </div>
+              )}
+              {!moveLoading && moveFolders.length === 0 && (
+                <div className="grid min-h-56 place-items-center text-xs text-stone-400">
+                  此目录没有子文件夹
+                </div>
+              )}
+              {moveNextPageToken && (
+                <button
+                  onClick={() => void loadMoveFolders(moveDialog, true, moveNextPageToken)}
+                  disabled={moveLoading || moveSubmitting}
+                  className="mt-2 h-8 w-full rounded-md border border-stone-200 text-xs text-stone-500 hover:bg-stone-50 disabled:opacity-40"
+                >
+                  {moveLoading ? "加载中..." : "加载更多"}
+                </button>
+              )}
+            </div>
+
+            <div className="flex shrink-0 items-center justify-between gap-3 border-t border-stone-200 px-4 py-3">
+              <div className="min-w-0 truncate text-[11px] text-stone-400">
+                {moveTargetIsSource
+                  ? "项目已位于此目录"
+                  : `目标：${moveDialog.path[moveDialog.path.length - 1].name}`}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  onClick={closeMoveDialog}
+                  disabled={moveSubmitting}
+                  className="h-8 rounded-md px-3 text-xs font-medium text-stone-500 hover:bg-stone-100 disabled:opacity-40"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={() => void moveFiles()}
+                  disabled={moveLoading || moveSubmitting || moveTargetIsSource}
+                  className="flex h-8 items-center gap-2 rounded-md bg-emerald-700 px-3 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-40"
+                >
+                  {moveSubmitting && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+                  移动到此处
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {knowledgeImportItem && (

@@ -113,6 +113,7 @@ pub struct StorageCapabilities {
     pub read_files: bool,
     pub write_files: bool,
     pub delete_files: bool,
+    pub move_files: bool,
     pub object_storage: bool,
     pub range_download: bool,
     pub resumable_upload: bool,
