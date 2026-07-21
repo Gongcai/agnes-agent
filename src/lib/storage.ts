@@ -24,3 +24,38 @@ export function formatTransferSpeed(bytesPerSecond: number | null | undefined): 
   }
   return `${formatStorageBytes(bytesPerSecond)}/s`;
 }
+
+interface RemoteImportCandidate {
+  name: string;
+  media_type: string | null;
+}
+
+const KNOWLEDGE_MEDIA_TYPES = new Set([
+  "text/markdown",
+  "text/plain",
+  "text/csv",
+  "application/json",
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.google-apps.document",
+  "application/vnd.google-apps.spreadsheet",
+  "application/vnd.google-apps.presentation",
+  "application/vnd.google-apps.script",
+  "application/vnd.google-apps.script+json",
+]);
+
+function normalizedMediaType(value: string | null): string {
+  return value?.split(";", 1)[0].trim().toLowerCase() ?? "";
+}
+
+export function isKnowledgeImportable(item: RemoteImportCandidate): boolean {
+  return KNOWLEDGE_MEDIA_TYPES.has(normalizedMediaType(item.media_type))
+    || /\.(md|markdown|txt|rst|log|csv|json|pdf|docx|pptx|xlsx)$/i.test(item.name.trim());
+}
+
+export function isReadingImportable(item: RemoteImportCandidate): boolean {
+  return normalizedMediaType(item.media_type) === "application/epub+zip"
+    || /\.epub$/i.test(item.name.trim());
+}

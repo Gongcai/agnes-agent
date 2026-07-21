@@ -24,7 +24,13 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { formatStorageBytes, formatTransferSpeed, storageProgress } from "../lib/storage";
+import {
+  formatStorageBytes,
+  formatTransferSpeed,
+  isKnowledgeImportable,
+  isReadingImportable,
+  storageProgress,
+} from "../lib/storage";
 import { useAgentStore } from "../store/useAgentStore";
 
 interface ProviderDescriptor {
@@ -589,26 +595,9 @@ export function DriveWorkspace() {
     }
   };
 
-  const knowledgeImportable = (item: RemoteFileItem) => {
-    const mediaType = item.media_type?.split(";", 1)[0] ?? "";
-    return [
-      "text/markdown",
-      "text/plain",
-      "text/csv",
-      "application/json",
-      "application/vnd.google-apps.document",
-      "application/vnd.google-apps.spreadsheet",
-      "application/vnd.google-apps.presentation",
-      "application/vnd.google-apps.script",
-    ].includes(mediaType) || /\.(md|markdown|txt|rst|log|csv|json)$/i.test(item.name);
-  };
-
-  const readingImportable = (item: RemoteFileItem) =>
-    item.media_type?.split(";", 1)[0] === "application/epub+zip" || /\.epub$/i.test(item.name);
-
   const openKnowledgeImport = (item: RemoteFileItem) => {
     setFileContextMenu(null);
-    if (!activeAgentId || !knowledgeImportable(item)) return;
+    if (!activeAgentId || !isKnowledgeImportable(item)) return;
     const writableCollections = knowledgeCollections.filter(
       (collection) => collection.permission === "write" || collection.permission === "manage",
     );
@@ -644,7 +633,7 @@ export function DriveWorkspace() {
   };
 
   const importToReading = async (item: RemoteFileItem) => {
-    if (!selectedAccount || !activeAgentId || !readingImportable(item)) return;
+    if (!selectedAccount || !activeAgentId || !isReadingImportable(item)) return;
     setFileContextMenu(null);
     setView("transfers");
     setLoading(true);
@@ -1159,7 +1148,7 @@ export function DriveWorkspace() {
                   <Download className="h-3.5 w-3.5" />
                   下载
                 </button>
-                {knowledgeImportable(fileContextMenu.item) && (
+                {isKnowledgeImportable(fileContextMenu.item) && (
                   <button
                     onClick={() => openKnowledgeImport(fileContextMenu.item)}
                     disabled={loading || !activeAgentId || !fileContextMenu.item.downloadable}
@@ -1169,7 +1158,7 @@ export function DriveWorkspace() {
                     导入知识库
                   </button>
                 )}
-                {readingImportable(fileContextMenu.item) && (
+                {isReadingImportable(fileContextMenu.item) && (
                   <button
                     onClick={() => void importToReading(fileContextMenu.item)}
                     disabled={loading || !activeAgentId || !fileContextMenu.item.downloadable}
