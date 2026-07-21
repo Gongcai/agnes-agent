@@ -564,9 +564,6 @@ impl StorageService {
                 return Err(provider_error(error));
             }
         };
-        if remote_file.kind != RemoteFileKind::File {
-            return Err(AppError::Other("只能导入网盘中的普通文件".into()));
-        }
         let destination = destination_directory.join(match kind {
             StorageImportKind::Knowledge => {
                 format!("knowledge-{}.staged", uuid::Uuid::new_v4())
@@ -1868,16 +1865,25 @@ mod tests {
         }
 
         async fn get_file(&self, file_id: &str) -> ProviderResult<RemoteFileItem> {
+            let kind_mismatch = file_id == "provider-kind-mismatch";
             Ok(RemoteFileItem {
                 id: file_id.into(),
                 parent_id: None,
-                name: "Notes.md".into(),
-                kind: RemoteFileKind::File,
-                media_type: Some("text/markdown".into()),
+                name: if kind_mismatch {
+                    "Report.pdf".into()
+                } else {
+                    "Notes.md".into()
+                },
+                kind: if kind_mismatch {
+                    RemoteFileKind::Folder
+                } else {
+                    RemoteFileKind::File
+                },
+                media_type: (!kind_mismatch).then(|| "text/markdown".into()),
                 size: Some(128),
                 modified_at: None,
                 revision: Some("revision-1".into()),
-                downloadable: file_id != "remote-hint-disabled",
+                downloadable: file_id != "remote-hint-disabled" && !kind_mismatch,
             })
         }
 
@@ -2355,6 +2361,25 @@ mod tests {
             "running"
         );
         service.finish_file_import(&staged, None).await.unwrap();
+        let mismatched = service
+            .stage_file_import(
+                "account-1".into(),
+                "provider-kind-mismatch".into(),
+                Some("revision-1".into()),
+                Some(128),
+                import_directory.clone(),
+                StorageImportKind::Knowledge,
+                "collection-1".into(),
+                1024,
+            )
+            .await
+            .unwrap();
+        assert_eq!(mismatched.remote_file.name, "Report.pdf");
+        assert_eq!(
+            std::fs::read(&mismatched.local_path).unwrap(),
+            vec![b'x'; 128]
+        );
+        service.finish_file_import(&mismatched, None).await.unwrap();
         let batch_directory = std::env::temp_dir().join(format!(
             "agnes-storage-batch-download-{}",
             uuid::Uuid::new_v4()
@@ -2392,7 +2417,7 @@ mod tests {
             .list_transfers(Some("account-1".into()), 10)
             .await
             .unwrap();
-        assert_eq!(transfers.len(), 5);
+        assert_eq!(transfers.len(), 6);
         assert!(transfers
             .iter()
             .all(|transfer| transfer.status == "completed"));
