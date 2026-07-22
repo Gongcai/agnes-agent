@@ -368,13 +368,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
         } : { opacity: 0 }}
       />
       <div className="agnes-sidebar-top px-3 pt-3">
-        <div className="agnes-mode-switch mb-2 flex rounded-lg bg-stone-100 p-0.5" role="tablist" aria-label="会话类型">
+        <div
+          className="agnes-mode-switch mb-2 flex rounded-lg bg-stone-100 p-0.5"
+          data-mode={chatMode}
+          role="tablist"
+          aria-label="会话类型"
+        >
+          <span className="agnes-mode-highlight" aria-hidden="true" />
           <button
             type="button"
             role="tab"
             aria-selected={chatMode === "home"}
             onClick={() => onSelectChatMode("home")}
-            className={`agnes-mode-tab flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs transition-colors ${chatMode === "home" ? "bg-white font-medium text-stone-800 shadow-sm" : "text-stone-500 hover:text-stone-800"}`}
+            className={`agnes-mode-tab flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs transition-colors ${chatMode === "home" ? "font-medium text-stone-800" : "text-stone-500 hover:text-stone-800"}`}
             title="日常会话"
           >
             <House className="h-3.5 w-3.5 shrink-0" />
@@ -385,7 +391,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             role="tab"
             aria-selected={chatMode === "code"}
             onClick={() => onSelectChatMode("code")}
-            className={`agnes-mode-tab flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs transition-colors ${chatMode === "code" ? "bg-white font-medium text-stone-800 shadow-sm" : "text-stone-500 hover:text-stone-800"}`}
+            className={`agnes-mode-tab flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs transition-colors ${chatMode === "code" ? "font-medium text-stone-800" : "text-stone-500 hover:text-stone-800"}`}
             title="编程会话"
           >
             <Code className="h-3.5 w-3.5 shrink-0" />
