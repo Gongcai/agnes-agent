@@ -1347,6 +1347,81 @@ pre,
   background: var(--claude-surface-soft) !important;
 }
 
+.agnes-project-select-trigger {
+  background: var(--claude-surface) !important;
+  border-color: var(--claude-border-strong) !important;
+  color: var(--claude-ink) !important;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease;
+}
+
+.agnes-project-select-trigger:hover:not(:disabled) {
+  background: var(--claude-surface-soft) !important;
+}
+
+.agnes-project-select-trigger[data-open="true"] {
+  border-color: rgba(217, 119, 87, 0.65) !important;
+  box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.1);
+}
+
+.agnes-project-select-trigger[data-open="true"] > svg {
+  transform: rotate(180deg);
+}
+
+.agnes-project-select-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.agnes-project-select-menu {
+  background: var(--claude-surface) !important;
+  border-color: var(--claude-border-strong) !important;
+  color: var(--claude-body) !important;
+  animation: agnes-project-select-in 130ms ease-out;
+  transform-origin: top center;
+}
+
+.agnes-project-select-menu[data-direction="up"] {
+  animation-name: agnes-project-select-in-up;
+  transform-origin: bottom center;
+}
+
+.agnes-project-select-option {
+  color: var(--claude-body) !important;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+
+.agnes-project-select-option:hover,
+.agnes-project-select-option[data-active="true"] {
+  background: var(--claude-surface-soft) !important;
+  color: var(--claude-ink) !important;
+}
+
+.agnes-project-select-option[aria-selected="true"] > svg {
+  color: var(--claude-clay-dark);
+}
+
+@keyframes agnes-project-select-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes agnes-project-select-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .agnes-notification-title {
   color: var(--claude-ink) !important;
 }

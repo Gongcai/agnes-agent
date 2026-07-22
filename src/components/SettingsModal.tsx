@@ -12,6 +12,7 @@ import type {
   ModelRoleAssignments,
 } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
+import { ProjectSelect, type ProjectSelectOption } from "./ProjectSelect";
 import { SkillSettingsTab } from "./SkillSettingsTab";
 import {
   embeddingModelName,
@@ -150,6 +151,103 @@ const EMPTY_USER_PROFILE: UserProfile = {
   emoji: "default",
   verbosity: "default",
 };
+
+const GENDER_OPTIONS: readonly ProjectSelectOption[] = [
+  { value: "", label: "未设置" },
+  { value: "male", label: "男" },
+  { value: "female", label: "女" },
+  { value: "nonbinary", label: "非二元" },
+  { value: "other", label: "其他" },
+  { value: "prefer_not_to_say", label: "不愿透露" },
+];
+
+const OCCUPATION_OPTIONS: readonly ProjectSelectOption[] = [
+  { value: "", label: "未设置" },
+  { value: "software_it", label: "软件开发 / IT" },
+  { value: "product_design", label: "产品 / 设计" },
+  { value: "education_research", label: "教育 / 科研" },
+  { value: "healthcare", label: "医疗健康" },
+  { value: "finance_law", label: "金融 / 法律" },
+  { value: "marketing_media", label: "市场 / 媒体" },
+  { value: "management_entrepreneurship", label: "管理 / 创业" },
+  { value: "student", label: "学生" },
+  { value: "freelancer", label: "自由职业" },
+  { value: "other", label: "其他" },
+];
+
+type ProfilePreferenceKey = "baseStyle" | "warmth" | "enthusiasm" | "headingsLists" | "emoji" | "verbosity";
+
+const PROFILE_PREFERENCE_FIELDS: readonly {
+  label: string;
+  key: ProfilePreferenceKey;
+  options: readonly ProjectSelectOption[];
+}[] = [
+  {
+    label: "基础风格和语调",
+    key: "baseStyle",
+    options: [
+      { value: "default", label: "默认" },
+      { value: "professional", label: "专业可靠" },
+      { value: "friendly", label: "亲和友善" },
+      { value: "candid", label: "直言不讳" },
+      { value: "quirky", label: "天马行空" },
+      { value: "efficient", label: "高效务实" },
+      { value: "nerdy", label: "探索求知" },
+      { value: "cynical", label: "犀利幽默" },
+    ],
+  },
+  {
+    label: "温和体贴",
+    key: "warmth",
+    options: [
+      { value: "default", label: "默认" },
+      { value: "less", label: "较少" },
+      { value: "more", label: "较多" },
+    ],
+  },
+  {
+    label: "热情洋溢",
+    key: "enthusiasm",
+    options: [
+      { value: "default", label: "默认" },
+      { value: "less", label: "较少" },
+      { value: "more", label: "较多" },
+    ],
+  },
+  {
+    label: "标题和列表",
+    key: "headingsLists",
+    options: [
+      { value: "default", label: "默认" },
+      { value: "less", label: "较少使用" },
+      { value: "more", label: "较多使用" },
+    ],
+  },
+  {
+    label: "表情符号",
+    key: "emoji",
+    options: [
+      { value: "default", label: "默认" },
+      { value: "less", label: "较少使用" },
+      { value: "more", label: "较多使用" },
+    ],
+  },
+  {
+    label: "回答详略",
+    key: "verbosity",
+    options: [
+      { value: "default", label: "默认" },
+      { value: "concise", label: "简洁" },
+      { value: "detailed", label: "详细" },
+    ],
+  },
+];
+
+const PROFILE_INHERITANCE_OPTIONS: readonly ProjectSelectOption<UserProfileInheritanceMode>[] = [
+  { value: "auto", label: "自动（USER.md 为空时继承）" },
+  { value: "inherit", label: "继承全局用户资料" },
+  { value: "isolated", label: "不继承" },
+];
 
 interface ArtifactStorageStatus {
   quotaBytes: number;
@@ -2309,40 +2407,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-xs font-normal text-stone-800 outline-none focus:border-[#8CA38A]"
                           />
                         </label>
-                        <label className="space-y-1.5 text-xs font-semibold text-stone-600">
+                        <div className="space-y-1.5 text-xs font-semibold text-stone-600">
                           <span>性别</span>
-                          <select
+                          <ProjectSelect
                             value={userProfile.gender}
-                            onChange={(event) => setUserProfile((profile) => ({ ...profile, gender: event.target.value }))}
-                            className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-xs font-normal text-stone-800 outline-none focus:border-[#8CA38A]"
-                          >
-                            <option value="">未设置</option>
-                            <option value="male">男</option>
-                            <option value="female">女</option>
-                            <option value="nonbinary">非二元</option>
-                            <option value="other">其他</option>
-                            <option value="prefer_not_to_say">不愿透露</option>
-                          </select>
-                        </label>
-                        <label className="space-y-1.5 text-xs font-semibold text-stone-600 sm:col-span-2">
+                            options={GENDER_OPTIONS}
+                            onChange={(gender) => setUserProfile((profile) => ({ ...profile, gender }))}
+                            ariaLabel="性别"
+                          />
+                        </div>
+                        <div className="space-y-1.5 text-xs font-semibold text-stone-600 sm:col-span-2">
                           <span>职业</span>
-                          <select
+                          <ProjectSelect
                             value={userProfile.occupation}
-                            onChange={(event) => setUserProfile((profile) => ({ ...profile, occupation: event.target.value }))}
-                            className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-xs font-normal text-stone-800 outline-none focus:border-[#8CA38A]"
-                          >
-                            <option value="">未设置</option>
-                            <option value="software_it">软件开发 / IT</option>
-                            <option value="product_design">产品 / 设计</option>
-                            <option value="education_research">教育 / 科研</option>
-                            <option value="healthcare">医疗健康</option>
-                            <option value="finance_law">金融 / 法律</option>
-                            <option value="marketing_media">市场 / 媒体</option>
-                            <option value="management_entrepreneurship">管理 / 创业</option>
-                            <option value="student">学生</option>
-                            <option value="freelancer">自由职业</option>
-                            <option value="other">其他</option>
-                          </select>
+                            options={OCCUPATION_OPTIONS}
+                            onChange={(occupation) => setUserProfile((profile) => ({ ...profile, occupation }))}
+                            ariaLabel="职业"
+                          />
                           {userProfile.occupation === "other" && (
                             <input
                               value={userProfile.customOccupation}
@@ -2352,7 +2433,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               className="mt-2 w-full rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-xs font-normal text-stone-800 outline-none focus:border-[#8CA38A]"
                             />
                           )}
-                        </label>
+                        </div>
                       </div>
                     </section>
 
@@ -2361,26 +2442,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <h4 className="text-xs font-semibold text-stone-800">偏好的风格</h4>
                         <p className="mt-1 text-[11px] text-stone-400">调整 Agent 默认采用的表达方式，不会限制你在对话中的临时要求。</p>
                       </div>
-                      {[
-                        ["基础风格和语调", "baseStyle", [["default", "默认"], ["professional", "专业可靠"], ["friendly", "亲和友善"], ["candid", "直言不讳"], ["quirky", "天马行空"], ["efficient", "高效务实"], ["nerdy", "探索求知"], ["cynical", "犀利幽默"]]],
-                        ["温和体贴", "warmth", [["default", "默认"], ["less", "较少"], ["more", "较多"]]],
-                        ["热情洋溢", "enthusiasm", [["default", "默认"], ["less", "较少"], ["more", "较多"]]],
-                        ["标题和列表", "headingsLists", [["default", "默认"], ["less", "较少使用"], ["more", "较多使用"]]],
-                        ["表情符号", "emoji", [["default", "默认"], ["less", "较少使用"], ["more", "较多使用"]]],
-                        ["回答详略", "verbosity", [["default", "默认"], ["concise", "简洁"], ["detailed", "详细"]]],
-                      ].map(([label, key, options]) => (
-                        <label key={key as string} className="flex items-center justify-between gap-5 border-b border-stone-200 py-3 text-xs font-medium text-stone-700 last:border-b-0">
-                          <span>{label as string}</span>
-                          <select
-                            value={userProfile[key as keyof UserProfile]}
-                            onChange={(event) => setUserProfile((profile) => ({ ...profile, [key as string]: event.target.value }))}
-                            className="min-w-40 rounded-lg border border-stone-200 bg-white px-3 py-2 text-right text-xs text-stone-700 outline-none focus:border-[#8CA38A]"
-                          >
-                            {(options as string[][]).map(([value, optionLabel]) => (
-                              <option key={value} value={value}>{optionLabel}</option>
-                            ))}
-                          </select>
-                        </label>
+                      {PROFILE_PREFERENCE_FIELDS.map(({ label, key, options }) => (
+                        <div key={key} className="flex items-center justify-between gap-5 border-b border-stone-200 py-3 text-xs font-medium text-stone-700 last:border-b-0">
+                          <span>{label}</span>
+                          <ProjectSelect
+                            value={userProfile[key]}
+                            options={options}
+                            onChange={(value) => setUserProfile((profile) => ({ ...profile, [key]: value }))}
+                            ariaLabel={label}
+                            className="w-44 shrink-0"
+                          />
+                        </div>
                       ))}
                     </section>
 
@@ -2926,17 +2998,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <p className="mt-1 text-[11px] text-rose-600">{profileInheritanceError}</p>
                     )}
                   </div>
-                  <select
+                  <ProjectSelect
                     value={profileInheritance?.mode ?? "auto"}
                     disabled={!profileInheritance || isSavingProfileInheritance}
-                    onChange={(event) => void saveProfileInheritance(event.target.value as UserProfileInheritanceMode)}
-                    className="min-w-52 rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs font-medium text-stone-700 outline-none focus:border-[#8CA38A] disabled:opacity-60"
-                    aria-label="全局用户资料继承方式"
-                  >
-                    <option value="auto">自动（USER.md 为空时继承）</option>
-                    <option value="inherit">继承全局用户资料</option>
-                    <option value="isolated">不继承</option>
-                  </select>
+                    options={PROFILE_INHERITANCE_OPTIONS}
+                    onChange={(mode) => void saveProfileInheritance(mode)}
+                    className="min-w-56 shrink-0"
+                    ariaLabel="全局用户资料继承方式"
+                  />
                 </div>
 
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
