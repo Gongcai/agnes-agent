@@ -29,6 +29,7 @@ export interface AppNotification {
 interface NotificationCenterProps {
   onNavigate: (notification: AppNotification) => void | Promise<void>;
   className?: string;
+  triggerVariant?: "icon" | "menu";
 }
 
 function notificationIcon(kind: AppNotification["kind"]) {
@@ -48,7 +49,7 @@ function relativeTime(value: string): string {
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(timestamp);
 }
 
-export function NotificationCenter({ onNavigate, className }: NotificationCenterProps) {
+export function NotificationCenter({ onNavigate, className, triggerVariant = "icon" }: NotificationCenterProps) {
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
@@ -222,16 +223,28 @@ export function NotificationCenter({ onNavigate, className }: NotificationCenter
           ref={triggerRef}
           type="button"
           onClick={toggle}
-          className={`relative grid h-9 w-9 place-items-center rounded-full border shadow-sm transition-colors ${
-            open ? "border-[#d97757]/30 bg-[#f5e2da] text-[#b95f43]" : "border-stone-200 bg-white text-stone-600 hover:bg-stone-50"
-          }`}
+          className={triggerVariant === "menu"
+            ? `relative flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors ${open ? "bg-[#f5e2da] text-[#b95f43]" : "text-stone-600 hover:bg-stone-50 hover:text-stone-900"}`
+            : `relative grid h-9 w-9 place-items-center rounded-full border shadow-sm transition-colors ${open ? "border-[#d97757]/30 bg-[#f5e2da] text-[#b95f43]" : "border-stone-200 bg-white text-stone-600 hover:bg-stone-50"}`
+          }
           title="通知中心"
           aria-label={unreadCount ? `通知中心，${unreadCount} 条未读` : "通知中心"}
           aria-expanded={open}
         >
-          <Bell className="h-4 w-4" />
+          {triggerVariant === "menu" ? (
+            <>
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-stone-200 bg-stone-50">
+                <Bell className="h-4 w-4" />
+              </span>
+              <span>通知</span>
+            </>
+          ) : (
+            <Bell className="h-4 w-4" />
+          )}
           {unreadCount > 0 && (
-            <span className="absolute -right-1 -top-1 grid min-h-4 min-w-4 place-items-center rounded-full bg-rose-500 px-1 text-[9px] font-semibold text-white">
+            <span className={`absolute grid min-h-4 min-w-4 place-items-center rounded-full bg-rose-500 px-1 text-[9px] font-semibold text-white ${
+              triggerVariant === "menu" ? "right-2 top-1/2 -translate-y-1/2" : "-right-1 -top-1"
+            }`}>
               {unreadCount > 9 ? "9+" : unreadCount}
             </span>
           )}

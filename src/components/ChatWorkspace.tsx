@@ -880,8 +880,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         >
           <div className="flex items-center justify-center gap-3">
             <Sparkles className="h-7 w-7 text-[var(--claude-clay)]" weight="regular" />
-            <h1 className="text-3xl font-normal tracking-tight text-[var(--claude-ink)]">
-              {activeAgent ? `${activeAgent.name}，我们聊点什么？` : "今天想聊点什么？"}
+            <h1 className="text-3xl font-normal text-[var(--claude-ink)]">
+              {activeAgent ? `${activeAgent.name} returns!` : "Agnes returns!"}
             </h1>
           </div>
         </div>

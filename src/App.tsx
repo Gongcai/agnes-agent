@@ -1,11 +1,12 @@
 import { Suspense, lazy, useState, useEffect } from "react";
 import { Sidebar } from "./components/Sidebar";
+import { AppTitleBar } from "./components/AppTitleBar";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { KnowledgeWorkspace } from "./components/KnowledgeWorkspace";
 import { PlannerWorkspace } from "./components/PlannerWorkspace";
 import { SettingsModal } from "./components/SettingsModal";
 import { type AppNotification } from "./components/NotificationCenter";
-import type { AppFeatureId } from "./lib/features";
+import { APP_FEATURES, type AppFeatureId, type ChatMode } from "./lib/features";
 import { useAgentStore, setupTauriEventListeners } from "./store/useAgentStore";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -28,9 +29,18 @@ const DriveWorkspace = lazy(() =>
 );
 
 export default function App() {
-  const { init, agents, setActiveAgentId, setActiveSessionId } = useAgentStore();
+  const {
+    init,
+    agents,
+    sessions,
+    activeAgentId,
+    activeSessionId,
+    setActiveAgentId,
+    setActiveSessionId,
+  } = useAgentStore();
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const [activeFeature, setActiveFeature] = useState<AppFeatureId>("chat");
+  const [chatMode, setChatMode] = useState<ChatMode>("home");
   const [requestedPlannerTaskId, setRequestedPlannerTaskId] = useState<string | null>(null);
   const [requestedPlannerEventId, setRequestedPlannerEventId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
@@ -69,6 +79,25 @@ export default function App() {
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    const activeSession = sessions.find((session) => session.id === activeSessionId);
+    if (activeSession) {
+      setChatMode(activeSession.workspace_id ? "code" : "home");
+    }
+  }, [activeSessionId, sessions]);
+
+  const handleSelectChatMode = (mode: ChatMode) => {
+    setChatMode(mode);
+    setActiveFeature("chat");
+    const modeSessions = sessions.filter((session) => (
+      session.agent_id === activeAgentId
+      && (mode === "code" ? Boolean(session.workspace_id) : !session.workspace_id)
+    ));
+    if (!modeSessions.some((session) => session.id === activeSessionId) && modeSessions[0]) {
+      setActiveSessionId(modeSessions[0].id).catch(console.error);
+    }
+  };
+
   const handleOpenSettings = (tab: "general" | "agents" | "memory" | "llm" | "tokens" | "mcp" | "skills" | "audit" | "debug" = "agents") => {
     setSettingsTab(tab);
     setIsSettingsOpen(true);
@@ -83,12 +112,14 @@ export default function App() {
       const sessionGroups = await Promise.all(
         agents.map(async (agent) => ({
           agentId: agent.id,
-          sessions: await invoke<{ id: string }[]>("list_sessions", { agentId: agent.id }),
+          sessions: await invoke<{ id: string; workspace_id: string | null }[]>("list_sessions", { agentId: agent.id }),
         })),
       );
       const owner = sessionGroups.find((group) => group.sessions.some((session) => session.id === targetId));
       if (owner) await setActiveAgentId(owner.agentId);
       await setActiveSessionId(targetId);
+      const target = owner?.sessions.find((session) => session.id === targetId);
+      setChatMode(target?.workspace_id ? "code" : "home");
       setActiveFeature("chat");
       return;
     }
@@ -105,50 +136,81 @@ export default function App() {
     }
   };
 
+  const activeSession = sessions.find((session) => session.id === activeSessionId);
+  const activeSessionMatchesMode = activeSession
+    ? chatMode === "code" ? Boolean(activeSession.workspace_id) : !activeSession.workspace_id
+    : false;
+  const activeFeatureLabel = APP_FEATURES.find((feature) => feature.id === activeFeature)?.label ?? "Agnes";
+  const title = activeFeature === "chat"
+    ? activeSessionMatchesMode ? activeSession?.title || (chatMode === "code" ? "Code" : "Home") : (chatMode === "code" ? "Code" : "Home")
+    : activeFeatureLabel;
+  const hasVisibleChatSession = activeSessionMatchesMode;
+
   return (
-    <div className="agnes-app flex h-screen w-screen overflow-hidden bg-[#FAF9F5] text-[#2e2e38] antialiased selection:bg-orange-100 selection:text-stone-900">
-      {/* Collapsible Left Sidebar */}
-      <Sidebar
-        isOpen={isSidebarOpen}
-        activeFeature={activeFeature}
-        onSelectFeature={setActiveFeature}
+    <div className="agnes-app flex h-screen w-screen flex-col overflow-hidden bg-[#FAF9F5] text-[#2e2e38] antialiased selection:bg-orange-100 selection:text-stone-900">
+      <AppTitleBar
+        title={title}
+        isSidebarOpen={isSidebarOpen}
         onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
-        onOpenSettings={handleOpenSettings}
-        onNotificationNavigate={handleNotificationNavigate}
       />
 
-      {/* Feature view host. New local features are mounted here when enabled. */}
-      {activeFeature === "chat" && (
-        <ChatWorkspace
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <Sidebar
+          isOpen={isSidebarOpen}
+          activeFeature={activeFeature}
+          chatMode={chatMode}
+          onSelectChatMode={handleSelectChatMode}
+          onSelectFeature={setActiveFeature}
           onOpenSettings={handleOpenSettings}
+          onNotificationNavigate={handleNotificationNavigate}
         />
-      )}
-      {activeFeature === "knowledge" && (
-        <KnowledgeWorkspace />
-      )}
-      {activeFeature === "reading" && (
-        <Suspense fallback={<main className="grid min-w-0 flex-1 place-items-center text-sm text-stone-400">加载阅读器...</main>}>
-          <ReadingWorkspace />
-        </Suspense>
-      )}
-      {activeFeature === "drive" && (
-        <Suspense fallback={<main className="grid min-w-0 flex-1 place-items-center text-sm text-stone-400">加载网盘...</main>}>
-          <DriveWorkspace />
-        </Suspense>
-      )}
-      {(activeFeature === "calendar" || activeFeature === "tasks") && (
-        <PlannerWorkspace
-          mode={activeFeature}
-          requestedTaskId={requestedPlannerTaskId}
-          requestedEventId={requestedPlannerEventId}
-          onOpenTask={(taskId) => {
-            setRequestedPlannerTaskId(taskId);
-            setActiveFeature("tasks");
-          }}
-          onCloseRequestedTask={() => setRequestedPlannerTaskId(null)}
-          onCloseRequestedEvent={() => setRequestedPlannerEventId(null)}
-        />
-      )}
+
+        {/* Feature view host. New local features are mounted here when enabled. */}
+        {activeFeature === "chat" && hasVisibleChatSession && (
+          <ChatWorkspace onOpenSettings={handleOpenSettings} />
+        )}
+        {activeFeature === "chat" && !hasVisibleChatSession && (
+          <main className="agnes-chat-workspace grid min-w-0 flex-1 place-items-center bg-white px-8 text-center">
+            <div className="max-w-sm">
+              <div className="mx-auto mb-4 grid h-11 w-11 place-items-center rounded-lg bg-stone-100 font-mono text-sm text-stone-500">
+                {chatMode === "code" ? "</>" : "+"}
+              </div>
+              <h1 className="text-2xl font-normal text-stone-800">
+                {chatMode === "code" ? "选择一个代码工作区" : "开始一段新对话"}
+              </h1>
+              <p className="mt-2 text-sm leading-6 text-stone-500">
+                {chatMode === "code"
+                  ? "从左侧添加项目文件夹，或在已有工作区中新建会话。"
+                  : "使用左侧的新对话按钮创建日常会话。"}
+              </p>
+            </div>
+          </main>
+        )}
+        {activeFeature === "knowledge" && <KnowledgeWorkspace />}
+        {activeFeature === "reading" && (
+          <Suspense fallback={<main className="grid min-w-0 flex-1 place-items-center text-sm text-stone-400">加载阅读器...</main>}>
+            <ReadingWorkspace />
+          </Suspense>
+        )}
+        {activeFeature === "drive" && (
+          <Suspense fallback={<main className="grid min-w-0 flex-1 place-items-center text-sm text-stone-400">加载网盘...</main>}>
+            <DriveWorkspace />
+          </Suspense>
+        )}
+        {(activeFeature === "calendar" || activeFeature === "tasks") && (
+          <PlannerWorkspace
+            mode={activeFeature}
+            requestedTaskId={requestedPlannerTaskId}
+            requestedEventId={requestedPlannerEventId}
+            onOpenTask={(taskId) => {
+              setRequestedPlannerTaskId(taskId);
+              setActiveFeature("tasks");
+            }}
+            onCloseRequestedTask={() => setRequestedPlannerTaskId(null)}
+            onCloseRequestedEvent={() => setRequestedPlannerEventId(null)}
+          />
+        )}
+      </div>
 
       {/* Configuration Modal Panels */}
       <SettingsModal

@@ -7,6 +7,8 @@ export type AppFeatureId =
   | "calendar"
   | "tasks";
 
+export type ChatMode = "home" | "code";
+
 export interface AppFeatureDefinition {
   id: AppFeatureId;
   label: string;

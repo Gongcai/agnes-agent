@@ -7,6 +7,7 @@ dist
 src-tauri/target
 src-tauri/gen
 claude-extracted/
+stitch_claude_aesthetic_design_system/
 
 # python
 agent/.venv
