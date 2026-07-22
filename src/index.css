@@ -5,25 +5,25 @@
 @layer base {
   :root {
     color-scheme: light;
-    --background: 40 20% 99%; /* Soft Warm Ivory background */
-    --foreground: 240 10% 10%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 10%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 10%;
-    --primary: 15 63% 60%;
-    --primary-foreground: 210 20% 98%;
-    --secondary: 240 4.8% 96%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 96%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 96%;
-    --accent-foreground: 240 5.9% 10%;
+    --background: 48 33% 97%;
+    --foreground: 60 2% 8%;
+    --card: 39 33% 90%;
+    --card-foreground: 60 2% 8%;
+    --popover: 48 33% 97%;
+    --popover-foreground: 60 2% 8%;
+    --primary: 14 53% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 38 39% 94%;
+    --secondary-foreground: 60 2% 8%;
+    --muted: 38 39% 94%;
+    --muted-foreground: 42 4% 41%;
+    --accent: 39 33% 90%;
+    --accent-foreground: 60 2% 8%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 20% 98%;
-    --border: 240 5.9% 88%;
-    --input: 240 5.9% 90%;
-    --ring: 15 63% 60%;
+    --border: 32 23% 87%;
+    --input: 32 23% 87%;
+    --ring: 14 53% 58%;
     --radius: 0.5rem;
   }
 }
@@ -354,16 +354,18 @@ body.quick-window-body #root {
 /* ============ Warm, flat desktop visual system ============ */
 :root {
   --claude-canvas: #faf9f5;
-  --claude-sidebar: #f7f6f0;
-  --claude-surface: #ffffff;
-  --claude-surface-soft: #efeee8;
-  --claude-surface-strong: #e7e5dc;
+  --claude-sidebar: #f5f0e8;
+  --claude-surface: #faf9f5;
+  --claude-surface-soft: #f5f0e8;
+  --claude-surface-card: #efe9de;
+  --claude-surface-strong: #e8e0d2;
+  --claude-input: #ffffff;
   --claude-ink: #141413;
   --claude-body: #3d3d3a;
   --claude-muted: #747269;
   --claude-muted-soft: #96938a;
-  --claude-border: rgba(31, 30, 27, 0.15);
-  --claude-border-strong: rgba(31, 30, 27, 0.3);
+  --claude-border: #e6dfd8;
+  --claude-border-strong: #d8cfc1;
   --claude-clay: #cc785c;
   --claude-clay-dark: #a9583e;
   --claude-clay-soft: #f3e2dc;
@@ -371,8 +373,8 @@ body.quick-window-body #root {
   --claude-success: #3f7d53;
   --claude-warning: #a96919;
   --claude-danger: #b84343;
-  --claude-header: rgba(255, 255, 255, 0.94);
-  --claude-header-soft: rgba(250, 249, 245, 0.96);
+  --claude-header: rgba(250, 249, 245, 0.96);
+  --claude-header-soft: rgba(245, 240, 232, 0.96);
   --claude-overlay: rgba(31, 30, 27, 0.34);
   --claude-shadow: rgba(31, 30, 27, 0.16);
   --claude-ui-font: "Noto Serif", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
@@ -405,7 +407,9 @@ body.quick-window-body #root {
   --claude-sidebar: #1f1f1d;
   --claude-surface: #1f1f1d;
   --claude-surface-soft: #2d2c29;
+  --claude-surface-card: #252320;
   --claude-surface-strong: #383631;
+  --claude-input: #2d2c29;
   --claude-ink: #f5f3ed;
   --claude-body: #dedad1;
   --claude-muted: #aaa59b;
@@ -462,7 +466,7 @@ pre,
 
 .agnes-app > main,
 .agnes-app > section {
-  background: var(--claude-surface) !important;
+  background: var(--claude-canvas) !important;
   color: var(--claude-body);
 }
 
@@ -559,7 +563,7 @@ pre,
 }
 
 .agnes-mode-switch {
-  background: var(--claude-surface-soft) !important;
+  background: var(--claude-surface-card) !important;
 }
 
 .agnes-sidebar .agnes-mode-tab {
@@ -573,7 +577,7 @@ pre,
 }
 
 .agnes-sidebar-primary-action[aria-current="page"] {
-  background: var(--claude-surface-soft) !important;
+  background: var(--claude-surface-card) !important;
   color: var(--claude-ink) !important;
 }
 
@@ -586,7 +590,7 @@ pre,
 
 .agnes-sidebar .agnes-feature-item[aria-current="page"],
 .agnes-sidebar .agnes-session-item[class*="bg-white"] {
-  background: rgba(51, 48, 42, 0.075) !important;
+  background: var(--claude-surface-card) !important;
   color: var(--claude-ink) !important;
   font-weight: 500;
   box-shadow: none !important;
@@ -598,7 +602,7 @@ pre,
 }
 
 .agnes-feature-highlight {
-  background: rgba(51, 48, 42, 0.075);
+  background: var(--claude-surface-card);
   box-shadow: none;
   transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms ease;
   will-change: transform;
@@ -636,7 +640,7 @@ pre,
 }
 
 .agnes-sidebar-primary-action:hover {
-  background: var(--claude-surface-soft) !important;
+  background: var(--claude-surface-card) !important;
 }
 
 .agnes-sidebar-primary-icon {
@@ -732,13 +736,35 @@ pre,
 }
 
 .agnes-account-menu {
-  background: var(--claude-surface) !important;
+  background: var(--claude-canvas) !important;
   border-color: var(--claude-border) !important;
   color: var(--claude-body);
 }
 
+.agnes-account-menu-header {
+  border-color: var(--claude-border) !important;
+}
+
+.agnes-account-menu-icon {
+  border-color: var(--claude-border) !important;
+  background: var(--claude-surface-soft) !important;
+}
+
 :root[data-agnes-theme="dark"] .agnes-account-menu button:hover {
   background: var(--claude-surface-soft) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-account-menu {
+  border-color: rgba(245, 243, 237, 0.07) !important;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.38) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-account-menu-header {
+  border-color: rgba(245, 243, 237, 0.09) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-account-menu-icon {
+  border-color: transparent !important;
 }
 
 :root[data-agnes-theme="dark"] .agnes-account-menu [class*="text-stone-8"] {
@@ -761,7 +787,7 @@ pre,
 
 .agnes-chat-workspace {
   min-width: 0;
-  background: var(--claude-surface) !important;
+  background: var(--claude-canvas) !important;
   color: var(--claude-body);
 }
 
@@ -877,7 +903,7 @@ pre,
 
 .agnes-chat-composer {
   padding: 10px 28px 20px !important;
-  background: var(--claude-surface) !important;
+  background: var(--claude-canvas) !important;
   border-top: 0 !important;
 }
 
@@ -898,7 +924,7 @@ pre,
   max-width: 744px !important;
   border: 0.5px solid var(--claude-border-strong) !important;
   border-radius: 16px !important;
-  background: var(--claude-surface) !important;
+  background: var(--claude-input) !important;
   padding: 5px !important;
   box-shadow: 0 1px 2px rgba(31, 30, 27, 0.03) !important;
 }
@@ -914,7 +940,7 @@ pre,
 }
 
 :root[data-agnes-theme="dark"] .agnes-chat-composer-box {
-  background: var(--claude-surface-soft) !important;
+  background: var(--claude-input) !important;
 }
 
 .agnes-chat-composer-box:focus-within {
@@ -1120,9 +1146,12 @@ pre,
   accent-color: var(--claude-clay) !important;
 }
 
-.agnes-app [class*="bg-stone-50"],
-.agnes-app [class*="bg-stone-100"] {
-  background-color: var(--claude-canvas) !important;
+.agnes-app [class~="bg-stone-50"] {
+  background-color: var(--claude-surface-soft) !important;
+}
+
+.agnes-app [class~="bg-stone-100"] {
+  background-color: var(--claude-surface-card) !important;
 }
 
 .agnes-app [class*="border-stone-"] {
@@ -1161,7 +1190,7 @@ pre,
   height: min(680px, calc(100vh - 32px)) !important;
   border-color: var(--claude-border-strong) !important;
   border-radius: 10px !important;
-  background: var(--claude-surface) !important;
+  background: var(--claude-canvas) !important;
   box-shadow: 0 24px 64px rgba(31, 30, 27, 0.18) !important;
 }
 
@@ -1189,7 +1218,7 @@ pre,
 }
 
 .agnes-settings-content {
-  background: var(--claude-surface) !important;
+  background: var(--claude-canvas) !important;
 }
 
 .claude-popover {
@@ -1208,6 +1237,15 @@ pre,
   background: var(--claude-surface-soft) !important;
 }
 
+.agnes-notification-title {
+  color: var(--claude-ink) !important;
+}
+
+.agnes-notification-body,
+.agnes-notification-meta {
+  color: var(--claude-muted) !important;
+}
+
 .agnes-settings-content article,
 .agnes-settings-content section > div[class*="rounded-xl"],
 .agnes-settings-content div[class*="rounded-xl"][class*="border"] {
@@ -1217,7 +1255,7 @@ pre,
 }
 
 .agnes-feature-workspace {
-  background: var(--claude-surface) !important;
+  background: var(--claude-canvas) !important;
   color: var(--claude-body);
 }
 
@@ -1249,7 +1287,7 @@ pre,
 }
 
 .agnes-feature-content {
-  background: var(--claude-surface);
+  background: var(--claude-canvas);
 }
 
 .agnes-feature-workspace button[class*="bg-white"],
@@ -1301,7 +1339,7 @@ pre,
 
 .agnes-reading-workspace > section,
 .agnes-reading-workspace > div > section {
-  background: var(--claude-surface) !important;
+  background: var(--claude-canvas) !important;
 }
 
 .agnes-reading-workspace aside {
@@ -1504,6 +1542,32 @@ pre,
 :root[data-agnes-theme="dark"] .claude-popover {
   background: var(--claude-surface) !important;
   color: var(--claude-body);
+}
+
+:root[data-agnes-theme="dark"] .agnes-notification-popover {
+  border-color: rgba(245, 243, 237, 0.1) !important;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-notification-header {
+  border-color: rgba(245, 243, 237, 0.09) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-notification-item {
+  color: var(--claude-body) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-notification-item[class*="bg-[#f5e2da]"] {
+  background: rgba(204, 120, 92, 0.1) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-notification-title {
+  color: var(--claude-ink) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-notification-body,
+:root[data-agnes-theme="dark"] .agnes-notification-meta {
+  color: var(--claude-muted) !important;
 }
 
 @media (max-width: 900px) {

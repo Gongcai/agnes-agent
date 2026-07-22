@@ -515,31 +515,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
             bottom: Math.max(8, window.innerHeight - accountAnchor.top + 8),
           }}
         >
-          <div className="flex items-center gap-2 border-b border-stone-100 px-2.5 py-2">
+          <div className="agnes-account-menu-header flex items-center gap-2 border-b border-stone-100 px-2.5 py-2">
             <span className="grid h-7 w-7 place-items-center rounded-full bg-stone-300 text-xs font-semibold text-stone-700">A</span>
             <div className="min-w-0">
               <p className="truncate text-xs font-semibold text-stone-800">AGENS</p>
               <p className="text-[10px] text-stone-400">本地账户</p>
             </div>
           </div>
-          <NotificationCenter
-            onNavigate={onNotificationNavigate}
-            className="w-full"
-            triggerVariant="menu"
-          />
-          <button
-            type="button"
-            onClick={() => {
-              setAccountMenuOpen(false);
-              onOpenSettings("agents");
-            }}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-stone-600 hover:bg-stone-50 hover:text-stone-900"
-          >
-            <span className="grid h-9 w-9 place-items-center rounded-full border border-stone-200 bg-stone-50">
-              <Settings className="h-4 w-4" />
-            </span>
-            <span>设置</span>
-          </button>
+          <div className="agnes-account-menu-actions mt-1 space-y-1">
+            <NotificationCenter
+              onNavigate={onNotificationNavigate}
+              className="w-full"
+              triggerVariant="menu"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                setAccountMenuOpen(false);
+                onOpenSettings("agents");
+              }}
+              className="flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-stone-600 hover:bg-stone-50 hover:text-stone-900"
+            >
+              <span className="agnes-account-menu-icon grid h-8 w-8 shrink-0 place-items-center rounded-full border border-stone-200 bg-stone-50">
+                <Settings className="h-4 w-4" />
+              </span>
+              <span>设置</span>
+            </button>
+          </div>
         </div>,
         document.body,
       )}

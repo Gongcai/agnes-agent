@@ -157,11 +157,11 @@ export function NotificationCenter({ onNavigate, className, triggerVariant = "ic
   const popover = open && anchor && (
     <section
       ref={popoverRef}
-      className="claude-popover fixed z-[100] flex w-[min(25rem,calc(100vw-1rem))] flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-2xl"
+      className="claude-popover agnes-notification-popover fixed z-[100] flex w-[min(25rem,calc(100vw-1rem))] flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-2xl"
       style={popoverStyle}
       aria-label="通知中心内容"
     >
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-stone-200 px-4">
+      <header className="agnes-notification-header flex h-12 shrink-0 items-center justify-between border-b border-stone-200 px-4">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold text-stone-900">通知</h2>
           {unreadCount > 0 && <span className="text-[11px] text-stone-400">{unreadCount} 条未读</span>}
@@ -188,7 +188,7 @@ export function NotificationCenter({ onNavigate, className, triggerVariant = "ic
               key={notification.id}
               type="button"
               onClick={() => void openNotification(notification)}
-              className={`flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-stone-50 ${
+              className={`agnes-notification-item flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-stone-50 ${
                 notification.read_at ? "opacity-70" : "bg-[#f5e2da]/35"
               }`}
             >
@@ -203,10 +203,10 @@ export function NotificationCenter({ onNavigate, className, triggerVariant = "ic
               </span>
               <span className="min-w-0 flex-1">
                 <span className="flex items-center justify-between gap-3">
-                  <span className="truncate text-xs font-semibold text-stone-800">{notification.title}</span>
-                  <span className="shrink-0 text-[10px] text-stone-400">{relativeTime(notification.delivered_at)}</span>
+                  <span className="agnes-notification-title truncate text-xs font-semibold text-stone-800">{notification.title}</span>
+                  <span className="agnes-notification-meta shrink-0 text-[10px] text-stone-400">{relativeTime(notification.delivered_at)}</span>
                 </span>
-                {notification.body && <span className="mt-1 block line-clamp-2 text-[11px] leading-5 text-stone-500">{notification.body}</span>}
+                {notification.body && <span className="agnes-notification-body mt-1 block line-clamp-2 text-[11px] leading-5 text-stone-500">{notification.body}</span>}
               </span>
               {actionable && <ChevronRight className="mt-1 h-3.5 w-3.5 shrink-0 text-stone-300" />}
             </button>
@@ -233,7 +233,7 @@ export function NotificationCenter({ onNavigate, className, triggerVariant = "ic
         >
           {triggerVariant === "menu" ? (
             <>
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-stone-200 bg-stone-50">
+              <span className="agnes-account-menu-icon grid h-8 w-8 shrink-0 place-items-center rounded-full border border-stone-200 bg-stone-50">
                 <Bell className="h-4 w-4" />
               </span>
               <span>通知</span>

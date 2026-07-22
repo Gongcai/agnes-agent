@@ -506,11 +506,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const currentMaxTokens = activeSession?.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const contextLimit = activeSession?.context_limit ?? currentModel?.descriptor?.context_window ?? 8192;
   const currentCompressThreshold = activeSession?.compress_threshold ?? 0.85;
-  const latestAssistant = [...messages]
-    .reverse()
-    .find((message) => message.role === "assistant" && message.status === "complete");
-  const contextTokens = latestAssistant?.context_tokens ?? 0;
-  const contextPercent = Math.min(100, (contextTokens / Math.max(1, contextLimit)) * 100);
   const summaryTriggerTokens = Math.floor(contextLimit * currentCompressThreshold);
   const currentPermissionMode = activeSession?.permission_mode || "auto";
 
@@ -553,47 +548,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
   return (
     <main className="agnes-chat-workspace flex flex-1 flex-col bg-[#FAF9F5] relative h-full">
-      {/* Header bar */}
-      <header className="agnes-chat-header flex h-14 items-center justify-between border-b border-stone-200 px-6 bg-white/40 backdrop-blur-md shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-stone-800 text-sm">
-              {activeSession?.title || "暂无活动会话"}
-            </span>
-            {activeAgent && (
-              <span className="text-[9px] bg-stone-200/60 border border-stone-300/20 px-1.5 py-0.5 rounded text-stone-600 font-mono font-medium">
-                {activeAgent.name}
-              </span>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <div
-            className="agnes-chat-context flex items-center gap-2 rounded-lg border border-stone-200 bg-white/70 px-2.5 py-1 transition-colors"
-            title={`上下文 ${contextTokens.toLocaleString()} / ${contextLimit.toLocaleString()} Token；总结阈值 ${summaryTriggerTokens.toLocaleString()} Token`}
-          >
-            <span className="text-[10px] text-stone-500">上下文</span>
-            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-stone-200" aria-label="当前上下文占用">
-              <div
-                className={`h-full rounded-full transition-all ${contextPercent >= currentCompressThreshold * 100 ? "bg-amber-500" : "bg-[#8CA38A]"}`}
-                style={{ width: `${contextPercent}%` }}
-              />
-            </div>
-            <span className="min-w-[34px] text-right font-mono text-[10px] tabular-nums text-stone-500">
-              {contextPercent.toFixed(0)}%
-            </span>
-          </div>
-          <button
-            onClick={() => onOpenSettings("audit")}
-            className="agnes-chat-audit-button flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[11px] text-stone-600 shadow-sm transition-colors hover:text-stone-900"
-          >
-            <ShieldCheck className="h-3.5 w-3.5 text-[#8CA38A]" />
-            <span>审计流水</span>
-          </button>
-        </div>
-      </header>
-
       <div className="agnes-chat-stage relative min-h-0 flex-1 overflow-hidden">
       {/* Message Panel list */}
       <div
