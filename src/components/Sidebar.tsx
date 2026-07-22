@@ -401,7 +401,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
       </div>
 
-      <nav className="agnes-sidebar-nav shrink-0 border-b border-stone-200/80 px-3 py-3" aria-label="更多功能">
+      <nav className="agnes-sidebar-nav shrink-0 border-b border-stone-200/80 px-3 pb-3 pt-1" aria-label="更多功能">
         {moreExpanded && (
           <div className="mb-1 space-y-1">
             {ENABLED_APP_FEATURES.filter((feature) => feature.id !== "chat" && feature.id !== "drive").map((feature) => {
