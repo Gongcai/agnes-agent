@@ -1026,14 +1026,62 @@ pre,
   line-height: 1.78;
 }
 
-.agnes-chat-messages .agnes-assistant-body > details {
-  border-color: var(--claude-clay) !important;
-  background: var(--claude-canvas) !important;
-  border-radius: 0 8px 8px 0 !important;
+.agnes-chat-messages .agnes-assistant-body > .agnes-thought-details {
+  width: min(100%, 620px);
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
 }
 
-.agnes-chat-messages .agnes-assistant-body > details summary {
-  color: var(--claude-clay-dark) !important;
+.agnes-thought-summary {
+  display: flex;
+  width: fit-content;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--claude-muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 20px;
+  transition: color 140ms ease;
+}
+
+.agnes-thought-summary::-webkit-details-marker {
+  display: none;
+}
+
+.agnes-thought-summary:hover {
+  color: var(--claude-body);
+}
+
+.agnes-thought-content {
+  position: relative;
+  margin-top: 8px;
+  margin-left: 7px;
+  border-left: 1px solid var(--claude-border-strong);
+  padding: 0 0 2px 24px;
+  color: var(--claude-muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.7;
+}
+
+.agnes-thought-content > p {
+  margin: 0;
+}
+
+.agnes-thought-status-icon {
+  position: absolute;
+  top: 1px;
+  left: -8px;
+  display: grid;
+  width: 15px;
+  height: 17px;
+  place-items: center;
+  background: var(--claude-canvas);
+  color: var(--claude-muted-soft);
 }
 
 .agnes-chat-messages .agnes-assistant-body pre {

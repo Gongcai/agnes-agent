@@ -1025,14 +1025,8 @@ export const ReadingWorkspace: React.FC = () => {
                                 className="group rounded-r-md border-l-2 border-emerald-600 bg-stone-50 px-2.5 py-2"
                               >
                                 <summary className="flex cursor-pointer select-none items-center gap-2 text-[11px] font-semibold text-emerald-700">
-                                  <Brain className="h-3.5 w-3.5" />
-                                  <span>思考过程</span>
-                                  {isLiveThought && (
-                                    <span className="ml-1 flex items-center gap-1 text-[9px] font-normal text-stone-400">
-                                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-600" />
-                                      思考中
-                                    </span>
-                                  )}
+                                  <Brain className={`h-3.5 w-3.5 ${isLiveThought ? "animate-pulse" : ""}`} />
+                                  <span>Agent思维过程</span>
                                   <ChevronDown className="ml-auto h-3 w-3 transition-transform group-open:rotate-180" />
                                 </summary>
                                 <p className="mt-2 whitespace-pre-wrap border-t border-stone-200/70 pt-2 font-mono text-[11px] leading-relaxed text-stone-500">{part.content}</p>

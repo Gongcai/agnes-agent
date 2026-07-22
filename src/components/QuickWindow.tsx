@@ -335,7 +335,7 @@ export const QuickWindow: React.FC = () => {
                     <details className="group rounded-md border border-stone-200 bg-white/70">
                       <summary className="flex h-9 cursor-pointer list-none items-center gap-2 px-3 text-[11px] font-medium text-stone-500 [&::-webkit-details-marker]:hidden">
                         <Brain className="h-3.5 w-3.5 text-[#8CA38A]" />
-                        <span className="flex-1">{streaming ? "正在思考" : "思考过程"}</span>
+                        <span className="flex-1">Agent思维过程</span>
                         <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
                       </summary>
                       <div className="border-t border-stone-100 px-3 py-2 text-xs leading-5 text-stone-500">

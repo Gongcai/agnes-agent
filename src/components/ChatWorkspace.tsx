@@ -652,22 +652,21 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           <ThoughtDetails
                             key={part._renderKey ?? part.id}
                             defaultOpen={autoExpandThoughts}
-                            className="group border-l-2 border-[#8CA38A] bg-stone-100/60 rounded-r-xl p-3 transition-colors"
+                            className="agnes-thought-details group"
                           >
-                            <summary className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-[#6C806A] select-none hover:text-[#556654]">
-                              <Cpu className="h-3.5 w-3.5" />
-                              <span>Agent 思维过程 (Thought)</span>
-                              {isLiveThought && (
-                                <span className="ml-1 flex items-center gap-1 text-[10px] font-normal text-stone-400">
-                                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#8CA38A]" />
-                                  思考中
-                                </span>
-                              )}
-                              <ChevronDown className="h-3 w-3 ml-auto group-open:rotate-180 transition-transform" />
+                            <summary className="agnes-thought-summary">
+                              <span>Agent思维过程</span>
+                              <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-180" />
                             </summary>
-                            <p className="text-xs text-stone-600 mt-2 font-mono leading-relaxed pl-5 whitespace-pre-wrap border-t border-stone-200/40 pt-2">
-                              {part.content}
-                            </p>
+                            <div className="agnes-thought-content">
+                              <span
+                                className={`agnes-thought-status-icon ${isLiveThought ? "animate-pulse" : ""}`}
+                                aria-hidden="true"
+                              >
+                                <Cpu className="h-3 w-3" />
+                              </span>
+                              <p className="whitespace-pre-wrap">{part.content}</p>
+                            </div>
                           </ThoughtDetails>
                         );
                       }
