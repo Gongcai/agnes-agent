@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Brain,
@@ -118,8 +118,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
   );
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [accountAnchor, setAccountAnchor] = useState<DOMRect | null>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
   const accountTriggerRef = useRef<HTMLButtonElement>(null);
   const accountMenuRef = useRef<HTMLDivElement>(null);
+  const [featureHighlight, setFeatureHighlight] = useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
   const [expandedWs, setExpandedWs] = useState<Set<string>>(new Set());
   const closeCtxMenu = () => setCtxMenu(null);
   const closeWsCtxMenu = () => setWsCtxMenu(null);
@@ -154,6 +161,53 @@ export const Sidebar: React.FC<SidebarProps> = ({
   useEffect(() => {
     if (activeFeature !== "chat" && activeFeature !== "drive") setMoreExpanded(true);
   }, [activeFeature]);
+
+  useLayoutEffect(() => {
+    const sidebar = sidebarRef.current;
+    if (!sidebar) return;
+
+    let frame = 0;
+    let stopped = false;
+    const startedAt = performance.now();
+
+    const measure = () => {
+      if (stopped) return;
+      const target = activeFeature === "chat"
+        ? null
+        : sidebar.querySelector<HTMLElement>(`[data-feature-id="${activeFeature}"]`);
+
+      if (!target) {
+        if (activeFeature === "chat") setFeatureHighlight(null);
+        return;
+      }
+
+      const sidebarRect = sidebar.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      setFeatureHighlight({
+        x: targetRect.left - sidebarRect.left,
+        y: targetRect.top - sidebarRect.top,
+        width: targetRect.width,
+        height: targetRect.height,
+      });
+    };
+
+    const followLayoutTransition = (timestamp: number) => {
+      measure();
+      if (timestamp - startedAt < 360) frame = requestAnimationFrame(followLayoutTransition);
+    };
+
+    frame = requestAnimationFrame(followLayoutTransition);
+    const resizeObserver = new ResizeObserver(measure);
+    resizeObserver.observe(sidebar);
+    window.addEventListener("resize", measure);
+
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [activeFeature, isOpen, moreExpanded]);
 
   useEffect(() => {
     if (!accountMenuOpen) return;
@@ -297,12 +351,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
+      ref={sidebarRef}
       data-open={isOpen}
       className={`agnes-sidebar ${isOpen ? "agnes-sidebar--open" : "agnes-sidebar--collapsed"} flex h-full shrink-0 flex-col overflow-hidden border-r border-stone-200/80 bg-stone-100/60 backdrop-blur-md transition-[width] duration-300 ${
         isOpen ? "w-72" : "w-12"
       }`}
     >
-      <div className="px-3 pt-3">
+      <div
+        className="agnes-feature-highlight"
+        aria-hidden="true"
+        style={featureHighlight ? {
+          width: featureHighlight.width,
+          height: featureHighlight.height,
+          opacity: 1,
+          transform: `translate3d(${featureHighlight.x}px, ${featureHighlight.y}px, 0)`,
+        } : { opacity: 0 }}
+      />
+      <div className="agnes-sidebar-top px-3 pt-3">
         <div className="agnes-mode-switch mb-2 flex rounded-lg bg-stone-100 p-0.5" role="tablist" aria-label="会话类型">
           <button
             type="button"
@@ -342,7 +407,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={() => onSelectFeature("drive")}
-          className={`agnes-sidebar-primary-action mt-1 flex w-full items-center gap-2 px-3 ${activeFeature === "drive" ? "bg-stone-100" : ""}`}
+          data-feature-id="drive"
+          className={`agnes-sidebar-primary-action mt-1 flex w-full items-center gap-2 px-3 ${activeFeature === "drive" ? "font-medium text-stone-900" : ""}`}
           title={isOpen ? undefined : "网盘"}
           aria-current={activeFeature === "drive" ? "page" : undefined}
         >
@@ -363,7 +429,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <button
                   key={feature.id}
                   onClick={() => onSelectFeature(feature.id)}
-                  className={`agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3 ${selected ? "bg-stone-100 font-medium text-stone-900" : ""}`}
+                  data-feature-id={feature.id}
+                  className={`agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3 ${selected ? "font-medium text-stone-900" : ""}`}
                   title={isOpen ? undefined : feature.label}
                   aria-current={selected ? "page" : undefined}
                 >
@@ -491,7 +558,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Account entry; the product has no user model yet, so this is a stable UI placeholder. */}
-      <div className="relative mt-auto shrink-0 border-t border-stone-200 bg-stone-200/20 p-2">
+      <div className="agnes-sidebar-account relative mt-auto shrink-0 border-t border-stone-200 bg-stone-200/20 p-2">
         <button
           ref={accountTriggerRef}
           type="button"
