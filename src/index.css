@@ -747,6 +747,7 @@ pre,
   min-height: 32px;
   padding-block: 0 !important;
   flex: none;
+  gap: 0 !important;
 }
 
 .agnes-sidebar--collapsed .agnes-mode-highlight {
