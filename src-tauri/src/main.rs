@@ -289,7 +289,7 @@ fn main() {
                 app.handle().clone(),
                 mcp.clone(),
                 secrets.clone(),
-                home_workspace_dir,
+                home_workspace_dir.clone(),
             ) {
                 eprintln!("[agent] 启动失败（非致命）：{e}");
             }
@@ -305,6 +305,7 @@ fn main() {
             app.manage(AppState {
                 app_handle: app.handle().clone(),
                 data_dir,
+                home_workspace_dir,
                 db,
                 agent,
                 mcp,

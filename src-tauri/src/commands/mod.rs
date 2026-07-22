@@ -17,7 +17,7 @@ use crate::model_registry::{
 use crate::secrets::{provider_api_key_secret_id, SecretStore, SYNC_CREDENTIAL_SECRET_ID};
 use crate::state::AppState;
 use crate::sync::auth::SyncCredential;
-use crate::tools::ToolPolicy;
+use crate::tools::{PermissionMode, ToolPolicy};
 
 const MAX_OUTPUT_TOKENS: i64 = 1_048_576;
 const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 131_072;
@@ -36,6 +36,39 @@ async fn load_default_max_output_tokens(state: &AppState) -> AppResult<i64> {
         .get_setting(DEFAULT_MAX_OUTPUT_TOKENS_SETTING.to_string())
         .await?;
     Ok(normalize_default_max_output_tokens(value.as_deref()))
+}
+
+async fn resolve_effective_tool_policy(
+    state: &AppState,
+    base_policy: &ToolPolicy,
+    session_id: Option<&str>,
+) -> AppResult<(ToolPolicy, PermissionMode, Option<std::path::PathBuf>)> {
+    let permission_mode = match session_id {
+        Some(session_id) => state
+            .db
+            .get_session(session_id.to_string())
+            .await?
+            .and_then(|session| session.permission_mode.parse().ok())
+            .unwrap_or_default(),
+        None => PermissionMode::default(),
+    };
+    let workspace_cwd = match session_id {
+        Some(session_id) => {
+            crate::tools::workspace::resolve_workspace_cwd(
+                &state.db,
+                session_id,
+                &state.home_workspace_dir,
+            )
+            .await
+        }
+        None => None,
+    };
+    let effective = crate::tools::executor::effective_policy(
+        &permission_mode.effective_policy(base_policy),
+        &workspace_cwd,
+        &[],
+    );
+    Ok((effective, permission_mode, workspace_cwd))
 }
 
 fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -949,8 +982,11 @@ pub async fn get_debug_prompt(
     .await?;
     let parsed_tool_policy =
         serde_json::from_str::<ToolPolicy>(&agent.tool_policy).unwrap_or_default();
-    let tool_policy_json = serde_json::to_value(&parsed_tool_policy)?;
-    let mcp_tools = state.mcp.dynamic_tools(&parsed_tool_policy).await;
+    let (effective_tool_policy, permission_mode, workspace_cwd) =
+        resolve_effective_tool_policy(&state, &parsed_tool_policy, session_id.as_deref()).await?;
+    let prompt_tool_policy = effective_tool_policy.redacted_for_prompt(workspace_cwd.as_deref());
+    let tool_policy_json = serde_json::to_value(&prompt_tool_policy)?;
+    let mcp_tools = state.mcp.dynamic_tools(&effective_tool_policy).await;
     let snapshot = json!({
         "input": "",
         "context": {
@@ -958,7 +994,8 @@ pub async fn get_debug_prompt(
                 "persona": agent.persona,
                 "systemPrompt": agent.system_prompt,
                 "model": agent_model_str,
-                "toolPolicy": tool_policy_json
+                "toolPolicy": tool_policy_json,
+                "permissionMode": permission_mode.as_str()
             },
             "mcpTools": mcp_tools,
             "llmConfig": {
@@ -1913,8 +1950,11 @@ async fn start_agent_run(
 
     let parsed_tool_policy =
         serde_json::from_str::<ToolPolicy>(&cfg.agent.tool_policy).unwrap_or_default();
-    let tool_policy_json = serde_json::to_value(&parsed_tool_policy)?;
-    let mcp_tools = state.mcp.dynamic_tools(&parsed_tool_policy).await;
+    let (effective_tool_policy, permission_mode, workspace_cwd) =
+        resolve_effective_tool_policy(state, &parsed_tool_policy, Some(session_id)).await?;
+    let prompt_tool_policy = effective_tool_policy.redacted_for_prompt(workspace_cwd.as_deref());
+    let tool_policy_json = serde_json::to_value(&prompt_tool_policy)?;
+    let mcp_tools = state.mcp.dynamic_tools(&effective_tool_policy).await;
     let run_id = uuid::Uuid::new_v4().to_string();
     let context_snapshot = json!({
         "input": "",
@@ -1923,7 +1963,8 @@ async fn start_agent_run(
                 "persona": cfg.agent.persona,
                 "systemPrompt": cfg.agent.system_prompt,
                 "model": cfg.effective_model,
-                "toolPolicy": tool_policy_json
+                "toolPolicy": tool_policy_json,
+                "permissionMode": permission_mode.as_str()
             },
             "mcpTools": mcp_tools,
             "llmConfig": {

@@ -504,8 +504,6 @@ async fn handle_conn<R: tauri::Runtime>(
 
                     // Resolve approval from the session permission mode.
                     let risk = crate::tools::builtin::compute_risk(&tool_name, &args);
-                    let role_policy_requires_approval =
-                        crate::tools::builtin::needs_approval(&tool_name, &args, &policy);
                     let approval_decision = crate::tools::permissions::approval_decision(
                         permission_mode,
                         &tool_name,
@@ -517,6 +515,9 @@ async fn handle_conn<R: tauri::Runtime>(
                         &home_workspace_dir,
                     )
                     .await;
+                    policy = crate::tools::executor::effective_policy(&policy, &workspace_cwd, &[]);
+                    let role_policy_requires_approval =
+                        crate::tools::builtin::needs_approval(&tool_name, &args, &policy);
                     let diff_preview = crate::tools::review::preview_tool_call(
                         &tool_name,
                         &args,

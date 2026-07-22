@@ -58,7 +58,7 @@ This conversation can use the shared app-managed workspace for everyday tasks. T
 {metadata}
 ```
 
-The workspace is shared by all Home conversations on this device. Use relative paths from its root; the local absolute path is intentionally not part of this prompt.
+The workspace is shared by all Home conversations on this device. It is the actual `$WORKSPACE` used by file and shell tools. Use relative paths from its root; the local absolute path is intentionally not part of this prompt.
 
 - Use this workspace for user-requested documents, tables, downloaded material, converted files, scripts, and other task artifacts.
 - Inspect existing files before replacing them. Keep unrelated files intact and use clear filenames that a non-developer can understand.
@@ -355,10 +355,32 @@ def assemble_prompt(
     # 2. Tool policies description
     tool_policy = agent.get("toolPolicy")
     if tool_policy:
+        permission_mode = str(agent.get("permissionMode") or "auto")
+        shell_roots = (tool_policy.get("shell") or {}).get("allowed_cwd") or []
+        file_roots = (tool_policy.get("file") or {}).get("allowed_roots") or []
+        has_workspace_boundary = "$WORKSPACE" in shell_roots or "$WORKSPACE" in file_roots
+        if permission_mode == "full_access":
+            boundary_summary = (
+                "This session is in Full Access mode. Path restrictions and the normal workspace "
+                "write boundary are expanded within the enabled tool capabilities."
+            )
+        elif has_workspace_boundary:
+            boundary_summary = (
+                "`$WORKSPACE` is the current effective workspace. Relative file paths and shell "
+                "commands use it by default. Normal writes are limited to `$WORKSPACE`; additional "
+                "allowed or readable roots in the policy do not automatically grant write access."
+            )
+        else:
+            boundary_summary = (
+                "No effective local workspace root is bound in this prompt. Do not claim local file "
+                "or shell access unless the effective policy below explicitly grants it."
+            )
         system_parts.append(
-            f"# Tool Policies & Permissions\n"
-            f"You have permissions configured as follows:\n{json.dumps(tool_policy, indent=2)}\n"
-            f"Always explain your rationale briefly before calling tools."
+            f"# Effective Tool Boundaries\n"
+            f"Permission mode: `{permission_mode}`.\n{boundary_summary}\n"
+            f"The effective capability policy is:\n{json.dumps(tool_policy, indent=2)}\n"
+            f"Always explain your rationale briefly before calling tools. Never infer access to a "
+            f"path that is absent from this effective policy."
         )
 
     current_datetime = context.get("currentDateTime")

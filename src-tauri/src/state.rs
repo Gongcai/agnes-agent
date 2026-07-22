@@ -15,6 +15,7 @@ use crate::sync::engine::SyncService;
 pub struct AppState {
     pub app_handle: tauri::AppHandle,
     pub data_dir: PathBuf,
+    pub home_workspace_dir: PathBuf,
     pub db: DbActorHandle,
     pub agent: Arc<AgentManager>,
     pub mcp: Arc<McpManager>,

@@ -1159,9 +1159,65 @@ def test_home_workspace_is_shared_and_does_not_assume_a_software_repository():
 
     assert "# Home Workspace" in system_prompt
     assert "shared by all Home conversations" in system_prompt
+    assert "actual `$WORKSPACE` used by file and shell tools" in system_prompt
     assert "documents, tables" in system_prompt
     assert "Do not assume this is a software repository" in system_prompt
     assert "# Workspace Coding Mode" not in system_prompt
+
+
+def test_home_prompt_describes_the_redacted_effective_workspace_boundary():
+    local_workspace = "/home/example/Documents/Agnes/Home"
+    system_prompt, _, _ = assemble_prompt(
+        {
+            "context": {
+                "agent": {
+                    "model": "gpt-4o",
+                    "permissionMode": "auto",
+                    "toolPolicy": {
+                        "shell": {
+                            "enabled": True,
+                            "allowed_cwd": ["$WORKSPACE"],
+                            "deny_write_outside_workspace": True,
+                        },
+                        "file": {
+                            "enabled": True,
+                            "allowed_roots": ["$WORKSPACE"],
+                        },
+                    },
+                },
+                "workspace": {
+                    "name": "Home",
+                    "mode": "home",
+                    "hasLocalFolderBinding": True,
+                },
+            }
+        }
+    )
+
+    assert "# Effective Tool Boundaries" in system_prompt
+    assert "Normal writes are limited to `$WORKSPACE`" in system_prompt
+    assert "~/Projects" not in system_prompt
+    assert local_workspace not in system_prompt
+
+
+def test_full_access_prompt_does_not_claim_writes_are_workspace_limited():
+    system_prompt, _, _ = assemble_prompt(
+        {
+            "context": {
+                "agent": {
+                    "model": "gpt-4o",
+                    "permissionMode": "full_access",
+                    "toolPolicy": {
+                        "shell": {"enabled": True, "allowed_cwd": ["/"]},
+                        "file": {"enabled": True, "allowed_roots": ["/"]},
+                    },
+                }
+            }
+        }
+    )
+
+    assert "This session is in Full Access mode" in system_prompt
+    assert "Normal writes are limited to `$WORKSPACE`" not in system_prompt
 
 
 def test_unbound_workspace_prompt_does_not_allow_local_coding_operations():

@@ -206,17 +206,17 @@ Python 本轮内只做：prompt 拼装 / 模型调用 / 工具决策 / 记忆抽
 {
   "shell": {
     "enabled": true, "approval": "always",
-    "allowedCwd": ["~/Projects"], "denyWriteOutsideWorkspace": true,
+    "allowedCwd": ["$WORKSPACE"], "denyWriteOutsideWorkspace": true,
     "timeoutSec": 30, "maxOutputBytes": 200000, "envAllowlist": ["PATH", "HOME"]
   },
   "file": {
     "enabled": true, "approval": "write",
-    "allowedRoots": ["~/Projects"]
+    "allowedRoots": ["$WORKSPACE"]
   },
   "git": { "enabled": true, "approval": "push" }
 }
 ```
-维度：`enabled`（是否可用）、`approval`（always / write / push / never）、`allowedCwd`/`allowedRoots`（可访问范围）、`timeoutSec`、`maxOutputBytes`、`envAllowlist`（环境变量白名单）。审批只决定"能不能跑"，capability 决定"能跑在哪、跑多久、出多少"——双保险。每次执行落 `tool_calls` 审计（status/risk_level/cwd/exit_code/stdout/stderr/时间戳/策略快照）。
+维度：`enabled`（是否可用）、`approval`（always / write / push / never）、`allowedCwd`/`allowedRoots`（可访问范围）、`timeoutSec`、`maxOutputBytes`、`envAllowlist`（环境变量白名单）。`$WORKSPACE` 表示会话当前实际工作区：Home 为应用托管的共用目录，Code 为项目绑定目录；它在发送给模型时用于隐藏设备绝对路径。审批只决定"能不能跑"，capability 决定"能跑在哪、跑多久、出多少"——双保险。每次执行落 `tool_calls` 审计（status/risk_level/cwd/exit_code/stdout/stderr/时间戳/有效策略快照）。
 
 ---
 

@@ -83,7 +83,20 @@ impl ToolExecutor {
         permission_mode: PermissionMode,
     ) -> AppResult<serde_json::Value> {
         let public_arguments = crate::tools::builtin::memory_entry::public_arguments(arguments);
-        // A. 审计初志
+
+        // A. Resolve the Code binding or app-managed shared Home workspace.
+        let workspace_cwd = crate::tools::workspace::resolve_workspace_cwd(
+            &self.db,
+            session_id,
+            &self.home_workspace_dir,
+        )
+        .await;
+        let skill_roots = resolve_selected_skill_roots(&self.db, session_id).await;
+
+        // B. Merge workspace and selected read-only Skill roots into the effective policy.
+        let effective_policy = effective_policy(policy, &workspace_cwd, &skill_roots);
+
+        // C. Record the same effective policy that will govern physical execution.
         let new_tc = NewToolCall {
             id: tool_call_id.to_string(),
             session_id: session_id.to_string(),
@@ -98,26 +111,15 @@ impl ToolExecutor {
             ),
             approval_policy_snapshot: Some(crate::tools::permissions::audit_snapshot(
                 permission_mode,
-                policy,
+                &effective_policy,
             )),
         };
         self.db.insert_tool_call(new_tc).await?;
 
-        // B. Resolve the Code binding or app-managed shared Home workspace.
-        let workspace_cwd = crate::tools::workspace::resolve_workspace_cwd(
-            &self.db,
-            session_id,
-            &self.home_workspace_dir,
-        )
-        .await;
-        let skill_roots = resolve_selected_skill_roots(&self.db, session_id).await;
-
-        // C. Merge workspace and selected read-only Skill roots into the effective policy.
-        let effective_policy = effective_policy(policy, &workspace_cwd, &skill_roots);
         let sandbox =
             crate::tools::sandbox::PolicySandbox::new(&effective_policy, workspace_cwd.as_deref());
 
-        // D. Dispatch MCP tools through the same audit boundary.
+        // D. Dispatch MCP tools through the same effective boundary.
         if tool.starts_with("mcp__") {
             self.db
                 .update_tool_call_running(tool_call_id.to_string(), "mcp".into())
@@ -198,7 +200,7 @@ async fn resolve_selected_skill_roots(db: &DbActorHandle, session_id: &str) -> V
         .unwrap_or_default()
 }
 
-fn effective_policy(
+pub(crate) fn effective_policy(
     policy: &ToolPolicy,
     workspace_cwd: &Option<PathBuf>,
     skill_roots: &[PathBuf],
@@ -230,6 +232,34 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn effective_policy_adds_workspace_once_to_shell_and_file_roots() {
+        let policy = ToolPolicy::default();
+        let workspace = PathBuf::from("/tmp/agnes-home-workspace");
+        let effective = effective_policy(&policy, &Some(workspace.clone()), &[]);
+        let repeated = effective_policy(&effective, &Some(workspace.clone()), &[]);
+        let workspace = workspace.to_string_lossy().to_string();
+
+        assert_eq!(
+            repeated
+                .shell
+                .allowed_cwd
+                .iter()
+                .filter(|path| *path == &workspace)
+                .count(),
+            1
+        );
+        assert_eq!(
+            repeated
+                .file
+                .allowed_roots
+                .iter()
+                .filter(|path| *path == &workspace)
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn selected_skill_roots_extend_file_reads_without_becoming_shell_cwds() {

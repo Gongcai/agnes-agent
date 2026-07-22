@@ -98,7 +98,7 @@ impl Default for ShellPolicy {
         ShellPolicy {
             enabled: true,
             approval: ApprovalTier::OnRisk,
-            allowed_cwd: vec!["~/Projects".into()],
+            allowed_cwd: Vec::new(),
             deny_write_outside_workspace: true,
             // A zero value means no wall-clock deadline. Callers can still
             // provide a bounded wait window when polling a terminal session.
@@ -194,7 +194,7 @@ impl Default for FilePolicy {
         FilePolicy {
             enabled: true,
             approval: ApprovalTier::OnWrite,
-            allowed_roots: vec!["~/Projects".into()],
+            allowed_roots: Vec::new(),
         }
     }
 }
@@ -355,6 +355,27 @@ pub fn is_path_under_roots(target: &Path, roots: &[String]) -> bool {
 }
 
 impl ToolPolicy {
+    /// Replace the device-local workspace path with a stable symbolic label before
+    /// sending policy context to a model.
+    pub fn redacted_for_prompt(&self, workspace_cwd: Option<&Path>) -> Self {
+        let Some(workspace_cwd) = workspace_cwd else {
+            return self.clone();
+        };
+        let workspace = workspace_cwd.to_string_lossy();
+        let mut policy = self.clone();
+        for path in &mut policy.shell.allowed_cwd {
+            if path == workspace.as_ref() {
+                *path = "$WORKSPACE".to_string();
+            }
+        }
+        for path in &mut policy.file.allowed_roots {
+            if path == workspace.as_ref() {
+                *path = "$WORKSPACE".to_string();
+            }
+        }
+        policy
+    }
+
     /// 验证 shell 执行策略。
     pub fn check_shell(&self, cwd: &str) -> Result<(), String> {
         if !self.shell.enabled {
@@ -447,6 +468,30 @@ impl ToolPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn defaults_do_not_claim_a_hard_coded_projects_directory() {
+        let policy = ToolPolicy::default();
+        assert!(policy.shell.allowed_cwd.is_empty());
+        assert!(policy.file.allowed_roots.is_empty());
+    }
+
+    #[test]
+    fn prompt_policy_redacts_only_the_effective_workspace_path() {
+        let workspace = PathBuf::from("/home/example/Documents/Agnes/Home");
+        let mut policy = ToolPolicy::default();
+        policy.shell.allowed_cwd = vec![workspace.to_string_lossy().to_string(), "/tmp".into()];
+        policy.file.allowed_roots = vec![workspace.to_string_lossy().to_string(), "/opt".into()];
+
+        let redacted = policy.redacted_for_prompt(Some(&workspace));
+
+        assert_eq!(redacted.shell.allowed_cwd, vec!["$WORKSPACE", "/tmp"]);
+        assert_eq!(redacted.file.allowed_roots, vec!["$WORKSPACE", "/opt"]);
+        assert_eq!(
+            policy.shell.allowed_cwd[0],
+            "/home/example/Documents/Agnes/Home"
+        );
+    }
 
     #[test]
     fn approval_tier_accepts_legacy_values() {
