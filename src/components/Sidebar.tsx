@@ -429,6 +429,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       <nav className="agnes-sidebar-nav shrink-0 border-b border-stone-200/80 px-3 pb-3 pt-1" aria-label="更多功能">
+        <button
+          type="button"
+          onClick={() => setMoreExpanded((expanded) => !expanded)}
+          className="agnes-more-toggle agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3"
+          aria-expanded={moreExpanded}
+          title={moreExpanded ? "收起更多功能" : "展开更多功能"}
+        >
+          <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
+            <ChevronRight className="agnes-more-chevron h-4 w-4" />
+          </span>
+          <span className="agnes-sidebar-label">更多功能</span>
+        </button>
         <div
           className="agnes-more-features"
           data-expanded={moreExpanded}
@@ -457,18 +469,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             })}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => setMoreExpanded((expanded) => !expanded)}
-          className="agnes-more-toggle agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3"
-          aria-expanded={moreExpanded}
-          title={moreExpanded ? "收起更多功能" : "展开更多功能"}
-        >
-          <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
-            <ChevronRight className="agnes-more-chevron h-4 w-4" />
-          </span>
-          <span className="agnes-sidebar-label">更多功能</span>
-        </button>
       </nav>
 
       {/* Session navigation is hidden when the sidebar becomes an icon rail. */}

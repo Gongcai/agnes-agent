@@ -794,26 +794,26 @@ pre,
 .agnes-more-features {
   display: grid;
   grid-template-rows: 0fr;
-  margin-bottom: 0;
+  margin-top: 0;
   opacity: 0;
   pointer-events: none;
   transform: translateY(-5px);
   transition:
     grid-template-rows 280ms cubic-bezier(0.22, 1, 0.36, 1),
-    margin-bottom 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-top 280ms cubic-bezier(0.22, 1, 0.36, 1),
     opacity 150ms ease,
     transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .agnes-more-features[data-expanded="true"] {
   grid-template-rows: 1fr;
-  margin-bottom: 4px;
+  margin-top: 4px;
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
   transition:
     grid-template-rows 300ms cubic-bezier(0.22, 1, 0.36, 1),
-    margin-bottom 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-top 300ms cubic-bezier(0.22, 1, 0.36, 1),
     opacity 180ms ease 45ms,
     transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -824,7 +824,7 @@ pre,
 }
 
 .agnes-sidebar--collapsed .agnes-more-features[data-expanded="true"] {
-  margin-bottom: 8px;
+  margin-top: 8px;
 }
 
 .agnes-sidebar .agnes-more-toggle .agnes-more-chevron {
