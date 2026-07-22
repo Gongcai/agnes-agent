@@ -6,10 +6,12 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 131_072;
 export const MIN_MAX_OUTPUT_TOKENS = 128;
 export const MAX_MAX_OUTPUT_TOKENS = 1_048_576;
 
-export type ColorScheme = "light" | "dark";
+export type ColorScheme = "light" | "dark" | "system";
+export type ResolvedColorScheme = Exclude<ColorScheme, "system">;
 
 export interface UIPreferenceChange {
   colorScheme?: ColorScheme;
+  resolvedColorScheme?: ResolvedColorScheme;
   autoExpandThoughts?: boolean;
   autoFollowStreaming?: boolean;
 }
@@ -18,9 +20,25 @@ const COLOR_SCHEME_CACHE_KEY = "agnes.ui.color_scheme";
 const AUTO_EXPAND_THOUGHTS_CACHE_KEY = "agnes.ui.auto_expand_thoughts";
 const AUTO_FOLLOW_STREAMING_CACHE_KEY = "agnes.ui.auto_follow_streaming";
 const UI_PREFERENCE_EVENT = "agnes-ui-preference-change";
+let systemColorQuery: MediaQueryList | null = null;
+let systemColorListener: ((event: MediaQueryListEvent) => void) | null = null;
 
 export function normalizeColorScheme(value: string | null | undefined): ColorScheme {
-  return value === "dark" ? "dark" : "light";
+  return value === "dark" || value === "system" ? value : "light";
+}
+
+function systemPrefersDark(): boolean {
+  return typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+export function resolveColorScheme(
+  scheme: ColorScheme,
+  prefersDark = systemPrefersDark(),
+): ResolvedColorScheme {
+  const normalized = normalizeColorScheme(scheme);
+  return normalized === "system" ? (prefersDark ? "dark" : "light") : normalized;
 }
 
 export function normalizeBooleanPreference(
@@ -65,6 +83,12 @@ export function getCachedColorScheme(): ColorScheme {
   return normalizeColorScheme(readCache(COLOR_SCHEME_CACHE_KEY));
 }
 
+export function getResolvedColorScheme(
+  scheme: ColorScheme = getCachedColorScheme(),
+): ResolvedColorScheme {
+  return resolveColorScheme(scheme);
+}
+
 export function getCachedAutoExpandThoughts(): boolean {
   return normalizeBooleanPreference(readCache(AUTO_EXPAND_THOUGHTS_CACHE_KEY), true);
 }
@@ -73,13 +97,51 @@ export function getCachedAutoFollowStreaming(): boolean {
   return normalizeBooleanPreference(readCache(AUTO_FOLLOW_STREAMING_CACHE_KEY), true);
 }
 
-export function applyColorScheme(scheme: ColorScheme): void {
-  const normalized = normalizeColorScheme(scheme);
+function clearSystemColorListener(): void {
+  if (!systemColorQuery || !systemColorListener) return;
+  if (typeof systemColorQuery.removeEventListener === "function") {
+    systemColorQuery.removeEventListener("change", systemColorListener);
+  } else {
+    systemColorQuery.removeListener(systemColorListener);
+  }
+  systemColorQuery = null;
+  systemColorListener = null;
+}
+
+function applyResolvedColorScheme(scheme: ResolvedColorScheme): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
-  root.dataset.agnesTheme = normalized;
-  root.style.colorScheme = normalized;
+  root.dataset.agnesTheme = scheme;
+  root.style.colorScheme = scheme;
+  announceUIPreferenceChange({ resolvedColorScheme: scheme });
+}
+
+export function applyColorScheme(scheme: ColorScheme): ResolvedColorScheme {
+  const normalized = normalizeColorScheme(scheme);
+  clearSystemColorListener();
+
+  let resolved = resolveColorScheme(normalized);
+  if (
+    normalized === "system"
+    && typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+  ) {
+    systemColorQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    resolved = systemColorQuery.matches ? "dark" : "light";
+    systemColorListener = () => {
+      if (!systemColorQuery) return;
+      applyResolvedColorScheme(systemColorQuery.matches ? "dark" : "light");
+    };
+    if (typeof systemColorQuery.addEventListener === "function") {
+      systemColorQuery.addEventListener("change", systemColorListener);
+    } else {
+      systemColorQuery.addListener(systemColorListener);
+    }
+  }
+
   writeCache(COLOR_SCHEME_CACHE_KEY, normalized);
+  applyResolvedColorScheme(resolved);
+  return resolved;
 }
 
 export function setAutoExpandThoughts(value: boolean): void {

@@ -22,8 +22,10 @@ import { AnimatedDisclosure } from "./AnimatedDisclosure";
 import { MarkdownMessage } from "./MarkdownMessage";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
+  applyColorScheme,
   getCachedAutoExpandThoughts,
   getCachedAutoFollowStreaming,
+  getCachedColorScheme,
   subscribeUIPreferenceChanges,
 } from "../lib/uiPreferences";
 import { setupTauriEventListeners, useAgentStore } from "../store/useAgentStore";
@@ -193,6 +195,7 @@ export const QuickWindow: React.FC = () => {
 
     const unlistenPromise = quickWindow.onFocusChanged(({ payload: focused }) => {
       if (focused) {
+        applyColorScheme(getCachedColorScheme());
         setAutoExpandThoughts(getCachedAutoExpandThoughts());
         setAutoFollowStreaming(getCachedAutoFollowStreaming());
         window.setTimeout(() => inputRef.current?.focus(), 50);

@@ -49,9 +49,9 @@ import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   getCachedAutoFollowStreaming,
   getCachedAutoExpandThoughts,
-  getCachedColorScheme,
+  getResolvedColorScheme,
   subscribeUIPreferenceChanges,
-  type ColorScheme,
+  type ResolvedColorScheme,
 } from "../lib/uiPreferences";
 
 interface ReadingBook {
@@ -146,7 +146,7 @@ function appSerifFontFamily(): string {
 }
 
 function epubTheme(
-  colorScheme: ColorScheme,
+  colorScheme: ResolvedColorScheme,
   preferences: ReadingPreferences,
 ): Record<string, Record<string, string>> {
   const dark = colorScheme === "dark";
@@ -234,7 +234,7 @@ const EpubPane: React.FC<{
   highlights: ReadingHighlight[];
   highlightMode: boolean;
   highlightColor: string;
-  colorScheme: ColorScheme;
+  colorScheme: ResolvedColorScheme;
   preferences: ReadingPreferences;
   onProgress: (cfi: string) => void;
   onBackToShelf: () => void;
@@ -873,7 +873,7 @@ export const ReadingWorkspace: React.FC = () => {
   const [highlightColor, setHighlightColor] = useState("yellow");
   const [translationLanguage, setTranslationLanguage] = useState("中文");
   const [readingPreferences, setReadingPreferences] = useState(DEFAULT_READING_PREFERENCES);
-  const [colorScheme, setColorScheme] = useState<ColorScheme>(getCachedColorScheme);
+  const [colorScheme, setColorScheme] = useState<ResolvedColorScheme>(getResolvedColorScheme);
   const [autoExpandThoughts, setAutoExpandThoughts] = useState(getCachedAutoExpandThoughts);
   const [autoFollowStreaming, setAutoFollowStreaming] = useState(getCachedAutoFollowStreaming);
   const messageEndRef = useRef<HTMLDivElement>(null);
@@ -936,7 +936,7 @@ export const ReadingWorkspace: React.FC = () => {
   }, []);
 
   useEffect(() => subscribeUIPreferenceChanges((change) => {
-    if (change.colorScheme !== undefined) setColorScheme(change.colorScheme);
+    if (change.resolvedColorScheme !== undefined) setColorScheme(change.resolvedColorScheme);
     if (change.autoExpandThoughts !== undefined) {
       setAutoExpandThoughts(change.autoExpandThoughts);
     }

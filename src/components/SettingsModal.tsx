@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, CircleUserRound, Camera, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Moon, Sun, HardDrive, Eraser, Gauge, Puzzle } from "lucide-react";
+import { X, User, CircleUserRound, Camera, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, Puzzle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAgentStore } from "../store/useAgentStore";
@@ -5674,10 +5674,11 @@ const GeneralTab: React.FC = () => {
 
       <div>
         <label className="mb-2 block font-semibold text-stone-500">外观</label>
-        <div className="grid grid-cols-2 gap-1 rounded-lg border border-stone-200 bg-stone-100 p-1">
+        <div className="grid grid-cols-3 gap-1 rounded-lg border border-stone-200 bg-stone-100 p-1">
           {([
             { value: "light" as const, label: "浅色", icon: Sun },
             { value: "dark" as const, label: "深色", icon: Moon },
+            { value: "system" as const, label: "系统", icon: Monitor },
           ]).map((option) => {
             const Icon = option.icon;
             const active = colorScheme === option.value;

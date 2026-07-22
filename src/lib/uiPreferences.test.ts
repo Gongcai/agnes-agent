@@ -5,14 +5,18 @@ import {
   normalizeBooleanPreference,
   normalizeColorScheme,
   normalizeMaxOutputTokens,
+  resolveColorScheme,
 } from "./uiPreferences";
 
 describe("UI preference normalization", () => {
-  it("accepts supported color schemes and falls back to light", () => {
+  it("accepts supported color schemes and resolves the system preference", () => {
     expect(normalizeColorScheme("dark")).toBe("dark");
     expect(normalizeColorScheme("light")).toBe("light");
-    expect(normalizeColorScheme("system")).toBe("light");
+    expect(normalizeColorScheme("system")).toBe("system");
     expect(normalizeColorScheme(null)).toBe("light");
+    expect(resolveColorScheme("system", true)).toBe("dark");
+    expect(resolveColorScheme("system", false)).toBe("light");
+    expect(resolveColorScheme("light", true)).toBe("light");
   });
 
   it("normalizes persisted boolean values without changing the default", () => {
