@@ -22,6 +22,7 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCw,
+  Search,
   ShieldAlert,
   Trash2,
   Upload,
@@ -50,6 +51,7 @@ interface ProviderDescriptor {
   implementation_version: string;
   capabilities: {
     browse_files: boolean;
+    search_files: boolean;
     read_files: boolean;
     write_files: boolean;
     delete_files: boolean;
@@ -235,6 +237,10 @@ export function DriveWorkspace() {
   const [quarkQrLoading, setQuarkQrLoading] = useState(false);
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
   const [fileSort, setFileSort] = useState<DriveSort>({ key: "name", direction: "asc" });
+  const [fileSearchQuery, setFileSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<RemoteFileItem[]>([]);
+  const [searchNextPageToken, setSearchNextPageToken] = useState<string | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [knowledgeCollections, setKnowledgeCollections] = useState<KnowledgeCollection[]>([]);
   const [knowledgeImportItem, setKnowledgeImportItem] = useState<RemoteFileItem | null>(null);
   const [moveDialog, setMoveDialog] = useState<MoveDialogState | null>(null);
@@ -243,6 +249,7 @@ export function DriveWorkspace() {
   const [moveLoading, setMoveLoading] = useState(false);
   const [moveSubmitting, setMoveSubmitting] = useState(false);
   const fileRequestId = useRef(0);
+  const searchRequestId = useRef(0);
   const moveRequestId = useRef(0);
   const transferSpeedSamples = useRef(new Map<string, TransferSpeedSample>());
 
@@ -264,7 +271,14 @@ export function DriveWorkspace() {
         : selectedAccount.last_error_message
     : null;
 
-  const sortedFiles = useMemo(() => sortDriveItems(files, fileSort), [files, fileSort]);
+  const normalizedSearchQuery = fileSearchQuery.trim();
+  const displayedFiles = normalizedSearchQuery ? searchResults : files;
+  const sortedFiles = useMemo(
+    () => sortDriveItems(displayedFiles, fileSort),
+    [displayedFiles, fileSort],
+  );
+  const fileListLoading = loading || searchLoading;
+  const visibleNextPageToken = normalizedSearchQuery ? searchNextPageToken : nextPageToken;
   const selectedFileCount = selectedFileIds.size;
   const allFilesSelected = sortedFiles.length > 0 && sortedFiles.every((item) => selectedFileIds.has(item.id));
   const changeFileSort = (key: DriveSortKey) => {
@@ -342,6 +356,49 @@ export function DriveWorkspace() {
     }
   };
 
+  const loadSearchFiles = async (
+    query: string,
+    append: boolean,
+    pageToken: string | null = null,
+  ) => {
+    if (
+      !selectedAccountId
+      || !selectedProvider?.capabilities.search_files
+      || !selectedAccount?.provider_installed
+      || !selectedAccount.enabled
+      || selectedAccount.auth_state !== "connected"
+    ) {
+      searchRequestId.current += 1;
+      setSearchResults([]);
+      setSearchNextPageToken(null);
+      setSearchLoading(false);
+      return;
+    }
+    const requestId = ++searchRequestId.current;
+    setSearchLoading(true);
+    setError(null);
+    if (!append) {
+      setSearchResults([]);
+      setSearchNextPageToken(null);
+    }
+    try {
+      const page = await invoke<RemoteFilePage>("search_storage_files", {
+        accountId: selectedAccountId,
+        query,
+        pageToken,
+        pageSize: 100,
+      });
+      if (requestId === searchRequestId.current) {
+        setSearchResults((current) => append ? [...current, ...page.items] : page.items);
+        setSearchNextPageToken(page.next_page_token);
+      }
+    } catch (reason) {
+      if (requestId === searchRequestId.current) setError(String(reason));
+    } finally {
+      if (requestId === searchRequestId.current) setSearchLoading(false);
+    }
+  };
+
   useEffect(() => {
     void loadShell();
   }, []);
@@ -362,6 +419,11 @@ export function DriveWorkspace() {
     setFolderPath([{ id: null, name: "根目录" }]);
     setFiles([]);
     setNextPageToken(null);
+    setFileSearchQuery("");
+    setSearchResults([]);
+    setSearchNextPageToken(null);
+    setSearchLoading(false);
+    searchRequestId.current += 1;
     setSelectedFileIds(new Set());
     setMoveDialog(null);
     moveRequestId.current += 1;
@@ -374,6 +436,22 @@ export function DriveWorkspace() {
   useEffect(() => {
     if (view === "files") void loadFiles(false);
   }, [selectedAccountId, selectedAccount?.auth_state, selectedAccount?.enabled, selectedAccount?.provider_installed, currentFolder.id, view]);
+
+  useEffect(() => {
+    searchRequestId.current += 1;
+    setSelectedFileIds(new Set());
+    setSearchResults([]);
+    setSearchNextPageToken(null);
+    if (!normalizedSearchQuery || view !== "files") {
+      setSearchLoading(false);
+      return;
+    }
+    setSearchLoading(true);
+    const timer = window.setTimeout(() => {
+      void loadSearchFiles(normalizedSearchQuery, false);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [normalizedSearchQuery, selectedAccountId, selectedAccount?.auth_state, selectedAccount?.enabled, selectedAccount?.provider_installed, selectedProvider?.capabilities.search_files, view]);
 
   useEffect(() => {
     if (!fileContextMenu) return;
@@ -722,7 +800,20 @@ export function DriveWorkspace() {
 
   const openFolder = (item: RemoteFileItem) => {
     if (item.kind !== "folder") return;
-    setFolderPath((path) => [...path, { id: item.id, name: item.name }]);
+    if (normalizedSearchQuery) {
+      setFileSearchQuery("");
+      setFolderPath([{ id: null, name: "根目录" }, { id: item.id, name: item.name }]);
+    } else {
+      setFolderPath((path) => [...path, { id: item.id, name: item.name }]);
+    }
+  };
+
+  const refreshVisibleFiles = async () => {
+    if (normalizedSearchQuery) {
+      await loadSearchFiles(normalizedSearchQuery, false);
+    } else {
+      await loadFiles(false);
+    }
   };
 
   const downloadFolder = async (item: RemoteFileItem) => {
@@ -772,7 +863,7 @@ export function DriveWorkspace() {
         });
       }
       await loadShell();
-      await loadFiles(false);
+      await refreshVisibleFiles();
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -887,7 +978,7 @@ export function DriveWorkspace() {
       setMoveDialog(null);
       setSelectedFileIds(new Set());
       await loadShell();
-      await loadFiles(false);
+      await refreshVisibleFiles();
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -909,7 +1000,7 @@ export function DriveWorkspace() {
       setSelectedFileIds(new Set());
       setFileContextMenu(null);
       await loadShell();
-      await loadFiles(false);
+      await refreshVisibleFiles();
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -1069,13 +1160,16 @@ export function DriveWorkspace() {
 
               {view === "files" ? (
                 <div className="flex min-h-0 flex-1 flex-col px-5 py-4">
-                  <div className="mb-3 flex h-8 items-center justify-between gap-3 text-xs text-stone-500">
-                    <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+                  <div className="mb-3 flex min-h-8 flex-wrap items-center gap-2 text-xs text-stone-500">
+                    <div className="mr-auto flex min-w-40 flex-1 items-center gap-1 overflow-x-auto">
                       {folderPath.map((folder, index) => (
                         <span key={`${folder.id ?? "root"}-${index}`} className="flex shrink-0 items-center gap-1">
                           {index > 0 && <ChevronRight className="h-3.5 w-3.5 text-stone-300" />}
                           <button
-                            onClick={() => setFolderPath((path) => path.slice(0, index + 1))}
+                            onClick={() => {
+                              setFileSearchQuery("");
+                              setFolderPath((path) => path.slice(0, index + 1));
+                            }}
                             className="rounded-md px-1.5 py-1 hover:bg-stone-100 hover:text-stone-900"
                           >
                             {folder.name}
@@ -1083,14 +1177,45 @@ export function DriveWorkspace() {
                         </span>
                       ))}
                     </div>
-                    <button
-                      onClick={() => void uploadFiles()}
-                      disabled={loading || !selectedProvider?.capabilities.write_files}
-                      className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 hover:bg-white hover:text-stone-900 disabled:opacity-35"
-                      title={selectedProvider?.capabilities.write_files ? "上传文件" : "当前 Provider 不支持上传"}
-                    >
-                      <Upload className="h-4 w-4" />
-                    </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <div className="relative w-40 sm:w-56">
+                        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-stone-400" />
+                        <input
+                          type="text"
+                          inputMode="search"
+                          value={fileSearchQuery}
+                          onChange={(event) => setFileSearchQuery(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") setFileSearchQuery("");
+                          }}
+                          maxLength={200}
+                          disabled={!selectedProvider?.capabilities.search_files}
+                          placeholder="全盘搜索"
+                          aria-label="全盘搜索文件"
+                          className="h-8 w-full rounded-md border border-stone-200 bg-white pl-8 pr-8 text-xs text-stone-700 outline-none placeholder:text-stone-400 focus:border-stone-400 disabled:cursor-not-allowed disabled:opacity-50"
+                        />
+                        {searchLoading ? (
+                          <LoaderCircle className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-stone-400" />
+                        ) : fileSearchQuery ? (
+                          <button
+                            type="button"
+                            onClick={() => setFileSearchQuery("")}
+                            className="absolute right-1.5 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                            title="清除搜索"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        ) : null}
+                      </div>
+                      <button
+                        onClick={() => void uploadFiles()}
+                        disabled={loading || !selectedProvider?.capabilities.write_files}
+                        className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 hover:bg-white hover:text-stone-900 disabled:opacity-35"
+                        title={selectedProvider?.capabilities.write_files ? "上传文件" : "当前 Provider 不支持上传"}
+                      >
+                        <Upload className="h-4 w-4" />
+                      </button>
+                    </div>
                   </div>
                   <div
                     className="min-h-0 flex-1 overflow-auto border-y border-stone-200 bg-white/40"
@@ -1099,13 +1224,13 @@ export function DriveWorkspace() {
                     <div className="sticky top-0 z-10 grid grid-cols-[28px_minmax(0,1fr)_74px_56px] items-center gap-3 border-b border-stone-200 bg-[#FAF9F5]/95 px-3 py-2 text-[11px] font-medium text-stone-400 backdrop-blur-sm sm:grid-cols-[28px_minmax(0,1fr)_90px_130px_56px] sm:gap-4">
                       <input
                         type="checkbox"
-                        aria-label="全选当前目录"
+                        aria-label={normalizedSearchQuery ? "全选搜索结果" : "全选当前目录"}
                         checked={allFilesSelected}
                         ref={(element) => {
                           if (element) element.indeterminate = !allFilesSelected && selectedFileCount > 0;
                         }}
                         onChange={(event) => toggleAllFiles(event.target.checked)}
-                        disabled={loading || sortedFiles.length === 0}
+                        disabled={fileListLoading || sortedFiles.length === 0}
                         className="h-3.5 w-3.5 accent-emerald-700"
                       />
                       <div className="flex min-w-0 items-center gap-2">
@@ -1188,9 +1313,11 @@ export function DriveWorkspace() {
                         </div>
                       </div>
                     ))}
-                    {!loading && sortedFiles.length === 0 && (
+                    {!fileListLoading && sortedFiles.length === 0 && (
                       <div className="grid h-full min-h-48 place-items-center text-xs text-stone-400">
-                        {!selectedAccount.provider_installed
+                        {normalizedSearchQuery
+                          ? "未找到匹配文件"
+                          : !selectedAccount.provider_installed
                           ? "Provider adapter 不可用"
                           : !selectedAccount.enabled
                             ? "账户已在本机停用"
@@ -1200,13 +1327,19 @@ export function DriveWorkspace() {
                       </div>
                     )}
                   </div>
-                  {nextPageToken && (
+                  {visibleNextPageToken && (
                     <button
-                      onClick={() => void loadFiles(true, nextPageToken)}
-                      disabled={loading}
+                      onClick={() => {
+                        if (normalizedSearchQuery) {
+                          void loadSearchFiles(normalizedSearchQuery, true, visibleNextPageToken);
+                        } else {
+                          void loadFiles(true, visibleNextPageToken);
+                        }
+                      }}
+                      disabled={fileListLoading}
                       className="mt-3 self-center rounded-md border border-stone-200 bg-white px-3 py-1.5 text-xs text-stone-600 hover:bg-stone-50 disabled:opacity-50"
                     >
-                      加载更多
+                      {normalizedSearchQuery ? "加载更多搜索结果" : "加载更多"}
                     </button>
                   )}
                 </div>

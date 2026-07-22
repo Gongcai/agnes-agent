@@ -110,6 +110,7 @@ pub enum ContentHashAlgorithm {
 #[serde(default)]
 pub struct StorageCapabilities {
     pub browse_files: bool,
+    pub search_files: bool,
     pub read_files: bool,
     pub write_files: bool,
     pub delete_files: bool,
@@ -277,6 +278,45 @@ impl ListFilesRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchFilesRequest {
+    pub query: String,
+    pub page_token: Option<String>,
+    pub page_size: usize,
+}
+
+impl SearchFilesRequest {
+    pub fn normalized(mut self) -> Self {
+        self.query = self.query.trim().to_owned();
+        self.page_token = trim_optional(self.page_token);
+        self.page_size = self.page_size.clamp(1, 200);
+        self
+    }
+
+    pub fn validate(&self) -> ProviderResult<()> {
+        if self.query.is_empty()
+            || self.query.chars().count() > 200
+            || self.query.chars().any(char::is_control)
+        {
+            return Err(ProviderError::new(
+                ProviderErrorCategory::InvalidRequest,
+                "Search query must contain 1-200 visible characters",
+            ));
+        }
+        if self
+            .page_token
+            .as_ref()
+            .is_some_and(|value| value.len() > 4096 || value.chars().any(char::is_control))
+        {
+            return Err(ProviderError::new(
+                ProviderErrorCategory::InvalidRequest,
+                "Search page token is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteFilePage {
     pub items: Vec<RemoteFileItem>,
     pub next_page_token: Option<String>,
@@ -429,5 +469,35 @@ mod tests {
         assert_eq!(request.parent_id.as_deref(), Some("root"));
         assert_eq!(request.page_token, None);
         assert_eq!(request.page_size, 200);
+    }
+
+    #[test]
+    fn search_requests_are_trimmed_bounded_and_validated() {
+        let request = SearchFilesRequest {
+            query: "  report  ".into(),
+            page_token: Some("  next  ".into()),
+            page_size: 10_000,
+        }
+        .normalized();
+        assert_eq!(request.query, "report");
+        assert_eq!(request.page_token.as_deref(), Some("next"));
+        assert_eq!(request.page_size, 200);
+        request.validate().unwrap();
+
+        assert!(SearchFilesRequest {
+            query: "   ".into(),
+            page_token: None,
+            page_size: 100,
+        }
+        .normalized()
+        .validate()
+        .is_err());
+        assert!(SearchFilesRequest {
+            query: "bad\nquery".into(),
+            page_token: None,
+            page_size: 100,
+        }
+        .validate()
+        .is_err());
     }
 }

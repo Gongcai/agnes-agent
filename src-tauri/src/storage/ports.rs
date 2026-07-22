@@ -8,8 +8,9 @@ use super::domain::{
     BeginFileUploadRequest, BeginObjectUploadRequest, DownloadFileRequest, DownloadObjectRequest,
     FileUploadSession, ListFilesRequest, ObjectUploadSession, ProviderAuthorizationRequest,
     ProviderByteStream, ProviderDescriptor, ProviderError, ProviderQuota, ProviderResult,
-    RemoteFileItem, RemoteFilePage, RemoteObjectLocator, RemoteObjectState, StorageProviderAccount,
-    UploadFileChunkRequest, UploadObjectChunkRequest, UploadedFileChunk, UploadedObjectChunk,
+    RemoteFileItem, RemoteFilePage, RemoteObjectLocator, RemoteObjectState, SearchFilesRequest,
+    StorageProviderAccount, UploadFileChunkRequest, UploadObjectChunkRequest, UploadedFileChunk,
+    UploadedObjectChunk,
 };
 
 pub struct ProviderAuthorizationResult {
@@ -48,6 +49,11 @@ pub trait ProviderCredentialAccess: Send + Sync {
 #[async_trait]
 pub trait FileSourceProvider: Send + Sync {
     async fn list_files(&self, request: ListFilesRequest) -> ProviderResult<RemoteFilePage>;
+
+    async fn search_files(&self, _request: SearchFilesRequest) -> ProviderResult<RemoteFilePage> {
+        Err(ProviderError::unsupported("file search"))
+    }
+
     async fn get_file(&self, file_id: &str) -> ProviderResult<RemoteFileItem>;
     async fn download_file(
         &self,

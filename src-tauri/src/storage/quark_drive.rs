@@ -18,8 +18,8 @@ use super::domain::{
     BeginFileUploadRequest, ContentHashAlgorithm, DownloadFileRequest, FileUploadSession,
     ListFilesRequest, ProviderAuthKind, ProviderAuthorizationRequest, ProviderByteStream,
     ProviderDescriptor, ProviderError, ProviderErrorCategory, ProviderQuota, ProviderResult,
-    ProviderStability, RemoteFileItem, RemoteFileKind, RemoteFilePage, StorageCapabilities,
-    StorageProviderAccount, UploadFileChunkRequest, UploadedFileChunk,
+    ProviderStability, RemoteFileItem, RemoteFileKind, RemoteFilePage, SearchFilesRequest,
+    StorageCapabilities, StorageProviderAccount, UploadFileChunkRequest, UploadedFileChunk,
 };
 use super::ports::{
     FileManagementProvider, FileSourceProvider, FileUploadProvider, ProviderAuthorizationChallenge,
@@ -65,9 +65,10 @@ impl ProviderFactory for QuarkDriveFactory {
             display_name: "夸克网盘".into(),
             auth_kind: ProviderAuthKind::BrowserSession,
             stability: ProviderStability::Community,
-            implementation_version: "quark-pan-http-v3".into(),
+            implementation_version: "quark-pan-http-v4".into(),
             capabilities: StorageCapabilities {
                 browse_files: true,
+                search_files: true,
                 read_files: true,
                 write_files: true,
                 delete_files: true,
@@ -311,12 +312,7 @@ struct QuarkQrChallenge {
 impl FileSourceProvider for QuarkDriveSession {
     async fn list_files(&self, request: ListFilesRequest) -> ProviderResult<RemoteFilePage> {
         let request = request.normalized();
-        let page = request
-            .page_token
-            .as_deref()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(1)
-            .max(1);
+        let page = parse_page_token(request.page_token.as_deref())?;
         let parent_id = request.parent_id.as_deref().unwrap_or("0");
         let response = self
             .api(
@@ -355,6 +351,29 @@ impl FileSourceProvider for QuarkDriveSession {
             items,
             next_page_token,
         })
+    }
+
+    async fn search_files(&self, request: SearchFilesRequest) -> ProviderResult<RemoteFilePage> {
+        let request = request.normalized();
+        request.validate()?;
+        let page = parse_page_token(request.page_token.as_deref())?;
+        let page_size = request.page_size.min(100);
+        let response = self
+            .api(
+                Method::GET,
+                "file/search",
+                vec![
+                    ("q".into(), request.query),
+                    ("_page".into(), page.to_string()),
+                    ("_size".into(), page_size.to_string()),
+                    ("_fetch_total".into(), "1".into()),
+                    ("_sort".into(), "file_type:desc,updated_at:desc".into()),
+                    ("_is_hl".into(), "1".into()),
+                ],
+                None,
+            )
+            .await?;
+        parse_search_page(&response, page, page_size)
     }
 
     async fn get_file(&self, file_id: &str) -> ProviderResult<RemoteFileItem> {
@@ -1313,9 +1332,12 @@ fn remote_file_item(value: &Value, parent_id: Option<&str>) -> ProviderResult<Re
     let modified = value_string(value, &["updated_at", "modified_at", "update_time"]);
     // Quark does not expose a stable revision on every endpoint. Only hashes are safe for
     // optimistic validation; timestamps are kept as display metadata, never as revisions.
+    let parent_id = parent_id
+        .map(ToOwned::to_owned)
+        .or_else(|| value_string(value, &["pdir_fid", "parent_id"]));
     Ok(RemoteFileItem {
         id,
-        parent_id: parent_id.map(ToOwned::to_owned),
+        parent_id,
         name,
         kind: if folder {
             RemoteFileKind::Folder
@@ -1328,6 +1350,53 @@ fn remote_file_item(value: &Value, parent_id: Option<&str>) -> ProviderResult<Re
         revision,
         downloadable: !folder,
     })
+}
+
+fn parse_search_page(
+    response: &Value,
+    page: usize,
+    page_size: usize,
+) -> ProviderResult<RemoteFilePage> {
+    let data = response.get("data").unwrap_or(&Value::Null);
+    let list = data
+        .get("list")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_response("夸克网盘搜索结果格式无效"))?;
+    let items = list
+        .iter()
+        .map(|value| remote_file_item(value, None))
+        .collect::<ProviderResult<Vec<_>>>()?;
+    let total = response
+        .get("metadata")
+        .and_then(|metadata| find_number(metadata, &["_total", "total", "total_count"]))
+        .or_else(|| find_number(data, &["_total", "total", "total_count"]));
+    let next_page_token = if total.is_some_and(|total| (page as u64) * (page_size as u64) < total)
+        || (total.is_none() && items.len() >= page_size)
+    {
+        Some((page + 1).to_string())
+    } else {
+        None
+    };
+    Ok(RemoteFilePage {
+        items,
+        next_page_token,
+    })
+}
+
+fn parse_page_token(page_token: Option<&str>) -> ProviderResult<usize> {
+    match page_token {
+        None => Ok(1),
+        Some(value) => value
+            .parse::<usize>()
+            .ok()
+            .filter(|page| *page > 0)
+            .ok_or_else(|| {
+                ProviderError::new(
+                    ProviderErrorCategory::InvalidRequest,
+                    "夸克网盘分页令牌无效",
+                )
+            }),
+    }
 }
 
 fn value_as_boolish(value: &Value) -> Option<bool> {
@@ -1752,6 +1821,31 @@ mod tests {
         );
         assert!(validate_bucket("ul-zb").is_ok());
         assert!(validate_bucket("evil.example.com").is_err());
+    }
+
+    #[test]
+    fn search_pages_use_metadata_total_and_preserve_parent_ids_when_present() {
+        let response = json!({
+            "metadata": { "_total": 3 },
+            "data": {
+                "list": [
+                    { "fid": "file-1", "file_name": "notes.md", "size": 128, "pdir_fid": "42" },
+                    { "fid": "file-2", "file_name": "notes-2.md", "size": 256, "pdir_fid": "42" }
+                ]
+            }
+        });
+        let page = parse_search_page(&response, 1, 2).unwrap();
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items[0].parent_id.as_deref(), Some("42"));
+        assert_eq!(page.next_page_token.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn page_tokens_must_be_positive_integers() {
+        assert_eq!(parse_page_token(None).unwrap(), 1);
+        assert_eq!(parse_page_token(Some("2")).unwrap(), 2);
+        assert!(parse_page_token(Some("0")).is_err());
+        assert!(parse_page_token(Some("next")).is_err());
     }
 
     #[test]

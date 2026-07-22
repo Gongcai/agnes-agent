@@ -29,9 +29,9 @@ use super::domain::{
     FileUploadSession, ListFilesRequest, ObjectUploadSession, ProviderAuthKind,
     ProviderAuthorizationRequest, ProviderByteStream, ProviderDescriptor, ProviderError,
     ProviderErrorCategory, ProviderQuota, ProviderResult, ProviderStability, RemoteFileItem,
-    RemoteFileKind, RemoteFilePage, RemoteObjectLocator, RemoteObjectState, StorageCapabilities,
-    StorageProviderAccount, UploadFileChunkRequest, UploadObjectChunkRequest, UploadedFileChunk,
-    UploadedObjectChunk,
+    RemoteFileKind, RemoteFilePage, RemoteObjectLocator, RemoteObjectState, SearchFilesRequest,
+    StorageCapabilities, StorageProviderAccount, UploadFileChunkRequest, UploadObjectChunkRequest,
+    UploadedFileChunk, UploadedObjectChunk,
 };
 use super::ports::{
     FileManagementProvider, FileSourceProvider, FileUploadProvider, ObjectStorageProvider,
@@ -82,9 +82,10 @@ impl ProviderFactory for GoogleDriveFactory {
             display_name: "Google Drive".into(),
             auth_kind: ProviderAuthKind::OAuth2Pkce,
             stability: ProviderStability::Official,
-            implementation_version: "drive-v3-pkce-v1".into(),
+            implementation_version: "drive-v3-pkce-v2".into(),
             capabilities: StorageCapabilities {
                 browse_files: true,
+                search_files: true,
                 read_files: true,
                 write_files: true,
                 delete_files: true,
@@ -220,59 +221,26 @@ impl FileSourceProvider for GoogleDriveSession {
     async fn list_files(&self, request: ListFilesRequest) -> ProviderResult<RemoteFilePage> {
         let request = request.normalized();
         let parent_id = request.parent_id.as_deref().unwrap_or("root");
-        let query = vec![
-            (
-                "q".into(),
-                format!(
-                    "'{}' in parents and trashed = false",
-                    escape_drive_query(parent_id)
-                ),
+        self.query_files(
+            format!(
+                "'{}' in parents and trashed = false",
+                escape_drive_query(parent_id)
             ),
-            ("pageSize".into(), request.page_size.to_string()),
-            (
-                "fields".into(),
-                format!("nextPageToken,files({FILE_FIELDS})"),
-            ),
-            ("orderBy".into(), "folder,name_natural".into()),
-            ("spaces".into(), "drive".into()),
-            ("supportsAllDrives".into(), "true".into()),
-            ("includeItemsFromAllDrives".into(), "true".into()),
-        ];
-        let mut query = query;
-        if let Some(page_token) = request.page_token {
-            query.push(("pageToken".into(), page_token));
-        }
-        let response = self
-            .send_authorized(
-                Method::GET,
-                &format!("{DRIVE_API}/files"),
-                &query,
-                HeaderMap::new(),
-                RequestBody::Empty,
-                true,
-                &[],
-            )
-            .await?;
-        let page: GoogleFileList = parse_json_response(response).await?;
-        if page.files.len() > request.page_size
-            || page
-                .next_page_token
-                .as_deref()
-                .is_some_and(|value| value.len() > 4096)
-        {
-            return Err(invalid_response(
-                "Google Drive returned an invalid file page",
-            ));
-        }
-        let items = page
-            .files
-            .into_iter()
-            .map(remote_file_item)
-            .collect::<ProviderResult<Vec<_>>>()?;
-        Ok(RemoteFilePage {
-            items,
-            next_page_token: page.next_page_token,
-        })
+            request.page_token,
+            request.page_size,
+        )
+        .await
+    }
+
+    async fn search_files(&self, request: SearchFilesRequest) -> ProviderResult<RemoteFilePage> {
+        let request = request.normalized();
+        request.validate()?;
+        self.query_files(
+            google_search_query(&request.query),
+            request.page_token,
+            request.page_size,
+        )
+        .await
     }
 
     async fn get_file(&self, file_id: &str) -> ProviderResult<RemoteFileItem> {
@@ -630,6 +598,60 @@ impl ProviderSession for GoogleDriveSession {
 }
 
 impl GoogleDriveSession {
+    async fn query_files(
+        &self,
+        file_query: String,
+        page_token: Option<String>,
+        page_size: usize,
+    ) -> ProviderResult<RemoteFilePage> {
+        let mut query = vec![
+            ("q".into(), file_query),
+            ("pageSize".into(), page_size.to_string()),
+            (
+                "fields".into(),
+                format!("nextPageToken,files({FILE_FIELDS})"),
+            ),
+            ("orderBy".into(), "folder,name_natural".into()),
+            ("spaces".into(), "drive".into()),
+            ("supportsAllDrives".into(), "true".into()),
+            ("includeItemsFromAllDrives".into(), "true".into()),
+        ];
+        if let Some(page_token) = page_token {
+            query.push(("pageToken".into(), page_token));
+        }
+        let response = self
+            .send_authorized(
+                Method::GET,
+                &format!("{DRIVE_API}/files"),
+                &query,
+                HeaderMap::new(),
+                RequestBody::Empty,
+                true,
+                &[],
+            )
+            .await?;
+        let page: GoogleFileList = parse_json_response(response).await?;
+        if page.files.len() > page_size
+            || page
+                .next_page_token
+                .as_deref()
+                .is_some_and(|value| value.len() > 4096)
+        {
+            return Err(invalid_response(
+                "Google Drive returned an invalid file page",
+            ));
+        }
+        let items = page
+            .files
+            .into_iter()
+            .map(remote_file_item)
+            .collect::<ProviderResult<Vec<_>>>()?;
+        Ok(RemoteFilePage {
+            items,
+            next_page_token: page.next_page_token,
+        })
+    }
+
     async fn get_google_file(&self, file_id: &str) -> ProviderResult<GoogleFile> {
         validate_opaque_id(file_id, "file ID")?;
         let response = self
@@ -1368,6 +1390,13 @@ fn escape_drive_query(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
+fn google_search_query(value: &str) -> String {
+    format!(
+        "name contains '{}' and trashed = false",
+        escape_drive_query(value)
+    )
+}
+
 fn random_base64(bytes: usize) -> String {
     let mut value = vec![0_u8; bytes];
     rand::thread_rng().fill_bytes(&mut value);
@@ -1571,6 +1600,17 @@ mod tests {
             "bytes=10-20"
         );
         assert!(validate_range(None, Some(20)).is_err());
+        assert_eq!(
+            google_search_query("Bob's \\notes"),
+            "name contains 'Bob\\'s \\\\notes' and trashed = false"
+        );
+        assert!(
+            GoogleDriveFactory::new()
+                .unwrap()
+                .descriptor()
+                .capabilities
+                .search_files
+        );
     }
 
     #[test]

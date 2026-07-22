@@ -4195,6 +4195,27 @@ pub async fn list_storage_files(
 }
 
 #[tauri::command]
+pub async fn search_storage_files(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    query: String,
+    page_token: Option<String>,
+    page_size: Option<usize>,
+) -> AppResult<crate::storage::RemoteFilePage> {
+    state
+        .storage
+        .search_files(
+            account_id,
+            crate::storage::SearchFilesRequest {
+                query,
+                page_token,
+                page_size: page_size.unwrap_or(100),
+            },
+        )
+        .await
+}
+
+#[tauri::command]
 pub async fn download_storage_file(
     state: tauri::State<'_, AppState>,
     account_id: String,

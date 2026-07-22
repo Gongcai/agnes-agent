@@ -400,6 +400,7 @@ fn main() {
             commands::begin_storage_provider_authorization,
             commands::poll_storage_provider_authorization,
             commands::list_storage_files,
+            commands::search_storage_files,
             commands::download_storage_file,
             commands::import_storage_reading_book,
             commands::download_storage_folder,

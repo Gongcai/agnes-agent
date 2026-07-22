@@ -24,8 +24,8 @@ use super::artifact_transfer;
 use super::domain::{
     BeginFileUploadRequest, ContentHashAlgorithm, ListFilesRequest, ProviderAuthorizationRequest,
     ProviderDescriptor, ProviderError, ProviderQuota, RemoteFileItem, RemoteFileKind,
-    RemoteFilePage, RemoteObjectLocator, RemoteObjectState, StorageProviderAccount,
-    UploadFileChunkRequest,
+    RemoteFilePage, RemoteObjectLocator, RemoteObjectState, SearchFilesRequest,
+    StorageProviderAccount, UploadFileChunkRequest,
 };
 use super::ports::{
     ProviderAuthorizationChallenge, ProviderAuthorizationStep, ProviderCredentialAccess,
@@ -402,6 +402,29 @@ impl StorageService {
             AppError::Other("Storage provider does not support file browsing".into())
         })?;
         match file_source.list_files(request.normalized()).await {
+            Ok(page) => {
+                self.update_provider_status(&row, None).await;
+                Ok(page)
+            }
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                Err(provider_error(error))
+            }
+        }
+    }
+
+    pub async fn search_files(
+        &self,
+        account_id: String,
+        request: SearchFilesRequest,
+    ) -> AppResult<RemoteFilePage> {
+        let request = request.normalized();
+        request.validate().map_err(provider_error)?;
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let file_source = session.file_source().ok_or_else(|| {
+            AppError::Other("Storage provider does not support file search".into())
+        })?;
+        match file_source.search_files(request).await {
             Ok(page) => {
                 self.update_provider_status(&row, None).await;
                 Ok(page)
@@ -1935,8 +1958,8 @@ mod tests {
     use crate::storage::domain::{
         BeginFileUploadRequest, DownloadFileRequest, FileUploadSession, ProviderAuthKind,
         ProviderByteStream, ProviderErrorCategory, ProviderResult, ProviderStability,
-        RemoteFileItem, RemoteFileKind, StorageCapabilities, UploadFileChunkRequest,
-        UploadedFileChunk,
+        RemoteFileItem, RemoteFileKind, SearchFilesRequest, StorageCapabilities,
+        UploadFileChunkRequest, UploadedFileChunk,
     };
     use crate::storage::ports::{
         FileManagementProvider, FileSourceProvider, FileUploadProvider,
@@ -1948,6 +1971,18 @@ mod tests {
     #[async_trait]
     impl FileSourceProvider for FakeDrive {
         async fn list_files(&self, request: ListFilesRequest) -> ProviderResult<RemoteFilePage> {
+            assert_eq!(request.page_size, 200);
+            Ok(RemoteFilePage {
+                items: vec![self.get_file("remote-1").await?],
+                next_page_token: None,
+            })
+        }
+
+        async fn search_files(
+            &self,
+            request: SearchFilesRequest,
+        ) -> ProviderResult<RemoteFilePage> {
+            assert_eq!(request.query, "Notes");
             assert_eq!(request.page_size, 200);
             Ok(RemoteFilePage {
                 items: vec![self.get_file("remote-1").await?],
@@ -2347,6 +2382,7 @@ mod tests {
                 implementation_version: "test-v1".into(),
                 capabilities: StorageCapabilities {
                     browse_files: true,
+                    search_files: true,
                     read_files: true,
                     write_files: true,
                     delete_files: true,
@@ -2426,6 +2462,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(files.items[0].name, "Notes.md");
+        let search_results = service
+            .search_files(
+                "account-1".into(),
+                SearchFilesRequest {
+                    query: "  Notes  ".into(),
+                    page_token: None,
+                    page_size: usize::MAX,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(search_results.items[0].name, "Notes.md");
         let destination = std::env::temp_dir().join(format!(
             "agnes-storage-service-download-{}.md",
             uuid::Uuid::new_v4()
