@@ -7,12 +7,12 @@ import {
   ArrowLeft,
   BookMarked,
   BookOpen,
-  Brain,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
+  Cpu,
   CloudUpload,
   FileUp,
   Highlighter,
@@ -1408,17 +1408,24 @@ export const ReadingWorkspace: React.FC = () => {
                               <AnimatedDisclosure
                                 key={part._renderKey ?? part.id}
                                 defaultOpen={autoExpandThoughts}
-                                className="group rounded-r-md border-l-2 border-emerald-600 bg-stone-50 px-2.5 py-2"
-                                summaryClassName="flex w-full cursor-pointer select-none items-center gap-2 text-[11px] font-semibold text-emerald-700"
+                                className="agnes-thought-details group"
+                                summaryClassName="agnes-thought-summary"
                                 summary={(
                                   <>
-                                    <Brain className={`h-3.5 w-3.5 ${isLiveThought ? "animate-pulse" : ""}`} />
                                     <span>Agent思维过程</span>
-                                    <ChevronDown className="agnes-collapse-chevron ml-auto h-3 w-3" />
+                                    <ChevronDown className="agnes-collapse-chevron h-3 w-3" />
                                   </>
                                 )}
                               >
-                                <p className="mt-2 whitespace-pre-wrap border-t border-stone-200/70 pt-2 font-mono text-[11px] leading-relaxed text-stone-500">{part.content}</p>
+                                <div className="agnes-thought-content">
+                                  <span
+                                    className={`agnes-thought-status-icon ${isLiveThought ? "animate-pulse" : ""}`}
+                                    aria-hidden="true"
+                                  >
+                                    <Cpu className="h-3 w-3" />
+                                  </span>
+                                  <p className="whitespace-pre-wrap">{part.content}</p>
+                                </div>
                               </AnimatedDisclosure>
                             );
                           }

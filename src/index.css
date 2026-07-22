@@ -1158,6 +1158,10 @@ pre,
   color: var(--claude-muted-soft);
 }
 
+.agnes-reading-workspace .agnes-thought-status-icon {
+  background: var(--claude-surface);
+}
+
 .agnes-tool-details {
   width: min(100%, 620px);
 }
