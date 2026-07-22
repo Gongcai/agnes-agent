@@ -44,6 +44,7 @@ import {
   getCachedAutoExpandThoughts,
   subscribeUIPreferenceChanges,
 } from "../lib/uiPreferences";
+import { selectConversationGreeting } from "../lib/greetings";
 
 // 思考模式/强度选项（与角色卡编辑器保持一致）
 const THINKING_OPTIONS: { value: string; label: string; desc: string }[] = [
@@ -355,6 +356,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const hasSessionTarget = Boolean(activeSessionId || draftSession);
   const isEmptyConversation = messages.length === 0;
+  const welcomeGreeting = selectConversationGreeting(
+    userName,
+    new Date(),
+    draftSession?.id ?? activeSessionId ?? "new-conversation",
+  );
 
   // 拉取服务商与模型列表，供底部模型切换器使用
   useEffect(() => {
@@ -882,7 +888,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           <div className="flex items-center justify-center gap-3">
             <Sparkles className="h-7 w-7 text-[var(--claude-clay)]" weight="regular" />
             <h1 className="text-3xl font-normal text-[var(--claude-ink)]">
-              {userName ? `${userName} returns!` : "Welcome back!"}
+              {welcomeGreeting}
             </h1>
           </div>
         </div>
