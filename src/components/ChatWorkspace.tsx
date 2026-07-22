@@ -344,7 +344,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [inputVal, setInputVal] = useState("");
   const messageEndRef = useRef<HTMLDivElement>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
-  const [permissionPickerOpen, setPermissionPickerOpen] = useState(false);
   const [attachmentPicker, setAttachmentPicker] = useState<"menu" | "knowledge" | "skill" | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [knowledgeCollections, setKnowledgeCollections] = useState<KnowledgeCollectionOption[]>([]);
@@ -508,6 +507,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const currentCompressThreshold = activeSession?.compress_threshold ?? 0.85;
   const summaryTriggerTokens = Math.floor(contextLimit * currentCompressThreshold);
   const currentPermissionMode = activeSession?.permission_mode || "auto";
+  const currentPermissionOption = PERMISSION_OPTIONS.find(
+    (option) => option.value === currentPermissionMode,
+  ) ?? PERMISSION_OPTIONS[1];
 
   // 持久化会话级模型/思考配置
   const applySessionLlm = (
@@ -891,7 +893,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   onClick={() => {
                     setAttachmentPicker((current) => current ? null : "menu");
                     setModelPickerOpen(false);
-                    setPermissionPickerOpen(false);
                     setAttachmentError(null);
                   }}
                   disabled={!activeSessionId || isStreaming}
@@ -1072,92 +1073,26 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   </>
                 )}
               </div>
-              <span className="truncate">
-                {currentPermissionMode === "full_access"
-                  ? "完全访问已开启：文件与网络沙箱限制已放宽"
-                  : attachments.length > 0
-                    ? `${attachments.length} 个附件将随本条消息发送`
-                    : "Agent 本地执行受系统沙箱安全策略保护"}
+              <span className="truncate" title={currentPermissionOption.desc}>
+                <span className={currentPermissionMode === "full_access" ? "font-semibold text-rose-600" : "font-semibold text-stone-500"}>
+                  {currentPermissionOption.label}
+                </span>
+                <span>{` · ${currentPermissionOption.desc}`}</span>
+                {attachments.length > 0 && (
+                  <span>{` · ${attachments.length} 个附件`}</span>
+                )}
               </span>
             </div>
             <div className="flex items-center gap-2">
-              {/* Session permission mode switcher */}
-              <div className="relative">
-                <button
-                  onClick={() => {
-                    setPermissionPickerOpen((open) => !open);
-                    setModelPickerOpen(false);
-                    setAttachmentPicker(null);
-                  }}
-                  disabled={!activeSessionId || isStreaming}
-                  className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[10px] transition-colors disabled:opacity-40 ${
-                    currentPermissionMode === "full_access"
-                      ? "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
-                      : "border-stone-200 bg-white text-stone-600 hover:text-stone-900 hover:bg-stone-50"
-                  }`}
-                  title={PERMISSION_OPTIONS.find((option) => option.value === currentPermissionMode)?.desc}
-                >
-                  <ShieldCheck className="h-3 w-3" />
-                  <span>{PERMISSION_LABEL[currentPermissionMode]}</span>
-                  <ChevronDown className="h-3 w-3" />
-                </button>
-
-                {permissionPickerOpen && (
-                  <>
-                    <div
-                      className="fixed inset-0 z-40"
-                      onClick={() => setPermissionPickerOpen(false)}
-                    />
-                    <div className="absolute bottom-full right-0 mb-2 z-50 w-72 rounded-xl border border-stone-200 bg-white shadow-2xl p-2">
-                      <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-stone-400">
-                        会话权限
-                      </div>
-                      {PERMISSION_OPTIONS.map((option) => {
-                        const isActive = option.value === currentPermissionMode;
-                        const isFullAccess = option.value === "full_access";
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => {
-                              applyPermissionMode(option.value);
-                              setPermissionPickerOpen(false);
-                            }}
-                            className={`w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
-                              isActive
-                                ? isFullAccess
-                                  ? "bg-rose-50 text-rose-700"
-                                  : "bg-[#8CA38A]/10 text-[#5F735D]"
-                                : isFullAccess
-                                  ? "text-rose-600 hover:bg-rose-50"
-                                  : "text-stone-600 hover:bg-stone-100"
-                            }`}
-                          >
-                            <span className="flex items-center justify-between text-[11px] font-semibold">
-                              {option.label}
-                              {isActive && <Check className="h-3 w-3" />}
-                            </span>
-                            <span className="mt-0.5 block text-[10px] leading-relaxed opacity-70">
-                              {option.desc}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* Model switcher (Provider -> Model) */}
+              {/* Model, thinking, and permission switcher */}
               <div className="relative">
                 <button
                   onClick={() => {
                     setModelPickerOpen((v) => !v);
-                    setPermissionPickerOpen(false);
                     setAttachmentPicker(null);
                   }}
                   className="flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[10px] text-stone-600 hover:text-stone-900 hover:bg-stone-50 transition-colors"
-                  title="切换模型"
+                  title="模型与运行模式"
                 >
                   <Cpu className="h-3 w-3 text-[#8CA38A]" />
                   <span className="max-w-[160px] truncate font-mono">
@@ -1178,7 +1113,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       className="fixed inset-0 z-40"
                       onClick={() => setModelPickerOpen(false)}
                     />
-                    <div className="absolute bottom-full right-0 mb-2 z-50 w-72 max-h-80 overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl p-2">
+                    <div className="absolute bottom-full right-0 mb-2 z-50 w-80 max-h-80 overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl p-2">
                       {providers.length === 0 ? (
                         <div className="px-3 py-6 text-center text-[11px] text-stone-400">
                           暂无服务商，请到设置 → 模型与同步中添加
@@ -1225,6 +1160,43 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           </div>
                         ))
                       )}
+                      <div className="mt-2 border-t border-stone-100 pt-2">
+                        <div className="mb-1 flex items-center gap-1.5 px-1 text-[10px] font-semibold text-stone-500">
+                          <ShieldCheck className="h-3 w-3" />
+                          <span>运行模式</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1 px-1">
+                          {PERMISSION_OPTIONS.map((option) => {
+                            const isActive = option.value === currentPermissionMode;
+                            const isFullAccess = option.value === "full_access";
+                            return (
+                              <button
+                                key={option.value}
+                                type="button"
+                                disabled={!activeSessionId || isStreaming}
+                                onClick={() => applyPermissionMode(option.value)}
+                                className={`min-h-14 rounded-lg border px-2 py-1.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                                  isActive
+                                    ? isFullAccess
+                                      ? "border-rose-200 bg-rose-50 text-rose-700"
+                                      : "border-[#8CA38A]/30 bg-[#8CA38A]/10 text-[#5F735D]"
+                                    : isFullAccess
+                                      ? "border-stone-200 text-rose-600 hover:border-rose-200 hover:bg-rose-50"
+                                      : "border-stone-200 text-stone-600 hover:bg-stone-100"
+                                }`}
+                              >
+                                <span className="flex items-center justify-between gap-1 text-[10px] font-semibold">
+                                  {option.label}
+                                  {isActive && <Check className="h-3 w-3 shrink-0" />}
+                                </span>
+                                <span className="mt-0.5 line-clamp-2 block text-[9px] leading-relaxed opacity-70">
+                                  {option.desc}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
                       {/* 思考模式/强度（与模型选择并列） */}
                       <div className="mt-2 pt-2 border-t border-stone-100">
                         <div className="px-1 mb-1 text-[10px] font-semibold text-stone-500">
