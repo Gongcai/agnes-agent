@@ -304,6 +304,16 @@ pub enum DbCommand {
         input: repo::reading::NewReadingHighlight,
         resp: oneshot::Sender<AppResult<repo::reading::ReadingHighlightRow>>,
     },
+    UpdateReadingHighlight {
+        highlight_id: String,
+        note: Option<String>,
+        color: String,
+        resp: oneshot::Sender<AppResult<repo::reading::ReadingHighlightRow>>,
+    },
+    DeleteReadingHighlight {
+        highlight_id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     ListCalendars {
         resp: oneshot::Sender<AppResult<Vec<repo::planner::CalendarRow>>>,
     },
@@ -1457,6 +1467,30 @@ impl DbActorHandle {
     ) -> AppResult<repo::reading::ReadingHighlightRow> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::InsertReadingHighlight { input, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn update_reading_highlight(
+        &self,
+        highlight_id: String,
+        note: Option<String>,
+        color: String,
+    ) -> AppResult<repo::reading::ReadingHighlightRow> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateReadingHighlight {
+            highlight_id,
+            note,
+            color,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn delete_reading_highlight(&self, highlight_id: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::DeleteReadingHighlight { highlight_id, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -2807,6 +2841,22 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::InsertReadingHighlight { input, resp } => {
                     let _ = resp.send(repo::reading::insert_highlight(&mut conn, &input));
+                }
+                DbCommand::UpdateReadingHighlight {
+                    highlight_id,
+                    note,
+                    color,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::reading::update_highlight(
+                        &mut conn,
+                        &highlight_id,
+                        note.as_deref(),
+                        &color,
+                    ));
+                }
+                DbCommand::DeleteReadingHighlight { highlight_id, resp } => {
+                    let _ = resp.send(repo::reading::delete_highlight(&mut conn, &highlight_id));
                 }
                 DbCommand::ListCalendars { resp } => {
                     let _ = resp.send(repo::planner::list_calendars(&conn));

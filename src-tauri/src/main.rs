@@ -378,6 +378,8 @@ fn main() {
             commands::update_reading_book_progress,
             commands::list_reading_highlights,
             commands::create_reading_highlight,
+            commands::update_reading_highlight,
+            commands::delete_reading_highlight,
             commands::list_knowledge_collections,
             commands::create_knowledge_collection,
             commands::list_knowledge_documents,

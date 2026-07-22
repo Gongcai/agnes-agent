@@ -582,6 +582,61 @@ pub fn insert_highlight(
     Ok(row)
 }
 
+pub fn update_highlight(
+    conn: &mut Connection,
+    highlight_id: &str,
+    note: Option<&str>,
+    color: &str,
+) -> AppResult<ReadingHighlightRow> {
+    let note = note.map(str::trim).filter(|value| !value.is_empty());
+    if note.is_some_and(|value| value.len() > 20_000) {
+        return Err(AppError::Other("Reading highlight note is too long".into()));
+    }
+    let timestamp = now();
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
+    let changed = tx.execute(
+        "UPDATE reading_highlights SET note = ?1, color = ?2, updated_at = ?3, \
+         version = version + 1, origin_device_id = ?4 \
+         WHERE id = ?5 AND deleted_at IS NULL",
+        params![
+            note,
+            normalize_color(color),
+            timestamp,
+            device_id,
+            highlight_id
+        ],
+    )?;
+    if changed == 0 {
+        return Err(AppError::Other("Reading highlight not found".into()));
+    }
+    let row = get_highlight_in_transaction(&tx, highlight_id)?
+        .ok_or_else(|| AppError::Other("Reading highlight not found".into()))?;
+    enqueue_highlight(&tx, &row)?;
+    tx.commit()?;
+    Ok(row)
+}
+
+pub fn delete_highlight(conn: &mut Connection, highlight_id: &str) -> AppResult<()> {
+    let timestamp = now();
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let device_id = super::sync::device_id(&tx)?;
+    let changed = tx.execute(
+        "UPDATE reading_highlights SET deleted_at = ?1, updated_at = ?1, \
+         version = version + 1, origin_device_id = ?2 \
+         WHERE id = ?3 AND deleted_at IS NULL",
+        params![timestamp, device_id, highlight_id],
+    )?;
+    if changed == 0 {
+        return Err(AppError::Other("Reading highlight not found".into()));
+    }
+    let row = get_highlight_in_transaction(&tx, highlight_id)?
+        .ok_or_else(|| AppError::Other("Reading highlight not found".into()))?;
+    enqueue_highlight(&tx, &row)?;
+    tx.commit()?;
+    Ok(())
+}
+
 fn enqueue_book(conn: &Connection, row: &ReadingBookRow) -> AppResult<()> {
     conn.execute(
         "DELETE FROM sync_outbox WHERE entity_type = 'reading_book' AND entity_id = ?1 \
@@ -600,6 +655,11 @@ fn enqueue_book(conn: &Connection, row: &ReadingBookRow) -> AppResult<()> {
 }
 
 fn enqueue_highlight(conn: &Connection, row: &ReadingHighlightRow) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM sync_outbox WHERE entity_type = 'reading_highlight' AND entity_id = ?1 \
+         AND status = 'pending' AND payload_encoding = 'json'",
+        [&row.id],
+    )?;
     super::sync::enqueue_projection(
         conn,
         SyncEntityType::ReadingHighlight,
@@ -677,6 +737,20 @@ fn reading_highlight_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Readi
         deleted_at: row.get(11)?,
         origin_device_id: row.get(12)?,
     })
+}
+
+fn get_highlight_in_transaction(
+    tx: &Transaction<'_>,
+    highlight_id: &str,
+) -> AppResult<Option<ReadingHighlightRow>> {
+    tx.query_row(
+        "SELECT id, book_id, cfi_range, quote, context_before, context_after, note, color, created_at, updated_at, \
+                version, deleted_at, origin_device_id FROM reading_highlights WHERE id = ?1",
+        [highlight_id],
+        reading_highlight_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 fn get_in_transaction(tx: &Transaction<'_>, book_id: &str) -> AppResult<Option<ReadingBookRow>> {
@@ -770,6 +844,22 @@ mod tests {
         .unwrap();
         assert_eq!(highlight.quote, "A selected passage");
         assert_eq!(list_highlights(&conn, "book").unwrap().len(), 1);
+
+        let updated = update_highlight(&mut conn, "highlight", Some("Important"), "blue").unwrap();
+        assert_eq!(updated.note.as_deref(), Some("Important"));
+        assert_eq!(updated.color, "blue");
+        assert_eq!(updated.version, highlight.version + 1);
+
+        delete_highlight(&mut conn, "highlight").unwrap();
+        assert!(list_highlights(&conn, "book").unwrap().is_empty());
+        let deleted_at: Option<String> = conn
+            .query_row(
+                "SELECT deleted_at FROM reading_highlights WHERE id = 'highlight'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(deleted_at.is_some());
     }
 
     #[test]

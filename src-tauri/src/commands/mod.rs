@@ -2923,6 +2923,13 @@ pub struct ReadingHighlightPayload {
     pub color: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingHighlightUpdatePayload {
+    pub note: Option<String>,
+    pub color: String,
+}
+
 fn reading_prompt_context(book: &crate::db::repo::reading::ReadingBookRow) -> serde_json::Value {
     json!({
         "bookId": book.id,
@@ -3457,6 +3464,26 @@ pub async fn create_reading_highlight(
             color: payload.color.unwrap_or_else(|| "yellow".into()),
         })
         .await
+}
+
+#[tauri::command]
+pub async fn update_reading_highlight(
+    state: tauri::State<'_, AppState>,
+    highlight_id: String,
+    payload: ReadingHighlightUpdatePayload,
+) -> AppResult<crate::db::repo::reading::ReadingHighlightRow> {
+    state
+        .db
+        .update_reading_highlight(highlight_id, payload.note, payload.color)
+        .await
+}
+
+#[tauri::command]
+pub async fn delete_reading_highlight(
+    state: tauri::State<'_, AppState>,
+    highlight_id: String,
+) -> AppResult<()> {
+    state.db.delete_reading_highlight(highlight_id).await
 }
 
 #[tauri::command]

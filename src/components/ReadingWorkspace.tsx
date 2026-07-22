@@ -2,12 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import ePub, { type Book, type Contents, type NavItem, type Rendition } from "epubjs";
+import ePub, { type Book, type Contents, type Location, type NavItem, type Rendition } from "epubjs";
 import {
   ArrowLeft,
   BookMarked,
   BookOpen,
   Brain,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -19,19 +20,31 @@ import {
   Languages,
   LoaderCircle,
   MessageCircleMore,
+  NotebookPen,
   PanelRightClose,
   PanelRightOpen,
+  Pencil,
   Plus,
   Quote,
   RefreshCw,
+  RotateCcw,
   Send,
+  Settings2,
   ShieldAlert,
   SlidersHorizontal,
+  Trash2,
+  Type,
   X,
 } from "lucide-react";
 import { AnimatedDisclosure } from "./AnimatedDisclosure";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { useAgentStore } from "../store/useAgentStore";
+import {
+  DEFAULT_READING_PREFERENCES,
+  normalizeReadingPreferences,
+  parseReadingPreferences,
+  type ReadingPreferences,
+} from "../lib/readingPreferences";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   getCachedAutoFollowStreaming,
@@ -107,6 +120,22 @@ const HIGHLIGHT_STYLES: Record<string, Record<string, string>> = {
   pink: { fill: "#e6a7c5", "fill-opacity": "0.42", "mix-blend-mode": "multiply" },
 };
 
+const HIGHLIGHT_COLORS = ["yellow", "green", "blue", "pink"] as const;
+
+const HIGHLIGHT_COLOR_LABELS: Record<string, string> = {
+  yellow: "黄色",
+  green: "绿色",
+  blue: "蓝色",
+  pink: "粉色",
+};
+
+const HIGHLIGHT_COLOR_SWATCHES: Record<string, string> = {
+  yellow: "#e8bd3f",
+  green: "#67a36c",
+  blue: "#5aa7d8",
+  pink: "#cf7da6",
+};
+
 const APP_SERIF_FONT_FALLBACK =
   '"Noto Serif", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", Georgia, serif';
 
@@ -116,7 +145,10 @@ function appSerifFontFamily(): string {
     .trim() || APP_SERIF_FONT_FALLBACK;
 }
 
-function epubTheme(colorScheme: ColorScheme): Record<string, Record<string, string>> {
+function epubTheme(
+  colorScheme: ColorScheme,
+  preferences: ReadingPreferences,
+): Record<string, Record<string, string>> {
   const dark = colorScheme === "dark";
   const serifFont = `${appSerifFontFamily()} !important`;
   return {
@@ -128,7 +160,13 @@ function epubTheme(colorScheme: ColorScheme): Record<string, Record<string, stri
       background: dark ? "#1f1e1b" : "#fbfaf6",
       color: dark ? "#dedad1" : "#282723",
       "font-family": serifFont,
-      "line-height": "1.8",
+      "font-size": `${preferences.fontSize}px !important`,
+      "line-height": `${preferences.lineHeight} !important`,
+      width: "100% !important",
+      "max-width": `${preferences.contentWidth}px !important`,
+      margin: "0 auto !important",
+      padding: "12px 32px 48px !important",
+      "box-sizing": "border-box !important",
     },
     "html body, html body *": { "font-family": serifFont },
     p: { "margin-bottom": "1em" },
@@ -177,17 +215,53 @@ function conversationDate(timestamp: string): string {
   });
 }
 
+function handleReaderNavigationKey(event: KeyboardEvent, rendition: Rendition | null): void {
+  const target = event.target as Element | null;
+  if (typeof target?.closest === "function"
+    && target.closest("input, textarea, select, button, [contenteditable='true']")) return;
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    rendition?.prev().catch(console.error);
+  } else if (event.key === "ArrowRight") {
+    event.preventDefault();
+    rendition?.next().catch(console.error);
+  }
+}
+
 const EpubPane: React.FC<{
   book: ReadingBook;
   highlights: ReadingHighlight[];
   highlightMode: boolean;
+  highlightColor: string;
   colorScheme: ColorScheme;
+  preferences: ReadingPreferences;
   onProgress: (cfi: string) => void;
   onBackToShelf: () => void;
   onToggleHighlightMode: () => void;
+  onHighlightColorChange: (color: string) => void;
   onCreateHighlight: (selection: PendingSelection) => void;
+  onUpdateHighlight: (highlightId: string, note: string | null, color: string) => Promise<void>;
+  onDeleteHighlight: (highlight: ReadingHighlight) => Promise<void>;
+  onPreferencesChange: (preferences: ReadingPreferences) => void;
   onOpenSelectionMenu: (selection: PendingSelection, x: number, y: number) => void;
-}> = ({ book, highlights, highlightMode, colorScheme, onProgress, onBackToShelf, onToggleHighlightMode, onCreateHighlight, onOpenSelectionMenu }) => {
+}> = ({
+  book,
+  highlights,
+  highlightMode,
+  highlightColor,
+  colorScheme,
+  preferences,
+  onProgress,
+  onBackToShelf,
+  onToggleHighlightMode,
+  onHighlightColorChange,
+  onCreateHighlight,
+  onUpdateHighlight,
+  onDeleteHighlight,
+  onPreferencesChange,
+  onOpenSelectionMenu,
+}) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const bookRef = useRef<Book | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
@@ -195,24 +269,76 @@ const EpubPane: React.FC<{
   const createHighlightRef = useRef(onCreateHighlight);
   const openSelectionMenuRef = useRef(onOpenSelectionMenu);
   const colorSchemeRef = useRef(colorScheme);
+  const preferencesRef = useRef(preferences);
+  const highlightsRef = useRef(highlights);
+  const appliedHighlightsRef = useRef(new Map<string, { cfiRange: string; color: string }>());
   const [toc, setToc] = useState<NavItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [readingProgress, setReadingProgress] = useState(0);
+  const [currentChapter, setCurrentChapter] = useState("");
+  const [isHighlightsOpen, setIsHighlightsOpen] = useState(false);
+  const [isTypographyOpen, setIsTypographyOpen] = useState(false);
+  const [editingHighlightId, setEditingHighlightId] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [colorDraft, setColorDraft] = useState("yellow");
 
   useEffect(() => { highlightModeRef.current = highlightMode; }, [highlightMode]);
   useEffect(() => { createHighlightRef.current = onCreateHighlight; }, [onCreateHighlight]);
   useEffect(() => { openSelectionMenuRef.current = onOpenSelectionMenu; }, [onOpenSelectionMenu]);
   useEffect(() => {
     colorSchemeRef.current = colorScheme;
-    renditionRef.current?.themes.default(epubTheme(colorScheme));
-  }, [colorScheme]);
+    preferencesRef.current = preferences;
+    renditionRef.current?.themes.default(epubTheme(colorScheme, preferences));
+  }, [colorScheme, preferences]);
+
+  const syncHighlights = () => {
+    const rendition = renditionRef.current;
+    if (!rendition) return;
+    const nextHighlights = new Map(highlightsRef.current.map((highlight) => [highlight.id, highlight]));
+    for (const [id, applied] of appliedHighlightsRef.current) {
+      const next = nextHighlights.get(id);
+      if (!next || next.cfi_range !== applied.cfiRange || next.color !== applied.color) {
+        rendition.annotations.remove(applied.cfiRange, "highlight");
+        appliedHighlightsRef.current.delete(id);
+      }
+    }
+    for (const highlight of highlightsRef.current) {
+      if (appliedHighlightsRef.current.has(highlight.id)) continue;
+      try {
+        rendition.annotations.highlight(
+          highlight.cfi_range,
+          { id: highlight.id },
+          () => {
+            setIsHighlightsOpen(true);
+            setEditingHighlightId(highlight.id);
+            setNoteDraft(highlight.note ?? "");
+            setColorDraft(highlight.color);
+          },
+          `reading-highlight-${highlight.color}`,
+          HIGHLIGHT_STYLES[highlight.color] ?? HIGHLIGHT_STYLES.yellow,
+        );
+        appliedHighlightsRef.current.set(highlight.id, {
+          cfiRange: highlight.cfi_range,
+          color: highlight.color,
+        });
+      } catch {
+        // A highlight from another EPUB revision may no longer resolve.
+      }
+    }
+  };
+
+  useEffect(() => {
+    highlightsRef.current = highlights;
+    syncHighlights();
+  }, [highlights]);
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void invoke("set_reading_context_menu_active", { active: true });
 
-    const openNativeSelectionMenu = () => {
+    const openNativeSelectionMenu = (nativeX?: number, nativeY?: number) => {
       const rendition = renditionRef.current;
       if (!rendition) return;
       const contentsList = rendition.getContents() as unknown as Contents[];
@@ -231,16 +357,21 @@ const EpubPane: React.FC<{
         const frame = contents.document.defaultView?.frameElement;
         const frameRect = frame instanceof HTMLElement ? frame.getBoundingClientRect() : null;
         const rangeRect = range.getBoundingClientRect();
+        const hasNativePoint = Number.isFinite(nativeX)
+          && Number.isFinite(nativeY)
+          && (nativeX !== 0 || nativeY !== 0);
         openSelectionMenuRef.current(
           { cfiRange, quote, contextBefore: nearby.before, contextAfter: nearby.after },
-          (frameRect?.left ?? 0) + rangeRect.right,
-          (frameRect?.top ?? 0) + rangeRect.bottom,
+          hasNativePoint ? nativeX! : (frameRect?.left ?? 0) + rangeRect.right,
+          hasNativePoint ? nativeY! : (frameRect?.top ?? 0) + rangeRect.bottom,
         );
         return;
       }
     };
 
-    void listen("reading://native-context-menu", () => openNativeSelectionMenu()).then((remove) => {
+    void listen<{ x?: number; y?: number }>("reading://native-context-menu", (event) => {
+      openNativeSelectionMenu(event.payload.x, event.payload.y);
+    }).then((remove) => {
       if (disposed) remove();
       else unlisten = remove;
     });
@@ -268,23 +399,6 @@ const EpubPane: React.FC<{
     let resizeObserver: ResizeObserver | null = null;
     let resizeTimer: number | null = null;
 
-    const applyHighlights = () => {
-      if (!rendered) return;
-      for (const highlight of highlights) {
-        try {
-          rendered.annotations.highlight(
-            highlight.cfi_range,
-            { id: highlight.id },
-            undefined,
-            `reading-highlight-${highlight.color}`,
-            HIGHLIGHT_STYLES[highlight.color] ?? HIGHLIGHT_STYLES.yellow,
-          );
-        } catch {
-          // A highlight from another EPUB revision may no longer resolve.
-        }
-      }
-    };
-
     const load = async () => {
       setLoading(true);
       setError(null);
@@ -304,10 +418,20 @@ const EpubPane: React.FC<{
           allowScriptedContent: false,
         });
         renditionRef.current = rendered;
-        rendered.themes.default(epubTheme(colorSchemeRef.current));
-        rendered.on("relocated", (location: { start?: { cfi?: string } }) => {
+        rendered.themes.default(epubTheme(colorSchemeRef.current, preferencesRef.current));
+        rendered.on("relocated", (location: Location) => {
           const cfi = location?.start?.cfi;
-          if (cfi) onProgress(cfi);
+          if (!cfi) return;
+          onProgress(cfi);
+          const percentage = epub.locations.length() > 0
+            ? epub.locations.percentageFromCfi(cfi)
+            : location.start.percentage;
+          if (Number.isFinite(percentage)) {
+            setReadingProgress(Math.min(1, Math.max(0, percentage)));
+          }
+          const href = location.start.href?.split("#")[0];
+          const chapter = flattenToc(navigation.toc).find((item) => item.href.split("#")[0] === href);
+          setCurrentChapter(chapter?.label?.trim() ?? "");
         });
         const attachContextMenu = (target: Contents | { contents?: Contents }) => {
           // EPUB.js runs this hook twice: first with an IframeView and later
@@ -368,6 +492,9 @@ const EpubPane: React.FC<{
           documentTarget.addEventListener("mouseup", rememberSelection, true);
           contents.window.addEventListener("mousedown", handleMouseDown, true);
           contents.window.addEventListener("contextmenu", handleContextMenu, true);
+          contents.window.addEventListener("keydown", (event) => {
+            handleReaderNavigationKey(event, renditionRef.current);
+          }, true);
           // WebKit dispatches iframe context menus on the document rather than
           // reliably forwarding them to the iframe window.
           documentTarget.addEventListener("mousedown", handleMouseDown, true);
@@ -409,7 +536,7 @@ const EpubPane: React.FC<{
         rendered.hooks.content.register(attachContextMenu);
         rendered.on("rendered", (_section: unknown, view: { contents?: Contents }) => {
           attachContextMenu(view);
-          applyHighlights();
+          syncHighlights();
         });
         rendered.on("selected", (cfiRange: string, contents: Contents) => {
           const selection = contents.window.getSelection();
@@ -443,8 +570,16 @@ const EpubPane: React.FC<{
           const currentContents = rendered.getContents() as unknown as Contents[];
           currentContents.forEach(attachContextMenu);
           scanIframes();
-          applyHighlights();
+          syncHighlights();
           setLoading(false);
+          void epub.locations.generate(1_200).then(() => {
+            const currentCfi = renditionRef.current?.location?.start?.cfi;
+            if (!disposed && currentCfi) {
+              setReadingProgress(epub.locations.percentageFromCfi(currentCfi));
+            }
+          }).catch(() => {
+            // Location generation is optional; navigation remains available.
+          });
         }
       } catch (reason) {
         if (!disposed) {
@@ -466,38 +601,36 @@ const EpubPane: React.FC<{
       bookRef.current?.destroy();
       renditionRef.current = null;
       bookRef.current = null;
+      appliedHighlightsRef.current.clear();
       host.replaceChildren();
     };
   }, [book.id, book.local_path]);
 
-  useEffect(() => {
-    if (!renditionRef.current) return;
-    for (const highlight of highlights) {
-      try {
-        renditionRef.current.annotations.highlight(
-          highlight.cfi_range,
-          { id: highlight.id },
-          undefined,
-          `reading-highlight-${highlight.color}`,
-          HIGHLIGHT_STYLES[highlight.color] ?? HIGHLIGHT_STYLES.yellow,
-        );
-      } catch {
-        // Ignore anchors that no longer exist in the imported EPUB revision.
-      }
-    }
-  }, [highlights]);
-
   const navigate = (href: string) => renditionRef.current?.display(href).catch(console.error);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      handleReaderNavigationKey(event, renditionRef.current);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   return (
     <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[#fbfaf6]">
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-stone-200 bg-white/70 px-4">
+      <div className="relative flex h-12 shrink-0 items-center gap-2 border-b border-stone-200 bg-white/70 px-3">
         <button onClick={onBackToShelf} className="rounded p-1 text-stone-500 hover:bg-stone-100" title="返回书架"><ArrowLeft className="h-4 w-4" /></button>
         <BookOpen className="h-4 w-4 text-emerald-700" />
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-stone-800">{book.title}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold text-stone-800">{book.title}</span>
+          {currentChapter && <span className="block truncate text-[9px] text-stone-400">{currentChapter}</span>}
+        </span>
+        <span className="w-9 shrink-0 text-right font-mono text-[9px] tabular-nums text-stone-400" title="阅读进度">
+          {Math.round(readingProgress * 100)}%
+        </span>
         {toc.length > 0 && (
           <select
-            className="max-w-48 rounded-md border border-stone-200 bg-white px-2 py-1 text-xs text-stone-600 outline-none"
+            className="max-w-40 rounded-md border border-stone-200 bg-white px-2 py-1 text-xs text-stone-600 outline-none xl:max-w-48"
             defaultValue=""
             onChange={(event) => event.target.value && navigate(event.target.value)}
             aria-label="跳转目录"
@@ -508,11 +641,57 @@ const EpubPane: React.FC<{
         )}
         <button
           onClick={onToggleHighlightMode}
-          className={`rounded p-1 ${highlightMode ? "bg-amber-100 text-amber-700" : "text-stone-500 hover:bg-stone-100"}`}
+          className={`agnes-reading-highlight-toggle flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium transition-colors ${highlightMode ? "border-amber-300 bg-amber-100 text-amber-800" : "border-stone-200 text-stone-500 hover:bg-stone-100"}`}
           title={highlightMode ? "退出划线模式" : "进入划线模式"}
           aria-pressed={highlightMode}
         >
           <Highlighter className="h-4 w-4" />
+          <span className="hidden xl:inline">{highlightMode ? "划线中" : "划线"}</span>
+        </button>
+        <div className={`hidden h-8 shrink-0 items-center gap-1 rounded-md border border-stone-200 px-1 sm:flex ${highlightMode ? "opacity-100" : "opacity-45"}`} aria-label="划线颜色">
+          {HIGHLIGHT_COLORS.map((color) => (
+            <button
+              key={color}
+              type="button"
+              disabled={!highlightMode}
+              onClick={() => onHighlightColorChange(color)}
+              className={`grid h-5 w-5 place-items-center rounded-full border transition-transform hover:scale-110 disabled:cursor-default ${highlightColor === color ? "border-stone-700" : "border-transparent"}`}
+              title={`${HIGHLIGHT_COLOR_LABELS[color]}划线`}
+              aria-label={`${HIGHLIGHT_COLOR_LABELS[color]}划线`}
+              aria-pressed={highlightColor === color}
+            >
+              <span className="h-3 w-3 rounded-full" style={{ background: HIGHLIGHT_COLOR_SWATCHES[color] }} />
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setIsHighlightsOpen((open) => !open);
+            setIsTypographyOpen(false);
+          }}
+          className={`relative rounded p-1.5 ${isHighlightsOpen ? "bg-stone-100 text-stone-800" : "text-stone-500 hover:bg-stone-100"}`}
+          title="高亮与批注"
+          aria-pressed={isHighlightsOpen}
+        >
+          <NotebookPen className="h-4 w-4" />
+          {highlights.length > 0 && (
+            <span className="absolute -right-1 -top-1 min-w-3.5 rounded-full bg-stone-700 px-0.5 text-center font-mono text-[8px] leading-[14px] text-white">
+              {Math.min(highlights.length, 99)}
+            </span>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setIsTypographyOpen((open) => !open);
+            setIsHighlightsOpen(false);
+          }}
+          className={`rounded p-1.5 ${isTypographyOpen ? "bg-stone-100 text-stone-800" : "text-stone-500 hover:bg-stone-100"}`}
+          title="阅读排版"
+          aria-pressed={isTypographyOpen}
+        >
+          <Settings2 className="h-4 w-4" />
         </button>
         <button onClick={() => renditionRef.current?.prev().catch(console.error)} className="rounded p-1 text-stone-500 hover:bg-stone-100" title="上一页">
           <ChevronLeft className="h-4 w-4" />
@@ -520,7 +699,140 @@ const EpubPane: React.FC<{
         <button onClick={() => renditionRef.current?.next().catch(console.error)} className="rounded p-1 text-stone-500 hover:bg-stone-100" title="下一页">
           <ChevronRight className="h-4 w-4" />
         </button>
+        <span className="absolute inset-x-0 bottom-0 h-px bg-stone-200">
+          <span className="block h-full bg-[#c56f52] transition-[width] duration-300" style={{ width: `${readingProgress * 100}%` }} />
+        </span>
       </div>
+
+      {isHighlightsOpen && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => setIsHighlightsOpen(false)} />
+          <div className="absolute right-3 top-14 z-30 flex max-h-[min(70vh,560px)] w-[min(340px,calc(100%-24px))] flex-col overflow-hidden rounded-md border border-stone-200 bg-white shadow-xl">
+            <header className="flex h-10 shrink-0 items-center gap-2 border-b border-stone-100 px-3">
+              <NotebookPen className="h-3.5 w-3.5 text-stone-500" />
+              <span className="flex-1 text-xs font-semibold text-stone-700">高亮与批注</span>
+              <span className="font-mono text-[9px] text-stone-400">{highlights.length}</span>
+              <button type="button" onClick={() => setIsHighlightsOpen(false)} className="rounded p-1 text-stone-400 hover:bg-stone-100" title="关闭"><X className="h-3.5 w-3.5" /></button>
+            </header>
+            <div className="min-h-0 overflow-y-auto">
+              {highlights.length === 0 ? (
+                <div className="px-4 py-10 text-center text-xs text-stone-400">暂无高亮</div>
+              ) : highlights.map((highlight) => {
+                const editing = editingHighlightId === highlight.id;
+                return (
+                  <article key={highlight.id} className="border-b border-stone-100 px-3 py-3 last:border-b-0">
+                    <div className="flex items-start gap-2">
+                      <button
+                        type="button"
+                        onClick={() => navigate(highlight.cfi_range)}
+                        className="min-w-0 flex-1 text-left"
+                        title="定位到原文"
+                      >
+                        <span className="line-clamp-3 text-xs leading-5 text-stone-700">{highlight.quote}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingHighlightId(editing ? null : highlight.id);
+                          setNoteDraft(highlight.note ?? "");
+                          setColorDraft(highlight.color);
+                        }}
+                        className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                        title="编辑批注"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm("删除这条高亮和批注？")) void onDeleteHighlight(highlight);
+                        }}
+                        className="rounded p-1 text-stone-400 hover:bg-rose-50 hover:text-rose-600"
+                        title="删除高亮"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    {!editing && highlight.note && (
+                      <p className="mt-2 whitespace-pre-wrap border-l border-stone-200 pl-2 text-[10px] leading-4 text-stone-500">{highlight.note}</p>
+                    )}
+                    {editing && (
+                      <div className="mt-2 space-y-2">
+                        <textarea
+                          value={noteDraft}
+                          onChange={(event) => setNoteDraft(event.target.value)}
+                          maxLength={20_000}
+                          rows={3}
+                          placeholder="添加批注..."
+                          className="w-full resize-y rounded-md border border-stone-200 bg-stone-50 px-2 py-1.5 text-xs leading-5 text-stone-700 outline-none focus:border-stone-400"
+                        />
+                        <div className="flex items-center gap-1.5">
+                          {HIGHLIGHT_COLORS.map((color) => (
+                            <button
+                              key={color}
+                              type="button"
+                              onClick={() => setColorDraft(color)}
+                              className={`grid h-6 w-6 place-items-center rounded-full border ${colorDraft === color ? "border-stone-700" : "border-transparent"}`}
+                              title={HIGHLIGHT_COLOR_LABELS[color]}
+                              aria-pressed={colorDraft === color}
+                            >
+                              <span className="h-3.5 w-3.5 rounded-full" style={{ background: HIGHLIGHT_COLOR_SWATCHES[color] }} />
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void onUpdateHighlight(highlight.id, noteDraft.trim() || null, colorDraft)
+                                .then(() => setEditingHighlightId(null));
+                            }}
+                            className="ml-auto grid h-7 w-7 place-items-center rounded-md bg-stone-800 text-white hover:bg-stone-700"
+                            title="保存批注"
+                          >
+                            <Check className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+
+      {isTypographyOpen && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => setIsTypographyOpen(false)} />
+          <div className="absolute right-3 top-14 z-30 w-72 rounded-md border border-stone-200 bg-white p-4 shadow-xl">
+            <div className="mb-4 flex items-center gap-2">
+              <Type className="h-4 w-4 text-stone-500" />
+              <span className="flex-1 text-xs font-semibold text-stone-700">阅读排版</span>
+              <button
+                type="button"
+                onClick={() => onPreferencesChange(DEFAULT_READING_PREFERENCES)}
+                className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                title="恢复默认排版"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <label className="block text-[10px] text-stone-500">
+              <span className="mb-1.5 flex justify-between"><span>字号</span><span className="font-mono">{preferences.fontSize}px</span></span>
+              <input type="range" min={14} max={26} step={1} value={preferences.fontSize} onChange={(event) => onPreferencesChange(normalizeReadingPreferences({ ...preferences, fontSize: Number(event.target.value) }))} className="w-full accent-[#c56f52]" />
+            </label>
+            <label className="mt-4 block text-[10px] text-stone-500">
+              <span className="mb-1.5 flex justify-between"><span>行距</span><span className="font-mono">{preferences.lineHeight.toFixed(1)}</span></span>
+              <input type="range" min={1.4} max={2.4} step={0.1} value={preferences.lineHeight} onChange={(event) => onPreferencesChange(normalizeReadingPreferences({ ...preferences, lineHeight: Number(event.target.value) }))} className="w-full accent-[#c56f52]" />
+            </label>
+            <label className="mt-4 block text-[10px] text-stone-500">
+              <span className="mb-1.5 flex justify-between"><span>正文宽度</span><span className="font-mono">{preferences.contentWidth}px</span></span>
+              <input type="range" min={560} max={1_000} step={20} value={preferences.contentWidth} onChange={(event) => onPreferencesChange(normalizeReadingPreferences({ ...preferences, contentWidth: Number(event.target.value) }))} className="w-full accent-[#c56f52]" />
+            </label>
+          </div>
+        </>
+      )}
+
       {loading && <div className="absolute inset-0 z-10 grid place-items-center bg-[#fbfaf6]/80"><LoaderCircle className="h-5 w-5 animate-spin text-emerald-700" /></div>}
       {error && <div className="m-5 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs leading-relaxed text-rose-700">无法打开这本 EPUB：{error}</div>}
       <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden" />
@@ -529,6 +841,7 @@ const EpubPane: React.FC<{
 };
 
 const TRANSLATION_LANGUAGE_SETTING = "ui:translation_target_language";
+const READING_PREFERENCES_SETTING = "ui:reading_preferences";
 
 export const ReadingWorkspace: React.FC = () => {
   const activeAgentId = useAgentStore((state) => state.activeAgentId);
@@ -557,11 +870,15 @@ export const ReadingWorkspace: React.FC = () => {
   const [isDiscussionOptionsOpen, setIsDiscussionOptionsOpen] = useState(false);
   const [isConversationHistoryOpen, setIsConversationHistoryOpen] = useState(false);
   const [highlightMode, setHighlightMode] = useState(false);
+  const [highlightColor, setHighlightColor] = useState("yellow");
   const [translationLanguage, setTranslationLanguage] = useState("中文");
+  const [readingPreferences, setReadingPreferences] = useState(DEFAULT_READING_PREFERENCES);
   const [colorScheme, setColorScheme] = useState<ColorScheme>(getCachedColorScheme);
   const [autoExpandThoughts, setAutoExpandThoughts] = useState(getCachedAutoExpandThoughts);
   const [autoFollowStreaming, setAutoFollowStreaming] = useState(getCachedAutoFollowStreaming);
   const messageEndRef = useRef<HTMLDivElement>(null);
+  const preferenceSaveTimerRef = useRef<number | null>(null);
+  const pendingReadingPreferencesRef = useRef<ReadingPreferences | null>(null);
 
   const selectedBook = useMemo(
     () => books.find((book) => book.id === selectedBookId) ?? null,
@@ -598,6 +915,24 @@ export const ReadingWorkspace: React.FC = () => {
         if (value === "中文" || value === "English") setTranslationLanguage(value);
       })
       .catch(console.error);
+    void invoke<string | null>("get_setting", { key: READING_PREFERENCES_SETTING })
+      .then((value) => setReadingPreferences(parseReadingPreferences(value)))
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => () => {
+    if (preferenceSaveTimerRef.current !== null) {
+      window.clearTimeout(preferenceSaveTimerRef.current);
+      preferenceSaveTimerRef.current = null;
+    }
+    const pending = pendingReadingPreferencesRef.current;
+    if (pending) {
+      pendingReadingPreferencesRef.current = null;
+      void invoke("set_setting", {
+        key: READING_PREFERENCES_SETTING,
+        value: JSON.stringify(pending),
+      }).catch(console.error);
+    }
   }, []);
 
   useEffect(() => subscribeUIPreferenceChanges((change) => {
@@ -692,12 +1027,57 @@ export const ReadingWorkspace: React.FC = () => {
     }
   };
 
-  const createHighlight = async (selection: PendingSelection) => {
+  const updateReadingPreferences = (preferences: ReadingPreferences) => {
+    const normalized = normalizeReadingPreferences(preferences);
+    setReadingPreferences(normalized);
+    pendingReadingPreferencesRef.current = normalized;
+    if (preferenceSaveTimerRef.current !== null) {
+      window.clearTimeout(preferenceSaveTimerRef.current);
+    }
+    preferenceSaveTimerRef.current = window.setTimeout(() => {
+      preferenceSaveTimerRef.current = null;
+      pendingReadingPreferencesRef.current = null;
+      void invoke("set_setting", {
+        key: READING_PREFERENCES_SETTING,
+        value: JSON.stringify(normalized),
+      }).catch((reason) => setError(String(reason)));
+    }, 250);
+  };
+
+  const updateHighlight = async (highlightId: string, note: string | null, color: string) => {
+    try {
+      const next = await invoke<ReadingHighlight>("update_reading_highlight", {
+        highlightId,
+        payload: { note, color },
+      });
+      setHighlights((current) => current.map((highlight) => highlight.id === next.id ? next : highlight));
+    } catch (reason) {
+      setError(String(reason));
+      throw reason;
+    }
+  };
+
+  const deleteHighlight = async (highlight: ReadingHighlight) => {
+    try {
+      await invoke("delete_reading_highlight", { highlightId: highlight.id });
+      setHighlights((current) => current.filter((item) => item.id !== highlight.id));
+    } catch (reason) {
+      setError(String(reason));
+      throw reason;
+    }
+  };
+
+  const createHighlight = async (selection: PendingSelection, color = highlightColor) => {
     if (!selectedBook) return;
     try {
+      const existing = highlights.find((item) => item.cfi_range === selection.cfiRange);
+      if (existing) {
+        await updateHighlight(existing.id, existing.note, color);
+        return;
+      }
       const highlight = await invoke<ReadingHighlight>("create_reading_highlight", {
         bookId: selectedBook.id,
-        payload: { ...selection, color: "yellow" },
+        payload: { ...selection, color },
       });
       setHighlights((current) => current.some((item) => item.cfi_range === highlight.cfi_range) ? current : [...current, highlight]);
     } catch (reason) {
@@ -739,8 +1119,8 @@ export const ReadingWorkspace: React.FC = () => {
   const openSelectionMenu = (selection: PendingSelection, x: number, y: number) => {
     setSelectionMenu({
       selection,
-      x: Math.min(Math.max(x, 8), window.innerWidth - 196),
-      y: Math.min(Math.max(y, 8), window.innerHeight - 152),
+      x: Math.min(Math.max(x + 6, 8), window.innerWidth - 184),
+      y: Math.min(Math.max(y + 6, 8), window.innerHeight - 148),
     });
   };
 
@@ -827,14 +1207,20 @@ export const ReadingWorkspace: React.FC = () => {
             book={selectedBook}
             highlights={highlights}
             highlightMode={highlightMode}
+            highlightColor={highlightColor}
             colorScheme={colorScheme}
+            preferences={readingPreferences}
             onBackToShelf={returnToShelf}
             onToggleHighlightMode={() => setHighlightMode((enabled) => !enabled)}
+            onHighlightColorChange={setHighlightColor}
             onProgress={(cfi) => {
               setBooks((current) => current.map((book) => book.id === selectedBook.id ? { ...book, progress_cfi: cfi } : book));
               void invoke("update_reading_book_progress", { bookId: selectedBook.id, cfi }).catch(console.error);
             }}
             onCreateHighlight={(selection) => void createHighlight(selection)}
+            onUpdateHighlight={updateHighlight}
+            onDeleteHighlight={deleteHighlight}
+            onPreferencesChange={updateReadingPreferences}
             onOpenSelectionMenu={openSelectionMenu}
           />
 
@@ -1125,10 +1511,29 @@ export const ReadingWorkspace: React.FC = () => {
       {selectionMenu && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setSelectionMenu(null)} onContextMenu={(event) => { event.preventDefault(); setSelectionMenu(null); }} />
-          <div className="fixed z-50 w-40 overflow-hidden rounded-xl border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl" style={{ left: selectionMenu.x, top: selectionMenu.y }}>
+          <div className="fixed z-50 w-44 overflow-hidden rounded-md border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl" style={{ left: selectionMenu.x, top: selectionMenu.y }}>
             <button onClick={() => void copySelection()} className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-stone-100"><Copy className="h-3.5 w-3.5 text-stone-500" />复制</button>
             <button onClick={() => { setQuotedSelection(selectionMenu.selection); setSelectionMenu(null); setIsDiscussionOpen(true); }} className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-stone-100"><Quote className="h-3.5 w-3.5 text-stone-500" />引用</button>
             <button onClick={() => void translateSelection()} disabled={!conversationReady || isStreaming} className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"><Languages className="h-3.5 w-3.5 text-stone-500" />翻译</button>
+            <div className="mt-1 flex items-center gap-1 border-t border-stone-100 px-3 py-2">
+              <Highlighter className="mr-auto h-3.5 w-3.5 text-stone-500" />
+              {HIGHLIGHT_COLORS.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  onClick={() => {
+                    const selection = selectionMenu.selection;
+                    setSelectionMenu(null);
+                    void createHighlight(selection, color);
+                  }}
+                  className="grid h-6 w-6 place-items-center rounded-full border border-transparent hover:border-stone-400"
+                  title={`${HIGHLIGHT_COLOR_LABELS[color]}高亮`}
+                  aria-label={`${HIGHLIGHT_COLOR_LABELS[color]}高亮`}
+                >
+                  <span className="h-3.5 w-3.5 rounded-full" style={{ background: HIGHLIGHT_COLOR_SWATCHES[color] }} />
+                </button>
+              ))}
+            </div>
           </div>
         </>
       )}
