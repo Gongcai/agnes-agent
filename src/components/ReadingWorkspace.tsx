@@ -29,8 +29,8 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
+import { AnimatedDisclosure } from "./AnimatedDisclosure";
 import { MarkdownMessage } from "./MarkdownMessage";
-import { ThoughtDetails } from "./ThoughtDetails";
 import { useAgentStore } from "../store/useAgentStore";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -1019,18 +1019,21 @@ export const ReadingWorkspace: React.FC = () => {
                               && message.status !== "complete"
                               && message._streamingInThought === true;
                             return (
-                              <ThoughtDetails
+                              <AnimatedDisclosure
                                 key={part._renderKey ?? part.id}
                                 defaultOpen={autoExpandThoughts}
                                 className="group rounded-r-md border-l-2 border-emerald-600 bg-stone-50 px-2.5 py-2"
+                                summaryClassName="flex w-full cursor-pointer select-none items-center gap-2 text-[11px] font-semibold text-emerald-700"
+                                summary={(
+                                  <>
+                                    <Brain className={`h-3.5 w-3.5 ${isLiveThought ? "animate-pulse" : ""}`} />
+                                    <span>Agent思维过程</span>
+                                    <ChevronDown className="agnes-collapse-chevron ml-auto h-3 w-3" />
+                                  </>
+                                )}
                               >
-                                <summary className="flex cursor-pointer select-none items-center gap-2 text-[11px] font-semibold text-emerald-700">
-                                  <Brain className={`h-3.5 w-3.5 ${isLiveThought ? "animate-pulse" : ""}`} />
-                                  <span>Agent思维过程</span>
-                                  <ChevronDown className="ml-auto h-3 w-3 transition-transform group-open:rotate-180" />
-                                </summary>
                                 <p className="mt-2 whitespace-pre-wrap border-t border-stone-200/70 pt-2 font-mono text-[11px] leading-relaxed text-stone-500">{part.content}</p>
-                              </ThoughtDetails>
+                              </AnimatedDisclosure>
                             );
                           }
                           if (part.kind !== "text") return null;

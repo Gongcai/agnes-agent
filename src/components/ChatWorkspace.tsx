@@ -33,9 +33,9 @@ import type {
   ToolCall,
 } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
+import { AnimatedDisclosure } from "./AnimatedDisclosure";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ModifyMemoryModal } from "./ModifyMemoryModal";
-import { ThoughtDetails } from "./ThoughtDetails";
 import { listInstalledSkills, type InstalledSkill } from "../lib/skills";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -192,28 +192,29 @@ const ToolCallCard: React.FC<{
   }, [shouldAutoExpand]);
 
   return (
-    <details
+    <AnimatedDisclosure
       open={expanded}
-      onToggle={(event) => setExpanded(event.currentTarget.open)}
+      onOpenChange={setExpanded}
       className="agnes-tool-details group/tool"
       data-status={tc.status}
+      summaryClassName="agnes-tool-summary"
+      summary={(
+        <>
+          <span className="agnes-tool-title">工具调用</span>
+          <code className="agnes-tool-name">{tc.tool}</code>
+          <code className="agnes-tool-preview" title={preview}>
+            {preview}
+          </code>
+          <span className={`agnes-tool-status ${tc.status === "running" ? "animate-pulse" : ""}`}>
+            <span className="agnes-tool-status-dot" aria-hidden="true" />
+            {statusLabel}
+          </span>
+          {isHighRisk && <span className="agnes-tool-risk">高风险</span>}
+          <ChevronDown className="agnes-collapse-chevron h-3 w-3 shrink-0" />
+        </>
+      )}
     >
-      <summary className="agnes-tool-summary">
-        <span className="agnes-tool-title">工具调用</span>
-        <code className="agnes-tool-name">{tc.tool}</code>
-        <code className="agnes-tool-preview" title={preview}>
-          {preview}
-        </code>
-        <span className={`agnes-tool-status ${tc.status === "running" ? "animate-pulse" : ""}`}>
-          <span className="agnes-tool-status-dot" aria-hidden="true" />
-          {statusLabel}
-        </span>
-        {isHighRisk && <span className="agnes-tool-risk">高风险</span>}
-        <ChevronDown className="h-3 w-3 shrink-0 transition-transform group-open/tool:rotate-180" />
-      </summary>
-
-      {expanded && (
-        <div className="agnes-tool-content space-y-3">
+      <div className="agnes-tool-content space-y-3">
           <span className="agnes-tool-rail-icon" aria-hidden="true">
             <Terminal className="h-3 w-3" />
           </span>
@@ -291,9 +292,8 @@ const ToolCallCard: React.FC<{
               </button>
             </div>
           )}
-        </div>
-      )}
-    </details>
+      </div>
+    </AnimatedDisclosure>
   );
 });
 
@@ -634,15 +634,18 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       if (part.kind === "thought") {
                         const isLiveThought = isLiveAssistant && message._streamingInThought === true;
                         return (
-                          <ThoughtDetails
+                          <AnimatedDisclosure
                             key={part._renderKey ?? part.id}
                             defaultOpen={autoExpandThoughts}
                             className="agnes-thought-details group"
+                            summaryClassName="agnes-thought-summary"
+                            summary={(
+                              <>
+                                <span>Agent思维过程</span>
+                                <ChevronDown className="agnes-collapse-chevron h-3 w-3" />
+                              </>
+                            )}
                           >
-                            <summary className="agnes-thought-summary">
-                              <span>Agent思维过程</span>
-                              <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-180" />
-                            </summary>
                             <div className="agnes-thought-content">
                               <span
                                 className={`agnes-thought-status-icon ${isLiveThought ? "animate-pulse" : ""}`}
@@ -652,7 +655,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               </span>
                               <p className="whitespace-pre-wrap">{part.content}</p>
                             </div>
-                          </ThoughtDetails>
+                          </AnimatedDisclosure>
                         );
                       }
 

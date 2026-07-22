@@ -1026,6 +1026,43 @@ pre,
   line-height: 1.78;
 }
 
+.agnes-disclosure-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    grid-template-rows 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 160ms ease,
+    visibility 0s linear 240ms;
+}
+
+.agnes-disclosure-panel-inner {
+  min-height: 0;
+  overflow: hidden;
+  transform: translateY(-4px);
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agnes-animated-disclosure[data-expanded="true"] > .agnes-disclosure-panel {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  opacity: 1;
+  transition-delay: 0s;
+}
+
+.agnes-animated-disclosure[data-expanded="true"] > .agnes-disclosure-panel > .agnes-disclosure-panel-inner {
+  transform: translateY(0);
+}
+
+.agnes-collapse-chevron {
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agnes-animated-disclosure[data-expanded="true"] > button .agnes-collapse-chevron {
+  transform: rotate(180deg);
+}
+
 .agnes-chat-messages .agnes-assistant-body > .agnes-thought-details {
   width: min(100%, 620px);
   border: 0 !important;
@@ -1037,19 +1074,17 @@ pre,
   display: flex;
   width: fit-content;
   cursor: pointer;
-  list-style: none;
   user-select: none;
   align-items: center;
   gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 0;
   color: var(--claude-muted);
   font-size: 12px;
   font-weight: 400;
   line-height: 20px;
   transition: color 140ms ease;
-}
-
-.agnes-thought-summary::-webkit-details-marker {
-  display: none;
 }
 
 .agnes-thought-summary:hover {
@@ -1093,19 +1128,17 @@ pre,
   width: fit-content;
   max-width: 100%;
   cursor: pointer;
-  list-style: none;
   user-select: none;
   align-items: center;
   gap: 7px;
+  border: 0;
+  background: transparent;
+  padding: 0;
   color: var(--claude-muted);
   font-size: 11px;
   font-weight: 400;
   line-height: 20px;
   transition: color 140ms ease;
-}
-
-.agnes-tool-summary::-webkit-details-marker {
-  display: none;
 }
 
 .agnes-tool-summary:hover {
@@ -1208,6 +1241,21 @@ pre,
 .agnes-chat-messages button:hover {
   background: var(--claude-surface-soft) !important;
   color: var(--claude-ink) !important;
+}
+
+.agnes-chat-messages .agnes-thought-summary:hover,
+.agnes-chat-messages .agnes-tool-summary:hover {
+  background: transparent !important;
+  color: var(--claude-body) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agnes-disclosure-panel,
+  .agnes-disclosure-panel-inner,
+  .agnes-collapse-chevron {
+    transition-duration: 0ms;
+    transition-delay: 0ms;
+  }
 }
 
 .agnes-chat-composer {
