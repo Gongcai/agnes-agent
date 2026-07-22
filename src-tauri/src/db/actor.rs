@@ -533,6 +533,11 @@ pub enum DbCommand {
         agent_id: Option<String>,
         resp: oneshot::Sender<AppResult<(i64, i64, i64)>>,
     },
+    GetTokenUsageByDay {
+        agent_id: Option<String>,
+        timezone_offset_minutes: i32,
+        resp: oneshot::Sender<AppResult<Vec<repo::messages::TokenUsageDay>>>,
+    },
     UpdateMessageModel {
         id: String,
         model: String,
@@ -1961,6 +1966,21 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn token_usage_by_day(
+        &self,
+        agent_id: Option<String>,
+        timezone_offset_minutes: i32,
+    ) -> AppResult<Vec<repo::messages::TokenUsageDay>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetTokenUsageByDay {
+            agent_id,
+            timezone_offset_minutes,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn update_message_model(&self, id: String, model: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::UpdateMessageModel { id, model, resp })?;
@@ -3143,6 +3163,17 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     let _ = resp.send(repo::messages::token_usage_totals(
                         &conn,
                         agent_id.as_deref(),
+                    ));
+                }
+                DbCommand::GetTokenUsageByDay {
+                    agent_id,
+                    timezone_offset_minutes,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::messages::token_usage_by_day(
+                        &conn,
+                        agent_id.as_deref(),
+                        timezone_offset_minutes,
                     ));
                 }
                 DbCommand::UpdateMessageModel { id, model, resp } => {

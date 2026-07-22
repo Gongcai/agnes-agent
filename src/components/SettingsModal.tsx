@@ -14,6 +14,7 @@ import type {
 import { AgentAvatar } from "./AgentAvatar";
 import { ProjectSelect, type ProjectSelectOption } from "./ProjectSelect";
 import { SkillSettingsTab } from "./SkillSettingsTab";
+import { TokenUsageCalendar, type TokenUsageDay } from "./TokenUsageCalendar";
 import {
   embeddingModelName,
   formatMemoryTime,
@@ -91,6 +92,7 @@ interface TokenUsageStats {
   cached_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  days: TokenUsageDay[];
 }
 
 interface StructuredMemory {
@@ -1186,6 +1188,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setTokenUsageError(null);
     return invoke<TokenUsageStats>("get_token_usage_stats", {
       agentId: tokenUsageScope === "agent" ? activeAgentId : null,
+      timezoneOffsetMinutes: new Date().getTimezoneOffset(),
     })
       .then(setTokenUsageStats)
       .catch((error) => {
@@ -5179,7 +5182,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             )}
 
             {activeTab === "tokens" && (
-              <div className="max-w-2xl space-y-5">
+              <div className="w-full max-w-3xl space-y-5">
                 <div className="flex items-start justify-between gap-4 border-b border-stone-200 pb-3">
                   <div>
                     <h3 className="text-sm font-semibold text-stone-850">Token 统计</h3>
@@ -5244,6 +5247,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       : "0.0%"}
                   </span>
                 </div>
+
+                <TokenUsageCalendar days={tokenUsageStats?.days ?? []} />
               </div>
             )}
 

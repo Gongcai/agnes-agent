@@ -189,6 +189,16 @@ pub struct TokenUsageStatsDto {
     pub cached_tokens: i64,
     pub output_tokens: i64,
     pub total_tokens: i64,
+    pub days: Vec<TokenUsageDayDto>,
+}
+
+#[derive(Serialize)]
+pub struct TokenUsageDayDto {
+    pub date: String,
+    pub input_tokens: i64,
+    pub cached_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
 }
 
 fn usage_from_metadata(metadata: Option<&str>) -> (i64, i64, i64, i64) {
@@ -1183,14 +1193,29 @@ pub async fn list_messages(
 pub async fn get_token_usage_stats(
     state: tauri::State<'_, AppState>,
     agent_id: Option<String>,
+    timezone_offset_minutes: Option<i32>,
 ) -> AppResult<TokenUsageStatsDto> {
     let (input_tokens, cached_tokens, output_tokens) =
-        state.db.token_usage_totals(agent_id).await?;
+        state.db.token_usage_totals(agent_id.clone()).await?;
+    let days = state
+        .db
+        .token_usage_by_day(agent_id, timezone_offset_minutes.unwrap_or(0))
+        .await?
+        .into_iter()
+        .map(|day| TokenUsageDayDto {
+            date: day.date,
+            input_tokens: day.input_tokens,
+            cached_tokens: day.cached_tokens,
+            output_tokens: day.output_tokens,
+            total_tokens: day.input_tokens + day.output_tokens,
+        })
+        .collect();
     Ok(TokenUsageStatsDto {
         input_tokens,
         cached_tokens,
         output_tokens,
         total_tokens: input_tokens + output_tokens,
+        days,
     })
 }
 

@@ -1,4 +1,7 @@
 //! messages repo - 消息及消息片段的 CRUD 操作。
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 use serde_json::Value;
@@ -35,6 +38,14 @@ pub struct MessagePartRow {
     pub tool_call_id: Option<String>,
     pub content: String,
     pub metadata: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenUsageDay {
+    pub date: String,
+    pub input_tokens: i64,
+    pub cached_tokens: i64,
+    pub output_tokens: i64,
 }
 
 pub struct NewMessage {
@@ -287,29 +298,107 @@ pub fn token_usage_totals(conn: &Connection, agent_id: Option<&str>) -> AppResul
     let mut totals = (0_i64, 0_i64, 0_i64);
     for row in rows {
         let Some(metadata) = row? else { continue };
-        let Some(usage) = serde_json::from_str::<Value>(&metadata)
-            .ok()
-            .and_then(|value| value.get("usage").cloned())
+        let usage = usage_from_metadata(&metadata);
+        totals.0 += usage.0;
+        totals.1 += usage.1;
+        totals.2 += usage.2;
+    }
+    Ok(totals)
+}
+
+pub fn token_usage_by_day(
+    conn: &Connection,
+    agent_id: Option<&str>,
+    timezone_offset_minutes: i32,
+) -> AppResult<Vec<TokenUsageDay>> {
+    let mut statement = conn.prepare(
+        "SELECT m.created_at, m.metadata FROM messages m \
+         JOIN sessions s ON s.id = m.session_id \
+         WHERE m.role = 'assistant' AND m.deleted_at IS NULL \
+           AND (?1 IS NULL OR s.agent_id = ?1)",
+    )?;
+    let rows = statement.query_map([agent_id], |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            row.get::<_, Option<String>>(1)?,
+        ))
+    })?;
+    let timezone_offset_minutes = timezone_offset_minutes.clamp(-1_440, 1_440);
+    let mut days = BTreeMap::<String, (i64, i64, i64)>::new();
+
+    for row in rows {
+        let (Some(created_at), Some(metadata)) = row? else {
+            continue;
+        };
+        let Some(timestamp) = parse_message_timestamp(&created_at) else {
+            continue;
+        };
+        let Some(local_timestamp) =
+            timestamp.checked_sub_signed(Duration::minutes(i64::from(timezone_offset_minutes)))
         else {
             continue;
         };
-        totals.0 += usage
+        let usage = usage_from_metadata(&metadata);
+        if usage == (0, 0, 0) {
+            continue;
+        }
+        let totals = days
+            .entry(local_timestamp.date_naive().to_string())
+            .or_default();
+        totals.0 += usage.0;
+        totals.1 += usage.1;
+        totals.2 += usage.2;
+    }
+
+    Ok(days
+        .into_iter()
+        .map(
+            |(date, (input_tokens, cached_tokens, output_tokens))| TokenUsageDay {
+                date,
+                input_tokens,
+                cached_tokens,
+                output_tokens,
+            },
+        )
+        .collect())
+}
+
+fn usage_from_metadata(metadata: &str) -> (i64, i64, i64) {
+    let Some(usage) = serde_json::from_str::<Value>(metadata)
+        .ok()
+        .and_then(|value| value.get("usage").cloned())
+    else {
+        return (0, 0, 0);
+    };
+    (
+        usage
             .get("input_tokens")
             .and_then(Value::as_i64)
             .unwrap_or(0)
-            .max(0);
-        totals.1 += usage
+            .max(0),
+        usage
             .get("cached_tokens")
             .and_then(Value::as_i64)
             .unwrap_or(0)
-            .max(0);
-        totals.2 += usage
+            .max(0),
+        usage
             .get("output_tokens")
             .and_then(Value::as_i64)
             .unwrap_or(0)
-            .max(0);
-    }
-    Ok(totals)
+            .max(0),
+    )
+}
+
+fn parse_message_timestamp(value: &str) -> Option<DateTime<Utc>> {
+    value
+        .parse::<i64>()
+        .ok()
+        .and_then(|timestamp| Utc.timestamp_opt(timestamp, 0).single())
+        .or_else(|| {
+            DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|timestamp| timestamp.with_timezone(&Utc))
+        })
 }
 
 /// Update the actual model selected for an in-flight assistant response.
@@ -939,6 +1028,75 @@ mod tests {
             token_usage_totals(&conn, Some("missing-agent")).unwrap(),
             (0, 0, 0)
         );
+    }
+
+    #[test]
+    fn token_usage_by_day_respects_the_client_timezone() {
+        let conn = setup();
+        for (id, seq, created_at, input, cached, output) in [
+            ("usage-before-midnight", 1, "1767281400", 100, 50, 20),
+            (
+                "usage-after-midnight",
+                2,
+                "2026-01-01T17:30:00Z",
+                200,
+                80,
+                40,
+            ),
+        ] {
+            insert(
+                &conn,
+                &NewMessage {
+                    id: id.into(),
+                    session_id: "session-1".into(),
+                    role: "assistant".into(),
+                    seq,
+                    status: "complete".into(),
+                    model: Some("provider/model".into()),
+                    token_count: None,
+                    metadata: None,
+                    parent_id: None,
+                    selected_child_id: None,
+                },
+            )
+            .unwrap();
+            update_usage(&conn, id, input, cached, output, input + output).unwrap();
+            conn.execute(
+                "UPDATE messages SET created_at = ?1 WHERE id = ?2",
+                params![created_at, id],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            token_usage_by_day(&conn, None, 0).unwrap(),
+            vec![TokenUsageDay {
+                date: "2026-01-01".into(),
+                input_tokens: 300,
+                cached_tokens: 130,
+                output_tokens: 60,
+            }]
+        );
+        assert_eq!(
+            token_usage_by_day(&conn, Some("agent-1"), -480).unwrap(),
+            vec![
+                TokenUsageDay {
+                    date: "2026-01-01".into(),
+                    input_tokens: 100,
+                    cached_tokens: 50,
+                    output_tokens: 20,
+                },
+                TokenUsageDay {
+                    date: "2026-01-02".into(),
+                    input_tokens: 200,
+                    cached_tokens: 80,
+                    output_tokens: 40,
+                },
+            ]
+        );
+        assert!(token_usage_by_day(&conn, Some("missing-agent"), -480)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
