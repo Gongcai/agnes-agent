@@ -429,8 +429,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       <nav className="agnes-sidebar-nav shrink-0 border-b border-stone-200/80 px-3 pb-3 pt-1" aria-label="更多功能">
-        {moreExpanded && (
-          <div className="mb-1 space-y-1">
+        <div
+          className="agnes-more-features"
+          data-expanded={moreExpanded}
+          aria-hidden={!moreExpanded}
+        >
+          <div className="agnes-more-features-inner space-y-1">
             {ENABLED_APP_FEATURES.filter((feature) => feature.id !== "chat" && feature.id !== "drive").map((feature) => {
               const Icon = FEATURE_ICONS[feature.id];
               const selected = feature.id === activeFeature;
@@ -442,6 +446,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   className={`agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3 ${selected ? "font-medium text-stone-900" : ""}`}
                   title={isOpen ? undefined : feature.label}
                   aria-current={selected ? "page" : undefined}
+                  tabIndex={moreExpanded ? 0 : -1}
                 >
                   <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
                     <Icon className="h-4 w-4" weight="regular" />
@@ -451,16 +456,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
               );
             })}
           </div>
-        )}
+        </div>
         <button
           type="button"
           onClick={() => setMoreExpanded((expanded) => !expanded)}
-          className="agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3"
+          className="agnes-more-toggle agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3"
           aria-expanded={moreExpanded}
           title={moreExpanded ? "收起更多功能" : "展开更多功能"}
         >
           <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
-            {moreExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            <ChevronRight className="agnes-more-chevron h-4 w-4" />
           </span>
           <span className="agnes-sidebar-label">更多功能</span>
         </button>
