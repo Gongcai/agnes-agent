@@ -729,6 +729,21 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         }
     }
 
+    // Root messages have no parent whose selected_child_id can track the active
+    // sibling. Store that one missing pointer on the session and recover legacy
+    // edited-root conversations by selecting their newest root.
+    ensure_column(conn, "sessions", "selected_root_id", "TEXT")?;
+    conn.execute(
+        "UPDATE sessions SET selected_root_id = ( \
+           SELECT id FROM messages \
+           WHERE messages.session_id = sessions.id \
+             AND messages.parent_id IS NULL \
+             AND messages.deleted_at IS NULL \
+           ORDER BY messages.seq DESC LIMIT 1 \
+         ) WHERE selected_root_id IS NULL",
+        [],
+    )?;
+
     // Add structured memory fields to existing databases.
     let has_memory_name: bool = conn
         .query_row(
@@ -1157,6 +1172,45 @@ mod tests {
                 .unwrap();
             assert_eq!(version, 1);
         }
+    }
+
+    #[test]
+    fn selects_the_newest_legacy_root_message() {
+        unsafe {
+            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, title) VALUES ('root-session', 'agnes', 'Root')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, session_id, role, seq, status, parent_id) VALUES \
+             ('root-1', 'root-session', 'user', 0, 'complete', NULL), \
+             ('root-2', 'root-session', 'user', 4, 'complete', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE sessions SET selected_root_id = NULL WHERE id = 'root-session'",
+            [],
+        )
+        .unwrap();
+
+        apply(&mut conn).unwrap();
+
+        let selected: Option<String> = conn
+            .query_row(
+                "SELECT selected_root_id FROM sessions WHERE id = 'root-session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(selected.as_deref(), Some("root-2"));
     }
 
     #[test]

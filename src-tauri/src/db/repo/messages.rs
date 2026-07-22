@@ -628,11 +628,24 @@ pub fn list_active_with_parts(conn: &Connection, session_id: &str) -> AppResult<
     }
     let has_children: HashSet<String> = all.iter().filter_map(|m| m.parent_id.clone()).collect();
 
-    // 根 = parent_id 为 NULL 且 seq 最小
-    let mut cur_opt = all
-        .iter()
-        .filter(|m| m.parent_id.is_none())
-        .min_by_key(|m| m.seq);
+    // The session owns the active root pointer because root siblings have no
+    // parent message on which selected_child_id could be stored.
+    let selected_root_id = conn
+        .query_row(
+            "SELECT selected_root_id FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    let mut cur_opt = selected_root_id
+        .as_deref()
+        .and_then(|id| all.iter().find(|message| message.id == id))
+        .or_else(|| {
+            all.iter()
+                .filter(|message| message.parent_id.is_none())
+                .max_by_key(|message| message.seq)
+        });
     let mut out = Vec::new();
     let mut visited = HashSet::new();
     while let Some(cur) = cur_opt {
@@ -729,6 +742,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(operation, "delete");
+    }
+
+    #[test]
+    fn active_path_starts_from_the_session_selected_root() {
+        let conn = setup();
+        for (id, seq, selected_child_id) in [
+            ("root-old", 0, Some("answer-old")),
+            ("root-new", 2, Some("answer-new")),
+        ] {
+            insert(
+                &conn,
+                &NewMessage {
+                    id: id.into(),
+                    session_id: "session-1".into(),
+                    role: "user".into(),
+                    seq,
+                    status: "complete".into(),
+                    model: None,
+                    token_count: None,
+                    metadata: None,
+                    parent_id: None,
+                    selected_child_id: selected_child_id.map(str::to_string),
+                },
+            )
+            .unwrap();
+        }
+        for (id, seq, parent_id) in [("answer-old", 1, "root-old"), ("answer-new", 3, "root-new")] {
+            insert(
+                &conn,
+                &NewMessage {
+                    id: id.into(),
+                    session_id: "session-1".into(),
+                    role: "assistant".into(),
+                    seq,
+                    status: "complete".into(),
+                    model: None,
+                    token_count: None,
+                    metadata: None,
+                    parent_id: Some(parent_id.into()),
+                    selected_child_id: None,
+                },
+            )
+            .unwrap();
+        }
+
+        crate::db::repo::sessions::set_selected_root_local(&conn, "session-1", Some("root-new"))
+            .unwrap();
+        let current = list_active_with_parts(&conn, "session-1").unwrap();
+        assert_eq!(current.messages[0].message.id, "root-new");
+        assert_eq!(current.messages[0].version_index, 1);
+        assert_eq!(current.messages[0].version_count, 2);
+        assert_eq!(current.messages[1].message.id, "answer-new");
+
+        crate::db::repo::sessions::set_selected_root_local(&conn, "session-1", Some("root-old"))
+            .unwrap();
+        let previous = list_active_with_parts(&conn, "session-1").unwrap();
+        assert_eq!(previous.messages[0].message.id, "root-old");
+        assert_eq!(previous.messages[1].message.id, "answer-old");
     }
 
     #[test]

@@ -20,6 +20,7 @@ pub struct SessionRow {
     pub thinking_budget: Option<i64>,
     pub permission_mode: String,
     pub workspace_id: Option<String>,
+    pub selected_root_id: Option<String>,
     pub summary: Option<String>,
     pub summary_updated_at: Option<String>,
     pub created_at: String,
@@ -60,7 +61,7 @@ pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, title, context_limit, compress_threshold, recency_window, \
          reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
-         permission_mode, workspace_id, summary, summary_updated_at, \
+         permission_mode, workspace_id, selected_root_id, summary, summary_updated_at, \
          created_at, updated_at, version, deleted_at, origin_device_id, pinned \
          FROM sessions \
          WHERE agent_id = ?1 AND deleted_at IS NULL \
@@ -82,14 +83,15 @@ pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
             thinking_budget: r.get(10)?,
             permission_mode: r.get(11)?,
             workspace_id: r.get(12)?,
-            summary: r.get(13)?,
-            summary_updated_at: r.get(14)?,
-            created_at: r.get(15)?,
-            updated_at: r.get(16)?,
-            version: r.get(17)?,
-            deleted_at: r.get(18)?,
-            origin_device_id: r.get(19)?,
-            pinned: r.get(20)?,
+            selected_root_id: r.get(13)?,
+            summary: r.get(14)?,
+            summary_updated_at: r.get(15)?,
+            created_at: r.get(16)?,
+            updated_at: r.get(17)?,
+            version: r.get(18)?,
+            deleted_at: r.get(19)?,
+            origin_device_id: r.get(20)?,
+            pinned: r.get(21)?,
         })
     })?;
 
@@ -105,7 +107,7 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, title, context_limit, compress_threshold, recency_window, \
          reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
-         permission_mode, workspace_id, summary, summary_updated_at, \
+         permission_mode, workspace_id, selected_root_id, summary, summary_updated_at, \
          created_at, updated_at, version, deleted_at, origin_device_id, pinned \
          FROM sessions \
          WHERE id = ?1",
@@ -127,14 +129,15 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<SessionRow>> {
                 thinking_budget: r.get(10)?,
                 permission_mode: r.get(11)?,
                 workspace_id: r.get(12)?,
-                summary: r.get(13)?,
-                summary_updated_at: r.get(14)?,
-                created_at: r.get(15)?,
-                updated_at: r.get(16)?,
-                version: r.get(17)?,
-                deleted_at: r.get(18)?,
-                origin_device_id: r.get(19)?,
-                pinned: r.get(20)?,
+                selected_root_id: r.get(13)?,
+                summary: r.get(14)?,
+                summary_updated_at: r.get(15)?,
+                created_at: r.get(16)?,
+                updated_at: r.get(17)?,
+                version: r.get(18)?,
+                deleted_at: r.get(19)?,
+                origin_device_id: r.get(20)?,
+                pinned: r.get(21)?,
             })
         })
         .optional()?;
@@ -248,6 +251,32 @@ pub fn update_permission_mode(conn: &Connection, id: &str, permission_mode: &str
     Ok(())
 }
 
+pub(crate) fn set_selected_root_local(
+    conn: &Connection,
+    session_id: &str,
+    root_id: Option<&str>,
+) -> AppResult<()> {
+    let device_id = super::sync::device_id(conn)?;
+    conn.execute(
+        "UPDATE sessions SET selected_root_id = ?1, updated_at = ?2, version = version + 1, \
+         origin_device_id = ?3 WHERE id = ?4 AND deleted_at IS NULL",
+        params![root_id, now(), device_id, session_id],
+    )?;
+    Ok(())
+}
+
+pub fn set_selected_root(
+    conn: &mut Connection,
+    session_id: &str,
+    root_id: Option<&str>,
+) -> AppResult<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    set_selected_root_local(&tx, session_id, root_id)?;
+    enqueue_current(&tx, session_id)?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// 更新会话标题。
 pub fn update_title(conn: &mut Connection, id: &str, title: &str) -> AppResult<()> {
     let now_str = now();
@@ -319,7 +348,7 @@ pub fn set_pin(conn: &mut Connection, id: &str, pinned: bool) -> AppResult<()> {
     Ok(())
 }
 
-pub(super) fn enqueue_current(conn: &Connection, id: &str) -> AppResult<()> {
+pub(crate) fn enqueue_current(conn: &Connection, id: &str) -> AppResult<()> {
     let row = get(conn, id)?.ok_or_else(|| {
         AppError::Other(format!("session `{id}` disappeared during sync enqueue"))
     })?;
@@ -422,6 +451,32 @@ mod tests {
 
         let session = get(&conn, "session-1").unwrap().unwrap();
         assert!((session.compress_threshold - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn selected_root_is_persisted_as_a_synced_session_revision() {
+        let mut conn = setup();
+        insert(&mut conn, &new_session(None)).unwrap();
+
+        set_selected_root(&mut conn, "session-1", Some("message-root-2")).unwrap();
+
+        let session = get(&conn, "session-1").unwrap().unwrap();
+        assert_eq!(session.selected_root_id.as_deref(), Some("message-root-2"));
+        assert_eq!(session.version, 2);
+        assert_eq!(session.origin_device_id.as_deref(), Some("12345678-device"));
+
+        let (base_revision, local_version, payload): (Option<i64>, i64, String) = conn
+            .query_row(
+                "SELECT base_revision, local_version, payload FROM sync_outbox \
+                 WHERE entity_id = 'session-1' ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(base_revision, Some(1));
+        assert_eq!(local_version, 2);
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["selected_root_id"], "message-root-2");
     }
 
     #[test]

@@ -553,6 +553,11 @@ pub enum DbCommand {
         child_id: Option<String>,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    SetSelectedRoot {
+        session_id: String,
+        root_id: Option<String>,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     DeleteMessage {
         id: String,
         resp: oneshot::Sender<AppResult<()>>,
@@ -1982,6 +1987,21 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn set_selected_root(
+        &self,
+        session_id: String,
+        root_id: Option<String>,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SetSelectedRoot {
+            session_id,
+            root_id,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn delete_message(&self, id: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::DeleteMessage { id, resp })?;
@@ -3106,6 +3126,17 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         child_id.as_deref(),
                     ));
                 }
+                DbCommand::SetSelectedRoot {
+                    session_id,
+                    root_id,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::sessions::set_selected_root(
+                        &mut conn,
+                        &session_id,
+                        root_id.as_deref(),
+                    ));
+                }
                 DbCommand::DeleteMessage { id, resp } => {
                     let _ = resp.send(repo::messages::delete_message(&mut conn, &id));
                 }
@@ -3192,6 +3223,13 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         if let Some(ref pid) = parent_id {
                             repo::messages::set_selected_child_local(&tx, pid, Some(&user_id))?;
                             repo::messages::enqueue_if_complete(&tx, pid)?;
+                        } else {
+                            repo::sessions::set_selected_root_local(
+                                &tx,
+                                &session_id,
+                                Some(&user_id),
+                            )?;
+                            repo::sessions::enqueue_current(&tx, &session_id)?;
                         }
                         repo::messages::set_selected_child_local(&tx, &user_id, Some(&ai_id))?;
                         repo::messages::enqueue_if_complete(&tx, &user_id)?;
@@ -3571,6 +3609,37 @@ mod tests {
         assert_eq!(msg_with_parts[0].0.id, "msg-1");
         assert_eq!(msg_with_parts[0].1.len(), 1);
         assert_eq!(msg_with_parts[0].1[0].content, "Hello Agent!");
+
+        let (edited_root_id, pending_assistant_id) = handle
+            .append_user_and_assistant(
+                "test-session".into(),
+                None,
+                vec![repo::messages::NewUserMessagePart {
+                    kind: "text".into(),
+                    mime_type: None,
+                    content: "Edited question".into(),
+                    metadata: None,
+                }],
+                "GPT-4".into(),
+            )
+            .await
+            .unwrap();
+        let got_sess = handle
+            .get_session("test-session".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            got_sess.selected_root_id.as_deref(),
+            Some(edited_root_id.as_str())
+        );
+        let active_path = handle
+            .list_active_with_parts("test-session".into())
+            .await
+            .unwrap();
+        assert_eq!(active_path.messages[0].message.id, edited_root_id);
+        assert_eq!(active_path.messages[1].message.id, pending_assistant_id);
+        assert_eq!(active_path.messages[1].message.status, "pending");
 
         // Update message status
         handle

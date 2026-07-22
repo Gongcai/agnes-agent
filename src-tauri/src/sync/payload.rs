@@ -75,6 +75,7 @@ pub fn project(entity_type: SyncEntityType, source: &Value) -> AppResult<Value> 
             "thinking_mode",
             "thinking_budget",
             "workspace_id",
+            "selected_root_id",
             "summary",
             "summary_updated_at",
             "pinned",
@@ -363,6 +364,7 @@ mod tests {
             "pinned": 1,
             "permission_mode": "accept_edits",
             "workspace_id": "local-workspace",
+            "selected_root_id": "message-root-2",
             "parent_id": "not-a-session-field",
             "selected_child_id": "not-a-session-field"
         });
@@ -374,7 +376,8 @@ mod tests {
                 "agent_id": "agent-1",
                 "title": "Synced session",
                 "pinned": 1,
-                "workspace_id": "local-workspace"
+                "workspace_id": "local-workspace",
+                "selected_root_id": "message-root-2"
             })
         );
     }

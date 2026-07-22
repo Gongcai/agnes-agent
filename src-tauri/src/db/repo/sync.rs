@@ -176,6 +176,8 @@ struct SessionPayload {
     thinking_mode: Option<String>,
     thinking_budget: Option<i64>,
     workspace_id: Option<String>,
+    #[serde(default)]
+    selected_root_id: Option<String>,
     summary: Option<String>,
     summary_updated_at: Option<String>,
     pinned: i64,
@@ -1162,18 +1164,29 @@ fn apply_remote_session(
             entity.entity_id
         )));
     }
+    if payload
+        .selected_root_id
+        .as_deref()
+        .is_some_and(|id| !is_valid_entity_id(id))
+    {
+        return Err(AppError::Other(format!(
+            "invalid session root for `{}`",
+            entity.entity_id
+        )));
+    }
     tx.execute(
         "INSERT INTO sessions (id, agent_id, title, context_limit, compress_threshold, recency_window, \
          reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
-         permission_mode, workspace_id, summary, summary_updated_at, created_at, updated_at, \
+         permission_mode, workspace_id, selected_root_id, summary, summary_updated_at, created_at, updated_at, \
          version, deleted_at, origin_device_id, pinned) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, 'auto', ?11, ?12, ?13, \
-                 ?14, ?15, ?16, NULL, ?17, ?18) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, 'auto', ?11, ?12, ?13, ?14, \
+                 ?15, ?16, ?17, NULL, ?18, ?19) \
          ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, title = excluded.title, \
          context_limit = excluded.context_limit, compress_threshold = excluded.compress_threshold, \
          recency_window = excluded.recency_window, reserved_output_tokens = excluded.reserved_output_tokens, \
          model = excluded.model, thinking_mode = excluded.thinking_mode, \
          thinking_budget = excluded.thinking_budget, workspace_id = excluded.workspace_id, \
+         selected_root_id = excluded.selected_root_id, \
          summary = excluded.summary, summary_updated_at = excluded.summary_updated_at, \
          created_at = excluded.created_at, updated_at = excluded.updated_at, version = excluded.version, \
          deleted_at = NULL, origin_device_id = excluded.origin_device_id, pinned = excluded.pinned",
@@ -1189,6 +1202,7 @@ fn apply_remote_session(
             payload.thinking_mode,
             payload.thinking_budget,
             payload.workspace_id,
+            payload.selected_root_id,
             payload.summary,
             payload.summary_updated_at,
             payload.created_at,

@@ -16,6 +16,7 @@ const SESSION_HLC_FIELDS: &[&str] = &[
     "thinking_mode",
     "thinking_budget",
     "workspace_id",
+    "selected_root_id",
     "pinned",
 ];
 

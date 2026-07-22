@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   deleted_at TEXT,
   origin_device_id TEXT,
   pinned INTEGER DEFAULT 0,
-  workspace_id TEXT REFERENCES workspaces(id)  -- NULL=普通对话，非空=归属某工作区
+  workspace_id TEXT REFERENCES workspaces(id), -- NULL for standalone conversations
+  selected_root_id TEXT             -- Active root version of the message tree
 );
 
 CREATE TABLE IF NOT EXISTS workspaces (

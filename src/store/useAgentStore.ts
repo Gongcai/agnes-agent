@@ -137,24 +137,137 @@ export interface Message {
   _renderKey?: string;
 }
 
-function preserveLatestRunRenderKeys(
-  previousMessages: Message[],
-  nextMessages: Message[],
-  sessionId: string,
-): Message[] {
-  let previousIndex = -1;
-  for (let index = previousMessages.length - 1; index >= 0; index -= 1) {
-    const message = previousMessages[index];
+function pendingAssistantVersion(source: Message, id: string, parentId: string): Message {
+  return {
+    id,
+    session_id: source.session_id,
+    role: "assistant",
+    seq: source.seq + 1,
+    status: "pending",
+    parts: [],
+    created_at: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+    parent_id: parentId,
+    version_index: source.version_count,
+    version_count: source.version_count + 1,
+    is_leaf: true,
+    input_tokens: 0,
+    cached_tokens: 0,
+    output_tokens: 0,
+    context_tokens: 0,
+  };
+}
+
+function latestPendingAssistant(messages: Message[], sessionId: string): Message | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
     if (
       message.session_id === sessionId
       && message.role === "assistant"
       && (message.status === "pending" || message.status === "streaming")
     ) {
-      previousIndex = index;
-      break;
+      return message;
     }
   }
-  if (previousIndex < 0) return nextMessages;
+  return undefined;
+}
+
+function mergeLiveAssistantState(previous: Message, next: Message): Message {
+  const parts = [...next.parts];
+  for (const previousPart of previous.parts) {
+    if (previousPart.kind === "tool_result") continue;
+    const matchIndex = parts.findIndex((part) => (
+      part.kind === previousPart.kind
+      && (
+        part.kind !== "tool_call"
+        || part.tool_call?.id === previousPart.tool_call?.id
+      )
+    ));
+    if (matchIndex < 0) {
+      parts.push(previousPart);
+      continue;
+    }
+    const part = parts[matchIndex];
+    parts[matchIndex] = {
+      ...part,
+      _renderKey: previousPart._renderKey ?? previousPart.id,
+      ...(part.kind === "tool_call" && previousPart.tool_call
+        ? { tool_call: { ...part.tool_call, ...previousPart.tool_call } }
+        : {}),
+    };
+  }
+  return {
+    ...next,
+    status: previous.status === "streaming" ? "streaming" : next.status,
+    parts,
+    _streamingInThought: previous._streamingInThought,
+    _renderKey: previous._renderKey ?? previous.id,
+  };
+}
+
+export function buildOptimisticEditBranch(
+  messages: Message[],
+  messageId: string,
+  text: string,
+  nonce = Date.now(),
+): Message[] | null {
+  const sourceIndex = messages.findIndex((message) => message.id === messageId);
+  if (sourceIndex < 0) return null;
+  const source = messages[sourceIndex];
+  if (source.role !== "user") return null;
+
+  const userId = `temp_edit_user_${nonce}`;
+  const editedUser: Message = {
+    ...source,
+    id: userId,
+    status: "complete",
+    parts: [
+      {
+        id: `temp_edit_text_${nonce}`,
+        kind: "text",
+        content: text,
+      },
+      ...source.parts.filter((part) => part.kind === "attachment"),
+    ],
+    created_at: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+    version_index: source.version_count,
+    version_count: source.version_count + 1,
+    is_leaf: false,
+    _renderKey: userId,
+  };
+  const pendingAssistant = pendingAssistantVersion(
+    { ...source, version_count: 0 },
+    `temp_edit_assistant_${nonce}`,
+    userId,
+  );
+
+  return [...messages.slice(0, sourceIndex), editedUser, pendingAssistant];
+}
+
+export function buildOptimisticRegenerationBranch(
+  messages: Message[],
+  messageId: string,
+  nonce = Date.now(),
+): Message[] | null {
+  const sourceIndex = messages.findIndex((message) => message.id === messageId);
+  if (sourceIndex < 0) return null;
+  const source = messages[sourceIndex];
+  if (source.role !== "assistant" || !source.parent_id) return null;
+
+  const pendingAssistant = pendingAssistantVersion(
+    source,
+    `temp_regenerate_assistant_${nonce}`,
+    source.parent_id,
+  );
+  return [...messages.slice(0, sourceIndex), pendingAssistant];
+}
+
+export function preserveLatestRunRenderKeys(
+  previousMessages: Message[],
+  nextMessages: Message[],
+  sessionId: string,
+): Message[] {
+  const previous = latestPendingAssistant(previousMessages, sessionId);
+  if (!previous) return nextMessages;
 
   let nextIndex = -1;
   for (let index = nextMessages.length - 1; index >= 0; index -= 1) {
@@ -166,34 +279,8 @@ function preserveLatestRunRenderKeys(
   }
   if (nextIndex < 0) return nextMessages;
 
-  const previous = previousMessages[previousIndex];
-  const next = { ...nextMessages[nextIndex] };
-  const previousParts = previous.parts.filter((part) => part.kind !== "tool_result");
-  let previousPartIndex = 0;
-
-  next.parts = next.parts.map((part) => {
-    if (part.kind === "tool_result") return part;
-
-    let matchIndex = -1;
-    for (let index = previousPartIndex; index < previousParts.length; index += 1) {
-      const candidate = previousParts[index];
-      const sameToolCall = part.kind !== "tool_call"
-        || candidate.tool_call?.id === part.tool_call?.id;
-      if (candidate.kind === part.kind && sameToolCall) {
-        matchIndex = index;
-        break;
-      }
-    }
-    if (matchIndex < 0) return part;
-
-    const match = previousParts[matchIndex];
-    previousPartIndex = matchIndex + 1;
-    return { ...part, _renderKey: match._renderKey ?? match.id };
-  });
-  next._renderKey = previous._renderKey ?? previous.id;
-
   const reconciled = [...nextMessages];
-  reconciled[nextIndex] = next;
+  reconciled[nextIndex] = mergeLiveAssistantState(previous, nextMessages[nextIndex]);
   return reconciled;
 }
 
@@ -755,26 +842,46 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   editAndResend: async (messageId: string, text: string) => {
-    set({ isStreaming: true });
+    const source = get().messages.find((message) => message.id === messageId);
+    const sessionId = source?.session_id ?? get().activeSessionId;
+    const optimisticMessages = buildOptimisticEditBranch(get().messages, messageId, text);
+    set({
+      isStreaming: true,
+      ...(optimisticMessages ? { messages: optimisticMessages } : {}),
+    });
     try {
       await invoke("edit_and_resend", { messageId, text });
-      const { activeSessionId } = get();
-      if (activeSessionId) await get().loadMessages(activeSessionId);
+      if (sessionId && get().activeSessionId === sessionId) {
+        await get().loadMessages(sessionId, true);
+      }
     } catch (e) {
       set({ isStreaming: false });
+      if (sessionId && get().activeSessionId === sessionId) {
+        await get().loadMessages(sessionId, true);
+      }
       console.error("编辑并重发失败", e);
       throw e;
     }
   },
 
   regenerateMessage: async (messageId: string) => {
-    set({ isStreaming: true });
+    const source = get().messages.find((message) => message.id === messageId);
+    const sessionId = source?.session_id ?? get().activeSessionId;
+    const optimisticMessages = buildOptimisticRegenerationBranch(get().messages, messageId);
+    set({
+      isStreaming: true,
+      ...(optimisticMessages ? { messages: optimisticMessages } : {}),
+    });
     try {
       await invoke("regenerate_message", { messageId });
-      const { activeSessionId } = get();
-      if (activeSessionId) await get().loadMessages(activeSessionId);
+      if (sessionId && get().activeSessionId === sessionId) {
+        await get().loadMessages(sessionId, true);
+      }
     } catch (e) {
       set({ isStreaming: false });
+      if (sessionId && get().activeSessionId === sessionId) {
+        await get().loadMessages(sessionId, true);
+      }
       console.error("重新生成失败", e);
       throw e;
     }

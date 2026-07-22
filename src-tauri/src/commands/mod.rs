@@ -1207,10 +1207,6 @@ pub async fn switch_version(
         .get_message(message_id.clone())
         .await?
         .ok_or_else(|| AppError::Other("消息不存在".into()))?;
-    let parent_id = msg
-        .parent_id
-        .clone()
-        .ok_or_else(|| AppError::Other("根消息无同级版本".into()))?;
     let all = state
         .db
         .list_messages_with_parts(msg.session_id.clone())
@@ -1218,7 +1214,7 @@ pub async fn switch_version(
     // 同级：parent_id 相同，按 seq 升序（list 已排序）
     let siblings: Vec<String> = all
         .iter()
-        .filter(|(m, _)| m.parent_id.as_deref() == Some(parent_id.as_str()))
+        .filter(|(m, _)| m.parent_id == msg.parent_id)
         .map(|(m, _)| m.id.clone())
         .collect();
     let idx = siblings
@@ -1243,7 +1239,14 @@ pub async fn switch_version(
         _ => return Ok(()),
     };
     let new_id = siblings[new_idx].clone();
-    state.db.set_selected_child(parent_id, Some(new_id)).await?;
+    if let Some(parent_id) = msg.parent_id {
+        state.db.set_selected_child(parent_id, Some(new_id)).await?;
+    } else {
+        state
+            .db
+            .set_selected_root(msg.session_id, Some(new_id))
+            .await?;
+    }
     state.sync.schedule();
     Ok(())
 }
