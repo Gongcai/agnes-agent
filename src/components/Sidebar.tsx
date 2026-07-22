@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Brain,
@@ -14,6 +14,7 @@ import {
   FolderPlus,
   HardDrive,
   House,
+  MagnifyingGlass as Search,
   ChatsTeardrop as MessageSquare,
   PencilSimple as Pencil,
   PushPinSimple as Pin,
@@ -21,11 +22,13 @@ import {
   Plus,
   GearSix as Settings,
   Trash as Trash2,
+  X,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { ENABLED_APP_FEATURES, type AppFeatureId, type ChatMode } from "../lib/features";
+import { searchSessionsByTitle } from "../lib/sessionSearch";
 import { useAgentStore } from "../store/useAgentStore";
 import { NotificationCenter, type AppNotification } from "./NotificationCenter";
 
@@ -120,6 +123,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
   );
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [userProfile, setUserProfile] = useState<SidebarUserProfile>({ avatar: "", name: "" });
+  const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
+  const [sessionSearchQuery, setSessionSearchQuery] = useState("");
+  const [selectedSearchResult, setSelectedSearchResult] = useState(0);
+  const sessionSearchInputRef = useRef<HTMLInputElement>(null);
+  const searchResultRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  const sessionSearchResults = useMemo(
+    () => searchSessionsByTitle(sessions, activeAgentId, sessionSearchQuery),
+    [activeAgentId, sessionSearchQuery, sessions],
+  );
+  const workspaceNames = useMemo(
+    () => new Map(
+      workspaces
+        .filter((workspace) => workspace.agent_id === activeAgentId)
+        .map((workspace) => [workspace.id, workspace.name]),
+    ),
+    [activeAgentId, workspaces],
+  );
 
   useEffect(() => {
     let active = true;
@@ -160,6 +181,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
   useEffect(() => {
     writeLocalBoolean("agnes.ui.sidebar.more-expanded", moreExpanded);
   }, [moreExpanded]);
+
+  useEffect(() => {
+    if (!sessionSearchOpen) return;
+    const frame = requestAnimationFrame(() => sessionSearchInputRef.current?.focus());
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setSessionSearchOpen(false);
+      setSessionSearchQuery("");
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [sessionSearchOpen]);
+
+  useEffect(() => {
+    setSelectedSearchResult(0);
+  }, [sessionSearchQuery, activeAgentId]);
+
+  useEffect(() => {
+    if (!sessionSearchOpen || sessionSearchResults.length === 0) return;
+    searchResultRefs.current[selectedSearchResult]?.scrollIntoView({ block: "nearest" });
+  }, [selectedSearchResult, sessionSearchOpen, sessionSearchResults.length]);
+
+  useEffect(() => {
+    setSessionSearchOpen(false);
+    setSessionSearchQuery("");
+  }, [activeAgentId]);
 
   useEffect(() => {
     if (activeFeature !== "chat" && activeFeature !== "drive") setMoreExpanded(true);
@@ -220,6 +270,50 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const handleAddStandaloneSession = () => {
     if (!activeAgentId) return;
     onStartConversation(null);
+  };
+
+  const openSessionSearch = () => {
+    setAccountMenuOpen(false);
+    setCtxMenu(null);
+    setWsCtxMenu(null);
+    setSessionSearchQuery("");
+    setSelectedSearchResult(0);
+    setSessionSearchOpen(true);
+  };
+
+  const closeSessionSearch = () => {
+    setSessionSearchOpen(false);
+    setSessionSearchQuery("");
+  };
+
+  const openSearchResult = (sessionId: string) => {
+    closeSessionSearch();
+    onSelectFeature("chat");
+    setActiveSessionId(sessionId).catch(console.error);
+  };
+
+  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSessionSearch();
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (sessionSearchResults.length === 0) return;
+      setSelectedSearchResult((current) => Math.min(current + 1, sessionSearchResults.length - 1));
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (sessionSearchResults.length === 0) return;
+      setSelectedSearchResult((current) => Math.max(current - 1, 0));
+      return;
+    }
+    if (event.key === "Enter" && sessionSearchResults[selectedSearchResult]) {
+      event.preventDefault();
+      openSearchResult(sessionSearchResults[selectedSearchResult].id);
+    }
   };
 
   const handleNewConversation = () => {
@@ -424,6 +518,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
           aria-hidden={!moreExpanded}
         >
           <div className="agnes-more-features-inner space-y-1">
+            <button
+              type="button"
+              onClick={openSessionSearch}
+              className="agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3"
+              title={isOpen ? undefined : "搜索会话"}
+              tabIndex={moreExpanded ? 0 : -1}
+            >
+              <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
+                <Search className="h-4 w-4" weight="regular" />
+              </span>
+              <span className="agnes-sidebar-label truncate text-xs">搜索</span>
+            </button>
             {ENABLED_APP_FEATURES.filter((feature) => feature.id !== "chat" && feature.id !== "drive").map((feature) => {
               const Icon = FEATURE_ICONS[feature.id];
               const selected = feature.id === activeFeature;
@@ -570,6 +676,94 @@ export const Sidebar: React.FC<SidebarProps> = ({
             : <ChevronDown className="agnes-account-chevron h-3.5 w-3.5 shrink-0 text-stone-400" />}
         </button>
       </div>
+
+      {sessionSearchOpen && createPortal(
+        <div
+          className="fixed inset-0 z-[100] grid place-items-start bg-stone-950/25 p-4 pt-[min(14vh,7rem)] backdrop-blur-[1px]"
+          role="presentation"
+          onMouseDown={closeSessionSearch}
+        >
+          <section
+            className="claude-popover mx-auto flex max-h-[min(70vh,34rem)] w-full max-w-xl flex-col overflow-hidden rounded-lg border border-stone-200 bg-white shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label="搜索会话"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="flex h-12 shrink-0 items-center gap-3 border-b border-stone-200 px-4">
+              <Search className="h-4 w-4 shrink-0 text-stone-400" />
+              <input
+                ref={sessionSearchInputRef}
+                type="search"
+                value={sessionSearchQuery}
+                onChange={(event) => setSessionSearchQuery(event.target.value)}
+                onKeyDown={handleSearchKeyDown}
+                placeholder="按标题搜索会话"
+                aria-label="按标题搜索会话"
+                aria-controls="session-search-results"
+                aria-activedescendant={sessionSearchResults[selectedSearchResult]
+                  ? `session-search-result-${sessionSearchResults[selectedSearchResult].id}`
+                  : undefined}
+                className="min-w-0 flex-1 bg-transparent text-sm text-stone-800 outline-none placeholder:text-stone-400"
+              />
+              <button
+                type="button"
+                onClick={closeSessionSearch}
+                className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700"
+                title="关闭"
+                aria-label="关闭搜索"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div id="session-search-results" className="min-h-24 flex-1 overflow-y-auto p-2" role="listbox">
+              {sessionSearchResults.map((session, index) => {
+                const workspaceName = session.workspace_id
+                  ? workspaceNames.get(session.workspace_id) ?? "代码工作区"
+                  : "Home";
+                const ResultIcon = session.workspace_id ? Code : House;
+                const selected = index === selectedSearchResult;
+                return (
+                  <button
+                    id={`session-search-result-${session.id}`}
+                    key={session.id}
+                    ref={(element) => { searchResultRefs.current[index] = element; }}
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    onMouseEnter={() => setSelectedSearchResult(index)}
+                    onClick={() => openSearchResult(session.id)}
+                    className={`flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors ${
+                      selected ? "bg-stone-100" : "hover:bg-stone-50"
+                    }`}
+                  >
+                    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-stone-100 text-stone-500">
+                      <ResultIcon className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-stone-800" title={session.title}>
+                        {session.title}
+                      </span>
+                      <span className="mt-0.5 block truncate text-[11px] text-stone-400">{workspaceName}</span>
+                    </span>
+                    {session.pinned && <Pin className="h-3.5 w-3.5 shrink-0 text-amber-500" />}
+                    {session.id === activeSessionId && (
+                      <span className="shrink-0 text-[10px] font-medium text-stone-400">当前</span>
+                    )}
+                  </button>
+                );
+              })}
+              {sessionSearchResults.length === 0 && (
+                <div className="grid min-h-24 place-items-center px-4 text-xs text-stone-400">
+                  {sessionSearchQuery.trim() ? "没有匹配的会话" : "当前智能体暂无会话"}
+                </div>
+              )}
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
 
       {/* 会话右键菜单 */}
       {ctxMenu && createPortal(
