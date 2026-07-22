@@ -35,6 +35,9 @@ export default function App() {
     sessions,
     activeAgentId,
     activeSessionId,
+    draftSession,
+    discardDraftSession,
+    startDraftSession,
     setActiveAgentId,
     setActiveSessionId,
   } = useAgentStore();
@@ -87,6 +90,7 @@ export default function App() {
   }, [activeSessionId, sessions]);
 
   const handleSelectChatMode = (mode: ChatMode) => {
+    discardDraftSession();
     setChatMode(mode);
     setActiveFeature("chat");
     const modeSessions = sessions.filter((session) => (
@@ -96,6 +100,13 @@ export default function App() {
     if (!modeSessions.some((session) => session.id === activeSessionId) && modeSessions[0]) {
       setActiveSessionId(modeSessions[0].id).catch(console.error);
     }
+  };
+
+  const handleStartConversation = (workspaceId: string | null) => {
+    if (!activeAgentId) return;
+    setChatMode(workspaceId ? "code" : "home");
+    setActiveFeature("chat");
+    startDraftSession(activeAgentId, workspaceId);
   };
 
   const handleOpenSettings = (tab: "profile" | "general" | "agents" | "memory" | "storage" | "llm" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug" = "agents") => {
@@ -140,11 +151,13 @@ export default function App() {
   const activeSessionMatchesMode = activeSession
     ? chatMode === "code" ? Boolean(activeSession.workspace_id) : !activeSession.workspace_id
     : false;
+  const draftSessionMatchesMode = draftSession?.agentId === activeAgentId
+    && (chatMode === "code" ? Boolean(draftSession.workspaceId) : !draftSession.workspaceId);
   const activeFeatureLabel = APP_FEATURES.find((feature) => feature.id === activeFeature)?.label ?? "Agnes";
   const title = activeFeature === "chat"
     ? activeSessionMatchesMode ? activeSession?.title || (chatMode === "code" ? "Code" : "Home") : (chatMode === "code" ? "Code" : "Home")
     : activeFeatureLabel;
-  const hasVisibleChatSession = activeSessionMatchesMode;
+  const hasVisibleChatSession = activeSessionMatchesMode || draftSessionMatchesMode;
 
   return (
     <div className="agnes-app flex h-screen w-screen flex-col overflow-hidden bg-[#FAF9F5] text-[#2e2e38] antialiased selection:bg-orange-100 selection:text-stone-900">
@@ -160,6 +173,7 @@ export default function App() {
           activeFeature={activeFeature}
           chatMode={chatMode}
           onSelectChatMode={handleSelectChatMode}
+          onStartConversation={handleStartConversation}
           onSelectFeature={setActiveFeature}
           onOpenSettings={handleOpenSettings}
           onNotificationNavigate={handleNotificationNavigate}

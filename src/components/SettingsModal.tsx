@@ -5593,7 +5593,7 @@ const GeneralTab: React.FC = () => {
 
   const options = [
     { value: "last", label: "回到上次对话", desc: "打开时恢复上次选中的智能体与会话" },
-    { value: "new", label: "自动新建会话", desc: "打开时为上次选中的智能体自动创建新会话" },
+    { value: "new", label: "打开新对话", desc: "打开时显示空白对话，发送第一条消息后创建会话" },
   ];
 
   const updateTranslationLanguage = async (language: "中文" | "English") => {

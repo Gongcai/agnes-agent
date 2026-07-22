@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const invokeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: invokeMock,
+}));
 
 import {
   buildOptimisticEditBranch,
@@ -43,6 +49,94 @@ const assistant: Message = {
   parent_id: user.id,
   is_leaf: true,
 };
+
+beforeEach(() => {
+  invokeMock.mockReset();
+  useAgentStore.setState({
+    sessions: [],
+    messages: [],
+    activeAgentId: null,
+    activeSessionId: null,
+    draftSession: null,
+    isStreaming: false,
+    isPreparingSession: false,
+  });
+});
+
+describe("draft sessions", () => {
+  it("does not persist a session when a blank conversation is opened", () => {
+    useAgentStore.getState().startDraftSession("agent-1", "workspace-1");
+
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(useAgentStore.getState()).toMatchObject({
+      activeAgentId: "agent-1",
+      activeSessionId: null,
+      messages: [],
+      draftSession: {
+        agentId: "agent-1",
+        workspaceId: "workspace-1",
+      },
+    });
+  });
+
+  it("persists the workspace session before sending the first message", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "create_session") return "session-new";
+      if (command === "list_sessions") return [];
+      return undefined;
+    });
+    useAgentStore.getState().startDraftSession("agent-1", "workspace-1");
+
+    await useAgentStore.getState().sendMessage(null, "第一条消息");
+
+    expect(invokeMock).toHaveBeenCalledWith("create_session", {
+      agentId: "agent-1",
+      title: "新会话",
+      workspaceId: "workspace-1",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("send_message", {
+      sessionId: "session-new",
+      text: "第一条消息",
+      readingBookId: null,
+      attachments: [],
+    });
+    const createOrder = invokeMock.mock.invocationCallOrder[
+      invokeMock.mock.calls.findIndex(([command]) => command === "create_session")
+    ];
+    const sendOrder = invokeMock.mock.invocationCallOrder[
+      invokeMock.mock.calls.findIndex(([command]) => command === "send_message")
+    ];
+    expect(createOrder).toBeLessThan(sendOrder);
+    expect(useAgentStore.getState()).toMatchObject({
+      activeSessionId: "session-new",
+      draftSession: null,
+      isPreparingSession: false,
+      isStreaming: true,
+    });
+  });
+
+  it("prevents duplicate session creation while the first send is preparing", async () => {
+    let resolveCreation: ((sessionId: string) => void) | undefined;
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "create_session") {
+        return new Promise<string>((resolve) => {
+          resolveCreation = resolve;
+        });
+      }
+      if (command === "list_sessions") return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+    useAgentStore.getState().startDraftSession("agent-1");
+
+    const firstSend = useAgentStore.getState().sendMessage(null, "第一条消息");
+    const duplicateSend = useAgentStore.getState().sendMessage(null, "重复消息");
+
+    expect(invokeMock.mock.calls.filter(([command]) => command === "create_session")).toHaveLength(1);
+    resolveCreation?.("session-new");
+    await Promise.all([firstSend, duplicateSend]);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "send_message")).toHaveLength(1);
+  });
+});
 
 describe("optimistic conversation branches", () => {
   it("switches an edited user message to a visible pending branch immediately", () => {

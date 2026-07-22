@@ -41,6 +41,7 @@ interface SidebarProps {
   activeFeature: AppFeatureId;
   chatMode: ChatMode;
   onSelectChatMode: (mode: ChatMode) => void;
+  onStartConversation: (workspaceId: string | null) => void;
   onSelectFeature: (feature: AppFeatureId) => void;
   onOpenSettings: (tab?: SettingsTab) => void;
   onNotificationNavigate: (notification: AppNotification) => void | Promise<void>;
@@ -78,6 +79,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeFeature,
   chatMode,
   onSelectChatMode,
+  onStartConversation,
   onSelectFeature,
   onOpenSettings,
   onNotificationNavigate,
@@ -88,7 +90,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     activeAgentId,
     activeSessionId,
     setActiveSessionId,
-    createSession,
     pinSession,
     renameSession,
     deleteSession,
@@ -218,8 +219,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const handleAddStandaloneSession = () => {
     if (!activeAgentId) return;
-    onSelectFeature("chat");
-    createSession(activeAgentId, `新会话 #${standaloneSessions.length + 1}`, null).catch(console.error);
+    onStartConversation(null);
   };
 
   const handleNewConversation = () => {
@@ -242,11 +242,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const handleAddWorkspaceSession = (workspaceId: string) => {
     if (!activeAgentId) return;
-    onSelectFeature("chat");
-    const wsSessions = sessions.filter((s) => s.workspace_id === workspaceId);
-    createSession(activeAgentId, `会话 #${wsSessions.length + 1}`, workspaceId)
-      .then(() => setExpandedWs((prev) => new Set(prev).add(workspaceId)))
-      .catch(console.error);
+    onStartConversation(workspaceId);
+    setExpandedWs((prev) => new Set(prev).add(workspaceId));
   };
 
   const handleAddWorkspace = async () => {

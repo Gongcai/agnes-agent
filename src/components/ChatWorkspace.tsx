@@ -311,7 +311,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     messages,
     activeAgentId,
     activeSessionId,
+    draftSession,
     isStreaming,
+    isPreparingSession,
     providers,
     modelRoles,
     sendMessage,
@@ -319,6 +321,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     cancelRun,
     setSessionLlm,
     setSessionPermissionMode,
+    updateDraftSession,
     switchVersion,
     createBranch,
     deleteMessage,
@@ -345,6 +348,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
+  const hasSessionTarget = Boolean(activeSessionId || draftSession);
   const isEmptyConversation = messages.length === 0;
 
   // 拉取服务商与模型列表，供底部模型切换器使用
@@ -366,6 +370,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     setAttachmentPicker(null);
     setAttachmentError(null);
   }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!draftSession) return;
+    setInputVal("");
+    setAttachments([]);
+    setAttachmentPicker(null);
+    setAttachmentError(null);
+  }, [draftSession?.id]);
 
   const addLocalFiles = async () => {
     setAttachmentPicker(null);
@@ -472,7 +484,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   };
 
   // 当前生效的模型：优先会话级覆盖，回退角色卡默认（形如 "provider_id/model_name"）
-  const effectiveModel = activeSession?.model || activeAgent?.model || modelRoles.main_model || "";
+  const effectiveModel = draftSession?.model
+    ?? (activeSession?.model || activeAgent?.model || modelRoles.main_model || "");
   const currentModel = (() => {
     if (!effectiveModel) return null;
     const idx = effectiveModel.indexOf("/");
@@ -487,10 +500,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   })();
 
   // 当前生效的思考模式（会话级优先，回退角色卡）
-  const currentThinkingMode = activeSession?.thinking_mode || activeAgent?.thinking_mode || "off";
-  const currentMaxTokens = activeSession?.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  const currentThinkingMode = draftSession?.thinkingMode
+    ?? (activeSession?.thinking_mode || activeAgent?.thinking_mode || "off");
+  const currentMaxTokens = draftSession?.maxTokens ?? activeSession?.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const contextLimit = activeSession?.context_limit ?? currentModel?.descriptor?.context_window ?? 8192;
-  const currentCompressThreshold = activeSession?.compress_threshold ?? 0.85;
+  const currentCompressThreshold = draftSession?.compressThreshold ?? activeSession?.compress_threshold ?? 0.85;
   const summaryTriggerTokens = Math.floor(contextLimit * currentCompressThreshold);
   let currentContextTokens = 0;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -500,7 +514,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       break;
     }
   }
-  const currentPermissionMode = activeSession?.permission_mode || "auto";
+  const currentPermissionMode = draftSession?.permissionMode ?? (activeSession?.permission_mode || "auto");
   const currentPermissionOption = PERMISSION_OPTIONS.find(
     (option) => option.value === currentPermissionMode,
   ) ?? PERMISSION_OPTIONS[1];
@@ -512,13 +526,21 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     thinkingBudget: number,
     maxTokens = currentMaxTokens,
   ) => {
-    if (!activeSessionId) return;
-    setSessionLlm(activeSessionId, model, thinkingMode, thinkingBudget, maxTokens).catch(console.error);
+    if (activeSessionId) {
+      setSessionLlm(activeSessionId, model, thinkingMode, thinkingBudget, maxTokens).catch(console.error);
+      return;
+    }
+    if (draftSession) {
+      updateDraftSession({ model, thinkingMode, thinkingBudget, maxTokens });
+    }
   };
 
   const applyPermissionMode = (permissionMode: PermissionMode) => {
-    if (!activeSessionId) return;
-    setSessionPermissionMode(activeSessionId, permissionMode).catch(console.error);
+    if (activeSessionId) {
+      setSessionPermissionMode(activeSessionId, permissionMode).catch(console.error);
+      return;
+    }
+    if (draftSession) updateDraftSession({ permissionMode });
   };
 
   // Keep user sends visible, while streaming follow remains an optional UI preference.
@@ -529,7 +551,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   }, [messages, isStreaming, autoFollowStreaming]);
 
   const handleSend = async () => {
-    if ((!inputVal.trim() && attachments.length === 0) || isStreaming || !activeSessionId) return;
+    if (
+      (!inputVal.trim() && attachments.length === 0)
+      || isStreaming
+      || isPreparingSession
+      || !hasSessionTarget
+    ) return;
     const text = inputVal.trim() || "请查看附件。";
     setAttachmentError(null);
     try {
@@ -891,7 +918,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     setModelPickerOpen(false);
                     setAttachmentError(null);
                   }}
-                  disabled={!activeSessionId || isStreaming}
+                  disabled={!hasSessionTarget || isStreaming || isPreparingSession}
                   className={`flex h-7 w-7 items-center justify-center rounded-lg border transition-all disabled:opacity-40 ${
                     attachmentPicker
                       ? "rotate-45 border-stone-300 bg-stone-100 text-stone-800"
@@ -1174,7 +1201,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               <button
                                 key={option.value}
                                 type="button"
-                                disabled={!activeSessionId || isStreaming}
+                                disabled={!hasSessionTarget || isStreaming || isPreparingSession}
                                 onClick={() => applyPermissionMode(option.value)}
                                 className={`min-h-14 rounded-lg border px-2 py-1.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                                   isActive
@@ -1267,8 +1294,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           onBlur={(event) => {
                             const value = Math.min(1, Math.max(0, Number(event.currentTarget.value) || 0));
                             event.currentTarget.value = String(value);
-                            if (value !== currentCompressThreshold && activeSessionId) {
+                            if (value === currentCompressThreshold) return;
+                            if (activeSessionId) {
                               useAgentStore.getState().setSessionCompressThreshold(activeSessionId, value).catch(console.error);
+                            } else if (draftSession) {
+                              updateDraftSession({ compressThreshold: value });
                             }
                           }}
                           className="h-7 w-20 rounded-md border border-stone-200 bg-stone-50 px-2 text-right font-mono text-[10px] text-stone-700 outline-none focus:border-emerald-400"
@@ -1297,7 +1327,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               ) : (
                 <Button
                   onClick={handleSend}
-                  disabled={(!inputVal.trim() && attachments.length === 0) || !activeSessionId}
+                  disabled={
+                    (!inputVal.trim() && attachments.length === 0)
+                    || !hasSessionTarget
+                    || isPreparingSession
+                  }
                   className="agnes-chat-send-button h-6 rounded-lg bg-stone-900 px-3.5 py-1 text-[10px] font-semibold text-white shadow-sm hover:bg-stone-800"
                   title="发送"
                   aria-label="发送"

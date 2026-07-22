@@ -307,6 +307,29 @@ export interface Session {
   workspace_id: string | null;
 }
 
+export interface DraftSession {
+  id: string;
+  agentId: string;
+  workspaceId: string | null;
+  model?: string;
+  thinkingMode?: string;
+  thinkingBudget?: number;
+  maxTokens?: number;
+  permissionMode?: PermissionMode;
+  compressThreshold?: number;
+}
+
+let draftSessionSequence = 0;
+
+function newDraftSession(agentId: string, workspaceId: string | null): DraftSession {
+  draftSessionSequence += 1;
+  return {
+    id: `draft-${Date.now()}-${draftSessionSequence}`,
+    agentId,
+    workspaceId,
+  };
+}
+
 export interface Workspace {
   id: string;
   agent_id: string;
@@ -365,7 +388,9 @@ interface AgentState {
   workspaces: Workspace[];
   activeAgentId: string | null;
   activeSessionId: string | null;
+  draftSession: DraftSession | null;
   isStreaming: boolean;
+  isPreparingSession: boolean;
   providers: ModelProvider[];
   modelRoles: ModelRoleAssignments;
   
@@ -375,6 +400,9 @@ interface AgentState {
   loadSessions: (agentId: string) => Promise<void>;
   loadMessages: (sessionId: string, preserveRenderKeys?: boolean) => Promise<void>;
   createSession: (agentId: string, title: string, workspaceId?: string | null) => Promise<string>;
+  startDraftSession: (agentId: string, workspaceId?: string | null) => void;
+  discardDraftSession: () => void;
+  updateDraftSession: (patch: Partial<Omit<DraftSession, "id" | "agentId" | "workspaceId">>) => void;
   deleteSession: (sessionId: string) => Promise<void>;
   pinSession: (sessionId: string, pinned: boolean) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
@@ -383,7 +411,7 @@ interface AgentState {
   renameWorkspace: (workspaceId: string, name: string) => Promise<void>;
   deleteWorkspace: (workspaceId: string) => Promise<void>;
   sendMessage: (
-    sessionId: string,
+    sessionId: string | null,
     text: string,
     readingBookId?: string,
     attachments?: ChatAttachment[],
@@ -456,7 +484,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   workspaces: [],
   activeAgentId: null,
   activeSessionId: null,
+  draftSession: null,
   isStreaming: false,
+  isPreparingSession: false,
   providers: [],
   modelRoles: EMPTY_MODEL_ROLES,
 
@@ -495,28 +525,28 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       await get().loadWorkspaces(agentId);
 
       if (openMode === "new") {
-        // 打开时自动新建会话
-        const sid = await invoke<string>("create_session", { agentId, title: "新会话" });
-        set({ activeSessionId: sid, messages: [] });
-        if (persistNavigation) {
-          invoke("set_setting", { key: "ui:last_session_id", value: sid }).catch(() => {});
-        }
+        // Keep a local blank draft until the user sends the first message.
+        set({
+          activeSessionId: null,
+          draftSession: newDraftSession(agentId, null),
+          messages: [],
+        });
       } else {
         // 回到上次对话：优先上次会话，回退到首条，再回退到新建
         let sid: string | null = lastSessionId && sessions.some((s) => s.id === lastSessionId) ? lastSessionId : null;
         if (!sid && sessions.length > 0) sid = sessions[0].id;
         if (sid) {
-          set({ activeSessionId: sid });
+          set({ activeSessionId: sid, draftSession: null });
           await get().loadMessages(sid);
           if (persistNavigation) {
             invoke("set_setting", { key: "ui:last_session_id", value: sid }).catch(() => {});
           }
         } else {
-          const newSid = await invoke<string>("create_session", { agentId, title: "新会话" });
-          set({ activeSessionId: newSid, messages: [] });
-          if (persistNavigation) {
-            invoke("set_setting", { key: "ui:last_session_id", value: newSid }).catch(() => {});
-          }
+          set({
+            activeSessionId: null,
+            draftSession: newDraftSession(agentId, null),
+            messages: [],
+          });
         }
       }
     } catch (e) {
@@ -558,6 +588,26 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
+  startDraftSession: (agentId, workspaceId = null) => {
+    set({
+      activeAgentId: agentId,
+      activeSessionId: null,
+      draftSession: newDraftSession(agentId, workspaceId),
+      messages: [],
+    });
+  },
+
+  discardDraftSession: () => {
+    if (!get().draftSession) return;
+    set({ draftSession: null, messages: [] });
+  },
+
+  updateDraftSession: (patch) => {
+    const draftSession = get().draftSession;
+    if (!draftSession) return;
+    set({ draftSession: { ...draftSession, ...patch } });
+  },
+
   deleteSession: async (sessionId: string) => {
     try {
       await invoke("delete_session", { sessionId });
@@ -570,7 +620,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           if (sessions.length > 0) {
             await get().setActiveSessionId(sessions[0].id);
           } else {
-            set({ activeSessionId: null, messages: [] });
+            set({ activeSessionId: null, draftSession: null, messages: [] });
           }
         }
       }
@@ -636,7 +686,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         if (sessions.find((s) => s.id === activeSessionId)?.workspace_id === workspaceId) {
           const fallback = sessions.find((s) => !s.workspace_id) ?? sessions[0];
           if (fallback) await get().setActiveSessionId(fallback.id);
-          else set({ activeSessionId: null, messages: [] });
+          else set({ activeSessionId: null, draftSession: null, messages: [] });
         }
       }
     } catch (e) {
@@ -645,12 +695,57 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   sendMessage: async (
-    sessionId: string,
+    requestedSessionId: string | null,
     text: string,
     readingBookId?: string,
     attachments: ChatAttachment[] = [],
   ) => {
-    if (get().isStreaming) return;
+    if (get().isStreaming || get().isPreparingSession) return;
+
+    let sessionId = requestedSessionId;
+    if (!sessionId) {
+      const draftSession = get().draftSession;
+      if (!draftSession) throw new Error("没有可发送消息的会话草稿");
+
+      set({ isPreparingSession: true });
+      try {
+        sessionId = await invoke<string>("create_session", {
+          agentId: draftSession.agentId,
+          title: "新会话",
+          workspaceId: draftSession.workspaceId,
+        });
+        set({
+          activeSessionId: sessionId,
+          draftSession: null,
+          messages: [],
+        });
+        invoke("set_setting", { key: "ui:last_session_id", value: sessionId }).catch(() => {});
+        await get().loadSessions(draftSession.agentId);
+
+        if (
+          draftSession.model !== undefined
+          && draftSession.thinkingMode !== undefined
+          && draftSession.thinkingBudget !== undefined
+          && draftSession.maxTokens !== undefined
+        ) {
+          await get().setSessionLlm(
+            sessionId,
+            draftSession.model,
+            draftSession.thinkingMode,
+            draftSession.thinkingBudget,
+            draftSession.maxTokens,
+          );
+        }
+        if (draftSession.permissionMode !== undefined) {
+          await get().setSessionPermissionMode(sessionId, draftSession.permissionMode);
+        }
+        if (draftSession.compressThreshold !== undefined) {
+          await get().setSessionCompressThreshold(sessionId, draftSession.compressThreshold);
+        }
+      } finally {
+        set({ isPreparingSession: false });
+      }
+    }
     
     // 1. Instantly append a local user message and a pending assistant message for responsive UI
     const tempUserMsg: Message = {
@@ -755,7 +850,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   setActiveAgentId: async (agentId: string) => {
-    set({ activeAgentId: agentId });
+    set({ activeAgentId: agentId, draftSession: null });
     await get().loadSessions(agentId);
     await get().loadWorkspaces(agentId);
     // 持久化上次选中的智能体
@@ -765,12 +860,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     if (sessions.length > 0) {
       await get().setActiveSessionId(sessions[0].id);
     } else {
-      set({ activeSessionId: null, messages: [] });
+      set({ activeSessionId: null, draftSession: null, messages: [] });
     }
   },
 
   setActiveSessionId: async (sessionId: string, persist = true) => {
-    set({ activeSessionId: sessionId });
+    set({ activeSessionId: sessionId, draftSession: null });
     await get().loadMessages(sessionId);
     if (persist) {
       invoke("set_setting", { key: "ui:last_session_id", value: sessionId }).catch(() => {});
@@ -939,7 +1034,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         if (agents.length > 0) {
           await get().setActiveAgentId(agents[0].id);
         } else {
-          set({ activeAgentId: null, activeSessionId: null, sessions: [], messages: [] });
+          set({
+            activeAgentId: null,
+            activeSessionId: null,
+            draftSession: null,
+            sessions: [],
+            messages: [],
+          });
         }
       }
     } catch (e) {
