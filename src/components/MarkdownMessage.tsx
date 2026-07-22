@@ -50,6 +50,138 @@ interface MarkdownMessageProps {
 
 const MARKDOWN_RENDER_INTERVAL_MS = 400;
 
+type LatexDelimiter = "inline" | "display";
+
+function isUnescapedLatexDelimiter(source: string, index: number, marker: string): boolean {
+  if (source[index] !== "\\" || source.slice(index, index + 2) !== marker) return false;
+  let slashCount = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) {
+    slashCount += 1;
+  }
+  return slashCount % 2 === 0;
+}
+
+function lineEnd(source: string, start: number): number {
+  const newline = source.indexOf("\n", start);
+  return newline < 0 ? source.length : newline + 1;
+}
+
+type FenceMarker = { char: "`" | "~"; length: number; canClose: boolean };
+
+function fenceAtLineStart(line: string): FenceMarker | null {
+  const match = /^( {0,3})(`{3,}|~{3,})([^\r\n]*)(?:\r?\n)?$/.exec(line);
+  if (!match) return null;
+  return {
+    char: match[2][0] as "`" | "~",
+    length: match[2].length,
+    canClose: /^[ \t]*$/.test(match[3]),
+  };
+}
+
+/** Normalize TeX delimiters that remark-math does not parse by default. */
+export function normalizeLatexDelimiters(source: string): string {
+  let output = "";
+  let index = 0;
+  let fence: Pick<FenceMarker, "char" | "length"> | null = null;
+  let inlineCodeLength: number | null = null;
+  let math: { kind: LatexDelimiter; close: string; start: number } | null = null;
+
+  while (index < source.length) {
+    if (math) {
+      if (isUnescapedLatexDelimiter(source, index, math.close)) {
+        let content = source.slice(math.start, index);
+        if (math.kind === "display") {
+          content = content.replace(/^\r?\n/, "").replace(/\r?\n$/, "");
+          if (output && !output.endsWith("\n")) output += "\n";
+          output += `$$\n${content}\n$$`;
+          if (index + 2 < source.length && source[index + 2] !== "\n") output += "\n";
+        } else {
+          output += `$${content}$`;
+        }
+        index += 2;
+        math = null;
+      } else {
+        index += 1;
+      }
+      continue;
+    }
+
+    if (inlineCodeLength !== null) {
+      if (source[index] === "`") {
+        let length = 0;
+        while (source[index + length] === "`") length += 1;
+        output += source.slice(index, index + length);
+        index += length;
+        if (length === inlineCodeLength) inlineCodeLength = null;
+      } else {
+        output += source[index];
+        index += 1;
+      }
+      continue;
+    }
+
+    const atLineStart = index === 0 || source[index - 1] === "\n";
+    if (atLineStart) {
+      const end = lineEnd(source, index);
+      const line = source.slice(index, end);
+      const marker = fenceAtLineStart(line);
+      if (marker) {
+        output += line;
+        if (!fence) {
+          fence = marker;
+        } else if (
+          marker.canClose
+          && marker.char === fence.char
+          && marker.length >= fence.length
+        ) {
+          fence = null;
+        }
+        index = end;
+        continue;
+      }
+      if (!fence && (/^\t/.test(line) || /^ {4}/.test(line))) {
+        output += line;
+        index = end;
+        continue;
+      }
+    }
+
+    if (fence) {
+      output += source[index];
+      index += 1;
+      continue;
+    }
+
+    if (source[index] === "`") {
+      let length = 0;
+      while (source[index + length] === "`") length += 1;
+      output += source.slice(index, index + length);
+      index += length;
+      inlineCodeLength = length;
+      continue;
+    }
+
+    if (isUnescapedLatexDelimiter(source, index, "\\(")) {
+      math = { kind: "inline", close: "\\)", start: index + 2 };
+      index += 2;
+      continue;
+    }
+    if (isUnescapedLatexDelimiter(source, index, "\\[")) {
+      math = { kind: "display", close: "\\]", start: index + 2 };
+      index += 2;
+      continue;
+    }
+
+    output += source[index];
+    index += 1;
+  }
+
+  if (math) {
+    output += source.slice(math.start - 2);
+  }
+  return output;
+}
+
 /// Split at safe blank-line boundaries so completed blocks retain their React cache.
 function splitMarkdownBlocks(content: string): string[] {
   // Reference-style links and footnotes can resolve across blank lines, so keep
@@ -169,7 +301,11 @@ const MarkdownMessageView: React.FC<MarkdownMessageProps> = ({ content, streamin
 
   const cachedContent = content.startsWith(renderedContent) ? renderedContent : "";
   const liveTail = content.slice(cachedContent.length);
-  const blocks = useMemo(() => splitMarkdownBlocks(cachedContent), [cachedContent]);
+  const normalizedContent = useMemo(
+    () => normalizeLatexDelimiters(cachedContent),
+    [cachedContent],
+  );
+  const blocks = useMemo(() => splitMarkdownBlocks(normalizedContent), [normalizedContent]);
 
   return (
     <div className="markdown-body">
