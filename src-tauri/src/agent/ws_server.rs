@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
@@ -103,6 +104,7 @@ pub async fn run<R: tauri::Runtime>(
     manager: Arc<AgentManager>,
     mcp: Arc<McpManager>,
     secrets: SharedSecretStore,
+    home_workspace_dir: PathBuf,
 ) -> AppResult<()> {
     std_listener
         .set_nonblocking(true)
@@ -128,6 +130,7 @@ pub async fn run<R: tauri::Runtime>(
         let mcp = mcp.clone();
         let secrets = secrets.clone();
         let active_runs = active_runs.clone();
+        let home_workspace_dir = home_workspace_dir.clone();
 
         tokio::spawn(async move {
             if let Err(e) = handle_conn(
@@ -138,6 +141,7 @@ pub async fn run<R: tauri::Runtime>(
                 manager,
                 mcp,
                 secrets,
+                home_workspace_dir,
                 active_runs,
             )
             .await
@@ -157,6 +161,7 @@ async fn handle_conn<R: tauri::Runtime>(
     manager: Arc<AgentManager>,
     mcp: Arc<McpManager>,
     secrets: SharedSecretStore,
+    home_workspace_dir: PathBuf,
     active_runs: Arc<tokio::sync::Mutex<HashMap<String, ActiveRun>>>,
 ) -> AppResult<()> {
     let ws = accept_async(stream)
@@ -181,7 +186,7 @@ async fn handle_conn<R: tauri::Runtime>(
         }
     });
 
-    let tool_executor = ToolExecutor::new(db.clone(), mcp, secrets);
+    let tool_executor = ToolExecutor::new(db.clone(), mcp, secrets, home_workspace_dir.clone());
     let mut tool_tasks: HashMap<String, Vec<tokio::task::JoinHandle<()>>> = HashMap::new();
 
     // 读取循环
@@ -436,6 +441,7 @@ async fn handle_conn<R: tauri::Runtime>(
                 let manager = manager.clone();
                 let active_runs = active_runs.clone();
                 let tool_executor = tool_executor.clone();
+                let home_workspace_dir = home_workspace_dir.clone();
                 let task_run_id = run_id.clone();
                 let task = tokio::spawn(async move {
                     let tc_id = env
@@ -505,8 +511,12 @@ async fn handle_conn<R: tauri::Runtime>(
                         &tool_name,
                         risk,
                     );
-                    let workspace_cwd =
-                        crate::tools::workspace::resolve_workspace_cwd(&db, &session_id).await;
+                    let workspace_cwd = crate::tools::workspace::resolve_workspace_cwd(
+                        &db,
+                        &session_id,
+                        &home_workspace_dir,
+                    )
+                    .await;
                     let diff_preview = crate::tools::review::preview_tool_call(
                         &tool_name,
                         &args,
@@ -1214,6 +1224,7 @@ mod tests {
                 manager_clone,
                 mcp,
                 secrets,
+                std::path::PathBuf::from("target/test_home_workspace"),
             )
             .await;
         });

@@ -21,15 +21,22 @@ pub struct ToolExecutor {
     mcp: Arc<McpManager>,
     secrets: SharedSecretStore,
     terminals: Arc<TerminalManager>,
+    home_workspace_dir: PathBuf,
 }
 
 impl ToolExecutor {
-    pub fn new(db: DbActorHandle, mcp: Arc<McpManager>, secrets: SharedSecretStore) -> Self {
+    pub fn new(
+        db: DbActorHandle,
+        mcp: Arc<McpManager>,
+        secrets: SharedSecretStore,
+        home_workspace_dir: PathBuf,
+    ) -> Self {
         Self {
             db,
             mcp,
             secrets,
             terminals: Arc::new(TerminalManager::default()),
+            home_workspace_dir,
         }
     }
 
@@ -96,9 +103,13 @@ impl ToolExecutor {
         };
         self.db.insert_tool_call(new_tc).await?;
 
-        // B. Resolve the workspace cwd through the device-local binding.
-        let workspace_cwd =
-            crate::tools::workspace::resolve_workspace_cwd(&self.db, session_id).await;
+        // B. Resolve the Code binding or app-managed shared Home workspace.
+        let workspace_cwd = crate::tools::workspace::resolve_workspace_cwd(
+            &self.db,
+            session_id,
+            &self.home_workspace_dir,
+        )
+        .await;
         let skill_roots = resolve_selected_skill_roots(&self.db, session_id).await;
 
         // C. Merge workspace and selected read-only Skill roots into the effective policy.
@@ -261,7 +272,12 @@ mod tests {
         let db = spawn_db_actor(db_path.clone());
         let secrets = std::sync::Arc::new(crate::secrets::InMemorySecretStore::default());
         let mcp = std::sync::Arc::new(crate::mcp::McpManager::new(db.clone(), secrets.clone()));
-        let executor = ToolExecutor::new(db.clone(), mcp, secrets);
+        let executor = ToolExecutor::new(
+            db.clone(),
+            mcp,
+            secrets,
+            PathBuf::from("target/test_home_workspace"),
+        );
 
         db.insert_agent(new_agent("test-agent", "Test Agent"))
             .await

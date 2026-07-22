@@ -150,7 +150,7 @@ System Prompt
 ↓ 记忆决策规则（先检索再新增/更新，区分 MEMORY.md 与结构化记忆库）
 ↓ USER.md                （per-Agent，每次必注入，仅用户可改）
 ↓ MEMORY.md              （per-Agent，每次必注入，ai+用户可改）
-↓ [仅工作区会话] 编码工作流（工作区范围、先读项目指令、工具与验证纪律）
+↓ Home 注入通用共享工作区纪律；Code 注入编码工作流（工作区范围、先读项目指令、工具与验证纪律）
 ↓ 当前项目上下文
 ↓ [按本轮选择] Active Skills（低于系统安全规则与 Tool Policy）
 ↓ ② Conversation Summary
@@ -162,7 +162,7 @@ System Prompt
 提示词调试面板按实际模型请求结构分别展示 `system prompt`、`tools` schema 和 `messages`；
 工具定义通过模型 API 的 `tools` 参数发送，不重复拼进 system prompt。
 
-工作区编码工作流只在 `session.workspace_id` 指向有效工作区时注入，普通聊天会话不携带该段提示词，保持生活和办公场景的通用对话定位。提示词只接收工作区名称和本机目录是否已绑定，不向模型暴露本机绝对路径；未绑定目录的同步工作区会明确禁止本地文件、终端和 Git 操作，并提示用户先完成本机绑定。
+Home 普通会话共享一个设备本地的通用工作区，首选系统 Documents 下的 `Agnes/Home`（Linux 尊重 XDG Documents，Windows 使用系统 Documents/可能的 OneDrive 重定向路径），不可用时回退到应用本机数据目录；它面向文档、表格、下载与转换产物，不默认假设软件仓库。Code 的编码工作流仅在 `session.workspace_id` 指向有效逻辑工作区时注入。两种模式都不向模型暴露本机绝对路径；未绑定目录的同步 Code 工作区会明确禁止本地文件、终端和 Git 操作，并提示用户先完成本机绑定。
 
 ## 同步影响
 

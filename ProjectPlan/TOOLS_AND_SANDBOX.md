@@ -83,9 +83,9 @@ ToolExecutor `execute` 统一：审计入志 → 查 workspace cwd → 应用沙
 
 `ToolExecutor` 构造时持有 `db`，每次 `execute`：
 1. `db.get_session(session_id)` → `session.workspace_id`。
-2. 若有：`db.get_workspace(workspace_id)` → `folder_path`，作为默认 cwd。
-3. 工具 args.cwd 非空则覆盖（但仍经沙箱/白名单校验）。
-4. 无 workspace：回退到 `policy.shell.allowed_cwd[0]`（保持旧行为）。
+2. 若有：`db.get_workspace(workspace_id)` → `folder_path`，作为 Code 默认 cwd。
+3. 若无：使用所有 Home 会话共用的设备本地默认工作区，首选系统 Documents 下的 `Agnes/Home`，不可写时回退到应用本机数据目录。
+4. 工具 args.cwd 非空则覆盖（但仍经沙箱/白名单校验）。
 
 Python 侧 `get_available_tools` 的 `cwd` 描述改为真实生效。ContextSnapshot 已透传 session，无需改协议。
 

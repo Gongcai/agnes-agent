@@ -1143,6 +1143,27 @@ def test_workspace_coding_instructions_are_only_injected_for_workspace_sessions(
     assert "local absolute path is intentionally not part of this prompt" in workspace_prompt
 
 
+def test_home_workspace_is_shared_and_does_not_assume_a_software_repository():
+    system_prompt, _, _ = assemble_prompt(
+        {
+            "context": {
+                "agent": {"model": "gpt-4o", "toolPolicy": {}},
+                "workspace": {
+                    "name": "Home",
+                    "mode": "home",
+                    "hasLocalFolderBinding": True,
+                },
+            }
+        }
+    )
+
+    assert "# Home Workspace" in system_prompt
+    assert "shared by all Home conversations" in system_prompt
+    assert "documents, tables" in system_prompt
+    assert "Do not assume this is a software repository" in system_prompt
+    assert "# Workspace Coding Mode" not in system_prompt
+
+
 def test_unbound_workspace_prompt_does_not_allow_local_coding_operations():
     system_prompt, _, _ = assemble_prompt(
         {

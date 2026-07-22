@@ -197,6 +197,16 @@ fn main() {
             // 1) 初始化 SQLite（阻塞直到建表完成）
             let data_dir = app.path().app_data_dir().expect("无法获取 app data 目录");
             std::fs::create_dir_all(&data_dir).ok();
+            let app_local_data_dir = app
+                .path()
+                .app_local_data_dir()
+                .expect("无法获取本机应用数据目录");
+            let document_dir = app.path().document_dir().ok();
+            let home_workspace_dir = tools::workspace::prepare_home_workspace(
+                document_dir.as_deref(),
+                &app_local_data_dir,
+            )
+            .expect("无法创建 Home 默认工作区");
             let db = db::spawn_db_actor(data_dir.join("agnes.db"));
             match tauri::async_runtime::block_on(db.recover_interrupted_assistants()) {
                 Ok(0) => {}
@@ -279,6 +289,7 @@ fn main() {
                 app.handle().clone(),
                 mcp.clone(),
                 secrets.clone(),
+                home_workspace_dir,
             ) {
                 eprintln!("[agent] 启动失败（非致命）：{e}");
             }

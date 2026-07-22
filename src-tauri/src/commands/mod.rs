@@ -1588,7 +1588,11 @@ async fn resolve_workspace_prompt_context(
         return Ok(None);
     };
     let Some(workspace_id) = session.workspace_id else {
-        return Ok(None);
+        return Ok(Some(json!({
+            "name": "Home",
+            "mode": "home",
+            "hasLocalFolderBinding": true,
+        })));
     };
     let Some(workspace) = db.get_workspace(workspace_id).await? else {
         return Ok(None);
@@ -1596,6 +1600,7 @@ async fn resolve_workspace_prompt_context(
 
     Ok(Some(json!({
         "name": workspace.name,
+        "mode": "code",
         "hasLocalFolderBinding": !workspace.folder_path.trim().is_empty(),
     })))
 }

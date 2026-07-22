@@ -192,6 +192,7 @@ impl AgentManager {
         app_handle: tauri::AppHandle,
         mcp: Arc<McpManager>,
         secrets: SharedSecretStore,
+        home_workspace_dir: std::path::PathBuf,
     ) -> AppResult<()> {
         if self.running.swap(true, Ordering::SeqCst) {
             return Ok(());
@@ -224,6 +225,7 @@ impl AgentManager {
                 manager_clone,
                 mcp,
                 secrets,
+                home_workspace_dir,
             )
             .await
             {
