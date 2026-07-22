@@ -351,14 +351,14 @@ export const QuickWindow: React.FC = () => {
                   {toolParts.map((part) => {
                     const toolCall = part.tool_call!;
                     return (
-                      <div key={toolCall.id} className="rounded-md border border-stone-200 bg-white px-3 py-2 text-[11px] text-stone-600">
+                      <div key={toolCall.id} className="border-l border-stone-300 py-1 pl-3 text-[11px] text-stone-600">
                         <div className="flex items-center gap-2">
                           <ShieldAlert className="h-3.5 w-3.5 text-stone-400" />
                           <span className="min-w-0 flex-1 truncate font-mono">{toolCall.tool}</span>
                           <span className="text-[10px] text-stone-400">{toolCall.status}</span>
                         </div>
                         {toolCall.status === "pending_approval" && (
-                          <div className="mt-2 flex justify-end gap-2 border-t border-stone-100 pt-2">
+                          <div className="mt-2 flex justify-end gap-2">
                             <button
                               type="button"
                               onClick={() => approveTool(toolCall.id, false)}

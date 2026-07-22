@@ -195,43 +195,28 @@ const ToolCallCard: React.FC<{
     <details
       open={expanded}
       onToggle={(event) => setExpanded(event.currentTarget.open)}
-      className={`group/tool overflow-hidden rounded-lg border transition-colors ${
-        isPending
-          ? isHighRisk
-            ? "border-rose-300 bg-rose-50/40"
-            : "border-amber-300 bg-amber-50/40"
-          : tc.status === "failed" || tc.status === "denied"
-          ? "border-rose-200 bg-rose-50/20"
-          : "border-stone-200 bg-white"
-      }`}
+      className="agnes-tool-details group/tool"
+      data-status={tc.status}
     >
-      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs select-none hover:bg-stone-50/80 [&::-webkit-details-marker]:hidden">
-        <Terminal className="h-3.5 w-3.5 shrink-0 text-stone-500" />
-        <span className="shrink-0 font-semibold text-stone-700">{tc.tool}</span>
-        <code className="min-w-0 flex-1 truncate text-[10px] font-normal text-stone-400" title={preview}>
+      <summary className="agnes-tool-summary">
+        <span className="agnes-tool-title">工具调用</span>
+        <code className="agnes-tool-name">{tc.tool}</code>
+        <code className="agnes-tool-preview" title={preview}>
           {preview}
         </code>
-        <span className={`shrink-0 rounded px-2 py-0.5 text-[10px] ${
-          tc.status === "running"
-            ? "bg-blue-100 text-blue-700 animate-pulse"
-            : tc.status === "succeeded"
-            ? "bg-emerald-100 text-emerald-700"
-            : tc.status === "failed" || tc.status === "denied"
-            ? "bg-rose-100 text-rose-700"
-            : "bg-amber-100 text-amber-700"
-        }`}>
+        <span className={`agnes-tool-status ${tc.status === "running" ? "animate-pulse" : ""}`}>
+          <span className="agnes-tool-status-dot" aria-hidden="true" />
           {statusLabel}
         </span>
-        <span className={`shrink-0 rounded px-2 py-0.5 text-[10px] ${
-          isHighRisk ? "bg-rose-100 text-rose-700" : "bg-stone-100 text-stone-500"
-        }`}>
-          {tc.risk}
-        </span>
-        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-stone-400 transition-transform group-open/tool:rotate-180" />
+        {isHighRisk && <span className="agnes-tool-risk">高风险</span>}
+        <ChevronDown className="h-3 w-3 shrink-0 transition-transform group-open/tool:rotate-180" />
       </summary>
 
       {expanded && (
-        <div className="space-y-3 border-t border-stone-200/80 px-3 py-3 text-xs text-stone-700">
+        <div className="agnes-tool-content space-y-3">
+          <span className="agnes-tool-rail-icon" aria-hidden="true">
+            <Terminal className="h-3 w-3" />
+          </span>
           <div>
             <div className="mb-1 text-[10px] font-medium text-stone-400">参数</div>
             <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-md bg-stone-100 px-3 py-2 font-mono text-[10px] leading-relaxed text-stone-700">

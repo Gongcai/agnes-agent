@@ -1084,6 +1084,122 @@ pre,
   color: var(--claude-muted-soft);
 }
 
+.agnes-tool-details {
+  width: min(100%, 620px);
+}
+
+.agnes-tool-summary {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  align-items: center;
+  gap: 7px;
+  color: var(--claude-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 20px;
+  transition: color 140ms ease;
+}
+
+.agnes-tool-summary::-webkit-details-marker {
+  display: none;
+}
+
+.agnes-tool-summary:hover {
+  color: var(--claude-body);
+}
+
+.agnes-tool-title,
+.agnes-tool-name,
+.agnes-tool-status,
+.agnes-tool-risk {
+  flex-shrink: 0;
+}
+
+.agnes-tool-title {
+  font-size: 12px;
+}
+
+.agnes-tool-name {
+  color: var(--claude-body);
+  font-size: 11px;
+}
+
+.agnes-tool-preview {
+  min-width: 0;
+  max-width: min(240px, 30vw);
+  overflow: hidden;
+  color: var(--claude-muted-soft);
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agnes-tool-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--claude-muted);
+  font-size: 10px;
+}
+
+.agnes-tool-status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: currentColor;
+}
+
+.agnes-tool-details[data-status="pending_approval"] .agnes-tool-status {
+  color: var(--claude-warning);
+}
+
+.agnes-tool-details[data-status="running"] .agnes-tool-status,
+.agnes-tool-details[data-status="succeeded"] .agnes-tool-status {
+  color: var(--claude-success);
+}
+
+.agnes-tool-details[data-status="failed"] .agnes-tool-status,
+.agnes-tool-details[data-status="denied"] .agnes-tool-status,
+.agnes-tool-risk {
+  color: var(--claude-danger);
+}
+
+.agnes-tool-content {
+  position: relative;
+  margin-top: 8px;
+  margin-left: 7px;
+  border-left: 1px solid var(--claude-border-strong);
+  padding: 0 0 2px 24px;
+  color: var(--claude-body);
+  font-size: 12px;
+}
+
+.agnes-tool-rail-icon {
+  position: absolute;
+  top: 1px;
+  left: -8px;
+  display: grid;
+  width: 15px;
+  height: 17px;
+  place-items: center;
+  background: var(--claude-canvas);
+  color: var(--claude-muted-soft);
+}
+
+.agnes-tool-details[data-status="pending_approval"] .agnes-tool-rail-icon {
+  color: var(--claude-warning);
+}
+
+.agnes-tool-details[data-status="failed"] .agnes-tool-rail-icon,
+.agnes-tool-details[data-status="denied"] .agnes-tool-rail-icon {
+  color: var(--claude-danger);
+}
+
 .agnes-chat-messages .agnes-assistant-body pre {
   border-radius: 8px !important;
   background: var(--claude-dark) !important;
