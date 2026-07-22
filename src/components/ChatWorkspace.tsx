@@ -908,7 +908,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               {attachmentError}
             </div>
           )}
-          <div className="flex items-center justify-between border-t border-stone-100 pt-2 px-1 text-[10px] text-stone-400">
+          <div className="flex items-center justify-between pt-2 px-1 text-[10px] text-stone-400">
             <div className="flex min-w-0 items-center gap-2">
               <div className="relative shrink-0">
                 <button
