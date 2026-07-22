@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Moon, Sun, HardDrive, Eraser, Gauge, Puzzle } from "lucide-react";
+import { X, User, CircleUserRound, Camera, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Moon, Sun, HardDrive, Eraser, Gauge, Puzzle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAgentStore } from "../store/useAgentStore";
@@ -68,7 +68,7 @@ import {
 } from "../lib/uiPreferences";
 import { syncE2eeStatusMessage } from "../lib/syncStatus";
 
-type SettingsTab = "general" | "agents" | "memory" | "storage" | "llm" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
+type SettingsTab = "profile" | "general" | "agents" | "memory" | "storage" | "llm" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -114,6 +114,42 @@ interface MemoryVectorizationResult {
   indexed_now: number;
   status: MemoryEmbeddingStatus;
 }
+
+interface UserProfile {
+  avatar: string;
+  name: string;
+  gender: string;
+  occupation: string;
+  customOccupation: string;
+  baseStyle: string;
+  warmth: string;
+  enthusiasm: string;
+  headingsLists: string;
+  emoji: string;
+  verbosity: string;
+}
+
+type UserProfileInheritanceMode = "auto" | "inherit" | "isolated";
+
+interface AgentUserProfileInheritance {
+  mode: UserProfileInheritanceMode;
+  effective: boolean;
+  userMdEmpty: boolean;
+}
+
+const EMPTY_USER_PROFILE: UserProfile = {
+  avatar: "",
+  name: "",
+  gender: "",
+  occupation: "",
+  customOccupation: "",
+  baseStyle: "default",
+  warmth: "default",
+  enthusiasm: "default",
+  headingsLists: "default",
+  emoji: "default",
+  verbosity: "default",
+};
 
 interface ArtifactStorageStatus {
   quotaBytes: number;
@@ -600,6 +636,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   useEffect(() => {
     if (isOpen) setActiveTab(initialTab);
   }, [initialTab, isOpen]);
+
+  // Global user profile state
+  const [userProfile, setUserProfile] = useState<UserProfile>(EMPTY_USER_PROFILE);
+  const [isLoadingUserProfile, setIsLoadingUserProfile] = useState(false);
+  const [isSavingUserProfile, setIsSavingUserProfile] = useState(false);
+  const [userProfileMessage, setUserProfileMessage] = useState<{ success: boolean; text: string } | null>(null);
   
   // Memory MD state
   const [userMdText, setUserMdText] = useState("");
@@ -615,6 +657,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [memoryEmbeddingStatus, setMemoryEmbeddingStatus] = useState<MemoryEmbeddingStatus | null>(null);
   const [isVectorizingMemories, setIsVectorizingMemories] = useState(false);
   const [memoryVectorMessage, setMemoryVectorMessage] = useState<{ success: boolean; text: string } | null>(null);
+  const [profileInheritance, setProfileInheritance] = useState<AgentUserProfileInheritance | null>(null);
+  const [isSavingProfileInheritance, setIsSavingProfileInheritance] = useState(false);
+  const [profileInheritanceError, setProfileInheritanceError] = useState<string | null>(null);
 
   // Audit state
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -909,6 +954,57 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setShowEmojiPicker(false);
   };
 
+  const handleUserAvatarFile = (file: File | undefined) => {
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type)) {
+      setUserProfileMessage({ success: false, text: "请选择 PNG、JPEG、WebP 或 GIF 图片" });
+      return;
+    }
+    if (file.size > 3 * 1024 * 1024) {
+      setUserProfileMessage({ success: false, text: "头像图片不能超过 3 MB" });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+      setUserProfile((profile) => ({ ...profile, avatar: reader.result as string }));
+      setUserProfileMessage(null);
+    };
+    reader.onerror = () => setUserProfileMessage({ success: false, text: "头像读取失败" });
+    reader.readAsDataURL(file);
+  };
+
+  const saveUserProfile = async () => {
+    setIsSavingUserProfile(true);
+    setUserProfileMessage(null);
+    try {
+      await invoke("save_user_profile", { profile: userProfile });
+      window.dispatchEvent(new CustomEvent("agnes:user-profile-change"));
+      setUserProfileMessage({ success: true, text: "用户资料已保存" });
+    } catch (error) {
+      setUserProfileMessage({ success: false, text: String(error) });
+    } finally {
+      setIsSavingUserProfile(false);
+    }
+  };
+
+  const saveProfileInheritance = async (mode: UserProfileInheritanceMode) => {
+    if (!activeAgentId) return;
+    setIsSavingProfileInheritance(true);
+    setProfileInheritanceError(null);
+    try {
+      const result = await invoke<AgentUserProfileInheritance>("set_agent_user_profile_inheritance", {
+        agentId: activeAgentId,
+        mode,
+      });
+      setProfileInheritance(result);
+    } catch (error) {
+      setProfileInheritanceError(String(error));
+    } finally {
+      setIsSavingProfileInheritance(false);
+    }
+  };
+
   const loadDebugPrompt = () => {
     if (!activeAgentId) return;
     setDebugLoading(true);
@@ -933,6 +1029,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Sync memory text when activeAgentId changes
   useEffect(() => {
     if (activeAgentId && activeTab === "memory") {
+      setProfileInheritance(null);
+      setProfileInheritanceError(null);
       setMemoryEmbeddingStatus(null);
       setMemoryVectorMessage(null);
       Promise.all([
@@ -941,12 +1039,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         }),
         invoke<StructuredMemory[]>("list_memories", { agentId: activeAgentId }),
         invoke<MemoryEmbeddingStatus>("get_memory_embedding_status", { agentId: activeAgentId }),
+        invoke<AgentUserProfileInheritance>("get_agent_user_profile_inheritance", {
+          agentId: activeAgentId,
+        }),
       ])
-        .then(([explicit, memories, embeddingStatus]) => {
+        .then(([explicit, memories, embeddingStatus, inheritance]) => {
           setUserMdText(explicit.user_md);
           setMemoryMdText(explicit.memory_md);
           setStructuredMemories(memories);
           setMemoryEmbeddingStatus(embeddingStatus);
+          setProfileInheritance(inheritance);
           setIsEditingUserMd(false);
           setIsEditingMemoryMd(false);
           setEditingMemoryId(null);
@@ -958,6 +1060,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         });
     }
   }, [activeAgentId, activeTab]);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== "profile") return;
+    setIsLoadingUserProfile(true);
+    setUserProfileMessage(null);
+    invoke<UserProfile>("get_user_profile")
+      .then((profile) => setUserProfile({ ...EMPTY_USER_PROFILE, ...profile }))
+      .catch((error) => setUserProfileMessage({ success: false, text: String(error) }))
+      .finally(() => setIsLoadingUserProfile(false));
+  }, [activeTab, isOpen]);
 
   // Load audit logs when tab is switched to audit
   useEffect(() => {
@@ -1555,7 +1667,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       userMd: userMdText,
       memoryMd: memoryMdText,
     })
-      .then(() => setIsEditingUserMd(false))
+      .then(async () => {
+        setIsEditingUserMd(false);
+        const inheritance = await invoke<AgentUserProfileInheritance>("get_agent_user_profile_inheritance", {
+          agentId: activeAgentId,
+        });
+        setProfileInheritance(inheritance);
+      })
       .catch(console.error);
   };
 
@@ -1987,6 +2105,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* Navigation Sidebar */}
           <nav className="agnes-settings-nav w-56 overflow-y-auto border-r border-stone-200 bg-stone-50/50 p-3 flex flex-col gap-1 shrink-0">
             <button
+              onClick={() => setActiveTab("profile")}
+              aria-current={activeTab === "profile" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                activeTab === "profile" ? "text-zinc-900" : "text-stone-500"
+              }`}
+            >
+              <CircleUserRound className="h-4 w-4 text-stone-500" />
+              <span>用户信息</span>
+            </button>
+            <button
               onClick={() => setActiveTab("general")}
               aria-current={activeTab === "general" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
@@ -2122,6 +2250,160 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {/* Right Panel View */}
           <div className="agnes-settings-content flex-1 overflow-y-auto p-6 bg-white">
+            {activeTab === "profile" && (
+              <div className="mx-auto max-w-2xl space-y-7">
+                <div>
+                  <h3 className="text-sm font-semibold text-stone-850">用户信息</h3>
+                  <p className="mt-1 text-[11px] leading-5 text-stone-400">
+                    这些信息会按每个 Agent 的继承设置加入 USER.md 上下文，帮助回复更贴合你。
+                  </p>
+                </div>
+
+                {isLoadingUserProfile ? (
+                  <div className="py-16 text-center text-xs text-stone-400">正在加载用户资料…</div>
+                ) : (
+                  <>
+                    <section className="space-y-5 border-b border-stone-200 pb-7">
+                      <div className="flex items-center gap-4">
+                        <div className="grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-full bg-stone-200 text-xl font-semibold text-stone-600">
+                          {userProfile.avatar ? (
+                            <img src={userProfile.avatar} alt="用户头像" className="h-full w-full object-cover" />
+                          ) : (
+                            userProfile.name.trim().slice(0, 1).toUpperCase() || <User className="h-6 w-6" />
+                          )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs font-semibold text-stone-700 transition-colors hover:bg-stone-50">
+                            <Camera className="h-3.5 w-3.5" />
+                            更换头像
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/webp,image/gif"
+                              className="hidden"
+                              onChange={(event) => {
+                                handleUserAvatarFile(event.target.files?.[0]);
+                                event.currentTarget.value = "";
+                              }}
+                            />
+                          </label>
+                          {userProfile.avatar && (
+                            <button
+                              type="button"
+                              onClick={() => setUserProfile((profile) => ({ ...profile, avatar: "" }))}
+                              className="rounded-lg px-3 py-2 text-xs font-medium text-stone-500 hover:bg-stone-100 hover:text-stone-800"
+                            >
+                              移除
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <label className="space-y-1.5 text-xs font-semibold text-stone-600">
+                          <span>姓名</span>
+                          <input
+                            value={userProfile.name}
+                            maxLength={120}
+                            onChange={(event) => setUserProfile((profile) => ({ ...profile, name: event.target.value }))}
+                            placeholder="你希望 Agent 如何称呼你"
+                            className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-xs font-normal text-stone-800 outline-none focus:border-[#8CA38A]"
+                          />
+                        </label>
+                        <label className="space-y-1.5 text-xs font-semibold text-stone-600">
+                          <span>性别</span>
+                          <select
+                            value={userProfile.gender}
+                            onChange={(event) => setUserProfile((profile) => ({ ...profile, gender: event.target.value }))}
+                            className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-xs font-normal text-stone-800 outline-none focus:border-[#8CA38A]"
+                          >
+                            <option value="">未设置</option>
+                            <option value="male">男</option>
+                            <option value="female">女</option>
+                            <option value="nonbinary">非二元</option>
+                            <option value="other">其他</option>
+                            <option value="prefer_not_to_say">不愿透露</option>
+                          </select>
+                        </label>
+                        <label className="space-y-1.5 text-xs font-semibold text-stone-600 sm:col-span-2">
+                          <span>职业</span>
+                          <select
+                            value={userProfile.occupation}
+                            onChange={(event) => setUserProfile((profile) => ({ ...profile, occupation: event.target.value }))}
+                            className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-xs font-normal text-stone-800 outline-none focus:border-[#8CA38A]"
+                          >
+                            <option value="">未设置</option>
+                            <option value="software_it">软件开发 / IT</option>
+                            <option value="product_design">产品 / 设计</option>
+                            <option value="education_research">教育 / 科研</option>
+                            <option value="healthcare">医疗健康</option>
+                            <option value="finance_law">金融 / 法律</option>
+                            <option value="marketing_media">市场 / 媒体</option>
+                            <option value="management_entrepreneurship">管理 / 创业</option>
+                            <option value="student">学生</option>
+                            <option value="freelancer">自由职业</option>
+                            <option value="other">其他</option>
+                          </select>
+                          {userProfile.occupation === "other" && (
+                            <input
+                              value={userProfile.customOccupation}
+                              maxLength={120}
+                              onChange={(event) => setUserProfile((profile) => ({ ...profile, customOccupation: event.target.value }))}
+                              placeholder="输入你的职业"
+                              className="mt-2 w-full rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-xs font-normal text-stone-800 outline-none focus:border-[#8CA38A]"
+                            />
+                          )}
+                        </label>
+                      </div>
+                    </section>
+
+                    <section className="space-y-1">
+                      <div className="pb-3">
+                        <h4 className="text-xs font-semibold text-stone-800">偏好的风格</h4>
+                        <p className="mt-1 text-[11px] text-stone-400">调整 Agent 默认采用的表达方式，不会限制你在对话中的临时要求。</p>
+                      </div>
+                      {[
+                        ["基础风格和语调", "baseStyle", [["default", "默认"], ["professional", "专业可靠"], ["friendly", "亲和友善"], ["candid", "直言不讳"], ["quirky", "天马行空"], ["efficient", "高效务实"], ["nerdy", "探索求知"], ["cynical", "犀利幽默"]]],
+                        ["温和体贴", "warmth", [["default", "默认"], ["less", "较少"], ["more", "较多"]]],
+                        ["热情洋溢", "enthusiasm", [["default", "默认"], ["less", "较少"], ["more", "较多"]]],
+                        ["标题和列表", "headingsLists", [["default", "默认"], ["less", "较少使用"], ["more", "较多使用"]]],
+                        ["表情符号", "emoji", [["default", "默认"], ["less", "较少使用"], ["more", "较多使用"]]],
+                        ["回答详略", "verbosity", [["default", "默认"], ["concise", "简洁"], ["detailed", "详细"]]],
+                      ].map(([label, key, options]) => (
+                        <label key={key as string} className="flex items-center justify-between gap-5 border-b border-stone-200 py-3 text-xs font-medium text-stone-700 last:border-b-0">
+                          <span>{label as string}</span>
+                          <select
+                            value={userProfile[key as keyof UserProfile]}
+                            onChange={(event) => setUserProfile((profile) => ({ ...profile, [key as string]: event.target.value }))}
+                            className="min-w-40 rounded-lg border border-stone-200 bg-white px-3 py-2 text-right text-xs text-stone-700 outline-none focus:border-[#8CA38A]"
+                          >
+                            {(options as string[][]).map(([value, optionLabel]) => (
+                              <option key={value} value={value}>{optionLabel}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ))}
+                    </section>
+
+                    <div className="flex items-center justify-end gap-3 border-t border-stone-200 pt-5">
+                      {userProfileMessage && (
+                        <span className={`mr-auto text-[11px] ${userProfileMessage.success ? "text-emerald-600" : "text-rose-600"}`}>
+                          {userProfileMessage.text}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={saveUserProfile}
+                        disabled={isSavingUserProfile}
+                        className="rounded-lg bg-[#6C806A] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#596C58] disabled:opacity-60"
+                      >
+                        {isSavingUserProfile ? "保存中…" : "保存资料"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
             {/* 0. GENERAL TAB */}
             {activeTab === "general" && (
               <GeneralTab />
@@ -2622,6 +2904,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <p className="text-[11px] text-stone-400">
                     直接编辑或保存当前 Agent 的 USER.md (背景画像) 与 MEMORY.md (事实积累)。
                   </p>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-stone-200 bg-stone-50/70 px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-semibold text-stone-700">全局用户资料</div>
+                    <p className="mt-1 text-[11px] leading-5 text-stone-500">
+                      {!profileInheritance
+                        ? "正在读取继承设置…"
+                        : profileInheritance.mode === "inherit" && !profileInheritance.userMdEmpty
+                          ? "全局资料会在运行时追加到现有 USER.md 末尾，不会覆盖或写回原内容。"
+                          : profileInheritance.mode === "inherit"
+                            ? "当前继承全局用户资料。"
+                            : profileInheritance.mode === "isolated"
+                              ? "当前仅使用此 Agent 的 USER.md，不继承全局资料。"
+                              : profileInheritance.effective
+                                ? "自动模式：USER.md 为空，当前会继承全局用户资料。"
+                                : "自动模式：USER.md 已有内容，当前仅使用 Agent 自己的资料。"}
+                    </p>
+                    {profileInheritanceError && (
+                      <p className="mt-1 text-[11px] text-rose-600">{profileInheritanceError}</p>
+                    )}
+                  </div>
+                  <select
+                    value={profileInheritance?.mode ?? "auto"}
+                    disabled={!profileInheritance || isSavingProfileInheritance}
+                    onChange={(event) => void saveProfileInheritance(event.target.value as UserProfileInheritanceMode)}
+                    className="min-w-52 rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs font-medium text-stone-700 outline-none focus:border-[#8CA38A] disabled:opacity-60"
+                    aria-label="全局用户资料继承方式"
+                  >
+                    <option value="auto">自动（USER.md 为空时继承）</option>
+                    <option value="inherit">继承全局用户资料</option>
+                    <option value="isolated">不继承</option>
+                  </select>
                 </div>
 
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">

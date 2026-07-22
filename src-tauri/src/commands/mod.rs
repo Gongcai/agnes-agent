@@ -858,7 +858,8 @@ pub async fn get_debug_prompt(
     };
 
     // 读取 USER.md / MEMORY.md（SQLite canonical 真相源）
-    let (user_md, memory_md) = crate::memory::load_explicit_memories(&state.db, &agent.id).await?;
+    let (user_md, memory_md) =
+        crate::user_profile::load_effective_explicit_memories(&state.db, &agent.id).await?;
 
     // 读取会话历史与摘要（如有）
     let mut history_json = Vec::new();
@@ -1788,7 +1789,7 @@ async fn start_agent_run(
 ) -> AppResult<()> {
     eprintln!("[agent][run] Preparing run for session={session_id} assistant={assistant_msg_id}");
     let (user_md, memory_md) =
-        crate::memory::load_explicit_memories(&state.db, &cfg.agent.id).await?;
+        crate::user_profile::load_effective_explicit_memories(&state.db, &cfg.agent.id).await?;
     eprintln!("[agent][run] Explicit memories loaded session={session_id}");
 
     let path = state
@@ -2145,6 +2146,63 @@ pub async fn save_explicit_memories(
     crate::memory::save_explicit_memories(&state.db, &agent_id, &user_md, &memory_md).await?;
     state.sync.schedule();
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUserProfileInheritanceDto {
+    pub mode: crate::user_profile::UserProfileInheritanceMode,
+    pub effective: bool,
+    pub user_md_empty: bool,
+}
+
+async fn agent_user_profile_inheritance_dto(
+    state: &AppState,
+    agent_id: &str,
+) -> AppResult<AgentUserProfileInheritanceDto> {
+    let (user_md, _) = crate::memory::load_explicit_memories(&state.db, agent_id).await?;
+    let mode = crate::user_profile::load_agent_inheritance_mode(&state.db, agent_id).await?;
+    Ok(AgentUserProfileInheritanceDto {
+        mode,
+        effective: crate::user_profile::should_inherit(mode, &user_md),
+        user_md_empty: user_md.trim().is_empty(),
+    })
+}
+
+#[tauri::command]
+pub async fn get_user_profile(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::user_profile::UserProfile> {
+    crate::user_profile::load_user_profile(&state.db).await
+}
+
+#[tauri::command]
+pub async fn save_user_profile(
+    state: tauri::State<'_, AppState>,
+    profile: crate::user_profile::UserProfile,
+) -> AppResult<()> {
+    crate::user_profile::save_user_profile(&state.db, &profile).await?;
+    state.sync.schedule();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_agent_user_profile_inheritance(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> AppResult<AgentUserProfileInheritanceDto> {
+    agent_user_profile_inheritance_dto(&state, &agent_id).await
+}
+
+#[tauri::command]
+pub async fn set_agent_user_profile_inheritance(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    mode: crate::user_profile::UserProfileInheritanceMode,
+) -> AppResult<AgentUserProfileInheritanceDto> {
+    crate::user_profile::save_agent_inheritance_mode(&state.db, &agent_id, mode).await?;
+    state.sync.schedule();
+    agent_user_profile_inheritance_dto(&state, &agent_id).await
 }
 
 #[tauri::command]

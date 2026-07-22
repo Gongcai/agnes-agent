@@ -24,11 +24,17 @@ import {
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import { ENABLED_APP_FEATURES, type AppFeatureId, type ChatMode } from "../lib/features";
 import { useAgentStore } from "../store/useAgentStore";
 import { NotificationCenter, type AppNotification } from "./NotificationCenter";
 
-type SettingsTab = "general" | "agents" | "memory" | "llm" | "tokens" | "mcp" | "skills" | "audit" | "debug";
+type SettingsTab = "profile" | "general" | "agents" | "memory" | "storage" | "llm" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
+
+interface SidebarUserProfile {
+  avatar: string;
+  name: string;
+}
 
 interface SidebarProps {
   isOpen: boolean;
@@ -118,6 +124,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
     readLocalBoolean("agnes.ui.sidebar.more-expanded", false),
   );
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [userProfile, setUserProfile] = useState<SidebarUserProfile>({ avatar: "", name: "" });
+
+  useEffect(() => {
+    let active = true;
+    const loadUserProfile = () => {
+      invoke<SidebarUserProfile>("get_user_profile")
+        .then((profile) => {
+          if (active) setUserProfile(profile);
+        })
+        .catch(console.error);
+    };
+    loadUserProfile();
+    window.addEventListener("agnes:user-profile-change", loadUserProfile);
+    return () => {
+      active = false;
+      window.removeEventListener("agnes:user-profile-change", loadUserProfile);
+    };
+  }, []);
   const sidebarRef = useRef<HTMLElement>(null);
   const [featureHighlight, setFeatureHighlight] = useState<{
     x: number;
@@ -544,7 +568,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
       </div>
 
-      {/* Account entry; the product has no user model yet, so this is a stable UI placeholder. */}
+      {/* Account entry */}
       <div className="agnes-sidebar-account relative mt-auto shrink-0 border-t border-stone-200 bg-stone-200/20 px-2 py-1">
         <div className="agnes-account-actions" data-open={accountMenuOpen}>
           <div className="agnes-account-actions-inner space-y-1">
@@ -557,7 +581,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               type="button"
               onClick={() => {
                 setAccountMenuOpen(false);
-                onOpenSettings("agents");
+                onOpenSettings("profile");
               }}
               className="agnes-account-action flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-xs text-stone-600 transition-colors"
             >
@@ -575,8 +599,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           aria-expanded={accountMenuOpen}
           aria-label="打开账户菜单"
         >
-          <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-stone-300 text-[11px] font-semibold text-stone-700">A</span>
-          <span className="agnes-sidebar-label min-w-0 flex-1 truncate text-xs font-medium text-stone-700">AGENS</span>
+          <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-stone-300 text-[11px] font-semibold text-stone-700">
+            {userProfile.avatar
+              ? <img src={userProfile.avatar} alt="" className="h-full w-full object-cover" />
+              : userProfile.name.trim().slice(0, 1).toUpperCase() || "A"}
+          </span>
+          <span className="agnes-sidebar-label min-w-0 flex-1 truncate text-xs font-medium text-stone-700">
+            {userProfile.name.trim() || "AGENS"}
+          </span>
           {accountMenuOpen
             ? <ChevronUp className="agnes-account-chevron h-3.5 w-3.5 shrink-0 text-stone-400" />
             : <ChevronDown className="agnes-account-chevron h-3.5 w-3.5 shrink-0 text-stone-400" />}

@@ -20,6 +20,7 @@ mod state;
 mod storage;
 pub mod sync;
 mod tools;
+mod user_profile;
 mod web;
 
 use std::sync::Arc;
@@ -342,6 +343,10 @@ fn main() {
             commands::approve_tool,
             commands::get_explicit_memories,
             commands::save_explicit_memories,
+            commands::get_user_profile,
+            commands::save_user_profile,
+            commands::get_agent_user_profile_inheritance,
+            commands::set_agent_user_profile_inheritance,
             commands::list_memories,
             commands::get_memory_embedding_status,
             commands::vectorize_memories,
