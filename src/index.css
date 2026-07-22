@@ -2062,6 +2062,51 @@ pre,
   background-color: var(--claude-surface-soft) !important;
 }
 
+/* Settings still contain a few fractional neutral utilities from the light
+   theme. Keep those surfaces opaque enough to remain readable on dark canvas. */
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class~="bg-stone-50/60"],
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class~="bg-stone-50/40"] {
+  background-color: var(--claude-surface-soft) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class~="bg-rose-50/40"],
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class~="bg-rose-50/60"],
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class~="bg-red-50/60"] {
+  background-color: rgba(223, 123, 121, 0.14) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class~="bg-red-100"],
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class~="bg-emerald-100"] {
+  background-color: var(--claude-surface-strong) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class*="hover:bg-white"]:hover,
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class*="hover:bg-stone-"]:hover,
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class*="hover:bg-[#FAF9F5]"]:hover {
+  background-color: var(--claude-surface-soft) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class*="hover:bg-rose-"]:hover,
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class*="hover:bg-red-"]:hover {
+  background-color: rgba(223, 123, 121, 0.2) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-settings-modal [class*="hover:bg-amber-"]:hover {
+  background-color: rgba(217, 165, 87, 0.2) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-settings-content [class~="bg-white"][class~="shadow-sm"] {
+  background-color: var(--claude-surface-strong) !important;
+  color: var(--claude-ink);
+}
+
+:root[data-agnes-theme="dark"] .agnes-settings-content input[class~="bg-white"],
+:root[data-agnes-theme="dark"] .agnes-settings-content textarea[class~="bg-white"],
+:root[data-agnes-theme="dark"] .agnes-settings-content select[class~="bg-white"] {
+  background-color: var(--claude-input) !important;
+  color: var(--claude-ink) !important;
+}
+
 :root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#FAF9F5]"],
 :root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#faf9f5]"],
 :root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#fbfaf6]"],
