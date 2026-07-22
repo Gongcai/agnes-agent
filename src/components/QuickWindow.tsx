@@ -2,10 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Brain,
   ChevronDown,
   ChevronRight,
   CircleStop,
+  Cpu,
   FileText,
   Languages,
   Lightbulb,
@@ -22,6 +22,7 @@ import { AnimatedDisclosure } from "./AnimatedDisclosure";
 import { MarkdownMessage } from "./MarkdownMessage";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
+  getCachedAutoExpandThoughts,
   getCachedAutoFollowStreaming,
   subscribeUIPreferenceChanges,
 } from "../lib/uiPreferences";
@@ -128,6 +129,7 @@ export const QuickWindow: React.FC = () => {
   const [isPinned, setIsPinned] = useState(false);
   const [isPreparing, setIsPreparing] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [autoExpandThoughts, setAutoExpandThoughts] = useState(getCachedAutoExpandThoughts);
   const [autoFollowStreaming, setAutoFollowStreaming] = useState(getCachedAutoFollowStreaming);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messageEndRef = useRef<HTMLDivElement>(null);
@@ -147,6 +149,9 @@ export const QuickWindow: React.FC = () => {
   }, [isPinned]);
 
   useEffect(() => subscribeUIPreferenceChanges((change) => {
+    if (change.autoExpandThoughts !== undefined) {
+      setAutoExpandThoughts(change.autoExpandThoughts);
+    }
     if (change.autoFollowStreaming !== undefined) {
       setAutoFollowStreaming(change.autoFollowStreaming);
     }
@@ -188,6 +193,7 @@ export const QuickWindow: React.FC = () => {
 
     const unlistenPromise = quickWindow.onFocusChanged(({ payload: focused }) => {
       if (focused) {
+        setAutoExpandThoughts(getCachedAutoExpandThoughts());
         setAutoFollowStreaming(getCachedAutoFollowStreaming());
         window.setTimeout(() => inputRef.current?.focus(), 50);
       } else if (!pinnedRef.current) {
@@ -331,22 +337,29 @@ export const QuickWindow: React.FC = () => {
               }
 
               const streaming = isStreaming && message === messages[messages.length - 1];
+              const isLiveThought = streaming && message._streamingInThought === true;
               return (
                 <article key={message._renderKey ?? message.id} className="space-y-3">
                   {thought && (
                     <AnimatedDisclosure
-                      className="group rounded-md border border-stone-200 bg-white/70"
-                      summaryClassName="flex h-9 w-full cursor-pointer items-center gap-2 px-3 text-[11px] font-medium text-stone-500"
+                      defaultOpen={autoExpandThoughts}
+                      className="agnes-thought-details group"
+                      summaryClassName="agnes-thought-summary"
                       summary={(
                         <>
-                          <Brain className="h-3.5 w-3.5 text-[#8CA38A]" />
-                          <span className="flex-1 text-left">Agent思维过程</span>
-                          <ChevronDown className="agnes-collapse-chevron h-3.5 w-3.5" />
+                          <span>Agent思维过程</span>
+                          <ChevronDown className="agnes-collapse-chevron h-3 w-3" />
                         </>
                       )}
                     >
-                      <div className="border-t border-stone-100 px-3 py-2 text-xs leading-5 text-stone-500">
-                        <MarkdownMessage content={thought} streaming={streaming} />
+                      <div className="agnes-thought-content">
+                        <span
+                          className={`agnes-thought-status-icon ${isLiveThought ? "animate-pulse" : ""}`}
+                          aria-hidden="true"
+                        >
+                          <Cpu className="h-3 w-3" />
+                        </span>
+                        <p className="whitespace-pre-wrap">{thought}</p>
                       </div>
                     </AnimatedDisclosure>
                   )}
