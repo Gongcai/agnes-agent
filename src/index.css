@@ -990,6 +990,45 @@ pre,
   transform: translateY(-1.5px) scale(1.06);
 }
 
+.agnes-context-usage-ring {
+  display: inline-grid;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  place-items: center;
+}
+
+.agnes-context-usage-ring > svg,
+.agnes-chat-composer-box button:hover .agnes-context-usage-ring > svg {
+  width: 15px;
+  height: 15px;
+  overflow: visible;
+  transform: rotate(-90deg);
+}
+
+.agnes-context-usage-ring circle {
+  fill: none;
+  stroke-width: 2;
+}
+
+.agnes-context-ring-track {
+  stroke: var(--claude-border-strong);
+}
+
+.agnes-context-ring-value {
+  stroke: var(--claude-clay);
+  stroke-linecap: round;
+  transition: stroke 180ms ease, stroke-dashoffset 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agnes-context-usage-ring[data-status="warning"] .agnes-context-ring-value {
+  stroke: var(--claude-warning);
+}
+
+.agnes-context-usage-ring[data-status="danger"] .agnes-context-ring-value {
+  stroke: var(--claude-danger);
+}
+
 .agnes-chat-header .bg-\[\#8CA38A\] {
   background: var(--claude-clay) !important;
 }

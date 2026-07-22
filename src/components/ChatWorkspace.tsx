@@ -34,6 +34,7 @@ import type {
 } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
 import { AnimatedDisclosure } from "./AnimatedDisclosure";
+import { ContextUsageRing } from "./ContextUsageRing";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ModifyMemoryModal } from "./ModifyMemoryModal";
 import { listInstalledSkills, type InstalledSkill } from "../lib/skills";
@@ -491,6 +492,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const contextLimit = activeSession?.context_limit ?? currentModel?.descriptor?.context_window ?? 8192;
   const currentCompressThreshold = activeSession?.compress_threshold ?? 0.85;
   const summaryTriggerTokens = Math.floor(contextLimit * currentCompressThreshold);
+  let currentContextTokens = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "assistant" && message.context_tokens > 0) {
+      currentContextTokens = message.context_tokens;
+      break;
+    }
+  }
   const currentPermissionMode = activeSession?.permission_mode || "auto";
   const currentPermissionOption = PERMISSION_OPTIONS.find(
     (option) => option.value === currentPermissionMode,
@@ -1090,6 +1099,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       </span>
                     )}
                   </span>
+                  <ContextUsageRing
+                    usedTokens={currentContextTokens}
+                    limitTokens={contextLimit}
+                    warningThreshold={currentCompressThreshold}
+                  />
                   <ChevronDown className="h-3 w-3" />
                 </button>
 
