@@ -5,6 +5,8 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import * as QRCode from "qrcode";
 import {
   AlertCircle,
+  ArrowDown,
+  ArrowUp,
   ChevronRight,
   Cloud,
   Download,
@@ -23,8 +25,15 @@ import {
   ShieldAlert,
   Trash2,
   Upload,
+  ChevronsUpDown,
   X,
 } from "lucide-react";
+import {
+  remoteTimestampMillis,
+  sortDriveItems,
+  type DriveSort,
+  type DriveSortKey,
+} from "../lib/driveSorting";
 import {
   formatStorageBytes,
   formatTransferSpeed,
@@ -162,9 +171,42 @@ const TRANSFER_STATUS_LABELS: Record<string, string> = {
 
 function formatTimestamp(value: string | null): string {
   if (!value) return "--";
-  const numeric = Number(value);
-  const date = Number.isFinite(numeric) ? new Date(numeric * 1000) : new Date(value);
+  const timestamp = remoteTimestampMillis(value);
+  const date = timestamp === null ? new Date(Number.NaN) : new Date(timestamp);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function SortableFileHeader({
+  label,
+  sortKey,
+  currentSort,
+  onSort,
+  className = "",
+}: {
+  label: string;
+  sortKey: DriveSortKey;
+  currentSort: DriveSort;
+  onSort: (key: DriveSortKey) => void;
+  className?: string;
+}) {
+  const active = currentSort.key === sortKey;
+  const nextDirection = active && currentSort.direction === "asc" ? "降序" : "升序";
+  const SortIcon = !active
+    ? ChevronsUpDown
+    : currentSort.direction === "asc"
+      ? ArrowUp
+      : ArrowDown;
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(sortKey)}
+      className={`group/sort flex min-w-0 items-center gap-1 text-left transition-colors hover:text-stone-700 ${active ? "text-stone-600" : ""} ${className}`}
+      aria-label={`${label}${active ? `，当前${currentSort.direction === "asc" ? "升序" : "降序"}` : ""}，点击按${nextDirection}排列`}
+    >
+      <span className="truncate">{label}</span>
+      <SortIcon className={`h-3 w-3 shrink-0 ${active ? "opacity-100" : "opacity-50 transition-opacity group-hover/sort:opacity-100"}`} />
+    </button>
+  );
 }
 
 export function DriveWorkspace() {
@@ -192,6 +234,7 @@ export function DriveWorkspace() {
   const [quarkQrStatus, setQuarkQrStatus] = useState<string | null>(null);
   const [quarkQrLoading, setQuarkQrLoading] = useState(false);
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
+  const [fileSort, setFileSort] = useState<DriveSort>({ key: "name", direction: "asc" });
   const [knowledgeCollections, setKnowledgeCollections] = useState<KnowledgeCollection[]>([]);
   const [knowledgeImportItem, setKnowledgeImportItem] = useState<RemoteFileItem | null>(null);
   const [moveDialog, setMoveDialog] = useState<MoveDialogState | null>(null);
@@ -221,17 +264,17 @@ export function DriveWorkspace() {
         : selectedAccount.last_error_message
     : null;
 
-  const sortedFiles = useMemo(
-    () => [...files].sort((left, right) => {
-      const leftFolder = left.kind === "folder";
-      const rightFolder = right.kind === "folder";
-      if (leftFolder !== rightFolder) return leftFolder ? -1 : 1;
-      return left.name.localeCompare(right.name, "zh-CN");
-    }),
-    [files],
-  );
+  const sortedFiles = useMemo(() => sortDriveItems(files, fileSort), [files, fileSort]);
   const selectedFileCount = selectedFileIds.size;
   const allFilesSelected = sortedFiles.length > 0 && sortedFiles.every((item) => selectedFileIds.has(item.id));
+  const changeFileSort = (key: DriveSortKey) => {
+    setFileSort((current) => {
+      if (current.key === key) {
+        return { key, direction: current.direction === "asc" ? "desc" : "asc" };
+      }
+      return { key, direction: key === "name" ? "asc" : "desc" };
+    });
+  };
 
   const loadShell = async () => {
     setLoading(true);
@@ -1065,9 +1108,12 @@ export function DriveWorkspace() {
                         disabled={loading || sortedFiles.length === 0}
                         className="h-3.5 w-3.5 accent-emerald-700"
                       />
-                      <span>{selectedFileCount > 0 ? `已选 ${selectedFileCount} 项` : "名称"}</span>
-                      <span>大小</span>
-                      <span className="hidden sm:block">修改时间</span>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <SortableFileHeader label="名称" sortKey="name" currentSort={fileSort} onSort={changeFileSort} />
+                        {selectedFileCount > 0 && <span className="shrink-0 text-[10px] text-stone-400">已选 {selectedFileCount} 项</span>}
+                      </div>
+                      <SortableFileHeader label="大小" sortKey="size" currentSort={fileSort} onSort={changeFileSort} />
+                      <SortableFileHeader label="修改时间" sortKey="modified" currentSort={fileSort} onSort={changeFileSort} className="hidden sm:flex" />
                       {selectedFileCount > 0 ? (
                         <div className="flex items-center justify-end">
                           {selectedProvider?.capabilities.move_files && (
