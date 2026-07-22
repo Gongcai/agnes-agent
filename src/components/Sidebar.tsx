@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Brain,
   BookOpen,
@@ -310,6 +311,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         }}
         onContextMenu={(e) => {
           e.preventDefault();
+          setAccountMenuOpen(false);
+          setWsCtxMenu(null);
           setCtxMenu({ sessionId: sess.id, x: e.clientX, y: e.clientY, isPinned: !!sess.pinned, title: sess.title });
         }}
         className={`agnes-session-item flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition-all duration-150 ${
@@ -507,6 +510,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         onClick={() => toggleWs(ws.id)}
                         onContextMenu={(e) => {
                           e.preventDefault();
+                          setAccountMenuOpen(false);
+                          setCtxMenu(null);
                           setWsCtxMenu({ workspaceId: ws.id, name: ws.name, x: e.clientX, y: e.clientY });
                         }}
                         title={ws.folder_path}
@@ -579,10 +584,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* 会话右键菜单 */}
-      {ctxMenu && (
+      {ctxMenu && createPortal(
         <>
           <div className="fixed inset-0 z-40" onClick={closeCtxMenu} onContextMenu={(e) => { e.preventDefault(); closeCtxMenu(); }} />
-          <div className="fixed z-50 w-40 rounded-xl border border-stone-200 bg-white shadow-2xl py-1 text-xs text-stone-700" style={{ top: ctxMenu.y, left: ctxMenu.x }}>
+          <div
+            className="claude-popover fixed z-50 w-40 rounded-xl border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl"
+            style={{
+              top: Math.min(Math.max(ctxMenu.y, 8), Math.max(8, window.innerHeight - 104)),
+              left: Math.min(Math.max(ctxMenu.x, 8), Math.max(8, window.innerWidth - 168)),
+            }}
+          >
             <button onClick={handleCtxPin} className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors">
               {ctxMenu.isPinned ? <PinOff className="h-3.5 w-3.5 text-amber-500" /> : <Pin className="h-3.5 w-3.5 text-stone-500" />}
               {ctxMenu.isPinned ? "取消置顶" : "置顶"}
@@ -594,14 +605,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <Trash2 className="h-3.5 w-3.5" />删除
             </button>
           </div>
-        </>
+        </>,
+        document.body,
       )}
 
       {/* 工作区右键菜单 */}
-      {wsCtxMenu && (
+      {wsCtxMenu && createPortal(
         <>
           <div className="fixed inset-0 z-40" onClick={closeWsCtxMenu} onContextMenu={(e) => { e.preventDefault(); closeWsCtxMenu(); }} />
-          <div className="fixed z-50 w-40 rounded-xl border border-stone-200 bg-white shadow-2xl py-1 text-xs text-stone-700" style={{ top: wsCtxMenu.y, left: wsCtxMenu.x }}>
+          <div
+            className="claude-popover fixed z-50 w-40 rounded-xl border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl"
+            style={{
+              top: Math.min(Math.max(wsCtxMenu.y, 8), Math.max(8, window.innerHeight - 76)),
+              left: Math.min(Math.max(wsCtxMenu.x, 8), Math.max(8, window.innerWidth - 168)),
+            }}
+          >
             <button onClick={handleWsCtxRename} className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors">
               <Pencil className="h-3.5 w-3.5 text-stone-500" />重命名
             </button>
@@ -609,7 +627,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <Trash2 className="h-3.5 w-3.5" />删除工作区
             </button>
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </aside>
   );
