@@ -13,6 +13,8 @@ use crate::tools::policy::Risk;
 pub struct ApplyPatchTool;
 
 const MAX_PATCH_BYTES: usize = 2 * 1024 * 1024;
+const TOOL_DESCRIPTION: &str = "Apply an exact Codex-style text patch to one or more UTF-8 files in the workspace. Supported actions are *** Add File, *** Update File, and *** Delete File with relative paths; rename/move is not supported. Update hunks begin with @@ and each hunk line must start with a space for context, - for removal, or + for addition. Content and whitespace matching is exact, although a missing final newline at EOF is tolerated.";
+const PATCH_DESCRIPTION: &str = "Complete patch from *** Begin Patch through *** End Patch. Example:\n*** Begin Patch\n*** Update File: src/example.txt\n@@\n-old text\n+new text\n*** End Patch\nAdd File content lines must start with +; Delete File has no body. Insertion-only hunks require a numeric header such as @@ -1,0 +1 @@. To keep a line without a trailing newline, place \\ No newline at end of file immediately after that context, removal, or addition line.";
 
 #[derive(Debug, PartialEq, Eq)]
 enum PatchAction {
@@ -32,12 +34,12 @@ impl BuiltinTool for ApplyPatchTool {
             "type": "function",
             "function": {
                 "name": self.name(),
-                "description": "Apply a Codex-style multi-file patch inside the workspace. Paths must be relative and the patch must use Begin Patch/Add File/Update File/Delete File markers.",
+                "description": TOOL_DESCRIPTION,
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "patch": {"type": "string", "description": "Complete patch text beginning with '*** Begin Patch' and ending with '*** End Patch'."},
-                        "cwd": {"type": "string", "description": "Optional base directory; defaults to the workspace."}
+                        "patch": {"type": "string", "description": PATCH_DESCRIPTION},
+                        "cwd": {"type": "string", "description": "Optional workspace-relative base directory; defaults to the workspace root."}
                     },
                     "required": ["patch"]
                 }
@@ -347,42 +349,77 @@ fn apply_update(original: &str, body: &str) -> Result<String, String> {
             index += 1;
         }
 
-        let position = if old.is_empty() {
+        let (position, replaced_len) = if old.is_empty() {
             let line = parse_old_start(header)
                 .ok_or_else(|| "Insertion-only hunks require numeric line ranges".to_string())?;
-            line_offset(&content, line)
-                .ok_or_else(|| format!("Hunk line {line} is outside the file"))?
+            (
+                line_offset(&content, line)
+                    .ok_or_else(|| format!("Hunk line {line} is outside the file"))?,
+                0,
+            )
         } else {
-            find_hunk_position(&content, &old, header, search_from)?
+            find_hunk_match(&content, &old, header, search_from)?
         };
-        content.replace_range(position..position + old.len(), &new);
+        content.replace_range(position..position + replaced_len, &new);
         search_from = position + new.len();
     }
     Ok(content)
 }
 
-fn find_hunk_position(
+fn find_hunk_match(
     content: &str,
     old: &str,
     header: &str,
     search_from: usize,
-) -> Result<usize, String> {
+) -> Result<(usize, usize), String> {
+    let old_without_final_newline = strip_final_line_ending(old).filter(|value| !value.is_empty());
     if let Some(line) = parse_old_start(header) {
         if let Some(expected) = line_offset(content, line) {
-            if content[expected..].starts_with(old) {
-                return Ok(expected);
+            if content[expected..].starts_with(old)
+                && exact_match_has_valid_end(content, expected, old)
+            {
+                return Ok((expected, old.len()));
+            }
+            if old_without_final_newline.is_some_and(|value| content[expected..] == *value) {
+                return Ok((expected, content.len() - expected));
             }
         }
     }
-    let matches: Vec<_> = content[search_from..]
+    let mut matches: Vec<_> = content[search_from..]
         .match_indices(old)
         .map(|(position, _)| search_from + position)
+        .filter(|position| {
+            is_line_start(content, *position) && exact_match_has_valid_end(content, *position, old)
+        })
+        .map(|position| (position, old.len()))
         .collect();
+    if let Some(value) = old_without_final_newline {
+        if content[search_from..].ends_with(value) {
+            let position = content.len() - value.len();
+            if is_line_start(content, position) {
+                matches.push((position, value.len()));
+            }
+        }
+    }
     match matches.as_slice() {
-        [position] => Ok(*position),
-        [] => Err("Hunk context was not found".to_string()),
+        [matched] => Ok(*matched),
+        [] => Err("Hunk context was not found. Matching is exact; verify whitespace and line endings. Use `\\ No newline at end of file` after a patch line when its result must not end with a newline.".to_string()),
         _ => Err("Hunk context is ambiguous; include more unchanged lines".to_string()),
     }
+}
+
+fn is_line_start(content: &str, position: usize) -> bool {
+    position == 0 || content.as_bytes().get(position - 1) == Some(&b'\n')
+}
+
+fn exact_match_has_valid_end(content: &str, position: usize, old: &str) -> bool {
+    strip_final_line_ending(old).is_some() || position + old.len() == content.len()
+}
+
+fn strip_final_line_ending(value: &str) -> Option<&str> {
+    value
+        .strip_suffix("\r\n")
+        .or_else(|| value.strip_suffix('\n'))
 }
 
 fn parse_old_start(header: &str) -> Option<usize> {
@@ -473,6 +510,48 @@ mod tests {
         let body = "@@\n alpha\n-beta\n+bravo\n gamma\n";
         let updated = apply_update("alpha\nbeta\ngamma\n", body).unwrap();
         assert_eq!(updated, "alpha\nbravo\ngamma\n");
+    }
+
+    #[test]
+    fn applies_update_when_the_source_has_no_trailing_newline() {
+        let body = "@@\n-alpha\n+bravo\n omega\n";
+        let updated = apply_update("alpha\nomega", body).unwrap();
+        assert_eq!(updated, "bravo\nomega\n");
+
+        let preserve_body =
+            "@@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n";
+        assert_eq!(apply_update("old", preserve_body).unwrap(), "new");
+    }
+
+    #[test]
+    fn schema_documents_the_supported_patch_contract() {
+        let schema = ApplyPatchTool.schema();
+        let description = schema["function"]["description"].as_str().unwrap();
+        let patch_description = schema["function"]["parameters"]["properties"]["patch"]
+            ["description"]
+            .as_str()
+            .unwrap();
+        assert!(description.contains("*** Add File"));
+        assert!(description.contains("rename/move is not supported"));
+        assert!(patch_description.contains("*** Update File:"));
+        assert!(patch_description.contains("\\ No newline at end of file"));
+    }
+
+    #[test]
+    fn missing_context_error_explains_exact_matching() {
+        let error = apply_update("different\n", "@@\n-expected\n+updated\n").unwrap_err();
+        assert!(error.contains("Matching is exact"));
+        assert!(error.contains("No newline at end of file"));
+    }
+
+    #[test]
+    fn contextual_hunks_only_match_complete_lines() {
+        let error = apply_update("prefixexpected\n", "@@\n-expected\n+updated\n").unwrap_err();
+        assert!(error.contains("Hunk context was not found"));
+
+        let no_newline_body =
+            "@@\n-expected\n\\ No newline at end of file\n+updated\n\\ No newline at end of file\n";
+        assert!(apply_update("expected suffix", no_newline_body).is_err());
     }
 
     #[test]

@@ -1011,6 +1011,23 @@ def test_get_available_tools():
     assert invalid not in get_available_tools({"mcp": {"enabled": True}}, [invalid])
 
 
+def test_apply_patch_schema_documents_its_exact_patch_format():
+    tools = get_available_tools({})
+    apply_patch = next(
+        tool["function"]
+        for tool in tools
+        if tool["function"]["name"] == "apply_patch"
+    )
+    description = apply_patch["description"]
+    patch_description = apply_patch["parameters"]["properties"]["patch"]["description"]
+
+    assert "*** Add File" in description
+    assert "rename/move is not supported" in description
+    assert "matching is exact" in description
+    assert "*** Update File:" in patch_description
+    assert "\\ No newline at end of file" in patch_description
+
+
 def test_planner_tools_expose_stable_ids_and_update_fields():
     tools = {
         tool["function"]["name"]: tool["function"]

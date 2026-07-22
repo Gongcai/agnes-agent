@@ -30,6 +30,25 @@ class AgentState(TypedDict):
     token_usage: Dict[str, int]
 
 
+APPLY_PATCH_DESCRIPTION = (
+    "Apply an exact Codex-style text patch to one or more UTF-8 files in the workspace. "
+    "Supported actions are *** Add File, *** Update File, and *** Delete File with relative paths; "
+    "rename/move is not supported. Update hunks begin with @@ and each hunk line must start with "
+    "a space for context, - for removal, or + for addition. Content and whitespace matching is exact, "
+    "although a missing final newline at EOF is tolerated."
+)
+
+APPLY_PATCH_ARGUMENT_DESCRIPTION = """Complete patch from *** Begin Patch through *** End Patch.
+Example:
+*** Begin Patch
+*** Update File: src/example.txt
+@@
+-old text
++new text
+*** End Patch
+Add File content lines must start with +; Delete File has no body. Insertion-only hunks require a numeric header such as @@ -1,0 +1 @@. To keep a line without a trailing newline, place \\ No newline at end of file immediately after that context, removal, or addition line."""
+
+
 def _usage_field(usage: Any, name: str) -> int:
     value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
     try:
@@ -214,12 +233,12 @@ def get_available_tools(
             "type": "function",
             "function": {
                 "name": "apply_patch",
-                "description": "Apply a Codex-style multi-file patch within the workspace.",
+                "description": APPLY_PATCH_DESCRIPTION,
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "patch": {"type": "string", "description": "Patch text from *** Begin Patch through *** End Patch."},
-                        "cwd": {"type": "string", "description": "Optional base directory; defaults to the workspace."}
+                        "patch": {"type": "string", "description": APPLY_PATCH_ARGUMENT_DESCRIPTION},
+                        "cwd": {"type": "string", "description": "Optional workspace-relative base directory; defaults to the workspace root."}
                     },
                     "required": ["patch"]
                 }

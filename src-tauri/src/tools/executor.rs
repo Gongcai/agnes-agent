@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(grep_res["matches"][0]["line"], 1);
 
         let patch_args = json!({
-            "patch": "*** Begin Patch\n*** Update File: test_write.txt\n@@\n-Hello Edited!\n\\ No newline at end of file\n+Hello Patched!\n*** Add File: added.txt\n+Added by patch\n*** End Patch\n"
+            "patch": "*** Begin Patch\n*** Update File: test_write.txt\n@@\n-Hello Edited!\n+Hello Patched!\n*** Add File: added.txt\n+Added by patch\n*** End Patch\n"
         });
         let patch_res = executor
             .execute(
