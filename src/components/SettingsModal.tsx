@@ -463,7 +463,7 @@ const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
   sandbox: {
     landlock: true,
     bwrap: "auto",
-    rlimits: true,
+    rlimits: false,
     writable_roots: ["~/.cache", "~/.local", "~/.cargo", "~/.rustup"],
   },
 };
@@ -560,7 +560,9 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
       ...DEFAULT_TOOL_POLICY.sandbox,
       ...(sandbox && typeof sandbox === "object" ? sandbox : {}),
       landlock: sandbox?.landlock !== false,
-      rlimits: sandbox?.rlimits !== false,
+      // Resource limits are opt-in because fixed low limits break compilers
+      // and package managers. Preserve an explicit legacy `true` value.
+      rlimits: sandbox?.rlimits === true,
       writable_roots: Array.isArray(sandbox?.writable_roots)
         ? sandbox.writable_roots.filter((path: unknown): path is string => typeof path === "string" && path.trim().length > 0)
         : [...DEFAULT_TOOL_POLICY.sandbox.writable_roots],

@@ -100,9 +100,13 @@ impl Default for ShellPolicy {
             approval: ApprovalTier::OnRisk,
             allowed_cwd: vec!["~/Projects".into()],
             deny_write_outside_workspace: true,
-            timeout_sec: 30,
+            // A zero value means no wall-clock deadline. Callers can still
+            // provide a bounded wait window when polling a terminal session.
+            timeout_sec: 0,
             max_output_bytes: 200_000,
-            env_allowlist: vec!["PATH".into(), "HOME".into()],
+            // An empty allowlist inherits the host environment after the
+            // sandbox removes credential-shaped variables.
+            env_allowlist: Vec::new(),
         }
     }
 }
@@ -272,17 +276,20 @@ impl Default for SandboxPolicy {
         Self {
             landlock: true,
             bwrap: BwrapMode::Auto,
-            rlimits: true,
+            // Hard process/file/memory limits are opt-in. Fixed low limits
+            // make ordinary compilers and package managers unusable.
+            rlimits: false,
             writable_roots: vec![
                 "~/.cache".into(),
                 "~/.local".into(),
                 "~/.cargo".into(),
                 "~/.rustup".into(),
             ],
-            cpu_time_sec: 60,
-            memory_bytes: 1024 * 1024 * 1024,
-            file_size_bytes: 50 * 1024 * 1024,
-            max_processes: 64,
+            // Zero means unlimited for the corresponding optional limit.
+            cpu_time_sec: 0,
+            memory_bytes: 0,
+            file_size_bytes: 0,
+            max_processes: 0,
         }
     }
 }
@@ -418,7 +425,7 @@ impl ToolPolicy {
             return self.mcp.approval;
         }
         match tool {
-            "shell" => self.shell.approval,
+            "shell" | "write_stdin" | "stop_terminal" => self.shell.approval,
             "file_read" | "list_files" | "grep" => ApprovalTier::Never,
             "file_write" | "file_edit" | "apply_patch" => self.file.approval,
             "git" => self.git.approval,

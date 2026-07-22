@@ -9,6 +9,7 @@ use crate::error::AppResult;
 use crate::secrets::SecretStore;
 use crate::tools::policy::{ApprovalTier, Risk, ToolPolicy};
 use crate::tools::sandbox::SandboxGuard;
+use crate::tools::terminal::TerminalManager;
 
 pub mod apply_patch;
 pub mod file_edit;
@@ -49,12 +50,14 @@ pub struct ToolCtx<'a> {
     pub db: &'a DbActorHandle,
     pub search_secrets: SearchSecretAccess<'a>,
     pub session_id: &'a str,
+    pub run_id: Option<&'a str>,
     pub tool_call_id: &'a str,
     pub args: &'a Value,
     /// 已合并 workspace cwd 的有效 policy（workspace 自动加入 allowed_cwd/allowed_roots）
     pub policy: &'a ToolPolicy,
     pub workspace_cwd: Option<PathBuf>,
     pub sandbox: &'a dyn SandboxGuard,
+    pub terminals: &'a TerminalManager,
 }
 
 impl<'a> ToolCtx<'a> {
@@ -109,6 +112,8 @@ pub trait BuiltinTool: Send + Sync {
 pub fn builtin_tools() -> Vec<Box<dyn BuiltinTool>> {
     vec![
         Box::new(shell::ShellTool),
+        Box::new(shell::WriteStdinTool),
+        Box::new(shell::StopTerminalTool),
         Box::new(file_read::FileReadTool),
         Box::new(file_write::FileWriteTool),
         Box::new(file_edit::FileEditTool),
@@ -218,6 +223,11 @@ pub fn is_write_op(tool: &str, args: &Value) -> bool {
             let cmd = args.get("command").and_then(|x| x.as_str()).unwrap_or("");
             shell::command_is_write(cmd)
         }
+        "write_stdin" => args
+            .get("chars")
+            .and_then(|value| value.as_str())
+            .is_some_and(|chars| !chars.is_empty()),
+        "stop_terminal" => false,
         "git" => {
             let arr = args.get("args").and_then(|x| x.as_array());
             const WRITE_CMDS: &[&str] = &[
@@ -336,6 +346,8 @@ mod tests {
             names,
             vec![
                 "shell",
+                "write_stdin",
+                "stop_terminal",
                 "file_read",
                 "file_write",
                 "file_edit",

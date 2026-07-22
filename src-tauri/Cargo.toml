@@ -31,7 +31,7 @@ chrono = "0.4"
 chrono-tz = "0.10"
 globset = "0.4"
 landlock = "0.4.5"
-nix = { version = "0.31", features = ["resource"] }
+nix = { version = "0.31", features = ["process", "resource", "signal"] }
 regex = "1"
 walkdir = "2"
 sha2 = "0.10"
@@ -55,6 +55,7 @@ chromiumoxide = "0.9.1"
 open = "5"
 mime_guess = "2"
 zstd = "0.13"
+portable-pty = "0.9.0"
 
 [dev-dependencies]
 tempfile = "3"

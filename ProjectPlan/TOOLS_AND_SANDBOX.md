@@ -33,6 +33,10 @@
 | `grep` | 递归内容搜索（只读，ripgrep 风式） | Low |
 | `apply_patch` | 统一 diff 补丁应用（codex 风格，多段一次性改） | Medium |
 
+Shell 使用 PTY 会话运行，短命令返回完整输出，长命令返回 `session_id`；模型可通过
+`write_stdin` 增量轮询或发送输入，并通过 `stop_terminal` 终止会话及其进程组。每个
+会话输出均有策略上限，超出部分保留截断标记。
+
 > `memory_search`、`memory_create`、`memory_update` 与 `MEMORY.md` 专用工具已随记忆系统实现；只读 `web_search/web_fetch/browser_open` 见 `WEB_AND_MCP.md`，有状态浏览器操作与 `ssh` 仍留待后续单独设计。
 
 ### 工具模块拆分
@@ -148,10 +152,21 @@ pub struct NetworkPolicy { pub allow: bool }  // 默认 true（默认开）
 
 ### 6.3 资源限额（setrlimit，crate `nix`）
 对 shell/git 子进程设：
-- `RLIMIT_CPU`（CPU 秒，默认 60s）
-- `RLIMIT_AS`（虚拟内存，默认 1GB）
-- `RLIMIT_FSIZE`（单文件写大小，默认 50MB）
-- `RLIMIT_NPROC`（子进程数，默认 64）
+- `RLIMIT_CPU`（CPU 秒）
+- `RLIMIT_AS`（虚拟内存）
+- `RLIMIT_FSIZE`（单文件写大小）
+- `RLIMIT_NPROC`（子进程数）
+
+`sandbox.rlimits` 默认关闭，且各数值为 `0` 时表示该项不限制。这样普通编译器、
+`uv`/包管理器和测试运行器不会被固定的低上限阻断；需要资源上限时由角色策略显式开启。
+
+### 6.3.1 受保护的工作区元数据
+
+原生文件工具及普通 shell 不得写入 workspace 下的 `.git`、`.codex`、`.agents`。
+Linux 且 bwrap 可用时，普通命令会在 workspace 可写绑定之后对这些已存在路径重新只读挂载，
+避免进程绕过工具层直接修改代理/版本库元数据。专用 `git` 工具使用独立的 sandbox 命令通道，
+保留 Git 正常更新 `.git` 的能力，同时继续执行 Git 子命令白名单、hooks/editor 禁用和审批策略。
+会话明确选择 `full_access` 时不施加这层元数据保护，与该模式关闭文件隔离的既有语义一致。
 
 ### 6.4 git 加固（缺口 #4）
 - `env_clear` + `env_allowlist`（与 shell 一致）。
@@ -218,7 +233,7 @@ pub struct SandboxPolicy {
 pub struct NetworkPolicy { pub allow: bool }
 ```
 
-`file_edit`/`apply_patch` 复用 `file.approval`（默认 `OnWrite`）；`list_files`/`grep` 固定为只读免审批。这样 UI 仍保持 Shell / 文件 / Git 三个能力分组，同时审批判定覆盖所有八个工具。
+`file_edit`/`apply_patch` 复用 `file.approval`（默认 `OnWrite`）；`list_files`/`grep` 固定为只读免审批。这样 UI 仍保持 Shell / 文件 / Git 三个能力分组，同时审批判定覆盖所有已注册工具。
 
 ## 八、审批 UI 与取消
 - 现有审批卡片 + 取消信号机制保留（已修好的 select! 不动）。
@@ -242,8 +257,8 @@ pub struct NetworkPolicy { pub allow: bool }
 ## 十一、实施结果与安全边界（2026-07-16）
 
 - Phase A–E 已完成；对应提交：`4b4a056`、`1e65bcf`、`a02fa80`、`e070c4d`、`dc6cce5`。
-- Rust 内置工具共 24 个：基础文件/命令/Git 8 个、记忆 5 个、日历待办 8 个、联网研究 3 个；Python sidecar 已声明同一组 schema。记忆工具只访问当前 session 所属 Agent，不能接受任意路径或外部 `agent_id`。结构化记忆写工具固定由系统生成创建人和时间等字段。`web_search/web_fetch/browser_open` 仅访问公开网络，受 Web capability、总网络开关、SSRF 防护、响应/正文上限和提示词注入隔离共同约束；浏览器工具额外使用临时无登录 Profile 和只读请求拦截。
-- Linux 已验证 Landlock workspace 写边界、symlink 逃逸拒绝、软链接额外可写根目录、rlimit 文件大小上限，以及 bubblewrap loopback 网络隔离。
+- Rust 内置工具共 26 个：基础文件/命令/Git 10 个（含 PTY 终端控制）、记忆 5 个、日历待办 8 个、联网研究 3 个；Python sidecar 已声明同一组 schema。记忆工具只访问当前 session 所属 Agent，不能接受任意路径或外部 `agent_id`。结构化记忆写工具固定由系统生成创建人和时间等字段。`web_search/web_fetch/browser_open` 仅访问公开网络，受 Web capability、总网络开关、SSRF 防护、响应/正文上限和提示词注入隔离共同约束；浏览器工具额外使用临时无登录 Profile 和只读请求拦截。
+- Linux 已验证 Landlock workspace 写边界、symlink 逃逸拒绝、软链接额外可写根目录、bubblewrap loopback 网络隔离、受保护元数据只读覆盖，以及 bubblewrap + PTY 组合运行。
 - 原生文件工具由路径能力层保护；Landlock 仅施加给 shell/git 子进程，避免污染桌面主进程。
 - 非 Linux 或 Landlock 不可用时，文件工具仍受严格路径检查；shell/git 的内核级文件隔离会降级。bubblewrap 不可用且网络关闭时仅能启发式拒绝已知网络动作，不能视为完整网络沙箱。
 - Windows Job Object / Restricted Token 仍属于 Phase F，不在本轮实现范围内。

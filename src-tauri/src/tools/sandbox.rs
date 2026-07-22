@@ -33,6 +33,54 @@ struct ProcessSandboxSpec {
     limits: ResourceLimits,
 }
 
+/// Fully resolved launch specification shared by pipe-backed and PTY-backed
+/// runners. Sandbox wrapping and environment filtering must stay identical for
+/// both execution paths.
+pub struct SandboxCommand {
+    program: OsString,
+    args: Vec<OsString>,
+    env: Vec<(OsString, OsString)>,
+}
+
+impl SandboxCommand {
+    #[cfg(test)]
+    pub(crate) fn direct(program: String, args: Vec<String>, env: Vec<(String, String)>) -> Self {
+        Self {
+            program: program.into(),
+            args: args.into_iter().map(Into::into).collect(),
+            env: env
+                .into_iter()
+                .map(|(name, value)| (name.into(), value.into()))
+                .collect(),
+        }
+    }
+
+    pub fn into_tokio(self) -> Command {
+        let mut command = Command::new(self.program);
+        command.args(self.args);
+        command.env_clear();
+        command.envs(self.env);
+        command.kill_on_drop(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.as_std_mut().process_group(0);
+        }
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        command
+    }
+
+    pub fn into_pty(self) -> portable_pty::CommandBuilder {
+        let mut command = portable_pty::CommandBuilder::new(self.program);
+        command.args(self.args);
+        command.env_clear();
+        for (name, value) in self.env {
+            command.env(name, value);
+        }
+        command
+    }
+}
+
 enum ProcessIsolation {
     Allowed,
     Bubblewrap {
@@ -52,7 +100,28 @@ pub trait SandboxGuard: Send + Sync {
         program: &str,
         args: &[String],
         env_allowlist: &[String],
-    ) -> AppResult<Command>;
+    ) -> AppResult<Command> {
+        Ok(self
+            .command_spec(program, args, env_allowlist)?
+            .into_tokio())
+    }
+    fn command_spec(
+        &self,
+        program: &str,
+        args: &[String],
+        env_allowlist: &[String],
+    ) -> AppResult<SandboxCommand>;
+    /// Git is the one built-in tool allowed to update repository metadata.
+    fn git_command(
+        &self,
+        program: &str,
+        args: &[String],
+        env_allowlist: &[String],
+    ) -> AppResult<Command> {
+        Ok(self
+            .command_spec(program, args, env_allowlist)?
+            .into_tokio())
+    }
 }
 
 pub struct PolicySandbox {
@@ -61,6 +130,7 @@ pub struct PolicySandbox {
     cwd_roots: Vec<PathBuf>,
     process_spec: ProcessSandboxSpec,
     process_isolation: ProcessIsolation,
+    protected_paths: Vec<PathBuf>,
 }
 
 impl PolicySandbox {
@@ -136,6 +206,20 @@ impl PolicySandbox {
                 .unwrap_or(ProcessIsolation::RequiredUnavailable),
         };
 
+        let protect_metadata = policy.shell.deny_write_outside_workspace
+            || policy.sandbox.landlock
+            || policy.sandbox.bwrap != BwrapMode::Disabled;
+        let protected_paths = protect_metadata
+            .then(|| workspace_cwd.map(normalize_root))
+            .flatten()
+            .into_iter()
+            .flat_map(|workspace| {
+                [".git", ".codex", ".agents"]
+                    .into_iter()
+                    .map(move |name| normalize_root(&workspace.join(name)))
+            })
+            .collect();
+
         Self {
             read_roots,
             write_roots,
@@ -153,6 +237,7 @@ impl PolicySandbox {
                 },
             },
             process_isolation,
+            protected_paths,
         }
     }
 }
@@ -163,6 +248,17 @@ impl SandboxGuard for PolicySandbox {
     }
 
     fn check_write(&self, path: &Path) -> Result<(), String> {
+        let target = crate::tools::builtin::normalize_path(path);
+        if self
+            .protected_paths
+            .iter()
+            .any(|protected| target.starts_with(protected))
+        {
+            return Err(format!(
+                "Sandbox denied permission to write protected metadata path `{}`",
+                target.display()
+            ));
+        }
         check_under_roots(path, &self.write_roots, "write")
     }
 
@@ -170,12 +266,35 @@ impl SandboxGuard for PolicySandbox {
         check_under_roots(path, &self.cwd_roots, "use as a working directory")
     }
 
-    fn command(
+    fn command_spec(
+        &self,
+        program: &str,
+        args: &[String],
+        env_allowlist: &[String],
+    ) -> AppResult<SandboxCommand> {
+        self.command_spec_internal(program, args, env_allowlist, false)
+    }
+
+    fn git_command(
         &self,
         program: &str,
         args: &[String],
         env_allowlist: &[String],
     ) -> AppResult<Command> {
+        Ok(self
+            .command_spec_internal(program, args, env_allowlist, true)?
+            .into_tokio())
+    }
+}
+
+impl PolicySandbox {
+    fn command_spec_internal(
+        &self,
+        program: &str,
+        args: &[String],
+        env_allowlist: &[String],
+        allow_protected_metadata: bool,
+    ) -> AppResult<SandboxCommand> {
         match &self.process_isolation {
             ProcessIsolation::RequiredUnavailable => {
                 return Err(AppError::Other(
@@ -215,54 +334,95 @@ impl SandboxGuard for PolicySandbox {
             )
         };
 
-        let mut command = if let ProcessIsolation::Bubblewrap {
+        let (launch_program, launch_args) = if let ProcessIsolation::Bubblewrap {
             path,
             isolate_network,
         } = &self.process_isolation
         {
-            let mut command = Command::new(path);
+            let mut command_args = Vec::new();
             if *isolate_network {
-                command.arg("--unshare-net");
+                command_args.push(OsString::from("--unshare-net"));
             }
-            command.args([
-                "--unshare-pid",
-                "--die-with-parent",
-                "--new-session",
-                "--ro-bind",
-                "/",
-                "/",
-                "--dev-bind",
-                "/dev",
-                "/dev",
-                "--proc",
-                "/proc",
-            ]);
+            command_args.extend(
+                [
+                    "--unshare-pid",
+                    "--die-with-parent",
+                    "--new-session",
+                    "--ro-bind",
+                    "/",
+                    "/",
+                    "--dev-bind",
+                    "/dev",
+                    "/dev",
+                    "--proc",
+                    "/proc",
+                ]
+                .into_iter()
+                .map(OsString::from),
+            );
             for path in &self.process_spec.read_write {
                 if !path.exists() || path.starts_with("/dev") || path == Path::new("/") {
                     continue;
                 }
-                command.arg("--bind").arg(path).arg(path);
+                command_args.push(OsString::from("--bind"));
+                command_args.push(path.clone().into_os_string());
+                command_args.push(path.clone().into_os_string());
             }
-            command.arg("--").arg(&target).args(&target_args);
-            command
+            if !allow_protected_metadata {
+                for path in &self.protected_paths {
+                    if path.exists() {
+                        command_args.push(OsString::from("--ro-bind"));
+                        command_args.push(path.clone().into_os_string());
+                        command_args.push(path.clone().into_os_string());
+                    }
+                }
+            }
+            command_args.push(OsString::from("--"));
+            command_args.push(target.clone());
+            command_args.extend(target_args);
+            (path.clone().into_os_string(), command_args)
         } else {
-            let mut command = Command::new(&target);
-            command.args(&target_args);
-            command
+            (target, target_args)
         };
 
-        command.env_clear();
-        for name in env_allowlist {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
+        let mut env = Vec::new();
+        if env_allowlist.is_empty() {
+            for (name, value) in std::env::vars_os() {
+                if safe_environment_name(&name) {
+                    env.push((name, value));
+                }
+            }
+        } else {
+            for name in env_allowlist {
+                if safe_environment_name(std::ffi::OsStr::new(name)) {
+                    if let Some(value) = std::env::var_os(name) {
+                        env.push((OsString::from(name), value));
+                    }
+                }
             }
         }
         if let Some(config) = config {
-            command.env(SANDBOX_CONFIG_ENV, config);
+            env.push((OsString::from(SANDBOX_CONFIG_ENV), OsString::from(config)));
         }
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        Ok(command)
+        Ok(SandboxCommand {
+            program: launch_program,
+            args: launch_args,
+            env,
+        })
     }
+}
+
+fn safe_environment_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    if name == SANDBOX_CONFIG_ENV || name == "AGENT_PROTOCOL_TOKEN" || name == "AGENT_WS_URL" {
+        return false;
+    }
+    let upper = name.to_ascii_uppercase();
+    !["KEY", "SECRET", "TOKEN"]
+        .iter()
+        .any(|marker| upper.contains(marker))
 }
 
 fn detect_bwrap() -> Option<PathBuf> {
@@ -581,10 +741,18 @@ fn apply_resource_limits(limits: &ResourceLimits) -> Result<(), String> {
         setrlimit(resource, limit, limit).map_err(|error| error.to_string())
     }
 
-    set_limit(Resource::RLIMIT_CPU, limits.cpu_time_sec)?;
-    set_limit(Resource::RLIMIT_AS, limits.memory_bytes)?;
-    set_limit(Resource::RLIMIT_FSIZE, limits.file_size_bytes)?;
-    set_limit(Resource::RLIMIT_NPROC, limits.max_processes)?;
+    if limits.cpu_time_sec > 0 {
+        set_limit(Resource::RLIMIT_CPU, limits.cpu_time_sec)?;
+    }
+    if limits.memory_bytes > 0 {
+        set_limit(Resource::RLIMIT_AS, limits.memory_bytes)?;
+    }
+    if limits.file_size_bytes > 0 {
+        set_limit(Resource::RLIMIT_FSIZE, limits.file_size_bytes)?;
+    }
+    if limits.max_processes > 0 {
+        set_limit(Resource::RLIMIT_NPROC, limits.max_processes)?;
+    }
     Ok(())
 }
 
@@ -606,8 +774,12 @@ fn apply_resource_limits(limits: &ResourceLimits) -> Result<(), String> {
         setrlimit(resource, limit, limit).map_err(|error| error.to_string())
     }
 
-    set_limit(Resource::RLIMIT_CPU, limits.cpu_time_sec)?;
-    set_limit(Resource::RLIMIT_FSIZE, limits.file_size_bytes)?;
+    if limits.cpu_time_sec > 0 {
+        set_limit(Resource::RLIMIT_CPU, limits.cpu_time_sec)?;
+    }
+    if limits.file_size_bytes > 0 {
+        set_limit(Resource::RLIMIT_FSIZE, limits.file_size_bytes)?;
+    }
     Ok(())
 }
 
@@ -657,6 +829,11 @@ mod tests {
         assert!(sandbox.check_read(&root.join("Cargo.toml")).is_ok());
         assert!(sandbox.check_write(&workspace.join("output.txt")).is_ok());
         assert!(sandbox.check_write(&root.join("outside.txt")).is_err());
+        for protected in [".git", ".codex", ".agents"] {
+            assert!(sandbox
+                .check_write(&workspace.join(protected).join("metadata"))
+                .is_err());
+        }
 
         #[cfg(unix)]
         {
@@ -671,6 +848,38 @@ mod tests {
             let _ = std::fs::remove_file(link);
             let _ = std::fs::remove_dir_all(outside);
         }
+    }
+
+    #[test]
+    fn inherited_environment_keeps_runtime_paths_and_filters_credentials() {
+        assert!(safe_environment_name(std::ffi::OsStr::new("PATH")));
+        assert!(safe_environment_name(std::ffi::OsStr::new("UV_CACHE_DIR")));
+        assert!(!safe_environment_name(std::ffi::OsStr::new(
+            "OPENAI_API_KEY"
+        )));
+        assert!(!safe_environment_name(std::ffi::OsStr::new(
+            "CLIENT_SECRET"
+        )));
+        assert!(!safe_environment_name(std::ffi::OsStr::new("ACCESS_TOKEN")));
+        assert!(!safe_environment_name(std::ffi::OsStr::new(
+            "AGENT_PROTOCOL_TOKEN"
+        )));
+
+        let mut policy = ToolPolicy::default();
+        policy.sandbox.bwrap = BwrapMode::Disabled;
+        policy.sandbox.landlock = false;
+        let sandbox = PolicySandbox::new(&policy, None);
+        let command = sandbox.command_spec("true", &[], &[]).unwrap();
+        if let Some(path) = std::env::var_os("PATH") {
+            assert!(command
+                .env
+                .iter()
+                .any(|(name, value)| name == "PATH" && value == &path));
+        }
+        assert!(command
+            .env
+            .iter()
+            .all(|(name, _)| safe_environment_name(name)));
     }
 
     #[cfg(unix)]
@@ -803,6 +1012,106 @@ mod tests {
         assert!(external_cache.join("uv/package-manager.lock").is_file());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn bubblewrap_protects_metadata_but_git_command_can_update_it() {
+        if detect_bwrap().is_none() {
+            return;
+        }
+        let workspace = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("bwrap-protected-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&workspace)
+            .status()
+            .unwrap()
+            .success());
+
+        let mut policy = ToolPolicy::default();
+        policy.sandbox.landlock = false;
+        policy.sandbox.rlimits = false;
+        policy.shell.allowed_cwd = vec![workspace.to_string_lossy().to_string()];
+        policy.file.allowed_roots = vec![workspace.to_string_lossy().to_string()];
+        let sandbox = PolicySandbox::new(&policy, Some(&workspace));
+
+        let mut generic = sandbox
+            .command(
+                "touch",
+                &[".git/blocked".to_string()],
+                &["PATH".to_string()],
+            )
+            .unwrap();
+        generic.current_dir(&workspace);
+        assert!(!generic.status().await.unwrap().success());
+        assert!(!workspace.join(".git/blocked").exists());
+
+        let mut git = sandbox
+            .git_command(
+                "git",
+                &[
+                    "config".to_string(),
+                    "sandbox.test".to_string(),
+                    "allowed".to_string(),
+                ],
+                &["PATH".to_string()],
+            )
+            .unwrap();
+        git.current_dir(&workspace);
+        assert!(git.status().await.unwrap().success());
+
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn bubblewrap_command_runs_inside_a_pty() {
+        if detect_bwrap().is_none() {
+            return;
+        }
+        let workspace = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("bwrap-pty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut policy = ToolPolicy::default();
+        policy.sandbox.landlock = false;
+        policy.sandbox.rlimits = false;
+        policy.shell.allowed_cwd = vec![workspace.to_string_lossy().to_string()];
+        policy.file.allowed_roots = vec![workspace.to_string_lossy().to_string()];
+        let sandbox = PolicySandbox::new(&policy, Some(&workspace));
+        let command = sandbox
+            .command_spec(
+                "bash",
+                &["-c".to_string(), "printf bwrap-pty-ok".to_string()],
+                &["PATH".to_string(), "HOME".to_string()],
+            )
+            .unwrap();
+        let terminals = crate::tools::terminal::TerminalManager::default();
+        let id = terminals
+            .spawn(command, &workspace, "owner", "run", 1024, 0)
+            .unwrap();
+
+        let mut completed = None;
+        for _ in 0..100 {
+            let poll = terminals
+                .poll(&id, "owner", std::time::Duration::from_millis(50))
+                .await
+                .unwrap();
+            if !poll.running {
+                completed = Some(poll);
+                break;
+            }
+        }
+        let poll = completed.expect("bubblewrap PTY command did not exit");
+        assert_eq!(poll.exit_code, Some(0), "{}", poll.output);
+        assert!(poll.output.contains("bwrap-pty-ok"));
+
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[cfg(target_os = "linux")]

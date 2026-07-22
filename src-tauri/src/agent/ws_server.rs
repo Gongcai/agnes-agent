@@ -169,7 +169,7 @@ async fn handle_conn<R: tauri::Runtime>(
     manager.register_active_sender(tx);
 
     // 启动一个后台任务处理消息发送给 Python
-    let mut writer_task = tokio::spawn(async move {
+    let writer_task = tokio::spawn(async move {
         while let Some(env) = rx.recv().await {
             let raw = match serde_json::to_string(&env) {
                 Ok(r) => r,
@@ -182,9 +182,22 @@ async fn handle_conn<R: tauri::Runtime>(
     });
 
     let tool_executor = ToolExecutor::new(db.clone(), mcp, secrets);
+    let mut tool_tasks: HashMap<String, Vec<tokio::task::JoinHandle<()>>> = HashMap::new();
 
     // 读取循环
     while let Some(msg) = ws_read.next().await {
+        for tasks in tool_tasks.values_mut() {
+            let mut index = 0;
+            while index < tasks.len() {
+                if tasks[index].is_finished() {
+                    let task = tasks.swap_remove(index);
+                    let _ = task.await;
+                } else {
+                    index += 1;
+                }
+            }
+        }
+        tool_tasks.retain(|_, tasks| !tasks.is_empty());
         let msg = match msg {
             Ok(Message::Text(text)) => text,
             Ok(Message::Close(_)) | Err(_) => break,
@@ -418,95 +431,105 @@ async fn handle_conn<R: tauri::Runtime>(
             }
 
             msg_type::TOOL_CALL_REQUEST => {
-                let tc_id = env
-                    .payload
-                    .get("id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let tool_name = env
-                    .payload
-                    .get("tool")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let args = env
-                    .payload
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null);
-                let public_args = crate::tools::builtin::memory_entry::public_arguments(&args);
+                let db = db.clone();
+                let app_handle = app_handle.clone();
+                let manager = manager.clone();
+                let active_runs = active_runs.clone();
+                let tool_executor = tool_executor.clone();
+                let task_run_id = run_id.clone();
+                let task = tokio::spawn(async move {
+                    let tc_id = env
+                        .payload
+                        .get("id")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let tool_name = env
+                        .payload
+                        .get("tool")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let args = env
+                        .payload
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    let public_args = crate::tools::builtin::memory_entry::public_arguments(&args);
 
-                // 确保 ActiveRun 已创建（AI 首个输出可能是工具调用，此前无 ASSISTANT_DELTA）。
-                // 否则取消时无 ActiveRun 可 drain、状态不更新，消息会消失。
-                {
-                    let mut runs = active_runs.lock().await;
-                    if !runs.contains_key(&run_id) {
-                        let pending_id = manager.peek_run(&run_id);
-                        if let Some(id) = pending_id {
-                            runs.insert(
-                                run_id.clone(),
-                                ActiveRun {
-                                    assistant_message_id: id,
-                                    session_id: session_id.clone(),
-                                    accumulated_text: String::new(),
-                                    accumulated_thought: String::new(),
-                                    current_ordinal: 0,
-                                    in_thought: false,
-                                },
-                            );
-                        }
-                    }
-                }
-
-                // 获取 Agent 的 ToolPolicy
-                let mut policy = ToolPolicy::default();
-                let mut permission_mode = PermissionMode::default();
-                if let Ok(Some(sess)) = db.get_session(session_id.clone()).await {
-                    permission_mode = sess.permission_mode.parse().unwrap_or_default();
-                    if let Ok(agents) = db.list_agents().await {
-                        if let Some(agent) = agents.iter().find(|a| a.id == sess.agent_id) {
-                            if let Ok(parsed) =
-                                serde_json::from_str::<ToolPolicy>(&agent.tool_policy)
-                            {
-                                policy = parsed;
+                    // 确保 ActiveRun 已创建（AI 首个输出可能是工具调用，此前无 ASSISTANT_DELTA）。
+                    // 否则取消时无 ActiveRun 可 drain、状态不更新，消息会消失。
+                    {
+                        let mut runs = active_runs.lock().await;
+                        if !runs.contains_key(&run_id) {
+                            let pending_id = manager.peek_run(&run_id);
+                            if let Some(id) = pending_id {
+                                runs.insert(
+                                    run_id.clone(),
+                                    ActiveRun {
+                                        assistant_message_id: id,
+                                        session_id: session_id.clone(),
+                                        accumulated_text: String::new(),
+                                        accumulated_thought: String::new(),
+                                        current_ordinal: 0,
+                                        in_thought: false,
+                                    },
+                                );
                             }
                         }
                     }
-                }
-                policy = permission_mode.effective_policy(&policy);
 
-                // Resolve approval from the session permission mode.
-                let risk = crate::tools::builtin::compute_risk(&tool_name, &args);
-                let role_policy_requires_approval =
-                    crate::tools::builtin::needs_approval(&tool_name, &args, &policy);
-                let approval_decision =
-                    crate::tools::permissions::approval_decision(permission_mode, &tool_name, risk);
-                let workspace_cwd =
-                    crate::tools::workspace::resolve_workspace_cwd(&db, &session_id).await;
-                let diff_preview = crate::tools::review::preview_tool_call(
-                    &tool_name,
-                    &args,
-                    workspace_cwd.as_deref(),
-                    &policy,
-                )
-                .await;
-                let effective_cwd = args
-                    .get("cwd")
-                    .and_then(|value| value.as_str())
-                    .filter(|cwd| !cwd.is_empty())
-                    .map(ToString::to_string)
-                    .or_else(|| workspace_cwd.map(|path| path.to_string_lossy().to_string()))
-                    .or_else(|| policy.shell.allowed_cwd.first().cloned());
+                    // 获取 Agent 的 ToolPolicy
+                    let mut policy = ToolPolicy::default();
+                    let mut permission_mode = PermissionMode::default();
+                    if let Ok(Some(sess)) = db.get_session(session_id.clone()).await {
+                        permission_mode = sess.permission_mode.parse().unwrap_or_default();
+                        if let Ok(agents) = db.list_agents().await {
+                            if let Some(agent) = agents.iter().find(|a| a.id == sess.agent_id) {
+                                if let Ok(parsed) =
+                                    serde_json::from_str::<ToolPolicy>(&agent.tool_policy)
+                                {
+                                    policy = parsed;
+                                }
+                            }
+                        }
+                    }
+                    policy = permission_mode.effective_policy(&policy);
 
-                // Emit the tool call before approval or execution so every permission mode
-                // gets a live card in the frontend.
-                let tool_event_name = if approval_decision.needs_approval {
-                    "agent://tool_call_pending"
-                } else {
-                    "agent://tool_call_started"
-                };
-                let _ = app_handle.emit(tool_event_name, json!({
+                    // Resolve approval from the session permission mode.
+                    let risk = crate::tools::builtin::compute_risk(&tool_name, &args);
+                    let role_policy_requires_approval =
+                        crate::tools::builtin::needs_approval(&tool_name, &args, &policy);
+                    let approval_decision = crate::tools::permissions::approval_decision(
+                        permission_mode,
+                        &tool_name,
+                        risk,
+                    );
+                    let workspace_cwd =
+                        crate::tools::workspace::resolve_workspace_cwd(&db, &session_id).await;
+                    let diff_preview = crate::tools::review::preview_tool_call(
+                        &tool_name,
+                        &args,
+                        workspace_cwd.as_deref(),
+                        &policy,
+                    )
+                    .await;
+                    let effective_cwd = args
+                        .get("cwd")
+                        .and_then(|value| value.as_str())
+                        .filter(|cwd| !cwd.is_empty())
+                        .map(ToString::to_string)
+                        .or_else(|| workspace_cwd.map(|path| path.to_string_lossy().to_string()))
+                        .or_else(|| policy.shell.allowed_cwd.first().cloned());
+
+                    // Emit the tool call before approval or execution so every permission mode
+                    // gets a live card in the frontend.
+                    let tool_event_name = if approval_decision.needs_approval {
+                        "agent://tool_call_pending"
+                    } else {
+                        "agent://tool_call_started"
+                    };
+                    let _ = app_handle.emit(tool_event_name, json!({
                     "session_id": session_id.clone(),
                     "run_id": run_id.clone(),
                     "tool_call_id": tc_id.clone(),
@@ -523,62 +546,92 @@ async fn handle_conn<R: tauri::Runtime>(
                     "diff": diff_preview,
                     "status": if approval_decision.needs_approval { "pending_approval" } else { "running" },
                 }));
-                if approval_decision.needs_approval {
-                    if let Some(state) = app_handle.try_state::<AppState>() {
-                        if let Err(error) = state
-                            .notifications
-                            .notify_approval_requested(&session_id, &tc_id, &tool_name)
-                            .await
-                        {
-                            eprintln!("[notifications] failed to record approval request: {error}");
+                    if approval_decision.needs_approval {
+                        if let Some(state) = app_handle.try_state::<AppState>() {
+                            if let Err(error) = state
+                                .notifications
+                                .notify_approval_requested(&session_id, &tc_id, &tool_name)
+                                .await
+                            {
+                                eprintln!(
+                                    "[notifications] failed to record approval request: {error}"
+                                );
+                            }
                         }
                     }
-                }
 
-                let mut approved = true;
-                let mut cancelled_during_approval = false;
-                if approval_decision.needs_approval {
-                    // 1. 注册 Oneshot Channel 并将协程挂起
-                    let (approval_tx, approval_rx) = tokio::sync::oneshot::channel::<bool>();
-                    manager.register_approval(tc_id.clone(), approval_tx);
-                    // 记录 run_id → tc_id，cancel 时据此清理
-                    manager.set_run_approval_tc(run_id.clone(), tc_id.clone());
-                    // 注册取消信号：cancel_run 触发以解除下方 select 阻塞
-                    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+                    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
                     manager.set_run_cancel_signal(run_id.clone(), cancel_tx);
-
-                    // 2. 等待用户点击按钮释放，或 cancel_run 触发取消信号
-                    tokio::select! {
-                        r = approval_rx => { approved = r.unwrap_or(false); }
-                        _ = cancel_rx => { cancelled_during_approval = true; }
+                    if manager.is_run_cancelled(&run_id) {
+                        return;
                     }
-                    // 清理：未消费的 approval_tx 与 run→tc 映射（已消费则 no-op）
-                    let _ = manager.resolve_approval(&tc_id, false);
-                    let _ = manager.take_run_approval_tc(&run_id);
-                }
 
-                // 取消：不执行工具、不发 TOOL_RESULT，让 RUN_ERROR 清理消息状态
-                if cancelled_during_approval {
-                    continue;
-                }
+                    let mut approved = true;
+                    let mut cancelled_during_approval = false;
+                    if approval_decision.needs_approval {
+                        // 1. 注册 Oneshot Channel 并将协程挂起
+                        let (approval_tx, approval_rx) = tokio::sync::oneshot::channel::<bool>();
+                        manager.register_approval(tc_id.clone(), approval_tx);
+                        // 记录 run_id → tc_id，cancel 时据此清理
+                        manager.set_run_approval_tc(run_id.clone(), tc_id.clone());
+                        // 2. 等待用户点击按钮释放，或 cancel_run 触发取消信号
+                        tokio::select! {
+                            r = approval_rx => { approved = r.unwrap_or(false); }
+                            _ = &mut cancel_rx => { cancelled_during_approval = true; }
+                        }
+                        // 清理：未消费的 approval_tx 与 run→tc 映射（已消费则 no-op）
+                        let _ = manager.resolve_approval(&tc_id, false);
+                        let _ = manager.take_run_approval_tc(&run_id);
+                    }
 
-                if !approved {
-                    // 用户拒绝执行
-                    // 记录拒绝审计
-                    let tc_log = NewToolCall {
-                        id: tc_id.clone(),
-                        session_id: session_id.clone(),
-                        message_id: None,
-                        tool: tool_name.clone(),
-                        params: Some(public_args.to_string()),
-                        status: "rejected".to_string(),
-                        risk_level: Some(risk.as_str().to_string()),
-                        approval_policy_snapshot: Some(crate::tools::permissions::audit_snapshot(
-                            permission_mode,
-                            &policy,
-                        )),
-                    };
-                    let _ = db.insert_tool_call(tc_log).await;
+                    // 取消：不执行工具、不发 TOOL_RESULT，让 RUN_ERROR 清理消息状态
+                    if cancelled_during_approval {
+                        return;
+                    }
+
+                    if !approved {
+                        // 用户拒绝执行
+                        // 记录拒绝审计
+                        let tc_log = NewToolCall {
+                            id: tc_id.clone(),
+                            session_id: session_id.clone(),
+                            message_id: None,
+                            tool: tool_name.clone(),
+                            params: Some(public_args.to_string()),
+                            status: "rejected".to_string(),
+                            risk_level: Some(risk.as_str().to_string()),
+                            approval_policy_snapshot: Some(
+                                crate::tools::permissions::audit_snapshot(permission_mode, &policy),
+                            ),
+                        };
+                        let _ = db.insert_tool_call(tc_log).await;
+                        let _ = app_handle.emit(
+                            "agent://tool_result",
+                            json!({
+                                "session_id": session_id.clone(),
+                                "run_id": run_id.clone(),
+                                "tool_call_id": tc_id.clone(),
+                                "tool": tool_name.clone(),
+                                "status": "denied",
+                                "output": "User rejected tool execution"
+                            }),
+                        );
+
+                        let reply = Envelope::reply(
+                            msg_type::TOOL_RESULT,
+                            json!({
+                                "id": tc_id,
+                                "exit_code": -2,
+                                "stdout": "",
+                                "stderr": "User rejected tool execution",
+                            }),
+                        );
+                        let _ = manager.send_tool_result_if_active(&run_id, reply);
+                        manager.clear_run_cancel_signal(&run_id);
+                        return;
+                    }
+
+                    // 前端展示正在执行
                     let _ = app_handle.emit(
                         "agent://tool_result",
                         json!({
@@ -586,170 +639,156 @@ async fn handle_conn<R: tauri::Runtime>(
                             "run_id": run_id.clone(),
                             "tool_call_id": tc_id.clone(),
                             "tool": tool_name.clone(),
-                            "status": "denied",
-                            "output": "User rejected tool execution"
+                            "status": "running",
+                            "output": "Executing..."
                         }),
                     );
 
-                    let reply = Envelope::reply(
-                        msg_type::TOOL_RESULT,
-                        json!({
-                            "id": tc_id,
-                            "exit_code": -2,
-                            "stdout": "",
-                            "stderr": "User rejected tool execution",
-                        }),
-                    );
-                    let _ = manager.send_to_agent(reply);
-                    continue;
-                }
+                    // 获取当前 ActiveRun 的 assistant_message_id，作为外键绑定到 tool_calls 审计表
+                    let mut assistant_msg_id = None;
+                    let runs = active_runs.lock().await;
+                    if let Some(run) = runs.get(&run_id) {
+                        assistant_msg_id = Some(run.assistant_message_id.clone());
+                    }
+                    drop(runs);
 
-                // 前端展示正在执行
-                let _ = app_handle.emit(
-                    "agent://tool_result",
-                    json!({
-                        "session_id": session_id.clone(),
-                        "run_id": run_id.clone(),
-                        "tool_call_id": tc_id.clone(),
-                        "tool": tool_name.clone(),
-                        "status": "running",
-                        "output": "Executing..."
-                    }),
-                );
+                    // 执行物理调用
+                    let exec_res = tokio::select! {
+                        result = tool_executor.execute_with_permission_mode(
+                            &session_id,
+                            Some(&run_id),
+                            assistant_msg_id.as_deref(),
+                            &tc_id,
+                            &tool_name,
+                            &args,
+                            &policy,
+                            permission_mode,
+                        ) => result,
+                        _ = &mut cancel_rx => {
+                            tool_executor.stop_run(&run_id);
+                            return;
+                        }
+                    };
+                    if manager.is_run_cancelled(&run_id) {
+                        tool_executor.stop_run(&run_id);
+                        return;
+                    }
+                    manager.clear_run_cancel_signal(&run_id);
 
-                // 获取当前 ActiveRun 的 assistant_message_id，作为外键绑定到 tool_calls 审计表
-                let mut assistant_msg_id = None;
-                let runs = active_runs.lock().await;
-                if let Some(run) = runs.get(&run_id) {
-                    assistant_msg_id = Some(run.assistant_message_id.clone());
-                }
-                drop(runs);
+                    // 准备回传 Python 的结果
+                    let reply_payload = match exec_res {
+                        Ok(val) => {
+                            let stdout = val
+                                .get("stdout")
+                                .and_then(|x| x.as_str())
+                                .or_else(|| val.get("content").and_then(|x| x.as_str()))
+                                .map(ToString::to_string)
+                                .unwrap_or_else(|| {
+                                    serde_json::to_string(&val)
+                                        .unwrap_or_else(|_| "Success".to_string())
+                                });
+                            // 向前端发送执行结果以渲染 terminal log
+                            let _ = app_handle.emit(
+                                "agent://tool_result",
+                                json!({
+                                    "session_id": session_id.clone(),
+                                    "run_id": run_id.clone(),
+                                    "tool_call_id": tc_id.clone(),
+                                    "tool": tool_name.clone(),
+                                    "status": "succeeded",
+                                    "output": stdout.clone()
+                                }),
+                            );
 
-                // 执行物理调用
-                let exec_res = tool_executor
-                    .execute_with_permission_mode(
-                        &session_id,
-                        assistant_msg_id.as_deref(),
-                        &tc_id,
-                        &tool_name,
-                        &args,
-                        &policy,
-                        permission_mode,
-                    )
-                    .await;
+                            json!({
+                                "id": tc_id,
+                                "exit_code": val.get("exit_code").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
+                                "stdout": stdout,
+                                "stderr": val.get("stderr").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                            })
+                        }
+                        Err(e) => {
+                            let err_str = e.to_string();
+                            let _ = app_handle.emit(
+                                "agent://tool_result",
+                                json!({
+                                    "session_id": session_id.clone(),
+                                    "run_id": run_id.clone(),
+                                    "tool_call_id": tc_id.clone(),
+                                    "tool": tool_name.clone(),
+                                    "status": "failed",
+                                    "output": format!("Error: {err_str}")
+                                }),
+                            );
 
-                // 准备回传 Python 的结果
-                let reply_payload = match exec_res {
-                    Ok(val) => {
-                        let stdout = val
+                            json!({
+                                "id": tc_id,
+                                "exit_code": -1,
+                                "stdout": "",
+                                "stderr": err_str,
+                            })
+                        }
+                    };
+
+                    // 把执行结果插入为当前 assistant 消息的 tool_call 和 tool_result 两个 message_parts。
+                    // 这样前端加载历史消息时可以完整展示思考中的工具轨迹。
+                    let mut runs = active_runs.lock().await;
+                    if let Some(run) = runs.get_mut(&run_id) {
+                        let mut parts = Vec::new();
+
+                        // 先把本回合累积的思维链/正文落库，保持「回复-工具调用-回复」的回合顺序，
+                        // 不跨回合合并（避免重开后所有正文被拼到一起）。
+                        drain_accumulated(run, &mut parts);
+
+                        // tool_call part
+                        parts.push(NewMessagePart {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            message_id: run.assistant_message_id.clone(),
+                            kind: "tool_call".into(),
+                            ordinal: run.current_ordinal,
+                            mime_type: None,
+                            tool_call_id: Some(tc_id.clone()),
+                            content: format!("Calling {tool_name} with params: {public_args}"),
+                            metadata: None,
+                        });
+                        run.current_ordinal += 1;
+
+                        // tool_result part
+                        let stdout_clean = reply_payload
                             .get("stdout")
                             .and_then(|x| x.as_str())
-                            .or_else(|| val.get("content").and_then(|x| x.as_str()))
-                            .map(ToString::to_string)
-                            .unwrap_or_else(|| {
-                                serde_json::to_string(&val)
-                                    .unwrap_or_else(|_| "Success".to_string())
-                            });
-                        // 向前端发送执行结果以渲染 terminal log
-                        let _ = app_handle.emit(
-                            "agent://tool_result",
-                            json!({
-                                "session_id": session_id.clone(),
-                                "run_id": run_id.clone(),
-                                "tool_call_id": tc_id.clone(),
-                                "tool": tool_name.clone(),
-                                "status": "succeeded",
-                                "output": stdout.clone()
-                            }),
-                        );
+                            .unwrap_or("")
+                            .to_string();
+                        let stderr_clean = reply_payload
+                            .get("stderr")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        parts.push(NewMessagePart {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            message_id: run.assistant_message_id.clone(),
+                            kind: "tool_result".into(),
+                            ordinal: run.current_ordinal,
+                            mime_type: None,
+                            tool_call_id: Some(tc_id.clone()),
+                            content: if stderr_clean.is_empty() {
+                                stdout_clean
+                            } else {
+                                stderr_clean
+                            },
+                            metadata: None,
+                        });
+                        run.current_ordinal += 1;
 
-                        json!({
-                            "id": tc_id,
-                            "exit_code": val.get("exit_code").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
-                            "stdout": stdout,
-                            "stderr": val.get("stderr").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                        })
+                        let _ = db.insert_message_parts(parts).await;
                     }
-                    Err(e) => {
-                        let err_str = e.to_string();
-                        let _ = app_handle.emit(
-                            "agent://tool_result",
-                            json!({
-                                "session_id": session_id.clone(),
-                                "run_id": run_id.clone(),
-                                "tool_call_id": tc_id.clone(),
-                                "tool": tool_name.clone(),
-                                "status": "failed",
-                                "output": format!("Error: {err_str}")
-                            }),
-                        );
+                    drop(runs);
 
-                        json!({
-                            "id": tc_id,
-                            "exit_code": -1,
-                            "stdout": "",
-                            "stderr": err_str,
-                        })
-                    }
-                };
-
-                // 把执行结果插入为当前 assistant 消息的 tool_call 和 tool_result 两个 message_parts。
-                // 这样前端加载历史消息时可以完整展示思考中的工具轨迹。
-                let mut runs = active_runs.lock().await;
-                if let Some(run) = runs.get_mut(&run_id) {
-                    let mut parts = Vec::new();
-
-                    // 先把本回合累积的思维链/正文落库，保持「回复-工具调用-回复」的回合顺序，
-                    // 不跨回合合并（避免重开后所有正文被拼到一起）。
-                    drain_accumulated(run, &mut parts);
-
-                    // tool_call part
-                    parts.push(NewMessagePart {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        message_id: run.assistant_message_id.clone(),
-                        kind: "tool_call".into(),
-                        ordinal: run.current_ordinal,
-                        mime_type: None,
-                        tool_call_id: Some(tc_id.clone()),
-                        content: format!("Calling {tool_name} with params: {public_args}"),
-                        metadata: None,
-                    });
-                    run.current_ordinal += 1;
-
-                    // tool_result part
-                    let stdout_clean = reply_payload
-                        .get("stdout")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let stderr_clean = reply_payload
-                        .get("stderr")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    parts.push(NewMessagePart {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        message_id: run.assistant_message_id.clone(),
-                        kind: "tool_result".into(),
-                        ordinal: run.current_ordinal,
-                        mime_type: None,
-                        tool_call_id: Some(tc_id.clone()),
-                        content: if stderr_clean.is_empty() {
-                            stdout_clean
-                        } else {
-                            stderr_clean
-                        },
-                        metadata: None,
-                    });
-                    run.current_ordinal += 1;
-
-                    let _ = db.insert_message_parts(parts).await;
-                }
-                drop(runs);
-
-                // 发送给 Python client，使其恢复状态机运行
-                let reply = Envelope::reply(msg_type::TOOL_RESULT, reply_payload);
-                let _ = manager.send_to_agent(reply);
+                    // 发送给 Python client，使其恢复状态机运行
+                    let reply = Envelope::reply(msg_type::TOOL_RESULT, reply_payload);
+                    let _ = manager.send_tool_result_if_active(&run_id, reply);
+                });
+                tool_tasks.entry(task_run_id).or_default().push(task);
             }
 
             msg_type::SESSION_TITLE_UPDATE => {
@@ -786,6 +825,9 @@ async fn handle_conn<R: tauri::Runtime>(
             }
 
             msg_type::RUN_FINISHED => {
+                tool_executor.stop_run(&run_id);
+                abort_run_tool_tasks(&mut tool_tasks, &run_id).await;
+                manager.clear_run_cancelled(&run_id);
                 let summary = env
                     .payload
                     .get("summary")
@@ -997,6 +1039,9 @@ async fn handle_conn<R: tauri::Runtime>(
             }
 
             msg_type::RUN_ERROR => {
+                tool_executor.stop_run(&run_id);
+                abort_run_tool_tasks(&mut tool_tasks, &run_id).await;
+                manager.clear_run_cancelled(&run_id);
                 let err_msg = env
                     .payload
                     .get("message")
@@ -1067,6 +1112,23 @@ async fn handle_conn<R: tauri::Runtime>(
         }
     }
 
+    // Abort tool handlers before dropping the executor. This also drops any
+    // in-flight subprocess handles; TerminalManager's Drop then kills PTYs.
+    let disconnected_run_ids = tool_tasks.keys().cloned().collect::<Vec<_>>();
+    for tasks in tool_tasks.values() {
+        for task in tasks {
+            task.abort();
+        }
+    }
+    for (_, tasks) in tool_tasks.drain() {
+        for task in tasks {
+            let _ = task.await;
+        }
+    }
+    for run_id in disconnected_run_ids {
+        manager.clear_run_cancelled(&run_id);
+    }
+
     // A sidecar disconnect can otherwise leave the UI with blank pending
     // assistant placeholders forever. Resolve every in-flight run explicitly.
     let session_runs = manager.drain_session_runs();
@@ -1097,6 +1159,21 @@ async fn handle_conn<R: tauri::Runtime>(
     manager.clear_active_sender();
     writer_task.abort();
     Ok(())
+}
+
+async fn abort_run_tool_tasks(
+    tool_tasks: &mut HashMap<String, Vec<tokio::task::JoinHandle<()>>>,
+    run_id: &str,
+) {
+    let Some(tasks) = tool_tasks.remove(run_id) else {
+        return;
+    };
+    for task in &tasks {
+        task.abort();
+    }
+    for task in tasks {
+        let _ = task.await;
+    }
 }
 
 #[cfg(test)]

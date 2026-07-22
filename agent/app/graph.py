@@ -78,9 +78,52 @@ def get_available_tools(
                     "type": "object",
                     "properties": {
                         "command": {"type": "string", "description": "The command to run."},
-                        "cwd": {"type": "string", "description": "Optional working directory. Defaults to current workspace."}
+                        "cwd": {"type": "string", "description": "Optional working directory. Defaults to current workspace."},
+                        "yield_time_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 30000,
+                            "description": "Wait window before returning a running terminal session."
+                        },
+                        "timeout_sec": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 86400,
+                            "description": "Optional total lifetime; zero means no hard deadline."
+                        },
                     },
                     "required": ["command"]
+                }
+            }
+        })
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "write_stdin",
+                "description": "Poll a running terminal session or send characters to its PTY.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "string"},
+                        "chars": {
+                            "type": "string",
+                            "description": "Characters to send. Omit or use an empty string to poll only."
+                        },
+                        "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 30000},
+                    },
+                    "required": ["session_id"]
+                }
+            }
+        })
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "stop_terminal",
+                "description": "Stop a terminal session and all descendant processes.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"session_id": {"type": "string"}},
+                    "required": ["session_id"]
                 }
             }
         })

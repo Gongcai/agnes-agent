@@ -48,6 +48,53 @@ def test_sidecar_cli_treats_keyboard_interrupt_as_clean_exit(monkeypatch, capsys
     assert captured.err == ""
 
 
+def test_tool_future_is_registered_before_request_is_sent(monkeypatch):
+    pending_futures = {}
+
+    class ImmediateGraph:
+        async def ainvoke(self, inputs, config):
+            result = await config["configurable"]["execute_tool_fn"](
+                "fast-call",
+                "shell",
+                {"command": "true"},
+            )
+            assert result == "fast-result"
+            return {**inputs, "messages": [], "token_usage": {}}
+
+    class ImmediateWebSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, raw):
+            envelope = json.loads(raw)
+            self.sent.append(envelope)
+            if envelope["type"] == "tool_call_request":
+                assert "fast-call" in pending_futures
+                pending_futures["fast-call"].set_result({
+                    "exit_code": 0,
+                    "stdout": "fast-result",
+                    "stderr": "",
+                })
+
+    monkeypatch.setattr(main_module, "assemble_prompt", lambda _payload: ("", [], []))
+    monkeypatch.setattr(main_module, "build_graph", lambda: ImmediateGraph())
+    monkeypatch.setattr(main_module, "extract_memories", lambda *_args, **_kwargs: [])
+    ws = ImmediateWebSocket()
+    envelope = {
+        "session_id": "session",
+        "run_id": "run",
+        "payload": {"context": {"agent": {"toolPolicy": {}}}},
+    }
+
+    asyncio.run(main_module.run_agent_graph(ws, envelope, pending_futures))
+
+    assert pending_futures == {}
+    assert [message["type"] for message in ws.sent] == [
+        "tool_call_request",
+        "run_finished",
+    ]
+
+
 def test_completion_applies_a_bounded_request_timeout(monkeypatch):
     captured = {}
 
@@ -866,6 +913,8 @@ def test_get_available_tools():
     tool_names = [t["function"]["name"] for t in tools]
     
     assert "shell" in tool_names
+    assert "write_stdin" in tool_names
+    assert "stop_terminal" in tool_names
     assert "file_read" not in tool_names
     assert "file_write" not in tool_names
     assert "file_edit" not in tool_names
@@ -884,6 +933,8 @@ def test_get_available_tools():
     ]
     assert all_tool_names == [
         "shell",
+        "write_stdin",
+        "stop_terminal",
         "file_read",
         "file_write",
         "file_edit",

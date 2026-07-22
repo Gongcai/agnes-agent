@@ -1406,6 +1406,7 @@ pub async fn replace_message_parts(
 #[tauri::command]
 pub async fn cancel_run(state: tauri::State<'_, AppState>, session_id: String) -> AppResult<()> {
     if let Some(run_id) = state.agent.remove_session_run(&session_id) {
+        state.agent.mark_run_cancelled(&run_id);
         // 先触发审批取消信号，解除 ws_server 的 approval await 阻塞
         // （用 select! 分支，handler 不会发 TOOL_RESULT，避免 Python 任务被工具结果唤醒继续）
         if let Some(tx) = state.agent.take_run_cancel_signal(&run_id) {

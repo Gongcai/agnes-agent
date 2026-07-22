@@ -4,6 +4,7 @@ pub mod permissions;
 pub mod policy;
 pub mod review;
 pub mod sandbox;
+pub mod terminal;
 pub mod workspace;
 
 pub use executor::ToolExecutor;

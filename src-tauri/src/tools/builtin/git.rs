@@ -111,7 +111,7 @@ impl BuiltinTool for GitTool {
         let mut child =
             match ctx
                 .sandbox
-                .command("git", &execution_args, &ctx.policy.shell.env_allowlist)
+                .git_command("git", &execution_args, &ctx.policy.shell.env_allowlist)
             {
                 Ok(command) => command,
                 Err(error) => {

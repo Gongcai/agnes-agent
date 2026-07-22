@@ -12,17 +12,25 @@ use crate::mcp::McpManager;
 use crate::secrets::SharedSecretStore;
 use crate::tools::builtin::{builtin_tools, SearchSecretAccess, ToolCtx};
 use crate::tools::policy::ToolPolicy;
+use crate::tools::terminal::TerminalManager;
 use crate::tools::PermissionMode;
 
+#[derive(Clone)]
 pub struct ToolExecutor {
     db: DbActorHandle,
     mcp: Arc<McpManager>,
     secrets: SharedSecretStore,
+    terminals: Arc<TerminalManager>,
 }
 
 impl ToolExecutor {
     pub fn new(db: DbActorHandle, mcp: Arc<McpManager>, secrets: SharedSecretStore) -> Self {
-        Self { db, mcp, secrets }
+        Self {
+            db,
+            mcp,
+            secrets,
+            terminals: Arc::new(TerminalManager::default()),
+        }
     }
 
     /// 执行工具调用：审计入志 → workspace cwd → 有效 policy → 派发。
@@ -44,6 +52,7 @@ impl ToolExecutor {
             .unwrap_or_default();
         self.execute_with_permission_mode(
             session_id,
+            None,
             message_id,
             tool_call_id,
             tool,
@@ -58,6 +67,7 @@ impl ToolExecutor {
     pub async fn execute_with_permission_mode(
         &self,
         session_id: &str,
+        run_id: Option<&str>,
         message_id: Option<&str>,
         tool_call_id: &str,
         tool: &str,
@@ -139,11 +149,13 @@ impl ToolExecutor {
             db: &self.db,
             search_secrets: SearchSecretAccess::new(self.secrets.as_ref()),
             session_id,
+            run_id,
             tool_call_id,
             args: arguments,
             policy: &effective_policy,
             workspace_cwd,
             sandbox: &sandbox,
+            terminals: self.terminals.as_ref(),
         };
 
         for impl_ in builtin_tools() {
@@ -155,6 +167,10 @@ impl ToolExecutor {
         let err_msg = format!("未知的内置工具: {tool}");
         ctx.record_failure(&err_msg).await?;
         Err(AppError::Other(err_msg))
+    }
+
+    pub fn stop_run(&self, run_id: &str) {
+        self.terminals.stop_run(run_id);
     }
 }
 

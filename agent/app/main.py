@@ -186,13 +186,13 @@ async def run_agent_graph(
                 "arguments": arguments
             }
         )
-        await ws.send(tool_req.model_dump_json())
-
-        # Create future and register it to wait for the WS loop to resolve it
+        # Register before sending: a fast local tool can return before the
+        # event loop resumes this coroutine after ws.send().
         future = asyncio.get_running_loop().create_future()
         pending_futures[tool_call_id] = future
-        
+
         try:
+            await ws.send(tool_req.model_dump_json())
             result_payload = await future
             print(f"[sidecar][tool] Result received for `{tool_name}` (id: {tool_call_id})", flush=True)
             # Rust returns the tool result inside "result" field or stdout/stderr logs

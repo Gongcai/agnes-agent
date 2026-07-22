@@ -162,6 +162,9 @@ pub struct AgentManager {
     run_approval_tc: Mutex<std::collections::HashMap<String, String>>,
     // 挂起审批的取消信号：run_id -> oneshot::Sender，cancel_run 触发以解除 ws_server approval await
     run_cancel_signals: Mutex<std::collections::HashMap<String, oneshot::Sender<()>>>,
+    // Cancellation is sticky for the lifetime of a run so a late tool request
+    // cannot miss the one-shot signal and start after the user pressed stop.
+    cancelled_runs: Mutex<std::collections::HashSet<String>>,
 }
 
 impl AgentManager {
@@ -177,6 +180,7 @@ impl AgentManager {
             active_session_runs: Mutex::new(std::collections::HashMap::new()),
             run_approval_tc: Mutex::new(std::collections::HashMap::new()),
             run_cancel_signals: Mutex::new(std::collections::HashMap::new()),
+            cancelled_runs: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -257,6 +261,24 @@ impl AgentManager {
         }
     }
 
+    /// Send a tool result only while the run is still active. The cancellation
+    /// marker and sender lookup share an atomic decision boundary so a late
+    /// cancel cannot be followed by an obsolete TOOL_RESULT.
+    pub fn send_tool_result_if_active(&self, run_id: &str, env: Envelope) -> AppResult<bool> {
+        let cancelled = self.cancelled_runs.lock().unwrap();
+        if cancelled.contains(run_id) {
+            return Ok(false);
+        }
+        let sender = self.active_sender.lock().unwrap();
+        let Some(sender) = sender.as_ref() else {
+            return Err(AppError::Ws("Python sidecar 未连接或连接已断开".into()));
+        };
+        sender
+            .send(env)
+            .map_err(|_| AppError::Ws("WS 连接通道已断开".into()))?;
+        Ok(true)
+    }
+
     /// 注册一个等待审批的工具调用。
     pub fn register_approval(&self, tool_call_id: String, tx: oneshot::Sender<bool>) {
         self.pending_approvals
@@ -331,6 +353,7 @@ impl AgentManager {
 
     /// 记录某会话当前活跃运行的 run_id（cancel_run 按会话取消用）。
     pub fn set_session_run(&self, session_id: String, run_id: String) {
+        self.cancelled_runs.lock().unwrap().remove(&run_id);
         self.active_session_runs
             .lock()
             .unwrap()
@@ -369,6 +392,29 @@ impl AgentManager {
     pub fn take_run_cancel_signal(&self, run_id: &str) -> Option<oneshot::Sender<()>> {
         self.run_cancel_signals.lock().unwrap().remove(run_id)
     }
+
+    pub fn clear_run_cancel_signal(&self, run_id: &str) {
+        self.run_cancel_signals.lock().unwrap().remove(run_id);
+    }
+
+    pub fn mark_run_cancelled(&self, run_id: &str) {
+        self.cancelled_runs
+            .lock()
+            .unwrap()
+            .insert(run_id.to_string());
+    }
+
+    pub fn is_run_cancelled(&self, run_id: &str) -> bool {
+        self.cancelled_runs.lock().unwrap().contains(run_id)
+    }
+
+    pub fn clear_run_cancelled(&self, run_id: &str) {
+        self.cancelled_runs.lock().unwrap().remove(run_id);
+        self.run_cancel_signals.lock().unwrap().remove(run_id);
+        if let Some(tool_call_id) = self.run_approval_tc.lock().unwrap().remove(run_id) {
+            self.pending_approvals.lock().unwrap().remove(&tool_call_id);
+        }
+    }
 }
 
 fn generate_token() -> String {
@@ -390,7 +436,9 @@ fn resolve_agent_dir() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::AgentLauncher;
+    use super::{AgentLauncher, AgentManager};
+    use crate::agent::protocol::{msg_type, Envelope};
+    use tokio::sync::mpsc;
 
     #[cfg(all(debug_assertions, unix))]
     use super::AgentChild;
@@ -417,6 +465,26 @@ mod tests {
             .status()
             .expect("inspect child process");
         assert!(!status.success());
+    }
+
+    #[test]
+    fn cancelled_runs_cannot_send_late_tool_results() {
+        let manager = AgentManager::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        manager.register_active_sender(tx);
+        let env = Envelope::reply(msg_type::TOOL_RESULT, serde_json::json!({"id": "tc"}));
+
+        assert!(manager
+            .send_tool_result_if_active("run", env.clone())
+            .is_ok());
+        assert!(rx.try_recv().is_ok());
+
+        manager.mark_run_cancelled("run");
+        assert_eq!(
+            manager.send_tool_result_if_active("run", env).unwrap(),
+            false
+        );
+        assert!(rx.try_recv().is_err());
     }
 
     #[cfg(not(debug_assertions))]

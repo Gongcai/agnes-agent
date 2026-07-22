@@ -232,5 +232,8 @@ mod tests {
         assert!(sandbox
             .check_write(Path::new("/var/tmp/agnes-full-access-test"))
             .is_ok());
+        assert!(sandbox
+            .check_write(Path::new("/tmp/workspace/.git/config"))
+            .is_ok());
     }
 }

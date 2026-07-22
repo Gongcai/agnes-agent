@@ -1,4 +1,4 @@
-//! shell 工具：bash -c 执行，env_clear + 白名单 + 超时 + 输出截断。
+//! PTY-backed shell tools with incremental polling and process-group cleanup.
 use std::path::Path;
 use std::time::Duration;
 
@@ -10,6 +10,8 @@ use crate::tools::builtin::{BuiltinTool, ToolCtx};
 use crate::tools::policy::Risk;
 
 pub struct ShellTool;
+pub struct WriteStdinTool;
+pub struct StopTerminalTool;
 
 fn resolve_cwd(ctx: &ToolCtx<'_>) -> std::path::PathBuf {
     let raw = ctx
@@ -37,7 +39,9 @@ impl BuiltinTool for ShellTool {
                     "type": "object",
                     "properties": {
                         "command": {"type": "string", "description": "Command to execute."},
-                        "cwd": {"type": "string", "description": "Optional working directory; defaults to the workspace."}
+                        "cwd": {"type": "string", "description": "Optional working directory; defaults to the workspace."},
+                        "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "How long to wait before returning a running terminal session."},
+                        "timeout_sec": {"type": "integer", "minimum": 0, "maximum": 86400, "description": "Optional total command lifetime; zero means no hard deadline."}
                     },
                     "required": ["command"]
                 }
@@ -107,10 +111,10 @@ impl BuiltinTool for ShellTool {
         ctx.update_running(&cwd_absolute.to_string_lossy()).await?;
 
         let command_args = vec!["-c".to_string(), command_str.to_string()];
-        let mut child =
+        let command =
             match ctx
                 .sandbox
-                .command("bash", &command_args, &ctx.policy.shell.env_allowlist)
+                .command_spec("bash", &command_args, &ctx.policy.shell.env_allowlist)
             {
                 Ok(command) => command,
                 Err(error) => {
@@ -118,76 +122,214 @@ impl BuiltinTool for ShellTool {
                     return Err(error);
                 }
             };
-        child.current_dir(&cwd_absolute);
-
-        let mut spawned = match child.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                let err_msg = format!("无法生成 Shell 子进程: {e}");
-                ctx.record_failure(&err_msg).await?;
-                return Err(AppError::Other(err_msg));
+        let timeout_sec = ctx
+            .args
+            .get("timeout_sec")
+            .and_then(Value::as_u64)
+            .map(|value| value.min(86_400) as u32)
+            .unwrap_or(ctx.policy.shell.timeout_sec);
+        let run_id = ctx.run_id.unwrap_or(ctx.tool_call_id);
+        let terminal_id = match ctx.terminals.spawn(
+            command,
+            &cwd_absolute,
+            ctx.session_id,
+            run_id,
+            ctx.policy.shell.max_output_bytes as usize,
+            timeout_sec,
+        ) {
+            Ok(id) => id,
+            Err(error) => {
+                ctx.record_failure(&error.to_string()).await?;
+                return Err(error);
             }
         };
+        let poll = ctx
+            .terminals
+            .poll(
+                &terminal_id,
+                ctx.session_id,
+                yield_duration(ctx.args, 10_000),
+            )
+            .await?;
+        complete_tool_call(ctx, &poll).await
+    }
+}
 
-        let max_output = ctx.policy.shell.max_output_bytes as usize;
-        let stdout_task = spawned.stdout.take().map(|stdout| {
-            tokio::spawn(crate::tools::sandbox::read_stream_capped(
-                stdout, max_output,
-            ))
-        });
-        let stderr_task = spawned.stderr.take().map(|stderr| {
-            tokio::spawn(crate::tools::sandbox::read_stream_capped(
-                stderr, max_output,
-            ))
-        });
+#[async_trait]
+impl BuiltinTool for WriteStdinTool {
+    fn name(&self) -> &'static str {
+        "write_stdin"
+    }
 
-        let timeout_duration = Duration::from_secs(ctx.policy.shell.timeout_sec as u64);
-        let run_result = tokio::time::timeout(timeout_duration, spawned.wait()).await;
-
-        match run_result {
-            Ok(Ok(status)) => {
-                let (stdout_buf, stdout_truncated) =
-                    crate::tools::sandbox::join_capture(stdout_task).await;
-                let (stderr_buf, stderr_truncated) =
-                    crate::tools::sandbox::join_capture(stderr_task).await;
-                let stdout_str =
-                    crate::tools::sandbox::render_captured_output(stdout_buf, stdout_truncated);
-                let stderr_str =
-                    crate::tools::sandbox::render_captured_output(stderr_buf, stderr_truncated);
-                let exit_code = status.code().unwrap_or(-1);
-                let success = status.success();
-                let status_name = if success { "done" } else { "failed" };
-
-                ctx.update_complete(
-                    status_name,
-                    Some(if success { "success" } else { "error" }),
-                    Some(exit_code),
-                    Some(stdout_str.clone()),
-                    Some(stderr_str.clone()),
-                )
-                .await?;
-
-                Ok(json!({ "exit_code": exit_code, "stdout": stdout_str, "stderr": stderr_str }))
+    fn schema(&self) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": self.name(),
+                "description": "Send input to or poll a running terminal session.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "string"},
+                        "chars": {"type": "string", "description": "Characters to send; omit or use an empty string to poll only."},
+                        "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 30000}
+                    },
+                    "required": ["session_id"]
+                }
             }
-            Ok(Err(e)) => {
-                let _ = crate::tools::sandbox::join_capture(stdout_task).await;
-                let _ = crate::tools::sandbox::join_capture(stderr_task).await;
-                let err_msg = format!("执行出错: {e}");
-                ctx.record_failure(&err_msg).await?;
-                Err(AppError::Other(err_msg))
-            }
-            Err(_) => {
-                let _ = spawned.kill().await;
-                let _ = spawned.wait().await;
-                let _ = crate::tools::sandbox::join_capture(stdout_task).await;
-                let _ = crate::tools::sandbox::join_capture(stderr_task).await;
-                let err_msg = format!("执行超时 (限制 {} 秒)", ctx.policy.shell.timeout_sec);
-                ctx.update_complete("cancelled", None, Some(-9), None, Some(err_msg.clone()))
-                    .await?;
-                Err(AppError::Other(err_msg))
-            }
+        })
+    }
+
+    fn risk(&self, args: &Value) -> Risk {
+        if args
+            .get("chars")
+            .and_then(Value::as_str)
+            .is_some_and(|chars| !chars.is_empty())
+        {
+            Risk::High
+        } else {
+            Risk::Low
         }
     }
+
+    async fn execute(&self, ctx: &ToolCtx<'_>) -> AppResult<Value> {
+        if !ctx.policy.shell.enabled {
+            return fail(ctx, "Shell execution tools are disabled").await;
+        }
+        let terminal_id = required_string(ctx, "session_id").await?;
+        let chars = ctx.args.get("chars").and_then(Value::as_str).unwrap_or("");
+        if chars.len() > 64 * 1024 {
+            return fail(ctx, "Terminal input exceeds 64 KiB").await;
+        }
+        ctx.update_running(&terminal_id).await?;
+        let poll = match ctx
+            .terminals
+            .write_and_poll(
+                &terminal_id,
+                ctx.session_id,
+                chars,
+                yield_duration(ctx.args, 1_000),
+            )
+            .await
+        {
+            Ok(poll) => poll,
+            Err(error) => return fail(ctx, &error.to_string()).await,
+        };
+        complete_tool_call(ctx, &poll).await
+    }
+}
+
+#[async_trait]
+impl BuiltinTool for StopTerminalTool {
+    fn name(&self) -> &'static str {
+        "stop_terminal"
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": self.name(),
+                "description": "Stop a running terminal session and all of its descendant processes.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"session_id": {"type": "string"}},
+                    "required": ["session_id"]
+                }
+            }
+        })
+    }
+
+    fn risk(&self, _args: &Value) -> Risk {
+        Risk::Medium
+    }
+
+    async fn execute(&self, ctx: &ToolCtx<'_>) -> AppResult<Value> {
+        if !ctx.policy.shell.enabled {
+            return fail(ctx, "Shell execution tools are disabled").await;
+        }
+        let terminal_id = required_string(ctx, "session_id").await?;
+        ctx.update_running(&terminal_id).await?;
+        if let Err(error) = ctx.terminals.stop(&terminal_id, ctx.session_id) {
+            return fail(ctx, &error.to_string()).await;
+        }
+        let poll = ctx
+            .terminals
+            .poll(&terminal_id, ctx.session_id, Duration::from_secs(2))
+            .await?;
+        complete_tool_call(ctx, &poll).await
+    }
+}
+
+fn yield_duration(args: &Value, default_ms: u64) -> Duration {
+    Duration::from_millis(
+        args.get("yield_time_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(default_ms)
+            .min(30_000),
+    )
+}
+
+async fn complete_tool_call(
+    ctx: &ToolCtx<'_>,
+    poll: &crate::tools::terminal::TerminalPoll,
+) -> AppResult<Value> {
+    let stdout = render_terminal_output(poll);
+    let exit_code = poll.exit_code.unwrap_or(0);
+    ctx.update_complete(
+        "done",
+        Some(if poll.running { "running" } else { "exit" }),
+        (!poll.running).then_some(exit_code),
+        Some(stdout.clone()),
+        None,
+    )
+    .await?;
+    Ok(json!({
+        "session_id": poll.session_id,
+        "status": if poll.running { "running" } else { "exited" },
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": "",
+        "truncated": poll.truncated,
+        "signal": poll.signal,
+    }))
+}
+
+fn render_terminal_output(poll: &crate::tools::terminal::TerminalPoll) -> String {
+    let mut output = poll.output.clone();
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    if poll.running {
+        output.push_str(&format!(
+            "[terminal session_id={} status=running; use write_stdin to poll or send input, or stop_terminal to stop it]",
+            poll.session_id
+        ));
+    } else {
+        output.push_str(&format!(
+            "[terminal session_id={} status=exited exit_code={}]",
+            poll.session_id,
+            poll.exit_code.unwrap_or(-1)
+        ));
+    }
+    output
+}
+
+async fn required_string(ctx: &ToolCtx<'_>, key: &str) -> AppResult<String> {
+    match ctx
+        .args
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => Ok(value.to_string()),
+        None => fail(ctx, &format!("Missing or empty `{key}` argument")).await,
+    }
+}
+
+async fn fail<T>(ctx: &ToolCtx<'_>, message: &str) -> AppResult<T> {
+    ctx.record_failure(message).await?;
+    Err(AppError::Other(message.to_string()))
 }
 
 fn validate_shell_write_scope(
