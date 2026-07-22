@@ -1667,6 +1667,54 @@ pre,
   background: var(--claude-surface-soft) !important;
 }
 
+.agnes-session-search {
+  background: var(--claude-surface) !important;
+  border-color: var(--claude-border-strong) !important;
+  color: var(--claude-body);
+}
+
+.agnes-session-search-header {
+  border-color: var(--claude-border) !important;
+}
+
+.agnes-session-search-input {
+  color: var(--claude-ink);
+  caret-color: var(--claude-clay);
+  appearance: none;
+}
+
+.agnes-session-search-input::placeholder,
+.agnes-session-search-muted,
+.agnes-session-search-close,
+.agnes-session-search-result-meta,
+.agnes-session-search-empty {
+  color: var(--claude-muted) !important;
+}
+
+.agnes-session-search-close:hover {
+  background: var(--claude-surface-soft) !important;
+  color: var(--claude-ink) !important;
+}
+
+.agnes-session-search-result {
+  background: transparent !important;
+  color: var(--claude-body) !important;
+}
+
+.agnes-session-search-result:hover,
+.agnes-session-search-result[aria-selected="true"] {
+  background: var(--claude-surface-soft) !important;
+}
+
+.agnes-session-search-result-icon {
+  background: var(--claude-surface-card) !important;
+  color: var(--claude-muted) !important;
+}
+
+.agnes-session-search-result-title {
+  color: var(--claude-ink) !important;
+}
+
 .agnes-project-select-trigger {
   background: var(--claude-surface) !important;
   border-color: var(--claude-border-strong) !important;

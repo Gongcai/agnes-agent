@@ -684,14 +684,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           onMouseDown={closeSessionSearch}
         >
           <section
-            className="claude-popover mx-auto flex max-h-[min(70vh,34rem)] w-full max-w-xl flex-col overflow-hidden rounded-lg border border-stone-200 bg-white shadow-2xl"
+            className="claude-popover agnes-session-search mx-auto flex max-h-[min(70vh,34rem)] w-full max-w-xl flex-col overflow-hidden rounded-lg border shadow-2xl"
             role="dialog"
             aria-modal="true"
             aria-label="搜索会话"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <div className="flex h-12 shrink-0 items-center gap-3 border-b border-stone-200 px-4">
-              <Search className="h-4 w-4 shrink-0 text-stone-400" />
+            <div className="agnes-session-search-header flex h-12 shrink-0 items-center gap-3 border-b px-4">
+              <Search className="agnes-session-search-muted h-4 w-4 shrink-0" />
               <input
                 ref={sessionSearchInputRef}
                 type="search"
@@ -704,12 +704,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 aria-activedescendant={sessionSearchResults[selectedSearchResult]
                   ? `session-search-result-${sessionSearchResults[selectedSearchResult].id}`
                   : undefined}
-                className="min-w-0 flex-1 bg-transparent text-sm text-stone-800 outline-none placeholder:text-stone-400"
+                className="agnes-session-search-input min-w-0 flex-1 bg-transparent text-sm outline-none"
               />
               <button
                 type="button"
                 onClick={closeSessionSearch}
-                className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700"
+                className="agnes-session-search-close grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors"
                 title="关闭"
                 aria-label="关闭搜索"
               >
@@ -734,28 +734,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     aria-selected={selected}
                     onMouseEnter={() => setSelectedSearchResult(index)}
                     onClick={() => openSearchResult(session.id)}
-                    className={`flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors ${
-                      selected ? "bg-stone-100" : "hover:bg-stone-50"
-                    }`}
+                    className="agnes-session-search-result flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors"
                   >
-                    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-stone-100 text-stone-500">
+                    <span className="agnes-session-search-result-icon grid h-8 w-8 shrink-0 place-items-center rounded-md">
                       <ResultIcon className="h-4 w-4" />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium text-stone-800" title={session.title}>
+                      <span className="agnes-session-search-result-title block truncate text-sm font-medium" title={session.title}>
                         {session.title}
                       </span>
-                      <span className="mt-0.5 block truncate text-[11px] text-stone-400">{workspaceName}</span>
+                      <span className="agnes-session-search-result-meta mt-0.5 block truncate text-[11px]">{workspaceName}</span>
                     </span>
                     {session.pinned && <Pin className="h-3.5 w-3.5 shrink-0 text-amber-500" />}
                     {session.id === activeSessionId && (
-                      <span className="shrink-0 text-[10px] font-medium text-stone-400">当前</span>
+                      <span className="agnes-session-search-result-meta shrink-0 text-[10px] font-medium">当前</span>
                     )}
                   </button>
                 );
               })}
               {sessionSearchResults.length === 0 && (
-                <div className="grid min-h-24 place-items-center px-4 text-xs text-stone-400">
+                <div className="agnes-session-search-empty grid min-h-24 place-items-center px-4 text-xs">
                   {sessionSearchQuery.trim() ? "没有匹配的会话" : "当前智能体暂无会话"}
                 </div>
               )}
