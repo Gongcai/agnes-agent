@@ -1307,10 +1307,24 @@ pre,
   box-shadow: none !important;
 }
 
-.agnes-settings-nav button[class*="bg-white"] {
-  background: rgba(51, 48, 42, 0.075) !important;
+.agnes-settings-nav .agnes-settings-nav-item {
+  border: 1px solid transparent !important;
+  background: transparent !important;
+}
+
+.agnes-settings-nav .agnes-settings-nav-item:hover {
+  background: var(--claude-surface-soft) !important;
+  color: var(--claude-ink) !important;
+}
+
+.agnes-settings-nav .agnes-settings-nav-item[aria-current="page"] {
+  background: var(--claude-surface-card) !important;
   border-color: transparent !important;
   color: var(--claude-ink) !important;
+}
+
+.agnes-settings-nav .agnes-settings-nav-item[aria-current="page"] > svg {
+  color: var(--claude-clay-dark) !important;
 }
 
 .agnes-settings-content {

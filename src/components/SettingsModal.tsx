@@ -1988,10 +1988,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <nav className="agnes-settings-nav w-56 overflow-y-auto border-r border-stone-200 bg-stone-50/50 p-3 flex flex-col gap-1 shrink-0">
             <button
               onClick={() => setActiveTab("general")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+              aria-current={activeTab === "general" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "general"
-                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
-                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                  ? "text-zinc-900"
+                  : "text-stone-500"
               }`}
             >
               <Settings className="h-4 w-4 text-stone-500" />
@@ -1999,10 +2000,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
             <button
               onClick={() => setActiveTab("agents")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+              aria-current={activeTab === "agents" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "agents"
-                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
-                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                  ? "text-zinc-900"
+                  : "text-stone-500"
               }`}
             >
               <User className="h-4 w-4 text-stone-500" />
@@ -2010,10 +2012,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
             <button
               onClick={() => setActiveTab("memory")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+              aria-current={activeTab === "memory" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "memory"
-                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
-                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                  ? "text-zinc-900"
+                  : "text-stone-500"
               }`}
             >
               <Database className="h-4 w-4 text-stone-500" />
@@ -2021,10 +2024,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
             <button
               onClick={() => setActiveTab("storage")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+              aria-current={activeTab === "storage" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "storage"
-                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
-                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                  ? "text-zinc-900"
+                  : "text-stone-500"
               }`}
             >
               <HardDrive className="h-4 w-4 text-stone-500" />
@@ -2032,10 +2036,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
             <button
               onClick={() => setActiveTab("llm")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+              aria-current={activeTab === "llm" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "llm"
-                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
-                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                  ? "text-zinc-900"
+                  : "text-stone-500"
               }`}
             >
               <Sliders className="h-4 w-4 text-stone-500" />
@@ -2043,10 +2048,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
             <button
               onClick={() => setActiveTab("tokens")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+              aria-current={activeTab === "tokens" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "tokens"
-                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
-                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                  ? "text-zinc-900"
+                  : "text-stone-500"
               }`}
             >
               <BarChart3 className="h-4 w-4 text-stone-500" />
@@ -2054,10 +2060,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
             <button
               onClick={() => setActiveTab("web")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+              aria-current={activeTab === "web" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "web"
-                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
-                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                  ? "text-zinc-900"
+                  : "text-stone-500"
               }`}
             >
               <Globe2 className="h-4 w-4 text-stone-500" />
@@ -2065,10 +2072,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
             <button
               onClick={() => setActiveTab("mcp")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+              aria-current={activeTab === "mcp" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "mcp"
-                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
-                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                  ? "text-zinc-900"
+                  : "text-stone-500"
               }`}
             >
               <Server className="h-4 w-4 text-stone-500" />
@@ -2076,10 +2084,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
             <button
               onClick={() => setActiveTab("skills")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+              aria-current={activeTab === "skills" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "skills"
-                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
-                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                  ? "text-zinc-900"
+                  : "text-stone-500"
               }`}
             >
               <Puzzle className="h-4 w-4 text-stone-500" />
@@ -2087,10 +2096,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
             <button
               onClick={() => setActiveTab("audit")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+              aria-current={activeTab === "audit" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "audit"
-                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
-                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                  ? "text-zinc-900"
+                  : "text-stone-500"
               }`}
             >
               <ShieldCheck className="h-4 w-4 text-stone-500" />
@@ -2098,10 +2108,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
             <button
               onClick={() => setActiveTab("debug")}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+              aria-current={activeTab === "debug" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "debug"
-                  ? "bg-white text-zinc-900 border border-stone-200 shadow-sm"
-                  : "text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                  ? "text-zinc-900"
+                  : "text-stone-500"
               }`}
             >
               <Terminal className="h-4 w-4 text-stone-500" />
