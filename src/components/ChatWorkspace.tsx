@@ -302,6 +302,10 @@ interface ChatWorkspaceProps {
   onOpenSettings: (tab: "agents" | "memory" | "llm" | "tokens" | "skills" | "audit" | "debug") => void;
 }
 
+interface ChatUserProfile {
+  name: string;
+}
+
 export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   onOpenSettings,
 }) => {
@@ -345,6 +349,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [memoryEditMsgId, setMemoryEditMsgId] = useState<string | null>(null);
   const [autoExpandThoughts, setAutoExpandThoughts] = useState(getCachedAutoExpandThoughts);
   const [autoFollowStreaming, setAutoFollowStreaming] = useState(getCachedAutoFollowStreaming);
+  const [userName, setUserName] = useState("");
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -355,6 +360,23 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   useEffect(() => {
     loadProviders().catch(console.error);
   }, [loadProviders]);
+
+  useEffect(() => {
+    let active = true;
+    const loadUserName = () => {
+      invoke<ChatUserProfile>("get_user_profile")
+        .then((profile) => {
+          if (active) setUserName(profile.name.trim());
+        })
+        .catch(console.error);
+    };
+    loadUserName();
+    window.addEventListener("agnes:user-profile-change", loadUserName);
+    return () => {
+      active = false;
+      window.removeEventListener("agnes:user-profile-change", loadUserName);
+    };
+  }, []);
 
   useEffect(() => subscribeUIPreferenceChanges((change) => {
     if (change.autoExpandThoughts !== undefined) {
@@ -860,7 +882,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           <div className="flex items-center justify-center gap-3">
             <Sparkles className="h-7 w-7 text-[var(--claude-clay)]" weight="regular" />
             <h1 className="text-3xl font-normal text-[var(--claude-ink)]">
-              {activeAgent ? `${activeAgent.name} returns!` : "Agnes returns!"}
+              {userName ? `${userName} returns!` : "Welcome back!"}
             </h1>
           </div>
         </div>
