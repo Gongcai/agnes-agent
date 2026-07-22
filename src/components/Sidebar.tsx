@@ -467,7 +467,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <div className="mb-2 flex items-center gap-1 px-1 text-[10px] font-medium text-stone-400">
               <div className="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-1">
                 <span className="truncate">代码工作区</span>
-                <span className="font-medium text-stone-300">{agentWorkspaces.length}</span>
               </div>
               <button onClick={handleAddWorkspace} className="rounded-md p-1 text-stone-500 transition-colors hover:bg-stone-200/60 hover:text-stone-900" title="添加工作区（选择文件夹）">
                 <FolderPlus className="h-3.5 w-3.5" />
