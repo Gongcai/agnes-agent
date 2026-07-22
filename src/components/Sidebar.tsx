@@ -114,9 +114,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     x: number;
     y: number;
   } | null>(null);
-  const [workspacesExpanded, setWorkspacesExpanded] = useState(() =>
-    readLocalBoolean("agnes.ui.sidebar.workspaces-expanded", true),
-  );
   const [moreExpanded, setMoreExpanded] = useState(() =>
     readLocalBoolean("agnes.ui.sidebar.more-expanded", false),
   );
@@ -158,13 +155,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [ctxMenu, wsCtxMenu]);
-
-  useEffect(() => {
-    writeLocalBoolean(
-      "agnes.ui.sidebar.workspaces-expanded",
-      workspacesExpanded,
-    );
-  }, [workspacesExpanded]);
 
   useEffect(() => {
     writeLocalBoolean("agnes.ui.sidebar.more-expanded", moreExpanded);
@@ -475,74 +465,67 @@ export const Sidebar: React.FC<SidebarProps> = ({
         ) : (
           <section>
             <div className="mb-2 flex items-center gap-1 px-1 text-[10px] font-medium text-stone-400">
-              <button
-                onClick={() => setWorkspacesExpanded((expanded) => !expanded)}
-                className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left hover:bg-stone-200/50 hover:text-stone-600"
-                aria-expanded={workspacesExpanded}
-              >
-                {workspacesExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+              <div className="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-1">
                 <span className="truncate">代码工作区</span>
                 <span className="font-medium text-stone-300">{agentWorkspaces.length}</span>
-              </button>
+              </div>
               <button onClick={handleAddWorkspace} className="rounded-md p-1 text-stone-500 transition-colors hover:bg-stone-200/60 hover:text-stone-900" title="添加工作区（选择文件夹）">
                 <FolderPlus className="h-3.5 w-3.5" />
               </button>
             </div>
-            {workspacesExpanded && (
-              <div className="space-y-1">
-                {agentWorkspaces.length === 0 && (
-                  <div className="rounded-lg border border-dashed border-stone-200 px-3 py-4 text-center text-[11px] leading-relaxed text-stone-400">
-                    <p>还没有代码工作区</p>
-                    <button
-                      type="button"
-                      onClick={handleAddWorkspace}
-                      className="mt-2 inline-flex items-center gap-1 rounded-md px-2 py-1 text-stone-600 hover:bg-stone-100 hover:text-stone-900"
+            <div className="space-y-1">
+              {agentWorkspaces.length === 0 && (
+                <div className="rounded-lg border border-dashed border-stone-200 px-3 py-4 text-center text-[11px] leading-relaxed text-stone-400">
+                  <p>还没有代码工作区</p>
+                  <button
+                    type="button"
+                    onClick={handleAddWorkspace}
+                    className="mt-2 inline-flex items-center gap-1 rounded-md px-2 py-1 text-stone-600 hover:bg-stone-100 hover:text-stone-900"
+                  >
+                    <FolderPlus className="h-3.5 w-3.5" />
+                    添加项目
+                  </button>
+                </div>
+              )}
+              {agentWorkspaces.map((ws) => {
+                const expanded = expandedWs.has(ws.id);
+                const wsSessions = sessions.filter((s) => s.workspace_id === ws.id);
+                return (
+                  <div key={ws.id}>
+                    <div
+                      className="flex w-full cursor-pointer items-center gap-1.5 rounded-xl px-2 py-1.5 text-left text-xs text-stone-700 transition-colors hover:bg-stone-200/40"
+                      onClick={() => toggleWs(ws.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setAccountMenuOpen(false);
+                        setCtxMenu(null);
+                        setWsCtxMenu({ workspaceId: ws.id, name: ws.name, x: e.clientX, y: e.clientY });
+                      }}
+                      title={ws.folder_path}
                     >
-                      <FolderPlus className="h-3.5 w-3.5" />
-                      添加项目
-                    </button>
-                  </div>
-                )}
-                {agentWorkspaces.map((ws) => {
-                  const expanded = expandedWs.has(ws.id);
-                  const wsSessions = sessions.filter((s) => s.workspace_id === ws.id);
-                  return (
-                    <div key={ws.id}>
-                      <div
-                        className="flex w-full cursor-pointer items-center gap-1.5 rounded-xl px-2 py-1.5 text-left text-xs text-stone-700 transition-colors hover:bg-stone-200/40"
-                        onClick={() => toggleWs(ws.id)}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          setAccountMenuOpen(false);
-                          setCtxMenu(null);
-                          setWsCtxMenu({ workspaceId: ws.id, name: ws.name, x: e.clientX, y: e.clientY });
-                        }}
-                        title={ws.folder_path}
+                      {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-stone-400" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-stone-400" />}
+                      <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                      <span className="flex-1 truncate font-medium">{ws.name}</span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleAddWorkspaceSession(ws.id); }}
+                        className="shrink-0 text-stone-400 hover:text-stone-900"
+                        title="在工作区中新建会话"
                       >
-                        {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-stone-400" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-stone-400" />}
-                        <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-                        <span className="flex-1 truncate font-medium">{ws.name}</span>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleAddWorkspaceSession(ws.id); }}
-                          className="shrink-0 text-stone-400 hover:text-stone-900"
-                          title="在工作区中新建会话"
-                        >
-                          <Plus className="h-3 w-3" />
-                        </button>
-                      </div>
-                      {expanded && (
-                        <div className="ml-3 mt-0.5 space-y-1 border-l border-stone-200/60 pl-2">
-                          {wsSessions.map(renderSessionBtn)}
-                          {wsSessions.length === 0 && (
-                            <div className="py-2 text-center text-[10px] text-stone-400">无会话</div>
-                          )}
-                        </div>
-                      )}
+                        <Plus className="h-3 w-3" />
+                      </button>
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                    {expanded && (
+                      <div className="ml-3 mt-0.5 space-y-1 border-l border-stone-200/60 pl-2">
+                        {wsSessions.map(renderSessionBtn)}
+                        {wsSessions.length === 0 && (
+                          <div className="py-2 text-center text-[10px] text-stone-400">无会话</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </section>
         )}
       </div>
