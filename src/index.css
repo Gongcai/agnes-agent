@@ -544,7 +544,12 @@ pre,
 }
 
 .agnes-sidebar--collapsed {
-  width: 64px !important;
+  width: 48px !important;
+}
+
+.agnes-sidebar--collapsed > div:first-child,
+.agnes-sidebar--collapsed > nav {
+  padding-inline: 8px !important;
 }
 
 .agnes-sidebar > div,
@@ -678,13 +683,22 @@ pre,
 
 .agnes-sidebar--collapsed .agnes-mode-switch {
   flex-direction: column;
+  width: 32px;
   gap: 2px;
 }
 
 .agnes-sidebar--collapsed .agnes-mode-tab {
-  width: 34px;
+  width: 28px;
   min-height: 30px;
   flex: none;
+}
+
+.agnes-sidebar--collapsed .agnes-sidebar-primary-action,
+.agnes-sidebar--collapsed .agnes-account-trigger {
+  width: 32px;
+  padding-inline: 0 !important;
+  justify-content: center;
+  gap: 0;
 }
 
 .agnes-sidebar-nav-heading {

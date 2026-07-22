@@ -299,7 +299,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside
       data-open={isOpen}
       className={`agnes-sidebar ${isOpen ? "agnes-sidebar--open" : "agnes-sidebar--collapsed"} flex h-full shrink-0 flex-col overflow-hidden border-r border-stone-200/80 bg-stone-100/60 backdrop-blur-md transition-[width] duration-300 ${
-        isOpen ? "w-72" : "w-[68px]"
+        isOpen ? "w-72" : "w-12"
       }`}
     >
       <div className="px-3 pt-3">
