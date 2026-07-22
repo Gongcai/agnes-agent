@@ -1386,6 +1386,24 @@ pre,
   background: var(--claude-canvas);
 }
 
+.agnes-subnav .agnes-knowledge-collection:hover {
+  background: var(--claude-surface-soft) !important;
+}
+
+.agnes-subnav .agnes-knowledge-collection[aria-current="true"] {
+  background: var(--claude-surface-card) !important;
+  color: var(--claude-clay-dark) !important;
+}
+
+.agnes-reading-workspace .agnes-reading-panel-action:hover {
+  background: var(--claude-surface-soft) !important;
+}
+
+.agnes-reading-workspace .agnes-reading-panel-action[aria-pressed="true"] {
+  background: var(--claude-surface-card) !important;
+  color: var(--claude-ink) !important;
+}
+
 .agnes-feature-workspace button[class*="bg-white"],
 .agnes-feature-workspace label[class*="bg-white"] {
   border-color: var(--claude-border) !important;
@@ -1420,9 +1438,73 @@ pre,
   background: var(--claude-header-soft) !important;
 }
 
-.agnes-drive-workspace input[type="checkbox"],
 .agnes-planner-workspace input[type="checkbox"] {
   accent-color: var(--claude-clay);
+}
+
+.agnes-drive-workspace input[type="checkbox"] {
+  appearance: none;
+  display: inline-grid;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  place-content: center;
+  border: 1px solid var(--claude-border-strong);
+  border-radius: 3px;
+  background: var(--claude-surface-soft);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.agnes-drive-workspace input[type="checkbox"]::after {
+  width: 8px;
+  height: 8px;
+  content: "";
+  background: white;
+  clip-path: polygon(14% 44%, 0 59%, 38% 96%, 100% 24%, 84% 9%, 37% 68%);
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity 100ms ease, transform 120ms ease;
+}
+
+.agnes-drive-workspace input[type="checkbox"]:checked,
+.agnes-drive-workspace input[type="checkbox"]:indeterminate {
+  border-color: var(--claude-clay);
+  background: var(--claude-clay);
+}
+
+.agnes-drive-workspace input[type="checkbox"]:checked::after {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.agnes-drive-workspace input[type="checkbox"]:indeterminate::after {
+  width: 8px;
+  height: 2px;
+  clip-path: none;
+  opacity: 1;
+  transform: scale(1);
+}
+
+.agnes-drive-workspace input[type="checkbox"]:focus-visible {
+  box-shadow: 0 0 0 2px var(--claude-clay-soft);
+}
+
+.agnes-drive-workspace input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.agnes-drive-file-row {
+  transition: background-color 120ms ease;
+}
+
+.agnes-drive-file-row:hover {
+  background: var(--claude-surface-soft) !important;
+}
+
+.agnes-drive-file-row[aria-selected="true"] {
+  background: var(--claude-surface-card) !important;
 }
 
 .agnes-toggle-thumb--on {
@@ -1567,6 +1649,16 @@ pre,
 :root[data-agnes-theme="dark"] .agnes-app .hover\:text-stone-800:hover,
 :root[data-agnes-theme="dark"] .agnes-app .hover\:text-stone-700:hover {
   color: var(--claude-ink) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-reading-workspace [class*="hover:bg-stone-"]:hover,
+:root[data-agnes-theme="dark"] .agnes-knowledge-workspace [class*="hover:bg-stone-"]:hover {
+  background-color: var(--claude-surface-soft) !important;
+}
+
+:root[data-agnes-theme="dark"] .agnes-reading-workspace [class*="hover:bg-emerald-50"]:hover,
+:root[data-agnes-theme="dark"] .agnes-knowledge-workspace [class*="hover:bg-emerald-50"]:hover {
+  background-color: var(--claude-clay-soft) !important;
 }
 
 :root[data-agnes-theme="dark"] .agnes-app [class~="bg-amber-50"],

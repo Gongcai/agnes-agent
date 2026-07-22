@@ -450,10 +450,11 @@ export const KnowledgeWorkspace: React.FC = () => {
                   setResults([]);
                   setIndexStatus(null);
                 }}
-                className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs ${
+                aria-current={collection.id === selectedCollectionId ? "true" : undefined}
+                className={`agnes-knowledge-collection flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs ${
                   collection.id === selectedCollectionId
-                    ? "bg-white font-semibold text-emerald-700 shadow-sm"
-                    : "text-stone-600 hover:bg-stone-200/40"
+                    ? "font-semibold text-emerald-700"
+                    : "text-stone-600"
                 }`}
               >
                 <BookOpen className="h-3.5 w-3.5 shrink-0" />

@@ -866,8 +866,9 @@ export const ReadingWorkspace: React.FC = () => {
                   <button
                     onClick={() => setIsConversationHistoryOpen((open) => !open)}
                     disabled={!conversationReady || loading}
-                    className={`rounded p-1 disabled:opacity-40 ${isConversationHistoryOpen ? "bg-stone-100 text-stone-700" : "text-stone-400 hover:bg-stone-100 hover:text-stone-700"}`}
+                    className={`agnes-reading-panel-action rounded p-1 disabled:opacity-40 ${isConversationHistoryOpen ? "text-stone-700" : "text-stone-400 hover:text-stone-700"}`}
                     title="讨论历史"
+                    aria-pressed={isConversationHistoryOpen}
                   >
                     <History className="h-4 w-4" />
                   </button>
@@ -894,13 +895,13 @@ export const ReadingWorkspace: React.FC = () => {
                         .finally(() => setLoading(false));
                     }}
                     disabled={!conversationReady || isStreaming || loading}
-                    className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700 disabled:opacity-40"
+                    className="agnes-reading-panel-action rounded p-1 text-stone-400 hover:text-stone-700 disabled:opacity-40"
                     title="新建讨论"
                   >
                     <Plus className="h-4 w-4" />
                   </button>
-                  <button onClick={() => setIsDiscussionOptionsOpen((open) => !open)} className={`rounded p-1 ${isDiscussionOptionsOpen ? "bg-stone-100 text-stone-700" : "text-stone-400 hover:bg-stone-100 hover:text-stone-700"}`} title="讨论设置"><SlidersHorizontal className="h-4 w-4" /></button>
-                  <button onClick={() => setIsDiscussionOpen(false)} className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700" title="收起讨论" aria-expanded="true"><PanelRightClose className="h-4 w-4" /></button>
+                  <button onClick={() => setIsDiscussionOptionsOpen((open) => !open)} className={`agnes-reading-panel-action rounded p-1 ${isDiscussionOptionsOpen ? "text-stone-700" : "text-stone-400 hover:text-stone-700"}`} title="讨论设置" aria-pressed={isDiscussionOptionsOpen}><SlidersHorizontal className="h-4 w-4" /></button>
+                  <button onClick={() => setIsDiscussionOpen(false)} className="agnes-reading-panel-action rounded p-1 text-stone-400 hover:text-stone-700" title="收起讨论" aria-expanded="true"><PanelRightClose className="h-4 w-4" /></button>
                 </div>
                 {isConversationHistoryOpen && (
                   <>
@@ -1074,7 +1075,7 @@ export const ReadingWorkspace: React.FC = () => {
             ) : (
               <button
                 onClick={() => setIsDiscussionOpen(true)}
-                className="flex h-full w-full items-center justify-center text-stone-400 hover:bg-stone-50 hover:text-stone-700 lg:items-start lg:pt-4"
+                className="agnes-reading-panel-action flex h-full w-full items-center justify-center text-stone-400 hover:text-stone-700 lg:items-start lg:pt-4"
                 title="展开讨论"
                 aria-expanded="false"
               >

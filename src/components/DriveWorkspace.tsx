@@ -1097,7 +1097,8 @@ export function DriveWorkspace() {
                       <div
                         key={item.id}
                         onContextMenu={(event) => openFileContextMenu(event, item)}
-                        className={`grid w-full grid-cols-[28px_minmax(0,1fr)_74px_56px] items-center gap-3 border-b border-stone-100 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-white sm:grid-cols-[28px_minmax(0,1fr)_90px_130px_56px] sm:gap-4 ${selectedFileIds.has(item.id) ? "bg-emerald-50/60" : ""}`}
+                        aria-selected={selectedFileIds.has(item.id)}
+                        className="agnes-drive-file-row grid w-full grid-cols-[28px_minmax(0,1fr)_74px_56px] items-center gap-3 border-b border-stone-100 px-3 py-2 text-left text-xs last:border-b-0 sm:grid-cols-[28px_minmax(0,1fr)_90px_130px_56px] sm:gap-4"
                       >
                         <input
                           type="checkbox"
