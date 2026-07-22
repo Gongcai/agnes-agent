@@ -375,6 +375,7 @@ body.quick-window-body #root {
   --claude-success: #3f7d53;
   --claude-warning: #a96919;
   --claude-danger: #b84343;
+  --claude-danger-hover: #963535;
   --claude-header: rgba(250, 249, 245, 0.96);
   --claude-header-soft: rgba(245, 240, 232, 0.96);
   --claude-overlay: rgba(31, 30, 27, 0.34);
@@ -427,6 +428,7 @@ body.quick-window-body #root {
   --claude-success: #75ae84;
   --claude-warning: #d9a557;
   --claude-danger: #df7b79;
+  --claude-danger-hover: #c66160;
   --claude-header: rgba(31, 31, 29, 0.94);
   --claude-header-soft: rgba(31, 31, 29, 0.96);
   --claude-overlay: rgba(0, 0, 0, 0.58);
@@ -984,7 +986,7 @@ pre,
   transform: translateY(-0.5px) scale(1.08);
 }
 
-.agnes-chat-composer-box button[class*="bg-stone-800"]:hover svg {
+.agnes-chat-composer-box .agnes-chat-send-button:hover svg {
   transform: translateY(-1.5px) scale(1.06);
 }
 
@@ -1129,13 +1131,23 @@ pre,
   color: var(--claude-ink) !important;
 }
 
-.agnes-chat-composer-box button[class*="bg-stone-800"] {
+.agnes-chat-composer-box .agnes-chat-send-button {
   background: var(--claude-clay) !important;
   color: white !important;
 }
 
-.agnes-chat-composer-box button[class*="bg-stone-800"]:hover {
+.agnes-chat-composer-box .agnes-chat-send-button:hover {
   background: var(--claude-clay-dark) !important;
+  color: white !important;
+}
+
+.agnes-chat-composer-box .agnes-chat-stop-button {
+  background: var(--claude-danger) !important;
+  color: white !important;
+}
+
+.agnes-chat-composer-box .agnes-chat-stop-button:hover {
+  background: var(--claude-danger-hover) !important;
   color: white !important;
 }
 

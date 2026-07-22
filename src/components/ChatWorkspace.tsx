@@ -1284,9 +1284,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
               {isStreaming ? (
                 <button
+                  type="button"
                   onClick={() => activeSessionId && cancelRun(activeSessionId).catch(console.error)}
-                  className="flex items-center gap-1 rounded-lg bg-red-600 hover:bg-red-700 text-white px-3.5 py-1 h-6 text-[10px] font-semibold shadow-sm transition-colors"
+                  className="agnes-chat-stop-button flex h-6 items-center gap-1 rounded-lg bg-red-600 px-3.5 py-1 text-[10px] font-semibold text-white shadow-sm transition-colors hover:bg-red-700"
                   title="停止生成"
+                  aria-label="停止生成"
                 >
                   <Square className="h-2.5 w-2.5 fill-current" />
                   <span>停止</span>
@@ -1295,7 +1297,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 <Button
                   onClick={handleSend}
                   disabled={(!inputVal.trim() && attachments.length === 0) || !activeSessionId}
-                  className="rounded-lg bg-stone-900 hover:bg-stone-850 text-white px-3.5 py-1 h-6 text-[10px] font-semibold shadow-sm"
+                  className="agnes-chat-send-button h-6 rounded-lg bg-stone-900 px-3.5 py-1 text-[10px] font-semibold text-white shadow-sm hover:bg-stone-800"
+                  title="发送"
+                  aria-label="发送"
                 >
                   <Send className="h-3 w-3 mr-1" />
                   <span>发送</span>
