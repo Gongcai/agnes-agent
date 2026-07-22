@@ -1,5 +1,4 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   Brain,
   BookOpen,
@@ -8,6 +7,7 @@ import {
   CheckSquare as CheckSquare2,
   CaretDown as ChevronDown,
   CaretRight as ChevronRight,
+  CaretUp as ChevronUp,
   Database,
   Folder,
   FolderPlus,
@@ -117,10 +117,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     readLocalBoolean("agnes.ui.sidebar.more-expanded", false),
   );
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  const [accountAnchor, setAccountAnchor] = useState<DOMRect | null>(null);
   const sidebarRef = useRef<HTMLElement>(null);
-  const accountTriggerRef = useRef<HTMLButtonElement>(null);
-  const accountMenuRef = useRef<HTMLDivElement>(null);
   const [featureHighlight, setFeatureHighlight] = useState<{
     x: number;
     y: number;
@@ -209,26 +206,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     };
   }, [activeFeature, isOpen, moreExpanded]);
 
-  useEffect(() => {
-    if (!accountMenuOpen) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (accountTriggerRef.current?.contains(target) || accountMenuRef.current?.contains(target)) return;
-      if (target instanceof Element && target.closest(".claude-popover")) return;
-      setAccountMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setAccountMenuOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [accountMenuOpen]);
-
   // Expand newly loaded workspace groups by default.
   useEffect(() => {
     setExpandedWs(new Set(agentWorkspaces.map((w) => w.id)));
@@ -256,7 +233,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const toggleAccountMenu = () => {
     setAccountMenuOpen((open) => !open);
-    setAccountAnchor(accountTriggerRef.current?.getBoundingClientRect() ?? null);
   };
 
   const handleAddWorkspaceSession = (workspaceId: string) => {
@@ -564,38 +540,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Account entry; the product has no user model yet, so this is a stable UI placeholder. */}
-      <div className="agnes-sidebar-account relative mt-auto shrink-0 border-t border-stone-200 bg-stone-200/20 p-2">
-        <button
-          ref={accountTriggerRef}
-          type="button"
-          onClick={toggleAccountMenu}
-          className="agnes-account-trigger flex h-10 w-full items-center gap-2 rounded-lg px-2 text-left transition-colors hover:bg-stone-100"
-          aria-expanded={accountMenuOpen}
-          aria-label="打开账户菜单"
-        >
-          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-stone-300 text-xs font-semibold text-stone-700">A</span>
-          <span className="agnes-sidebar-label min-w-0 flex-1 truncate text-xs font-medium text-stone-700">AGENS</span>
-          <ChevronDown className={`agnes-sidebar-label h-3.5 w-3.5 shrink-0 text-stone-400 transition-transform ${accountMenuOpen ? "rotate-180" : ""}`} />
-        </button>
-      </div>
-
-      {accountMenuOpen && accountAnchor && createPortal(
-        <div
-          ref={accountMenuRef}
-          className="agnes-account-menu fixed z-[100] w-56 overflow-hidden rounded-lg border border-stone-200 bg-white p-1.5 shadow-2xl"
-          style={{
-            left: Math.min(Math.max(accountAnchor.left, 8), Math.max(8, window.innerWidth - 232)),
-            bottom: Math.max(8, window.innerHeight - accountAnchor.top + 8),
-          }}
-        >
-          <div className="agnes-account-menu-header flex items-center gap-2 border-b border-stone-100 px-2.5 py-2">
-            <span className="grid h-7 w-7 place-items-center rounded-full bg-stone-300 text-xs font-semibold text-stone-700">A</span>
-            <div className="min-w-0">
-              <p className="truncate text-xs font-semibold text-stone-800">AGENS</p>
-              <p className="text-[10px] text-stone-400">本地账户</p>
-            </div>
-          </div>
-          <div className="agnes-account-menu-actions mt-1 space-y-1">
+      <div className="agnes-sidebar-account relative mt-auto shrink-0 border-t border-stone-200 bg-stone-200/20 px-2 py-1">
+        <div className="agnes-account-actions" data-open={accountMenuOpen}>
+          <div className="agnes-account-actions-inner space-y-1">
             <NotificationCenter
               onNavigate={onNotificationNavigate}
               className="w-full"
@@ -607,17 +554,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 setAccountMenuOpen(false);
                 onOpenSettings("agents");
               }}
-              className="flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-stone-600 hover:bg-stone-50 hover:text-stone-900"
+              className="agnes-account-action flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-xs text-stone-600 transition-colors"
             >
-              <span className="agnes-account-menu-icon grid h-8 w-8 shrink-0 place-items-center rounded-full border border-stone-200 bg-stone-50">
+              <span className="agnes-account-action-icon grid h-7 w-7 shrink-0 place-items-center">
                 <Settings className="h-4 w-4" />
               </span>
-              <span>设置</span>
+              <span className="agnes-sidebar-label">设置</span>
             </button>
           </div>
-        </div>,
-        document.body,
-      )}
+        </div>
+        <button
+          type="button"
+          onClick={toggleAccountMenu}
+          className="agnes-account-trigger flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left transition-colors hover:bg-stone-100"
+          aria-expanded={accountMenuOpen}
+          aria-label="打开账户菜单"
+        >
+          <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-stone-300 text-[11px] font-semibold text-stone-700">A</span>
+          <span className="agnes-sidebar-label min-w-0 flex-1 truncate text-xs font-medium text-stone-700">AGENS</span>
+          {accountMenuOpen
+            ? <ChevronUp className="agnes-account-chevron h-3.5 w-3.5 shrink-0 text-stone-400" />
+            : <ChevronDown className="agnes-account-chevron h-3.5 w-3.5 shrink-0 text-stone-400" />}
+        </button>
+      </div>
 
       {/* 会话右键菜单 */}
       {ctxMenu && (

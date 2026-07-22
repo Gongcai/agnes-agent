@@ -224,7 +224,7 @@ export function NotificationCenter({ onNavigate, className, triggerVariant = "ic
           type="button"
           onClick={toggle}
           className={triggerVariant === "menu"
-            ? `relative flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors ${open ? "bg-[#f5e2da] text-[#b95f43]" : "text-stone-600 hover:bg-stone-50 hover:text-stone-900"}`
+            ? "agnes-account-action relative flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-xs text-stone-600 transition-colors"
             : `relative grid h-9 w-9 place-items-center rounded-full border shadow-sm transition-colors ${open ? "border-[#d97757]/30 bg-[#f5e2da] text-[#b95f43]" : "border-stone-200 bg-white text-stone-600 hover:bg-stone-50"}`
           }
           title="通知中心"
@@ -233,10 +233,10 @@ export function NotificationCenter({ onNavigate, className, triggerVariant = "ic
         >
           {triggerVariant === "menu" ? (
             <>
-              <span className="agnes-account-menu-icon grid h-8 w-8 shrink-0 place-items-center rounded-full border border-stone-200 bg-stone-50">
+              <span className="agnes-account-action-icon grid h-7 w-7 shrink-0 place-items-center">
                 <Bell className="h-4 w-4" />
               </span>
-              <span>通知</span>
+              <span className="agnes-sidebar-label">通知</span>
             </>
           ) : (
             <Bell className="h-4 w-4" />

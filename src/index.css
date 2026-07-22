@@ -729,6 +729,10 @@ pre,
   transition-delay: 0ms;
 }
 
+.agnes-sidebar--collapsed .agnes-account-chevron {
+  display: none;
+}
+
 .agnes-sidebar--collapsed .agnes-mode-switch {
   flex-direction: column;
   width: 32px;
@@ -756,6 +760,7 @@ pre,
 }
 
 .agnes-sidebar--collapsed .agnes-sidebar-primary-action,
+.agnes-sidebar--collapsed .agnes-account-action,
 .agnes-sidebar--collapsed .agnes-account-trigger {
   width: 32px;
   height: 32px !important;
@@ -832,54 +837,42 @@ pre,
   color: var(--claude-body) !important;
 }
 
-.agnes-account-menu {
-  background: var(--claude-canvas) !important;
-  border-color: var(--claude-border) !important;
-  color: var(--claude-body);
+.agnes-account-actions {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    grid-template-rows 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 160ms ease,
+    visibility 0s linear 260ms;
 }
 
-.agnes-account-menu-header {
-  border-color: var(--claude-border) !important;
+.agnes-account-actions[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
 }
 
-.agnes-account-menu-icon {
-  border-color: var(--claude-border) !important;
-  background: var(--claude-surface-soft) !important;
+.agnes-account-actions-inner {
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 4px;
 }
 
-:root[data-agnes-theme="dark"] .agnes-account-menu button:hover {
-  background: var(--claude-surface-soft) !important;
-}
-
-:root[data-agnes-theme="dark"] .agnes-account-menu {
-  border-color: rgba(245, 243, 237, 0.07) !important;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.38) !important;
-}
-
-:root[data-agnes-theme="dark"] .agnes-account-menu-header {
-  border-color: rgba(245, 243, 237, 0.09) !important;
-}
-
-:root[data-agnes-theme="dark"] .agnes-account-menu-icon {
-  border-color: transparent !important;
-}
-
-:root[data-agnes-theme="dark"] .agnes-account-menu [class*="text-stone-8"] {
-  color: var(--claude-ink) !important;
-}
-
-:root[data-agnes-theme="dark"] .agnes-account-menu [class*="text-stone-6"],
-:root[data-agnes-theme="dark"] .agnes-account-menu [class*="text-stone-7"] {
+.agnes-sidebar .agnes-account-action {
+  background: transparent !important;
   color: var(--claude-body) !important;
 }
 
-:root[data-agnes-theme="dark"] .agnes-account-menu [class*="text-stone-4"] {
-  color: var(--claude-muted) !important;
+.agnes-sidebar .agnes-account-action:hover {
+  background: var(--claude-surface-card) !important;
+  color: var(--claude-ink) !important;
 }
 
-:root[data-agnes-theme="dark"] .agnes-account-menu [class*="bg-stone-3"],
-:root[data-agnes-theme="dark"] .agnes-account-menu [class*="bg-stone-5"] {
-  background: var(--claude-surface-soft) !important;
+.agnes-account-action-icon {
+  color: var(--claude-muted);
 }
 
 .agnes-chat-workspace {
