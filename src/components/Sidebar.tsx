@@ -114,9 +114,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     x: number;
     y: number;
   } | null>(null);
-  const [standaloneExpanded, setStandaloneExpanded] = useState(() =>
-    readLocalBoolean("agnes.ui.sidebar.standalone-expanded", true),
-  );
   const [workspacesExpanded, setWorkspacesExpanded] = useState(() =>
     readLocalBoolean("agnes.ui.sidebar.workspaces-expanded", true),
   );
@@ -161,13 +158,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [ctxMenu, wsCtxMenu]);
-
-  useEffect(() => {
-    writeLocalBoolean(
-      "agnes.ui.sidebar.standalone-expanded",
-      standaloneExpanded,
-    );
-  }, [standaloneExpanded]);
 
   useEffect(() => {
     writeLocalBoolean(
@@ -475,28 +465,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="agnes-session-list flex-1 space-y-4 overflow-y-auto p-4" aria-hidden={!isOpen}>
         {chatMode === "home" ? (
           <section>
-            <div className="mb-2 flex items-center gap-1 px-1 text-[10px] font-medium text-stone-400">
-              <button
-                onClick={() => setStandaloneExpanded((expanded) => !expanded)}
-                className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left hover:bg-stone-200/50 hover:text-stone-600"
-                aria-expanded={standaloneExpanded}
-              >
-                {standaloneExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                <span className="truncate">最近对话</span>
-                <span className="font-medium text-stone-300">{standaloneSessions.length}</span>
-              </button>
-              <button onClick={handleAddStandaloneSession} className="rounded-md p-1 text-stone-500 transition-colors hover:bg-stone-200/60 hover:text-stone-900" title="新建对话">
-                <Plus className="h-3.5 w-3.5" />
-              </button>
+            <div className="space-y-1">
+              {standaloneSessions.map(renderSessionBtn)}
+              {standaloneSessions.length === 0 && (
+                <div className="py-3 text-center text-[11px] text-stone-400">无对话</div>
+              )}
             </div>
-            {standaloneExpanded && (
-              <div className="space-y-1">
-                {standaloneSessions.map(renderSessionBtn)}
-                {standaloneSessions.length === 0 && (
-                  <div className="py-3 text-center text-[11px] text-stone-400">无对话</div>
-                )}
-              </div>
-            )}
           </section>
         ) : (
           <section>
