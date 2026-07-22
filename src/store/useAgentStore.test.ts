@@ -5,6 +5,7 @@ import {
   buildOptimisticRegenerationBranch,
   preserveLatestRunRenderKeys,
   type Message,
+  useAgentStore,
 } from "./useAgentStore";
 
 const user: Message = {
@@ -121,5 +122,45 @@ describe("optimistic conversation branches", () => {
       id: "tool-1",
       status: "pending_approval",
     });
+  });
+});
+
+describe("typed assistant deltas", () => {
+  it("keeps reasoning out of text after an in-flight message is reloaded", () => {
+    const reloadedAssistant: Message = {
+      ...assistant,
+      id: "assistant-streaming",
+      status: "streaming",
+      parts: [],
+      _streamingInThought: undefined,
+    };
+    useAgentStore.setState({
+      activeSessionId: "session-1",
+      isStreaming: true,
+      messages: [user, reloadedAssistant],
+    });
+
+    useAgentStore.getState().appendStreamingDelta(
+      "<thought>private reasoning",
+      [{ kind: "thought", content: "private reasoning" }],
+      true,
+    );
+    useAgentStore.getState().appendStreamingDelta(
+      " continues</thought>public answer",
+      [
+        { kind: "thought", content: " continues" },
+        { kind: "text", content: "public answer" },
+      ],
+      false,
+    );
+
+    const streamed = useAgentStore.getState().messages.at(-1)!;
+    expect(streamed.parts).toMatchObject([
+      { kind: "thought", content: "private reasoning continues" },
+      { kind: "text", content: "public answer" },
+    ]);
+    expect(streamed._streamingInThought).toBe(false);
+
+    useAgentStore.setState({ activeSessionId: null, isStreaming: false, messages: [] });
   });
 });

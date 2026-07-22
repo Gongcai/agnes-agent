@@ -137,6 +137,11 @@ export interface Message {
   _renderKey?: string;
 }
 
+export interface StreamingDeltaSegment {
+  kind: "text" | "thought";
+  content: string;
+}
+
 function pendingAssistantVersion(source: Message, id: string, parentId: string): Message {
   return {
     id,
@@ -433,7 +438,11 @@ interface AgentState {
   deleteProvider: (providerId: string) => Promise<void>;
 
   // Local Mutations (typically called by Tauri event listeners)
-  appendStreamingDelta: (content: string) => void;
+  appendStreamingDelta: (
+    content: string,
+    segments?: StreamingDeltaSegment[],
+    inThought?: boolean,
+  ) => void;
   addModelFallbackNotice: (sessionId: string, content: string) => void;
   upsertLocalToolCall: (sessionId: string, toolCall: ToolCall) => void;
   updateLocalToolCallStatus: (toolCallId: string, status: ToolCall["status"], output?: string) => void;
@@ -989,7 +998,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  appendStreamingDelta: (content: string) => {
+  appendStreamingDelta: (
+    content: string,
+    segments?: StreamingDeltaSegment[],
+    inThought?: boolean,
+  ) => {
     const { messages } = get();
     if (messages.length === 0) return;
 
@@ -1011,36 +1024,39 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
     };
 
-    // 当前是否处于思维链中：用跨调用持久化的标志，避免 <thought> 独立 chunk 丢失状态
-    let inThought = lastMsg._streamingInThought === true;
-
-    // 按 <thought>/</thought> 标签分段路由（标签可能跨 chunk 到达）
-    let remaining = content;
-    while (remaining.length > 0) {
-      if (inThought) {
-        const closeIdx = remaining.indexOf("</thought>");
-        if (closeIdx >= 0) {
-          appendKind("thought", remaining.slice(0, closeIdx));
-          inThought = false;
-          remaining = remaining.slice(closeIdx + "</thought>".length);
+    if (segments !== undefined) {
+      for (const segment of segments) appendKind(segment.kind, segment.content);
+      lastMsg._streamingInThought = inThought ?? lastMsg._streamingInThought;
+    } else {
+      // Legacy event fallback: route raw tags locally when the backend does
+      // not provide typed segments.
+      let localInThought = lastMsg._streamingInThought === true;
+      let remaining = content;
+      while (remaining.length > 0) {
+        if (localInThought) {
+          const closeIdx = remaining.indexOf("</thought>");
+          if (closeIdx >= 0) {
+            appendKind("thought", remaining.slice(0, closeIdx));
+            localInThought = false;
+            remaining = remaining.slice(closeIdx + "</thought>".length);
+          } else {
+            appendKind("thought", remaining);
+            remaining = "";
+          }
         } else {
-          appendKind("thought", remaining);
-          remaining = "";
-        }
-      } else {
-        const openIdx = remaining.indexOf("<thought>");
-        if (openIdx >= 0) {
-          appendKind("text", remaining.slice(0, openIdx));
-          inThought = true;
-          remaining = remaining.slice(openIdx + "<thought>".length);
-        } else {
-          appendKind("text", remaining);
-          remaining = "";
+          const openIdx = remaining.indexOf("<thought>");
+          if (openIdx >= 0) {
+            appendKind("text", remaining.slice(0, openIdx));
+            localInThought = true;
+            remaining = remaining.slice(openIdx + "<thought>".length);
+          } else {
+            appendKind("text", remaining);
+            remaining = "";
+          }
         }
       }
+      lastMsg._streamingInThought = localInThought;
     }
-
-    lastMsg._streamingInThought = inThought;
     lastMsg.status = "streaming";
     updatedMessages[updatedMessages.length - 1] = lastMsg;
     set({ messages: updatedMessages });
@@ -1156,7 +1172,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 // Setup bridge listener to bind Tauri backend events to Zustand actions
 export function setupTauriEventListeners() {
   const listeners: Promise<() => void>[] = [];
-  let bufferedDelta: { sessionId: string; runId: string; content: string } | null = null;
+  let bufferedDelta: {
+    sessionId: string;
+    runId: string;
+    content: string;
+    segments?: StreamingDeltaSegment[];
+    inThought?: boolean;
+  } | null = null;
   let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   const flushBufferedDelta = () => {
@@ -1170,20 +1192,41 @@ export function setupTauriEventListeners() {
 
     const store = useAgentStore.getState();
     if (store.activeSessionId === delta.sessionId) {
-      store.appendStreamingDelta(delta.content);
+      store.appendStreamingDelta(delta.content, delta.segments, delta.inThought);
     }
   };
 
-  const queueStreamingDelta = (sessionId: string, runId: string, content: string) => {
-    if (!content || useAgentStore.getState().activeSessionId !== sessionId) return;
+  const queueStreamingDelta = (
+    sessionId: string,
+    runId: string,
+    content: string,
+    segments?: StreamingDeltaSegment[],
+    inThought?: boolean,
+  ) => {
+    if (
+      (!content && segments === undefined)
+      || useAgentStore.getState().activeSessionId !== sessionId
+    ) return;
     if (bufferedDelta && (bufferedDelta.sessionId !== sessionId || bufferedDelta.runId !== runId)) {
       flushBufferedDelta();
     }
 
     if (bufferedDelta) {
       bufferedDelta.content += content;
+      if (bufferedDelta.segments !== undefined && segments !== undefined) {
+        bufferedDelta.segments.push(...segments);
+      } else if (segments !== undefined) {
+        bufferedDelta.segments = [...segments];
+      }
+      if (inThought !== undefined) bufferedDelta.inThought = inThought;
     } else {
-      bufferedDelta = { sessionId, runId, content };
+      bufferedDelta = {
+        sessionId,
+        runId,
+        content,
+        ...(segments !== undefined ? { segments: [...segments] } : {}),
+        ...(inThought !== undefined ? { inThought } : {}),
+      };
     }
 
     if (deltaFlushTimer === null) {
@@ -1214,13 +1257,21 @@ export function setupTauriEventListeners() {
   };
 
   listeners.push(
-    listen<{ session_id: string; run_id: string; content: string }>(
+    listen<{
+      session_id: string;
+      run_id: string;
+      content: string;
+      segments?: StreamingDeltaSegment[];
+      in_thought?: boolean;
+    }>(
       "agent://assistant_delta",
       (event) => {
         queueStreamingDelta(
           event.payload.session_id,
           event.payload.run_id,
           event.payload.content,
+          event.payload.segments,
+          event.payload.in_thought,
         );
       }
     )

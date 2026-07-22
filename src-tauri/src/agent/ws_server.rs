@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use serde_json::json;
 use tauri::{Emitter, Manager};
 use tokio::net::TcpListener as TokioListener;
@@ -30,6 +31,60 @@ pub struct ActiveRun {
     pub current_ordinal: i32,
     /// 当前是否处于 <thought> 思维链中（跨 chunk 持久，避免多段思维链路由错乱）
     pub in_thought: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct AssistantDeltaSegment {
+    kind: &'static str,
+    content: String,
+}
+
+fn push_assistant_delta_segment(
+    run: &mut ActiveRun,
+    segments: &mut Vec<AssistantDeltaSegment>,
+    kind: &'static str,
+    content: &str,
+) {
+    if content.is_empty() {
+        return;
+    }
+    match kind {
+        "thought" => run.accumulated_thought.push_str(content),
+        _ => run.accumulated_text.push_str(content),
+    }
+    if let Some(last) = segments.last_mut().filter(|segment| segment.kind == kind) {
+        last.content.push_str(content);
+    } else {
+        segments.push(AssistantDeltaSegment {
+            kind,
+            content: content.to_string(),
+        });
+    }
+}
+
+fn route_assistant_delta(run: &mut ActiveRun, content: &str) -> Vec<AssistantDeltaSegment> {
+    let mut segments = Vec::new();
+    let mut remaining = content;
+    while !remaining.is_empty() {
+        if run.in_thought {
+            if let Some(index) = remaining.find("</thought>") {
+                push_assistant_delta_segment(run, &mut segments, "thought", &remaining[..index]);
+                run.in_thought = false;
+                remaining = &remaining[index + "</thought>".len()..];
+            } else {
+                push_assistant_delta_segment(run, &mut segments, "thought", remaining);
+                remaining = "";
+            }
+        } else if let Some(index) = remaining.find("<thought>") {
+            push_assistant_delta_segment(run, &mut segments, "text", &remaining[..index]);
+            run.in_thought = true;
+            remaining = &remaining[index + "<thought>".len()..];
+        } else {
+            push_assistant_delta_segment(run, &mut segments, "text", remaining);
+            remaining = "";
+        }
+    }
+    segments
 }
 
 /// 把当前回合累积的思维链与正文落库为 message_parts，并重置累积缓冲。
@@ -361,17 +416,6 @@ async fn handle_conn<R: tauri::Runtime>(
                     .and_then(|x| x.as_str())
                     .unwrap_or("");
 
-                // 1. 推送给前端 React
-                let _ = app_handle.emit(
-                    "agent://assistant_delta",
-                    json!({
-                        "session_id": session_id,
-                        "run_id": run_id,
-                        "content": content
-                    }),
-                );
-
-                // 2. 缓存并累加消息内容
                 let mut runs = active_runs.lock().await;
                 if !runs.contains_key(&run_id) {
                     // 优先用 AgentManager 显式注册的 assistant_message_id（peek 非消费，
@@ -407,32 +451,29 @@ async fn handle_conn<R: tauri::Runtime>(
                     }
                 }
 
-                if let Some(run) = runs.get_mut(&run_id) {
-                    // 按 <thought>/</thought> 标签分段路由到 thought / text。
-                    // 用 in_thought 标志跨 chunk 持久，避免多段思维链时第二段被误并入正文
-                    // （旧逻辑用 accumulated_thought.contains("</thought>") 判断，第一段闭合后恒为 true，
-                    //  导致第二段思维链全部落入 accumulated_text，重开读库时表现为正文泄漏）。
-                    let mut remaining = content;
-                    while !remaining.is_empty() {
-                        if run.in_thought {
-                            if let Some(idx) = remaining.find("</thought>") {
-                                run.accumulated_thought.push_str(&remaining[..idx]);
-                                run.in_thought = false;
-                                remaining = &remaining[idx + "</thought>".len()..];
-                            } else {
-                                run.accumulated_thought.push_str(remaining);
-                                remaining = "";
-                            }
-                        } else if let Some(idx) = remaining.find("<thought>") {
-                            run.accumulated_text.push_str(&remaining[..idx]);
-                            run.in_thought = true;
-                            remaining = &remaining[idx + "<thought>".len()..];
-                        } else {
-                            run.accumulated_text.push_str(remaining);
-                            remaining = "";
-                        }
-                    }
-                }
+                let routed = runs.get_mut(&run_id).map(|run| {
+                    let segments = route_assistant_delta(run, content);
+                    (segments, run.in_thought)
+                });
+                drop(runs);
+
+                // The backend owns thought routing state. Sending typed segments
+                // prevents a reloaded frontend from exposing reasoning as text.
+                let payload = match routed {
+                    Some((segments, in_thought)) => json!({
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "content": content,
+                        "segments": segments,
+                        "in_thought": in_thought,
+                    }),
+                    None => json!({
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "content": content,
+                    }),
+                };
+                let _ = app_handle.emit("agent://assistant_delta", payload);
             }
 
             msg_type::TOOL_CALL_REQUEST => {
@@ -1194,6 +1235,50 @@ mod tests {
     use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command as TokioCommand;
+
+    fn test_run() -> ActiveRun {
+        ActiveRun {
+            assistant_message_id: "assistant-1".into(),
+            session_id: "session-1".into(),
+            accumulated_text: String::new(),
+            accumulated_thought: String::new(),
+            current_ordinal: 0,
+            in_thought: false,
+        }
+    }
+
+    #[test]
+    fn assistant_deltas_are_typed_from_backend_run_state_across_chunks() {
+        let mut run = test_run();
+
+        let first = route_assistant_delta(&mut run, "<thought>private reasoning");
+        assert_eq!(
+            first,
+            vec![AssistantDeltaSegment {
+                kind: "thought",
+                content: "private reasoning".into(),
+            }]
+        );
+        assert!(run.in_thought);
+
+        let second = route_assistant_delta(&mut run, " continues</thought>public answer");
+        assert_eq!(
+            second,
+            vec![
+                AssistantDeltaSegment {
+                    kind: "thought",
+                    content: " continues".into(),
+                },
+                AssistantDeltaSegment {
+                    kind: "text",
+                    content: "public answer".into(),
+                },
+            ]
+        );
+        assert!(!run.in_thought);
+        assert_eq!(run.accumulated_thought, "private reasoning continues");
+        assert_eq!(run.accumulated_text, "public answer");
+    }
 
     #[tokio::test]
     async fn python_sidecar_handshake_succeeds() {
