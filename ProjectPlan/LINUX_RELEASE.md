@@ -105,6 +105,10 @@ pnpm tauri build \
 `NO_STRIP=1` 只禁用 linuxdeploy 对已编译依赖的二次 strip，不会取消
 `Cargo.toml` 中 Rust Release profile 的 `strip = true`。
 
+Linux 主程序在 WebKitGTK 初始化前默认设置 `WEBKIT_DISABLE_DMABUF_RENDERER=1`，规避
+部分 Arch GPU/GBM 组合下窗口存在但 WebView 内容为空的问题。用户显式提供该环境变量时
+保留用户值；程序不强制设置 `GDK_BACKEND`，Wayland 与 X11 仍由桌面会话决定。
+
 ### 4.2 先构建前端和 sidecar
 
 先显式完成完整的构建前置步骤。任一冒烟测试失败都必须停止发布：

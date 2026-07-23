@@ -34,6 +34,17 @@ use crate::state::AppState;
 
 const QUICK_WINDOW_LABEL: &str = "quick";
 
+#[cfg(target_os = "linux")]
+fn configure_linux_webview_environment() {
+    // WebKitGTK's DMA-BUF renderer can produce an empty surface on some Arch GPU stacks.
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_linux_webview_environment() {}
+
 fn create_quick_window<R: Runtime>(app: &AppHandle<R>) -> Option<WebviewWindow<R>> {
     let config = app
         .config()
@@ -166,6 +177,8 @@ fn main() {
     if let Some(exit_code) = tools::sandbox::run_sandbox_helper_if_requested() {
         std::process::exit(exit_code);
     }
+
+    configure_linux_webview_environment();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
