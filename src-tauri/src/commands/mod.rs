@@ -241,6 +241,13 @@ pub async fn ping() -> String {
     "pong from Rust".to_string()
 }
 
+/// Opens the webview inspector in development builds.
+#[tauri::command]
+pub fn open_webview_devtools(window: tauri::WebviewWindow) {
+    #[cfg(debug_assertions)]
+    window.open_devtools();
+}
+
 /// 列出所有 Agent（角色卡）。
 #[tauri::command]
 pub async fn list_agents(state: tauri::State<'_, AppState>) -> AppResult<Vec<AgentSummary>> {

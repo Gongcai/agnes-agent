@@ -5,6 +5,7 @@ import { ChatWorkspace } from "./components/ChatWorkspace";
 import { KnowledgeWorkspace } from "./components/KnowledgeWorkspace";
 import { PlannerWorkspace } from "./components/PlannerWorkspace";
 import { SettingsModal } from "./components/SettingsModal";
+import { AppContextMenu } from "./components/AppContextMenu";
 import { type AppNotification } from "./components/NotificationCenter";
 import { APP_FEATURES, type AppFeatureId, type ChatMode } from "./lib/features";
 import { useAgentStore, setupTauriEventListeners } from "./store/useAgentStore";
@@ -232,6 +233,7 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         initialTab={settingsTab}
       />
+      <AppContextMenu />
     </div>
   );
 }

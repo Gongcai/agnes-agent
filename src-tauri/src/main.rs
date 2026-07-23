@@ -326,6 +326,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::ping,
+            commands::open_webview_devtools,
             commands::list_agents,
             commands::update_agent_model,
             commands::upsert_agent,
