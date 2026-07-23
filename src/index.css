@@ -1667,6 +1667,75 @@ pre,
   background: var(--claude-surface-soft) !important;
 }
 
+.agnes-rename-overlay {
+  background: var(--claude-overlay);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.agnes-rename-dialog {
+  background: var(--claude-surface);
+  border-color: var(--claude-border-strong) !important;
+  box-shadow: 0 20px 56px var(--claude-shadow);
+  color: var(--claude-ink);
+  font-family: var(--claude-ui-font);
+}
+
+.agnes-rename-dialog-header,
+.agnes-rename-dialog-footer {
+  border-color: var(--claude-border) !important;
+}
+
+.agnes-rename-dialog-footer {
+  background: var(--claude-surface-soft);
+}
+
+.agnes-rename-dialog-icon {
+  background: var(--claude-clay-soft);
+  color: var(--claude-clay-dark);
+}
+
+.agnes-rename-dialog-hint,
+.agnes-rename-dialog-label {
+  color: var(--claude-muted);
+}
+
+.agnes-rename-dialog-close,
+.agnes-rename-dialog-cancel {
+  color: var(--claude-muted);
+}
+
+.agnes-rename-dialog-close:hover,
+.agnes-rename-dialog-cancel:hover {
+  background: var(--claude-surface-strong);
+  color: var(--claude-ink);
+}
+
+.agnes-rename-dialog-input {
+  background: var(--claude-input);
+  border-color: var(--claude-border-strong);
+  color: var(--claude-ink);
+  caret-color: var(--claude-clay);
+}
+
+.agnes-rename-dialog-input:focus {
+  border-color: var(--claude-clay);
+  box-shadow: 0 0 0 3px var(--claude-clay-soft);
+}
+
+.agnes-rename-dialog-error {
+  color: var(--claude-danger);
+}
+
+.agnes-rename-dialog-submit {
+  background: var(--claude-clay);
+  color: #fff;
+}
+
+.agnes-rename-dialog-submit:hover:not(:disabled) {
+  background: var(--claude-clay-dark);
+}
+
 .agnes-session-search {
   background: var(--claude-surface) !important;
   border-color: var(--claude-border-strong) !important;

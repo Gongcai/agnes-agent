@@ -6,6 +6,7 @@ import {
   Code,
   CalendarDots as CalendarDays,
   CheckSquare as CheckSquare2,
+  Check,
   CaretDown as ChevronDown,
   CaretRight as ChevronRight,
   CaretUp as ChevronUp,
@@ -38,6 +39,13 @@ interface SidebarUserProfile {
   avatar: string;
   name: string;
 }
+
+type RenameDialogState = {
+  kind: "session" | "workspace";
+  id: string;
+  currentName: string;
+  value: string;
+};
 
 interface SidebarProps {
   isOpen: boolean;
@@ -126,7 +134,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
   const [selectedSearchResult, setSelectedSearchResult] = useState(0);
+  const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
+  const [renameSubmitting, setRenameSubmitting] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const sessionSearchInputRef = useRef<HTMLInputElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
   const searchResultRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const sessionSearchResults = useMemo(
@@ -177,6 +189,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [ctxMenu, wsCtxMenu]);
+
+  useEffect(() => {
+    if (!renameDialog) return;
+    const frame = requestAnimationFrame(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [renameDialog]);
 
   useEffect(() => {
     writeLocalBoolean("agnes.ui.sidebar.more-expanded", moreExpanded);
@@ -367,10 +388,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
   const handleCtxRename = () => {
     if (!ctxMenu) return;
-    const next = window.prompt("重命名会话", ctxMenu.title);
-    if (next && next.trim() && next.trim() !== ctxMenu.title) {
-      renameSession(ctxMenu.sessionId, next.trim()).catch(console.error);
-    }
+    setRenameError(null);
+    setRenameDialog({ kind: "session", id: ctxMenu.sessionId, currentName: ctxMenu.title, value: ctxMenu.title });
     closeCtxMenu();
   };
   const handleCtxDelete = () => {
@@ -382,11 +401,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const handleWsCtxRename = () => {
     if (!wsCtxMenu) return;
-    const next = window.prompt("重命名工作区", wsCtxMenu.name);
-    if (next && next.trim() && next.trim() !== wsCtxMenu.name) {
-      renameWorkspace(wsCtxMenu.workspaceId, next.trim()).catch(console.error);
-    }
+    setRenameError(null);
+    setRenameDialog({ kind: "workspace", id: wsCtxMenu.workspaceId, currentName: wsCtxMenu.name, value: wsCtxMenu.name });
     closeWsCtxMenu();
+  };
+  const closeRenameDialog = () => {
+    if (renameSubmitting) return;
+    setRenameDialog(null);
+    setRenameError(null);
+  };
+  const submitRename = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!renameDialog || renameSubmitting) return;
+    const nextName = renameDialog.value.trim();
+    if (!nextName) {
+      setRenameError("名称不能为空");
+      renameInputRef.current?.focus();
+      return;
+    }
+    if (nextName === renameDialog.currentName) {
+      closeRenameDialog();
+      return;
+    }
+    setRenameSubmitting(true);
+    try {
+      if (renameDialog.kind === "session") {
+        await renameSession(renameDialog.id, nextName);
+      } else {
+        await renameWorkspace(renameDialog.id, nextName);
+      }
+      setRenameDialog(null);
+      setRenameError(null);
+    } catch (reason) {
+      setRenameError(String(reason));
+    } finally {
+      setRenameSubmitting(false);
+    }
   };
   const handleWsCtxDelete = () => {
     if (!wsCtxMenu) return;
@@ -808,6 +858,94 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </button>
           </div>
         </>,
+        document.body,
+      )}
+
+      {renameDialog && createPortal(
+        <div
+          className="agnes-rename-overlay fixed inset-0 z-[110] grid place-items-center p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeRenameDialog();
+          }}
+        >
+          <form
+            className="agnes-rename-dialog w-full max-w-md overflow-hidden rounded-lg border shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="agnes-rename-dialog-title"
+            onSubmit={submitRename}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="agnes-rename-dialog-header flex items-center justify-between border-b px-5 py-4">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="agnes-rename-dialog-icon grid h-8 w-8 shrink-0 place-items-center rounded-md">
+                  <Pencil className="h-4 w-4" />
+                </span>
+                <div className="min-w-0">
+                  <h2 id="agnes-rename-dialog-title" className="truncate text-sm font-semibold">
+                    重命名{renameDialog.kind === "session" ? "会话" : "工作区"}
+                  </h2>
+                  <p className="agnes-rename-dialog-hint mt-0.5 text-[11px]">为它设置一个容易识别的名称</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={closeRenameDialog}
+                disabled={renameSubmitting}
+                className="agnes-rename-dialog-close grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors disabled:opacity-40"
+                title="关闭"
+                aria-label="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+
+            <div className="space-y-2.5 px-5 py-5">
+              <label htmlFor="agnes-rename-dialog-input" className="agnes-rename-dialog-label block text-xs font-medium">
+                名称
+              </label>
+              <input
+                ref={renameInputRef}
+                id="agnes-rename-dialog-input"
+                value={renameDialog.value}
+                onChange={(event) => {
+                  setRenameDialog((current) => current ? { ...current, value: event.target.value } : current);
+                  setRenameError(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeRenameDialog();
+                  }
+                }}
+                maxLength={120}
+                autoComplete="off"
+                className="agnes-rename-dialog-input h-11 w-full rounded-md border px-3 text-sm outline-none transition-colors"
+              />
+              {renameError && <p className="agnes-rename-dialog-error text-xs">{renameError}</p>}
+            </div>
+
+            <footer className="agnes-rename-dialog-footer flex justify-end gap-2 border-t px-5 py-3">
+              <button
+                type="button"
+                onClick={closeRenameDialog}
+                disabled={renameSubmitting}
+                className="agnes-rename-dialog-cancel h-9 rounded-md px-3 text-xs font-medium transition-colors disabled:opacity-40"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                disabled={renameSubmitting || !renameDialog.value.trim()}
+                className="agnes-rename-dialog-submit flex h-9 items-center gap-1.5 rounded-md px-3.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Check className="h-3.5 w-3.5" />
+                {renameSubmitting ? "保存中" : "保存"}
+              </button>
+            </footer>
+          </form>
+        </div>,
         document.body,
       )}
     </aside>
