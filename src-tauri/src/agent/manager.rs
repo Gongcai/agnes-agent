@@ -241,6 +241,23 @@ impl AgentManager {
         Ok(())
     }
 
+    /// Stop the sidecar owned by this manager. This is intentionally explicit
+    /// so a resident tray application can distinguish hiding its window from
+    /// fully exiting the backend process.
+    pub fn shutdown(&self) {
+        self.running.store(false, Ordering::SeqCst);
+        self.active_sender.lock().unwrap().take();
+        self.pending_approvals.lock().unwrap().clear();
+        self.pending_debug.lock().unwrap().clear();
+        self.pending_embeddings.lock().unwrap().clear();
+        self.pending_runs.lock().unwrap().clear();
+        self.active_session_runs.lock().unwrap().clear();
+        self.run_approval_tc.lock().unwrap().clear();
+        self.run_cancel_signals.lock().unwrap().clear();
+        self.cancelled_runs.lock().unwrap().clear();
+        self.inner.lock().unwrap().take();
+    }
+
     /// 注册当前活跃的 WS 发送端通道。
     pub fn register_active_sender(&self, tx: mpsc::UnboundedSender<Envelope>) {
         *self.active_sender.lock().unwrap() = Some(tx);
@@ -443,7 +460,9 @@ mod tests {
     use tokio::sync::mpsc;
 
     #[cfg(all(debug_assertions, unix))]
-    use super::AgentChild;
+    use super::{AgentChild, AgentRuntime};
+    #[cfg(all(debug_assertions, unix))]
+    use std::sync::atomic::Ordering;
 
     #[cfg(debug_assertions)]
     #[test]
@@ -467,6 +486,35 @@ mod tests {
             .status()
             .expect("inspect child process");
         assert!(!status.success());
+    }
+
+    #[cfg(all(debug_assertions, unix))]
+    #[test]
+    fn shutdown_terminates_the_managed_sidecar_and_is_idempotent() {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep process");
+        let pid = child.id();
+        let manager = AgentManager::new();
+        manager.running.store(true, Ordering::SeqCst);
+        *manager.inner.lock().unwrap() = Some(AgentRuntime {
+            _port: 0,
+            _token: "test".into(),
+            child: Some(AgentChild::Dev(child)),
+        });
+
+        manager.shutdown();
+        manager.shutdown();
+
+        let status = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("inspect child process");
+        assert!(!status.success());
+        assert!(!manager.running.load(Ordering::SeqCst));
+        assert!(manager.inner.lock().unwrap().is_none());
     }
 
     #[test]

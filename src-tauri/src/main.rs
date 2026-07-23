@@ -25,7 +25,11 @@ mod web;
 
 use std::sync::Arc;
 
-use tauri::{AppHandle, Manager, Runtime, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Manager, RunEvent, Runtime, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+};
 use tauri_plugin_global_shortcut::{
     Builder as GlobalShortcutBuilder, ShortcutEvent, ShortcutState,
 };
@@ -33,6 +37,9 @@ use tauri_plugin_global_shortcut::{
 use crate::state::AppState;
 
 const QUICK_WINDOW_LABEL: &str = "quick";
+const MAIN_WINDOW_LABEL: &str = "main";
+const TRAY_SHOW_ID: &str = "tray-show-main";
+const TRAY_QUIT_ID: &str = "tray-quit";
 
 #[cfg(target_os = "linux")]
 fn configure_linux_webview_environment() {
@@ -148,6 +155,52 @@ fn reveal_quick_popup<R: Runtime>(window: &WebviewWindow<R>) {
     focus_quick_popup(window);
 }
 
+fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return;
+    };
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+}
+
+fn setup_system_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let show_item = MenuItem::with_id(app, TRAY_SHOW_ID, "显示主界面", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, TRAY_QUIT_ID, "完全退出", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&show_item, &separator, &quit_item])?;
+    let mut builder = TrayIconBuilder::with_id("agnes-tray")
+        .menu(&menu)
+        .tooltip("agnes-agent")
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_SHOW_ID => show_main_window(app),
+            TRAY_QUIT_ID => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.agent.shutdown();
+                }
+                app.exit(0);
+            }
+            _ => {}
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+    builder
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
 fn toggle_quick_popup<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window(QUICK_WINDOW_LABEL) {
         match window.is_visible() {
@@ -198,11 +251,12 @@ fn main() {
                 .build(),
         )
         .on_window_event(|window, event| {
-            if window.label() != QUICK_WINDOW_LABEL {
+            if !matches!(window.label(), MAIN_WINDOW_LABEL | QUICK_WINDOW_LABEL) {
                 return;
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // The quick popup is a resident singleton. Close means hide, never destroy.
+                // Closing a window only hides the UI. The tray menu owns the
+                // separate full-exit path so the sidecar remains available.
                 api.prevent_close();
                 let _ = window.hide();
             }
@@ -331,6 +385,8 @@ fn main() {
                 pdf_models,
                 secret_store_startup_error,
             });
+
+            setup_system_tray(app.handle())?;
 
             if let Some(window) = create_quick_window(app.handle()) {
                 configure_quick_popup(&window);
@@ -491,6 +547,13 @@ fn main() {
             commands::join_sync_pairing,
             commands::finish_sync_pairing
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let RunEvent::Exit = event {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.agent.shutdown();
+                }
+            }
+        });
 }
