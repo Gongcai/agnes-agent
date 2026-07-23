@@ -12,6 +12,7 @@ import {
   Link,
   Scissors,
   SelectionAll,
+  Stop,
 } from "@phosphor-icons/react";
 
 type EditableTarget = HTMLInputElement | HTMLTextAreaElement | HTMLElement;
@@ -23,6 +24,7 @@ interface ContextMenuState {
   editableTarget: EditableTarget | null;
   canGoBack: boolean;
   canGoForward: boolean;
+  canStop: boolean;
   canInspect: boolean;
 }
 
@@ -157,6 +159,7 @@ export const AppContextMenu: React.FC = () => {
         editableTarget,
         canGoBack: navigation?.canGoBack ?? window.history.length > 1,
         canGoForward: navigation?.canGoForward ?? false,
+        canStop: document.readyState === "loading",
         canInspect: import.meta.env.DEV && isTauri(),
       });
     };
@@ -241,6 +244,7 @@ export const AppContextMenu: React.FC = () => {
         <>
           <MenuItem label="后退" icon={ArrowLeft} disabled={!menu.canGoBack} onSelect={() => run(() => window.history.back())} />
           <MenuItem label="前进" icon={ArrowRight} disabled={!menu.canGoForward} onSelect={() => run(() => window.history.forward())} />
+          <MenuItem label="停止加载" icon={Stop} disabled={!menu.canStop} onSelect={() => run(() => window.stop())} />
           <MenuItem label="重新加载" icon={ArrowClockwise} onSelect={() => run(() => window.location.reload())} />
         </>
       )}
