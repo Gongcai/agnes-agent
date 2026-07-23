@@ -976,10 +976,9 @@ pub async fn get_debug_prompt(
         .as_ref()
         .filter(|book| !book.model_knows_content && book.content_context_allowed)
         .and_then(|book| book.collection_id.as_deref());
-    let retrieval_collection_id = attached_collection_id.as_deref().or(reading_collection_id);
-    let allow_hidden_collection =
-        attached_collection_id.is_none() && reading_collection_id.is_some();
-    let retrieved_knowledge = if reading_book.is_some() && retrieval_collection_id.is_none() {
+    let (retrieval_collection_id, allow_hidden_collection) =
+        resolve_chat_knowledge_scope(attached_collection_id.as_deref(), reading_collection_id);
+    let retrieved_knowledge = if retrieval_collection_id.is_none() {
         Vec::new()
     } else {
         retrieve_knowledge_for_history(
@@ -1926,6 +1925,16 @@ fn chat_attachment_context(
     Ok((context, collection_id))
 }
 
+fn resolve_chat_knowledge_scope<'a>(
+    attached_collection_id: Option<&'a str>,
+    reading_collection_id: Option<&'a str>,
+) -> (Option<&'a str>, bool) {
+    (
+        attached_collection_id.or(reading_collection_id),
+        attached_collection_id.is_none() && reading_collection_id.is_some(),
+    )
+}
+
 /// 用已解析配置启动一次 agent 运行：构建活动路径历史（跳过 pending assistant）→
 /// 编译 snapshot（input="" 避免与 recentMessages 重复）→ 注册 run_id → 发 RUN_REQUEST。
 async fn start_agent_run(
@@ -2014,10 +2023,9 @@ async fn start_agent_run(
         .as_ref()
         .filter(|book| !book.model_knows_content && book.content_context_allowed)
         .and_then(|book| book.collection_id.as_deref());
-    let retrieval_collection_id = attached_collection_id.as_deref().or(reading_collection_id);
-    let allow_hidden_collection =
-        attached_collection_id.is_none() && reading_collection_id.is_some();
-    let retrieved_knowledge = if reading_book.is_some() && retrieval_collection_id.is_none() {
+    let (retrieval_collection_id, allow_hidden_collection) =
+        resolve_chat_knowledge_scope(attached_collection_id.as_deref(), reading_collection_id);
+    let retrieved_knowledge = if retrieval_collection_id.is_none() {
         Vec::new()
     } else {
         let retrieval = retrieve_knowledge_for_history(
@@ -5681,13 +5689,26 @@ mod tests {
         cache_chat_attachment, commit_managed_file, install_managed_file,
         is_automatic_session_title, latest_user_query, normalize_default_max_output_tokens,
         normalize_session_title, persist_search_provider_settings, read_text_knowledge_document,
-        rollback_managed_file, saved_provider_endpoint_matches, CalendarEventUpdatePayload,
-        ChatAttachmentInput, SearchProviderSettingsInput, TaskUpdatePayload,
-        DEFAULT_MAX_OUTPUT_TOKENS,
+        resolve_chat_knowledge_scope, rollback_managed_file, saved_provider_endpoint_matches,
+        CalendarEventUpdatePayload, ChatAttachmentInput, SearchProviderSettingsInput,
+        TaskUpdatePayload, DEFAULT_MAX_OUTPUT_TOKENS,
     };
     use crate::secrets::{InMemorySecretStore, SecretStore};
 
     struct UnavailableSecretStore;
+
+    #[test]
+    fn chat_knowledge_retrieval_requires_an_explicit_scope() {
+        assert_eq!(resolve_chat_knowledge_scope(None, None), (None, false));
+        assert_eq!(
+            resolve_chat_knowledge_scope(Some("selected"), None),
+            (Some("selected"), false)
+        );
+        assert_eq!(
+            resolve_chat_knowledge_scope(None, Some("reading")),
+            (Some("reading"), true)
+        );
+    }
 
     #[test]
     fn default_max_output_tokens_are_128k_and_clamp_settings() {
