@@ -70,7 +70,7 @@ import {
 } from "../lib/uiPreferences";
 import { syncE2eeStatusMessage } from "../lib/syncStatus";
 
-type SettingsTab = "profile" | "general" | "agents" | "memory" | "storage" | "llm" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
+type SettingsTab = "profile" | "general" | "agents" | "memory" | "storage" | "models" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -1212,9 +1212,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     void loadTokenUsageStats();
   }, [activeTab, isOpen, loadTokenUsageStats]);
 
-  // Load providers when LLM tab is activated
+  // Load model configuration when the models tab is activated.
   useEffect(() => {
-    if (isOpen && activeTab === "llm") {
+    if (isOpen && activeTab === "models") {
       loadProviders();
       loadModelRoles();
       void loadPdfModelStatus();
@@ -1449,7 +1449,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   useEffect(() => {
-    if (!isOpen || activeTab !== "llm") return;
+    if (!isOpen || activeTab !== "sync") return;
     let active = true;
     const refresh = () => {
       void getSyncStatus()
@@ -1477,7 +1477,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   }, [activeTab, isOpen]);
 
   useEffect(() => {
-    if (isOpen && activeTab === "llm") return;
+    if (isOpen && activeTab === "sync") return;
     setSyncRecoveryMaterial(null);
     setSyncRecoveryAcknowledged(false);
     setShowSyncRestore(false);
@@ -2264,16 +2264,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>本地存储</span>
             </button>
             <button
-              onClick={() => setActiveTab("llm")}
-              aria-current={activeTab === "llm" ? "page" : undefined}
+              onClick={() => setActiveTab("models")}
+              aria-current={activeTab === "models" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
-                activeTab === "llm"
+                activeTab === "models"
                   ? "text-zinc-900"
                   : "text-stone-500"
               }`}
             >
-              <Sliders className="h-4 w-4 text-stone-500" />
-              <span>模型与同步 (LLM)</span>
+              <Brain className="h-4 w-4 text-stone-500" />
+              <span>模型</span>
+            </button>
+            <button
+              onClick={() => setActiveTab("sync")}
+              aria-current={activeTab === "sync" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                activeTab === "sync"
+                  ? "text-zinc-900"
+                  : "text-stone-500"
+              }`}
+            >
+              <Cloud className="h-4 w-4 text-stone-500" />
+              <span>同步</span>
             </button>
             <button
               onClick={() => setActiveTab("tokens")}
@@ -3292,8 +3304,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             )}
 
-            {/* 3. LLM TAB */}
-            {activeTab === "llm" && (
+            {/* 3. MODELS TAB */}
+            {activeTab === "models" && (
               <div className="space-y-5">
                 {/* Local document models */}
                 <div className="rounded-xl border border-stone-200 bg-[#FAF9F5]/30 p-5 shadow-sm">
@@ -3994,9 +4006,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     添加服务商
                   </button>
                 )}
+              </div>
+            )}
 
-                {/* Section 3: Cloud Sync */}
-                <div className="border-t border-stone-200 pt-5 mt-2">
+            {/* 4. SYNC TAB */}
+            {activeTab === "sync" && (
+              <div className="space-y-5">
+                <div>
                   <div className="space-y-3">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
@@ -4624,7 +4640,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             )}
 
-            {/* 4. WEB SEARCH TAB */}
+            {/* 5. WEB SEARCH TAB */}
             {activeTab === "web" && (
               <div className="space-y-5">
                 <div className="flex items-start justify-between gap-4 border-b border-stone-200 pb-3">

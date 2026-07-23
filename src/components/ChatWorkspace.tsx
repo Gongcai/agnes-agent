@@ -300,7 +300,7 @@ const ToolCallCard: React.FC<{
 });
 
 interface ChatWorkspaceProps {
-  onOpenSettings: (tab: "agents" | "memory" | "llm" | "tokens" | "skills" | "audit" | "debug") => void;
+  onOpenSettings: (tab: "agents" | "memory" | "models" | "sync" | "tokens" | "skills" | "audit" | "debug") => void;
 }
 
 interface ChatUserProfile {
@@ -1172,7 +1172,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     <div className="absolute bottom-full right-0 mb-2 z-50 w-80 max-h-80 overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl p-2">
                       {providers.length === 0 ? (
                         <div className="px-3 py-6 text-center text-[11px] text-stone-400">
-                          暂无服务商，请到设置 → 模型与同步中添加
+                          暂无服务商，请到设置 → 模型中添加
                         </div>
                       ) : (
                         providers.map((p) => (

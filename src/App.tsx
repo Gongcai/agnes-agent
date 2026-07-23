@@ -47,7 +47,7 @@ export default function App() {
   const [requestedPlannerTaskId, setRequestedPlannerTaskId] = useState<string | null>(null);
   const [requestedPlannerEventId, setRequestedPlannerEventId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
-  const [settingsTab, setSettingsTab] = useState<"profile" | "general" | "agents" | "memory" | "storage" | "llm" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug">("agents");
+  const [settingsTab, setSettingsTab] = useState<"profile" | "general" | "agents" | "memory" | "storage" | "models" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug">("agents");
 
   // 启动时初始化：恢复上次 agent/session 或按设置新建，并绑定 Tauri 事件桥
   useEffect(() => {
@@ -109,7 +109,7 @@ export default function App() {
     startDraftSession(activeAgentId, workspaceId);
   };
 
-  const handleOpenSettings = (tab: "profile" | "general" | "agents" | "memory" | "storage" | "llm" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug" = "agents") => {
+  const handleOpenSettings = (tab: "profile" | "general" | "agents" | "memory" | "storage" | "models" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug" = "agents") => {
     setSettingsTab(tab);
     setIsSettingsOpen(true);
   };
