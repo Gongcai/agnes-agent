@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { readImage, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Warning as AlertTriangle,
@@ -90,6 +91,71 @@ const PERMISSION_OPTIONS: {
     desc: "已启用工具可访问系统并直接执行，不再询问",
   },
 ];
+
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"]);
+
+function inferImageMediaType(name: string, mediaType?: string) {
+  if (mediaType?.startsWith("image/")) return mediaType;
+  const extension = name.split(".").pop()?.toLowerCase();
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension && IMAGE_EXTENSIONS.has(extension)) return `image/${extension}`;
+  return null;
+}
+
+async function detectImageMediaType(file: File) {
+  const inferred = inferImageMediaType(file.name, file.type);
+  if (inferred) return inferred;
+  const bytes = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+  if (bytes.length >= 8 && bytes.slice(0, 8).every((value, index) => value === [137, 80, 78, 71, 13, 10, 26, 10][index])) {
+    return "image/png";
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (String.fromCharCode(...bytes.slice(0, 6)).startsWith("GIF8")) return "image/gif";
+  if (
+    String.fromCharCode(...bytes.slice(0, 4)) === "RIFF"
+    && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP"
+  ) return "image/webp";
+  if (bytes[0] === 0x42 && bytes[1] === 0x4d) return "image/bmp";
+  if (String.fromCharCode(...bytes.slice(4, 12)).includes("ftypavif")) return "image/avif";
+  return null;
+}
+
+async function readNativeClipboardImageFile() {
+  let image: Awaited<ReturnType<typeof readImage>> | null = null;
+  try {
+    image = await readImage();
+    const [{ width, height }, rgba] = await Promise.all([image.size(), image.rgba()]);
+    if (width <= 0 || height <= 0 || width * height > 50_000_000) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    const pixels = new Uint8ClampedArray(new ArrayBuffer(rgba.byteLength));
+    pixels.set(rgba);
+    context.putImageData(new ImageData(pixels, width, height), 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    return blob
+      ? new File([blob], `pasted-image-${Date.now()}.png`, { type: "image/png" })
+      : null;
+  } catch {
+    return null;
+  } finally {
+    await image?.close().catch(() => {});
+  }
+}
+
+function fileUriToPath(value: string) {
+  const uri = value.split(/[\r\n]/).map((item) => item.trim()).find((item) => item && !item.startsWith("#"));
+  if (!uri || !uri.toLowerCase().startsWith("file://")) return null;
+  try {
+    const parsed = new URL(uri);
+    const path = decodeURIComponent(parsed.pathname);
+    return path || null;
+  } catch {
+    return null;
+  }
+}
 
 const PERMISSION_LABEL: Record<PermissionMode, string> = Object.fromEntries(
   PERMISSION_OPTIONS.map((option) => [option.value, option.label]),
@@ -464,13 +530,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const addLocalImages = () => chooseLocalFiles(true);
   const addLocalFiles = () => chooseLocalFiles(false);
 
-  const handlePaste = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const imageItem = Array.from(event.clipboardData.items).find((item) => item.type.startsWith("image/"));
-    if (!imageItem) return;
-    const file = imageItem.getAsFile();
-    if (!file) return;
-    event.preventDefault();
+  const appendPastedImage = async (file: File) => {
     setAttachmentError(null);
+    const mediaType = await detectImageMediaType(file);
+    if (!mediaType) {
+      setAttachmentError("剪贴板内容不是支持的图片格式");
+      return;
+    }
     if (file.size > 20 * 1024 * 1024) {
       setAttachmentError("图片不能超过 20 MiB");
       return;
@@ -488,21 +554,93 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       });
       const comma = dataUrl.indexOf(",");
       if (comma < 0) throw new Error("剪贴板图片数据格式无效");
-      const extension = file.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+      const extension = mediaType.split("/")[1]?.replace("jpeg", "jpg") || "png";
       const pastedAttachment: ChatAttachment = {
         id: crypto.randomUUID(),
         kind: "local_file",
         name: file.name || `pasted-image-${Date.now()}.${extension}`,
-        mediaType: file.type || "image/png",
+        mediaType,
         dataBase64: dataUrl.slice(comma + 1),
       };
-      setAttachments((current) => [
-        ...current,
-        pastedAttachment,
-      ].slice(0, 8));
+      setAttachments((current) => [...current, pastedAttachment].slice(0, 8));
     } catch (reason) {
       setAttachmentError(String(reason));
     }
+  };
+
+  const pasteTextAtCursor = (textarea: HTMLTextAreaElement, text: string) => {
+    const current = textarea.value;
+    const start = textarea.selectionStart ?? current.length;
+    const end = textarea.selectionEnd ?? start;
+    const next = `${current.slice(0, start)}${text}${current.slice(end)}`;
+    setInputVal(next);
+    requestAnimationFrame(() => {
+      if (!textarea.isConnected) return;
+      const cursor = start + text.length;
+      textarea.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const handleNativePaste = async (textarea: HTMLTextAreaElement) => {
+    const image = await readNativeClipboardImageFile();
+    if (image) {
+      await appendPastedImage(image);
+      return;
+    }
+    try {
+      const text = await readText();
+      if (text) pasteTextAtCursor(textarea, text);
+    } catch (reason) {
+      setAttachmentError(`无法读取剪贴板内容：${String(reason)}`);
+    }
+  };
+
+  const handlePaste = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardItems = Array.from(event.clipboardData.items);
+    const clipboardFiles = Array.from(event.clipboardData.files);
+    const imageItem = clipboardItems.find((item) => item.type.startsWith("image/"));
+    let file = imageItem?.getAsFile()
+      ?? clipboardFiles.find((candidate) => Boolean(inferImageMediaType(candidate.name, candidate.type)))
+      ?? (clipboardFiles.length === 1 ? clipboardFiles[0] : null);
+    const imageUri = fileUriToPath(event.clipboardData.getData("text/uri-list"));
+    const imageUriIsImage = Boolean(imageUri && inferImageMediaType(imageUri));
+    const clipboardMayContainImage = Boolean(imageItem || file || imageUriIsImage);
+
+    if (clipboardMayContainImage) event.preventDefault();
+
+    // WebKitGTK may expose a pasted bitmap only through the asynchronous Clipboard API.
+    if (!file && !imageUriIsImage && isTauri()) {
+      file = await readNativeClipboardImageFile();
+    }
+    if (!file && !imageUriIsImage && navigator.clipboard && "read" in navigator.clipboard) {
+      try {
+        const nativeItems = await navigator.clipboard.read();
+        for (const item of nativeItems) {
+          const imageType = item.types.find((type) => type.startsWith("image/"));
+          if (!imageType) continue;
+          file = new File([await item.getType(imageType)], `pasted-image-${Date.now()}.png`, {
+            type: imageType,
+          });
+          break;
+        }
+      } catch {
+        // The browser may deny clipboard-read permission; the visible error below is more useful.
+      }
+    }
+
+    if (!file && imageUriIsImage) {
+      appendLocalPaths([imageUri!]);
+      setAttachmentError(null);
+      return;
+    }
+    if (!file) {
+      if (clipboardItems.some((item) => item.type.startsWith("image/"))) {
+        setAttachmentError("无法读取剪贴板图片，请使用附件菜单选择图片");
+      }
+      return;
+    }
+
+    await appendPastedImage(file);
   };
 
   const openKnowledgePicker = async () => {
@@ -979,6 +1117,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             onChange={(e) => setInputVal(e.target.value)}
             onPaste={(event) => void handlePaste(event)}
             onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v" && isTauri()) {
+                e.preventDefault();
+                void handleNativePaste(e.currentTarget);
+                return;
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 handleSend();

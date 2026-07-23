@@ -6,6 +6,8 @@
   "permissions": [
     "core:default",
     "core:event:default",
+    "clipboard-manager:allow-read-image",
+    "clipboard-manager:allow-read-text",
     "dialog:default",
     "global-shortcut:default"
   ]
