@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 import websockets
 
 from .protocol import MsgType, make
+from .image import process_image_attachments
 from .prompt import assemble_prompt, summarize_history
 from .graph import build_graph, get_available_tools
 from .models import LlmConfig, embed_texts
@@ -36,7 +37,10 @@ def resolve_task_llm(
 
 def build_debug_prompt_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Build the same prompt components and tool schemas used by an LLM call."""
-    system_prompt, messages, discarded = assemble_prompt(payload)
+    context = payload.get("context", {})
+    task_configs = context.get("taskLlmConfigs") or {}
+    prepared = process_image_attachments(payload, task_configs.get("image"))
+    system_prompt, messages, discarded = assemble_prompt(prepared)
     tool_policy = payload.get("context", {}).get("agent", {}).get("toolPolicy") or {}
     dynamic_tools = payload.get("context", {}).get("mcpTools") or []
     return {
@@ -109,9 +113,18 @@ async def run_agent_graph(
     session_id = envelope.get("session_id", "")
     run_id = envelope.get("run_id", "")
     payload = envelope.get("payload", {})
-    
-    # 1. Compile prompt & budget calculations
+
+    context = payload.get("context", {})
+    llm_config_raw: Optional[Dict[str, Any]] = context.get("llmConfig")
+    task_llm_configs: Dict[str, Dict[str, Any]] = context.get("taskLlmConfigs") or {}
+
+    # 1. Prepare image fallbacks, then compile prompt and budget calculations.
     try:
+        payload = await asyncio.to_thread(
+            process_image_attachments,
+            payload,
+            task_llm_configs.get("image"),
+        )
         system_prompt, messages, discarded_messages = assemble_prompt(payload)
     except Exception as e:
         traceback.print_exc()
@@ -119,16 +132,14 @@ async def run_agent_graph(
             MsgType.RUN_ERROR,
             session_id=session_id,
             run_id=run_id,
-            payload={"message": f"Prompt assembly failed: {e}"}
+            payload={"message": f"图片附件或提示词处理失败：{e}"}
         )
         await ws.send(err_envelope.model_dump_json())
         return
 
-    llm_config_raw: Optional[Dict[str, Any]] = payload.get("context", {}).get("llmConfig")
     fallback_llm_configs = payload.get("context", {}).get("fallbackLlmConfigs") or []
     if not isinstance(fallback_llm_configs, list):
         fallback_llm_configs = []
-    task_llm_configs: Dict[str, Dict[str, Any]] = payload.get("context", {}).get("taskLlmConfigs") or {}
     title_request = payload.get("context", {}).get("sessionTitleRequest")
     embedding_config_raw = task_llm_configs.get("embedding")
     embedding_model = None

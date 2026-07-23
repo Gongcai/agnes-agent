@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -11,8 +12,9 @@ use crate::db::repo::messages::{NewMessagePart, NewUserMessagePart};
 use crate::db::repo::sessions::NewSession;
 use crate::error::{AppError, AppResult};
 use crate::model_registry::{
-    descriptor_from_api, load_model_roles, normalize_model_catalog, parse_model_catalog,
-    save_model_roles, ModelDescriptor, ModelRole, ModelRoleAssignments,
+    descriptor_from_api, infer_model_capabilities, load_model_roles, normalize_model_catalog,
+    parse_model_catalog, save_model_roles, ModelDescriptor, ModelModality, ModelRole,
+    ModelRoleAssignments,
 };
 use crate::secrets::{provider_api_key_secret_id, SecretStore, SYNC_CREDENTIAL_SECRET_ID};
 use crate::state::AppState;
@@ -160,6 +162,9 @@ pub struct ChatAttachmentInput {
     pub id: String,
     pub kind: String,
     pub path: Option<String>,
+    pub name: Option<String>,
+    pub media_type: Option<String>,
+    pub data_base64: Option<String>,
     pub collection_id: Option<String>,
     pub skill_id: Option<String>,
 }
@@ -938,6 +943,8 @@ pub async fn get_debug_prompt(
                         "id": p.id,
                         "kind": p.kind,
                         "content": p.content,
+                        "mimeType": p.mime_type,
+                        "metadata": p.metadata.as_deref().and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
                         "toolCall": tc_json,
                     }));
                 }
@@ -994,6 +1001,9 @@ pub async fn get_debug_prompt(
         serde_json::from_str::<ToolPolicy>(&agent.tool_policy).unwrap_or_default();
     let (effective_tool_policy, permission_mode, workspace_cwd) =
         resolve_effective_tool_policy(&state, &parsed_tool_policy, session_id.as_deref()).await?;
+    let attachment_root = workspace_cwd
+        .clone()
+        .unwrap_or_else(|| state.home_workspace_dir.clone());
     let prompt_tool_policy = effective_tool_policy.redacted_for_prompt(workspace_cwd.as_deref());
     let tool_policy_json = serde_json::to_value(&prompt_tool_policy)?;
     let mcp_tools = state.mcp.dynamic_tools(&effective_tool_policy).await;
@@ -1016,6 +1026,7 @@ pub async fn get_debug_prompt(
                 "model": model_name,
                 "litellmModel": litellm_model,
                 "maxTokens": effective_max_tokens,
+                "supportsImageInput": model_descriptor_supports_image_input(provider.as_ref(), &model_name),
                 "thinking": {
                     "mode": effective_thinking_mode,
                     "budget": effective_thinking_budget
@@ -1032,6 +1043,7 @@ pub async fn get_debug_prompt(
             "retrievedKnowledge": retrieved_knowledge,
             "readingContext": reading_book.as_ref().map(reading_prompt_context),
             "workspace": workspace_context,
+            "attachmentRoot": attachment_root.to_string_lossy().to_string(),
             "projectContext": [],
             "attachmentsContext": attachments_context
         }
@@ -1508,6 +1520,7 @@ struct ResolvedLlm {
     thinking_mode: String,
     thinking_budget: i64,
     max_tokens: i64,
+    supports_image_input: bool,
     task_llm_configs: serde_json::Value,
     fallback_llm_configs: serde_json::Value,
 }
@@ -1557,6 +1570,29 @@ fn fallback_session_title(source_text: &str) -> String {
     normalize_session_title(source_text).unwrap_or_else(|| DEFAULT_SESSION_TITLE.to_string())
 }
 
+fn model_descriptor_supports_image_input(
+    provider: Option<&crate::db::repo::model_providers::ModelProviderRow>,
+    model_name: &str,
+) -> bool {
+    provider
+        .and_then(|provider| {
+            parse_model_catalog(provider.models_json.as_deref(), &provider.kind)
+                .into_iter()
+                .find(|model| model.id == model_name)
+                .map(|model| model.capabilities)
+        })
+        .unwrap_or_else(|| {
+            infer_model_capabilities(
+                model_name,
+                provider
+                    .map(|provider| provider.kind.as_str())
+                    .unwrap_or(""),
+            )
+        })
+        .input_modalities
+        .contains(&ModelModality::Image)
+}
+
 /// Resolve a routed model reference into the same provider configuration used by the main model.
 async fn resolve_routed_llm_config(
     state: &AppState,
@@ -1582,6 +1618,11 @@ async fn resolve_routed_llm_config(
         "google" => format!("gemini/{model_name}"),
         _ => model_name.to_string(),
     };
+    let capabilities = parse_model_catalog(provider.models_json.as_deref(), &provider.kind)
+        .into_iter()
+        .find(|model| model.id == model_name)
+        .map(|model| model.capabilities)
+        .unwrap_or_else(|| infer_model_capabilities(&model_name, &provider.kind));
     Ok(Some(json!({
         "modelRef": model_ref,
         "provider": provider.kind,
@@ -1589,8 +1630,25 @@ async fn resolve_routed_llm_config(
         "apiKey": api_key,
         "model": model_name,
         "litellmModel": litellm_model,
+        "supportsImageInput": capabilities.input_modalities.contains(&ModelModality::Image),
+        "imageProcessingMode": if is_ocr_model(&model_name) { "ocr" } else { "describe" },
         "thinking": { "mode": "off", "budget": 0 }
     })))
+}
+
+fn is_ocr_model(model_name: &str) -> bool {
+    let name = model_name.to_ascii_lowercase();
+    [
+        "ocr",
+        "tesseract",
+        "easyocr",
+        "paddleocr",
+        "pp-ocr",
+        "olmocr",
+        "dots.ocr",
+    ]
+    .iter()
+    .any(|marker| name.contains(marker))
 }
 
 /// Build task-specific LLM configs. Unimplemented consumers can adopt these keys without a DB change.
@@ -1729,15 +1787,28 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         "google" => format!("gemini/{}", model_name),
         _ => model_name.clone(),
     };
-    let model_context_limit = provider
+    let model_descriptor = provider.as_ref().and_then(|provider| {
+        parse_model_catalog(provider.models_json.as_deref(), &provider.kind)
+            .into_iter()
+            .find(|model| model.id == model_name)
+    });
+    let model_context_limit = model_descriptor
         .as_ref()
-        .and_then(|provider| {
-            parse_model_catalog(provider.models_json.as_deref(), &provider.kind)
-                .into_iter()
-                .find(|model| model.id == model_name)
-        })
         .and_then(|model| model.context_window)
         .and_then(|value| i64::try_from(value).ok());
+    let supports_image_input = model_descriptor
+        .as_ref()
+        .map(|model| {
+            model
+                .capabilities
+                .input_modalities
+                .contains(&ModelModality::Image)
+        })
+        .unwrap_or_else(|| {
+            infer_model_capabilities(&model_name, &provider_kind)
+                .input_modalities
+                .contains(&ModelModality::Image)
+        });
     let thinking_mode = {
         let m = session
             .thinking_mode
@@ -1784,6 +1855,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         thinking_mode,
         thinking_budget,
         max_tokens,
+        supports_image_input,
         task_llm_configs,
         fallback_llm_configs,
     })
@@ -1808,9 +1880,10 @@ fn chat_attachment_context(
         {
             Some("local_file") => context.push(json!({
                 "kind": "local_file",
+                "id": metadata.get("id").and_then(serde_json::Value::as_str),
                 "name": metadata.get("name").and_then(serde_json::Value::as_str).unwrap_or("未命名附件"),
                 "path": metadata.get("path").and_then(serde_json::Value::as_str),
-                "mediaType": part.mime_type.as_deref(),
+                "mediaType": part.mime_type.as_deref().or_else(|| metadata.get("mediaType").and_then(serde_json::Value::as_str)),
                 "content": part.content,
             })),
             Some("knowledge_collection") => {
@@ -1898,6 +1971,8 @@ async fn start_agent_run(
                 "id": p.id,
                 "kind": p.kind,
                 "content": p.content,
+                "mimeType": p.mime_type,
+                "metadata": p.metadata.as_deref().and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
                 "toolCall": tc_json,
             }));
         }
@@ -1980,6 +2055,9 @@ async fn start_agent_run(
         serde_json::from_str::<ToolPolicy>(&cfg.agent.tool_policy).unwrap_or_default();
     let (effective_tool_policy, permission_mode, workspace_cwd) =
         resolve_effective_tool_policy(state, &parsed_tool_policy, Some(session_id)).await?;
+    let attachment_root = workspace_cwd
+        .clone()
+        .unwrap_or_else(|| state.home_workspace_dir.clone());
     let prompt_tool_policy = effective_tool_policy.redacted_for_prompt(workspace_cwd.as_deref());
     let tool_policy_json = serde_json::to_value(&prompt_tool_policy)?;
     let mcp_tools = state.mcp.dynamic_tools(&effective_tool_policy).await;
@@ -2003,6 +2081,7 @@ async fn start_agent_run(
                 "model": cfg.model_name,
                 "litellmModel": cfg.litellm_model,
                 "maxTokens": cfg.max_tokens,
+                "supportsImageInput": cfg.supports_image_input,
                 "thinking": {
                     "mode": cfg.thinking_mode,
                     "budget": cfg.thinking_budget
@@ -2026,6 +2105,7 @@ async fn start_agent_run(
             "retrievedKnowledge": retrieved_knowledge,
             "readingContext": reading_book.as_ref().map(reading_prompt_context),
             "workspace": workspace_context,
+            "attachmentRoot": attachment_root.to_string_lossy().to_string(),
             "projectContext": [],
             "attachmentsContext": attachments_context
         }
@@ -2107,8 +2187,17 @@ pub async fn send_message(
     attachments: Vec<ChatAttachmentInput>,
 ) -> AppResult<()> {
     let cfg = resolve_llm(&state, &session_id).await?;
+    let workspace_root = crate::tools::workspace::resolve_workspace_cwd(
+        &state.db,
+        &session_id,
+        &state.home_workspace_dir,
+    )
+    .await
+    .unwrap_or_else(|| state.home_workspace_dir.clone());
     let mut user_parts = vec![text_user_message_part(text.clone())];
-    user_parts.extend(prepare_chat_attachment_parts(&state, &cfg.agent.id, attachments).await?);
+    user_parts.extend(
+        prepare_chat_attachment_parts(&state, &cfg.agent.id, &workspace_root, attachments).await?,
+    );
 
     // 取当前活动叶子作为新 user 消息的 parent（首条消息时为 None）
     let path = state.db.list_active_with_parts(session_id.clone()).await?;
@@ -2400,11 +2489,23 @@ pub async fn delete_memory(
 }
 
 const MAX_LOCAL_KNOWLEDGE_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
-const MAX_LOCAL_CHAT_ATTACHMENT_BYTES: u64 = 512 * 1024;
-const MAX_CHAT_ATTACHMENT_TOTAL_BYTES: u64 = 1024 * 1024;
+const MAX_INLINE_CHAT_ATTACHMENT_BYTES: u64 = 512 * 1024;
+const MAX_LOCAL_CHAT_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_CHAT_ATTACHMENT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CHAT_ATTACHMENTS: usize = 8;
+const CHAT_ATTACHMENT_CACHE_PATH: [&str; 3] = [".agnes", "cache", "attachments"];
 const KNOWLEDGE_CHUNK_SIZE: usize = 1200;
 const KNOWLEDGE_CHUNK_OVERLAP: usize = 200;
+
+#[derive(Debug)]
+struct CachedChatAttachment {
+    id: String,
+    name: String,
+    media_type: String,
+    relative_path: String,
+    size: u64,
+    inline_content: String,
+}
 
 fn text_media_type(path: &std::path::Path) -> AppResult<&'static str> {
     match path
@@ -2423,36 +2524,157 @@ fn text_media_type(path: &std::path::Path) -> AppResult<&'static str> {
     }
 }
 
-fn read_local_chat_attachment(path: String) -> AppResult<(String, String, i64, String)> {
-    let path = std::path::PathBuf::from(path);
-    let metadata = std::fs::metadata(&path)?;
-    if !metadata.is_file() {
-        return Err(AppError::Other("附件路径必须是普通文件".into()));
+fn is_inline_text_media_type(media_type: &str) -> bool {
+    media_type.starts_with("text/")
+        || matches!(
+            media_type,
+            "application/json"
+                | "application/xml"
+                | "application/javascript"
+                | "application/x-yaml"
+        )
+}
+
+fn sanitize_attachment_name(value: &str) -> String {
+    let name = std::path::Path::new(value)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("attachment");
+    let sanitized = name
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim_matches('.');
+    if sanitized.is_empty() {
+        "attachment".into()
+    } else {
+        sanitized.chars().take(180).collect()
     }
-    if metadata.len() > MAX_LOCAL_CHAT_ATTACHMENT_BYTES {
+}
+
+fn cache_chat_attachment(
+    workspace_root: &std::path::Path,
+    attachment: ChatAttachmentInput,
+) -> AppResult<CachedChatAttachment> {
+    if attachment.id.is_empty()
+        || attachment.id.len() > 128
+        || !attachment
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(AppError::Other("附件标识格式无效".into()));
+    }
+    let source_path = attachment
+        .path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from);
+    if source_path.is_some() == attachment.data_base64.is_some() {
+        return Err(AppError::Other(
+            "本地附件必须且只能提供文件路径或剪贴板数据之一".into(),
+        ));
+    }
+
+    let fallback_name = source_path
+        .as_deref()
+        .and_then(std::path::Path::file_name)
+        .and_then(|value| value.to_str())
+        .unwrap_or("attachment");
+    let name = sanitize_attachment_name(attachment.name.as_deref().unwrap_or(fallback_name));
+    let media_type = attachment
+        .media_type
+        .as_deref()
+        .filter(|value| value.len() <= 128 && value.contains('/') && value.is_ascii())
+        .map(str::to_string)
+        .or_else(|| mime_guess::from_path(&name).first_raw().map(str::to_string))
+        .unwrap_or_else(|| "application/octet-stream".into());
+
+    let bytes = match (source_path.as_deref(), attachment.data_base64.as_deref()) {
+        (Some(path), None) => {
+            let metadata = std::fs::metadata(path)?;
+            if !metadata.is_file() {
+                return Err(AppError::Other("附件路径必须是普通文件".into()));
+            }
+            if metadata.len() > MAX_LOCAL_CHAT_ATTACHMENT_BYTES {
+                return Err(AppError::Other(format!(
+                    "单个附件不能超过 {} MiB",
+                    MAX_LOCAL_CHAT_ATTACHMENT_BYTES / 1024 / 1024
+                )));
+            }
+            std::fs::read(path)?
+        }
+        (None, Some(encoded)) => BASE64
+            .decode(encoded)
+            .map_err(|_| AppError::Other("剪贴板图片数据不是有效的 base64".into()))?,
+        _ => unreachable!(),
+    };
+    let size = bytes.len() as u64;
+    if size == 0 {
+        return Err(AppError::Other("附件为空".into()));
+    }
+    if size > MAX_LOCAL_CHAT_ATTACHMENT_BYTES {
         return Err(AppError::Other(format!(
-            "单个附件不能超过 {} KiB；较大的资料请导入知识库后再附加",
-            MAX_LOCAL_CHAT_ATTACHMENT_BYTES / 1024
+            "单个附件不能超过 {} MiB",
+            MAX_LOCAL_CHAT_ATTACHMENT_BYTES / 1024 / 1024
         )));
     }
-    let media_type = text_media_type(&path)?.to_string();
-    let bytes = std::fs::read(&path)?;
-    let content = std::str::from_utf8(&bytes)
-        .map_err(|_| AppError::Other("附件目前仅支持 UTF-8 编码的文本文件".into()))?
-        .trim_start_matches('\u{feff}')
-        .replace("\r\n", "\n");
-    if content.contains('\0') {
-        return Err(AppError::Other("附件包含 NUL 字符，已拒绝读取".into()));
+
+    let relative_path = CHAT_ATTACHMENT_CACHE_PATH
+        .iter()
+        .fold(std::path::PathBuf::new(), |path, segment| {
+            path.join(segment)
+        })
+        .join(&attachment.id)
+        .join(&name);
+    let target = workspace_root.join(&relative_path);
+    if let Some(parent) = target.parent() {
+        let canonical_root = workspace_root.canonicalize()?;
+        let mut existing_parent = parent;
+        while !existing_parent.exists() {
+            existing_parent = existing_parent
+                .parent()
+                .ok_or_else(|| AppError::Other("无法解析附件缓存目录".into()))?;
+        }
+        if !existing_parent.canonicalize()?.starts_with(&canonical_root) {
+            return Err(AppError::Other(
+                "附件缓存目录不能通过符号链接越出工作区".into(),
+            ));
+        }
+        std::fs::create_dir_all(parent)?;
+        if !parent.canonicalize()?.starts_with(&canonical_root) {
+            return Err(AppError::Other(
+                "附件缓存目录不能通过符号链接越出工作区".into(),
+            ));
+        }
     }
-    if content.trim().is_empty() {
-        return Err(AppError::Other("附件没有可读取的文本内容".into()));
-    }
-    let name = path
-        .file_name()
-        .map(|value| value.to_string_lossy().to_string())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "未命名附件".into());
-    Ok((name, media_type, bytes.len() as i64, content))
+    std::fs::write(&target, &bytes)?;
+
+    let inline_content =
+        if size <= MAX_INLINE_CHAT_ATTACHMENT_BYTES && is_inline_text_media_type(&media_type) {
+            std::str::from_utf8(&bytes)
+                .ok()
+                .filter(|content| !content.contains('\0'))
+                .map(|content| content.trim_start_matches('\u{feff}').replace("\r\n", "\n"))
+                .filter(|content| !content.trim().is_empty())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+    Ok(CachedChatAttachment {
+        id: attachment.id,
+        name,
+        media_type,
+        relative_path: relative_path.to_string_lossy().replace('\\', "/"),
+        size,
+        inline_content,
+    })
 }
 
 fn text_user_message_part(text: String) -> NewUserMessagePart {
@@ -2467,6 +2689,7 @@ fn text_user_message_part(text: String) -> NewUserMessagePart {
 async fn prepare_chat_attachment_parts(
     state: &AppState,
     agent_id: &str,
+    workspace_root: &std::path::Path,
     attachments: Vec<ChatAttachmentInput>,
 ) -> AppResult<Vec<NewUserMessagePart>> {
     if attachments.len() > MAX_CHAT_ATTACHMENTS {
@@ -2487,19 +2710,16 @@ async fn prepare_chat_attachment_parts(
         }
         match attachment.kind.as_str() {
             "local_file" => {
-                let path = attachment
-                    .path
-                    .filter(|value| !value.trim().is_empty())
-                    .ok_or_else(|| AppError::Other("本地文件附件缺少路径".into()))?;
-                let stored_path = path.clone();
-                let (name, media_type, size, content) =
-                    tokio::task::spawn_blocking(move || read_local_chat_attachment(path))
-                        .await
-                        .map_err(|error| {
-                            AppError::Other(format!("附件读取任务异常中止：{error}"))
-                        })??;
-                total_bytes = total_bytes.saturating_add(size as u64);
+                let cache_root = workspace_root.to_path_buf();
+                let task_root = cache_root.clone();
+                let cached = tokio::task::spawn_blocking(move || {
+                    cache_chat_attachment(&task_root, attachment)
+                })
+                .await
+                .map_err(|error| AppError::Other(format!("附件读取任务异常中止：{error}")))??;
+                total_bytes = total_bytes.saturating_add(cached.size);
                 if total_bytes > MAX_CHAT_ATTACHMENT_TOTAL_BYTES {
+                    let _ = std::fs::remove_file(cache_root.join(&cached.relative_path));
                     return Err(AppError::Other(format!(
                         "单条消息的本地附件总大小不能超过 {} MiB",
                         MAX_CHAT_ATTACHMENT_TOTAL_BYTES / 1024 / 1024
@@ -2507,16 +2727,16 @@ async fn prepare_chat_attachment_parts(
                 }
                 parts.push(NewUserMessagePart {
                     kind: "attachment".into(),
-                    mime_type: Some(media_type.clone()),
-                    content,
+                    mime_type: Some(cached.media_type.clone()),
+                    content: cached.inline_content,
                     metadata: Some(
                         json!({
                             "attachmentKind": "local_file",
-                            "id": attachment.id,
-                            "name": name,
-                            "path": stored_path,
-                            "mediaType": media_type,
-                            "size": size,
+                            "id": cached.id,
+                            "name": cached.name,
+                            "path": cached.relative_path,
+                            "mediaType": cached.media_type,
+                            "size": cached.size,
                         })
                         .to_string(),
                     ),
@@ -5451,11 +5671,12 @@ pub async fn set_setting(
 #[cfg(test)]
 mod tests {
     use super::{
-        commit_managed_file, install_managed_file, is_automatic_session_title, latest_user_query,
-        normalize_default_max_output_tokens, normalize_session_title,
-        persist_search_provider_settings, read_local_chat_attachment, read_text_knowledge_document,
+        cache_chat_attachment, commit_managed_file, install_managed_file,
+        is_automatic_session_title, latest_user_query, normalize_default_max_output_tokens,
+        normalize_session_title, persist_search_provider_settings, read_text_knowledge_document,
         rollback_managed_file, saved_provider_endpoint_matches, CalendarEventUpdatePayload,
-        SearchProviderSettingsInput, TaskUpdatePayload, DEFAULT_MAX_OUTPUT_TOKENS,
+        ChatAttachmentInput, SearchProviderSettingsInput, TaskUpdatePayload,
+        DEFAULT_MAX_OUTPUT_TOKENS,
     };
     use crate::secrets::{InMemorySecretStore, SecretStore};
 
@@ -5790,13 +6011,113 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("agnes-chat-attachment-{}.md", uuid::Uuid::new_v4()));
         std::fs::write(&path, "# Notes\r\n\r\nReference content.").unwrap();
-        let (name, media_type, size, content) =
-            read_local_chat_attachment(path.to_string_lossy().to_string()).unwrap();
-        assert!(name.ends_with(".md"));
-        assert_eq!(media_type, "text/markdown");
-        assert!(size > 0);
-        assert_eq!(content, "# Notes\n\nReference content.");
+        let workspace = tempfile::tempdir().unwrap();
+        let cached = cache_chat_attachment(
+            workspace.path(),
+            ChatAttachmentInput {
+                id: "attachment-1".into(),
+                kind: "local_file".into(),
+                path: Some(path.to_string_lossy().into_owned()),
+                name: None,
+                media_type: None,
+                data_base64: None,
+                collection_id: None,
+                skill_id: None,
+            },
+        )
+        .unwrap();
+        assert!(cached.name.ends_with(".md"));
+        assert_eq!(cached.media_type, "text/markdown");
+        assert!(cached.size > 0);
+        assert_eq!(cached.inline_content, "# Notes\n\nReference content.");
+        assert_eq!(
+            std::fs::read(workspace.path().join(&cached.relative_path)).unwrap(),
+            b"# Notes\r\n\r\nReference content."
+        );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn local_chat_attachment_caches_binary_data_without_inlining() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cached = cache_chat_attachment(
+            workspace.path(),
+            ChatAttachmentInput {
+                id: "clipboard-1".into(),
+                kind: "local_file".into(),
+                path: None,
+                name: Some("pasted image.png".into()),
+                media_type: Some("image/png".into()),
+                data_base64: Some("iVBORw0KGgo=".into()),
+                collection_id: None,
+                skill_id: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached.media_type, "image/png");
+        assert!(cached.inline_content.is_empty());
+        assert_eq!(
+            std::fs::read(workspace.path().join(&cached.relative_path)).unwrap(),
+            b"\x89PNG\r\n\x1a\n"
+        );
+    }
+
+    #[test]
+    fn local_chat_attachment_copies_arbitrary_binary_files() {
+        let source = std::env::temp_dir().join(format!(
+            "agnes-chat-attachment-{}.docx",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&source, b"PK\x03\x04document archive").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let cached = cache_chat_attachment(
+            workspace.path(),
+            ChatAttachmentInput {
+                id: "document-1".into(),
+                kind: "local_file".into(),
+                path: Some(source.to_string_lossy().into_owned()),
+                name: None,
+                media_type: None,
+                data_base64: None,
+                collection_id: None,
+                skill_id: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            cached.media_type,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        assert!(cached.inline_content.is_empty());
+        assert_eq!(
+            std::fs::read(workspace.path().join(&cached.relative_path)).unwrap(),
+            b"PK\x03\x04document archive"
+        );
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_chat_attachment_rejects_cache_symlink_escape() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join(".agnes")).unwrap();
+        let error = cache_chat_attachment(
+            workspace.path(),
+            ChatAttachmentInput {
+                id: "escape-1".into(),
+                kind: "local_file".into(),
+                path: None,
+                name: Some("image.png".into()),
+                media_type: Some("image/png".into()),
+                data_base64: Some("iVBORw0KGgo=".into()),
+                collection_id: None,
+                skill_id: None,
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("符号链接越出工作区"));
+        assert!(!outside.path().join("cache").exists());
     }
 
     #[test]

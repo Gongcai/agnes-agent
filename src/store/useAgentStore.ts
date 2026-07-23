@@ -88,8 +88,9 @@ export type ChatAttachment =
       id: string;
       kind: "local_file";
       name: string;
-      path: string;
+      path?: string;
       mediaType?: string;
+      dataBase64?: string;
     }
   | {
       id: string;
@@ -765,7 +766,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             id: attachment.id,
             name: attachment.name,
             ...(attachment.kind === "local_file"
-              ? { path: attachment.path, mediaType: attachment.mediaType }
+              ? {
+                  ...(attachment.path ? { path: attachment.path } : {}),
+                  ...(attachment.mediaType ? { mediaType: attachment.mediaType } : {}),
+                }
               : attachment.kind === "knowledge_collection"
                 ? { collectionId: attachment.collectionId }
                 : { skillId: attachment.skillId }),

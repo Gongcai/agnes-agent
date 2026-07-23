@@ -10,6 +10,7 @@ import {
   Cpu,
   Books,
   FileText,
+  ImageSquare,
   GitBranch,
   PencilSimple as Pencil,
   Plus,
@@ -116,11 +117,18 @@ function attachmentIcon(kind: ChatAttachment["kind"] | ChatAttachmentMetadata["a
   return FileText;
 }
 
+function attachmentIconForMetadata(metadata: ChatAttachmentMetadata) {
+  if (metadata.attachmentKind === "local_file" && metadata.mediaType?.startsWith("image/")) {
+    return ImageSquare;
+  }
+  return attachmentIcon(metadata.attachmentKind);
+}
+
 const AttachmentChip: React.FC<{
   metadata: ChatAttachmentMetadata;
   onRemove?: () => void;
 }> = ({ metadata, onRemove }) => {
-  const Icon = attachmentIcon(metadata.attachmentKind);
+  const Icon = attachmentIconForMetadata(metadata);
   const typeLabel = metadata.attachmentKind === "knowledge_collection"
     ? "知识库"
     : metadata.attachmentKind === "skill"
@@ -407,38 +415,91 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     setAttachmentError(null);
   }, [draftSession?.id]);
 
-  const addLocalFiles = async () => {
+  const appendLocalPaths = (paths: string[]) => {
+    setAttachments((current) => {
+      const existingPaths = new Set(
+        current
+          .filter((item): item is Extract<ChatAttachment, { kind: "local_file" }> => item.kind === "local_file")
+          .map((item) => item.path)
+          .filter((path): path is string => Boolean(path)),
+      );
+      const additions = paths
+        .filter((path) => !existingPaths.has(path))
+        .map((path): ChatAttachment => ({
+          id: crypto.randomUUID(),
+          kind: "local_file",
+          name: path.split(/[\\/]/).pop() || "未命名附件",
+          path,
+        }));
+      return [...current, ...additions].slice(0, 8);
+    });
+  };
+
+  const chooseLocalFiles = async (imagesOnly: boolean) => {
     setAttachmentPicker(null);
     setAttachmentError(null);
     try {
       const selected = await open({
         multiple: true,
-        title: "添加本地文本附件",
-        filters: [
-          {
-            name: "文本、Markdown、CSV 与 JSON",
-            extensions: ["md", "markdown", "txt", "rst", "log", "csv", "json"],
-          },
-        ],
+        title: imagesOnly ? "添加图片附件" : "添加本地文件附件",
+        ...(imagesOnly
+          ? {
+              filters: [
+                {
+                  name: "图片",
+                  extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"],
+                },
+              ],
+            }
+          : {}),
       });
       const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
       if (paths.length === 0) return;
-      setAttachments((current) => {
-        const existingPaths = new Set(
-          current
-            .filter((item): item is Extract<ChatAttachment, { kind: "local_file" }> => item.kind === "local_file")
-            .map((item) => item.path),
-        );
-        const additions = paths
-          .filter((path) => !existingPaths.has(path))
-          .map((path): ChatAttachment => ({
-            id: crypto.randomUUID(),
-            kind: "local_file",
-            name: path.split(/[\\/]/).pop() || "未命名附件",
-            path,
-          }));
-        return [...current, ...additions].slice(0, 8);
+      appendLocalPaths(paths);
+    } catch (reason) {
+      setAttachmentError(String(reason));
+    }
+  };
+
+  const addLocalImages = () => chooseLocalFiles(true);
+  const addLocalFiles = () => chooseLocalFiles(false);
+
+  const handlePaste = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageItem = Array.from(event.clipboardData.items).find((item) => item.type.startsWith("image/"));
+    if (!imageItem) return;
+    const file = imageItem.getAsFile();
+    if (!file) return;
+    event.preventDefault();
+    setAttachmentError(null);
+    if (file.size > 20 * 1024 * 1024) {
+      setAttachmentError("图片不能超过 20 MiB");
+      return;
+    }
+    if (attachments.length >= 8) {
+      setAttachmentError("每条消息最多添加 8 个附件");
+      return;
+    }
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("无法读取剪贴板图片"));
+        reader.readAsDataURL(file);
       });
+      const comma = dataUrl.indexOf(",");
+      if (comma < 0) throw new Error("剪贴板图片数据格式无效");
+      const extension = file.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+      const pastedAttachment: ChatAttachment = {
+        id: crypto.randomUUID(),
+        kind: "local_file",
+        name: file.name || `pasted-image-${Date.now()}.${extension}`,
+        mediaType: file.type || "image/png",
+        dataBase64: dataUrl.slice(comma + 1),
+      };
+      setAttachments((current) => [
+        ...current,
+        pastedAttachment,
+      ].slice(0, 8));
     } catch (reason) {
       setAttachmentError(String(reason));
     }
@@ -916,6 +977,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           <textarea
             value={inputVal}
             onChange={(e) => setInputVal(e.target.value)}
+            onPaste={(event) => void handlePaste(event)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -969,6 +1031,19 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           </div>
                           <button
                             type="button"
+                            onClick={() => void addLocalImages()}
+                            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-stone-700 transition-colors hover:bg-stone-100"
+                          >
+                            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#8CA38A]/10 text-[#5F735D]">
+                              <ImageSquare className="h-4 w-4" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-[12px] font-semibold">图片</span>
+                              <span className="block text-[10px] text-stone-400">发送原图或由图片处理模型识别</span>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => void addLocalFiles()}
                             className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-stone-700 transition-colors hover:bg-stone-100"
                           >
@@ -977,7 +1052,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                             </span>
                             <span className="min-w-0 flex-1">
                               <span className="block text-[12px] font-semibold">本地文件</span>
-                              <span className="block text-[10px] text-stone-400">UTF-8 文本，单个最大 512 KiB</span>
+                              <span className="block text-[10px] text-stone-400">支持 DOCX、PDF、表格及其他文件，AI 可用工具读取</span>
                             </span>
                           </button>
                           <button

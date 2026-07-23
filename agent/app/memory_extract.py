@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from .models import LlmConfig
 
 from .models import completion
+from .prompt import text_content
 
 def extract_memories(
     messages: List[Dict[str, Any]],
@@ -57,7 +58,7 @@ def extract_memories(
     # Clean messages for standard format (remove thoughts or non-text parts)
     for msg in recent_history:
         role = msg.get("role")
-        content = msg.get("content", "")
+        content = text_content(msg.get("content", ""), image_placeholder=True)
         if role in ("user", "assistant") and content:
             # Strip thought tags from assistant messages to focus on actual content
             if role == "assistant" and "<thought>" in content:
