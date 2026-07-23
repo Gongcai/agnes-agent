@@ -47,6 +47,10 @@ fn configure_linux_webview_environment() {
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
+    // Keep release launches aligned with the X11-backed development command.
+    if std::env::var_os("GDK_BACKEND").is_none() {
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

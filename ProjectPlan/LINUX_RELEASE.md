@@ -2,7 +2,7 @@
 
 > 状态：已按 V0.1.0 实际构建验证
 >
-> 日期：2026-07-22
+> 日期：2026-07-23
 >
 > 适用范围：Linux x86_64 的 `.deb`、`.rpm` 与 AppImage 发行包
 >
@@ -105,9 +105,23 @@ pnpm tauri build \
 `NO_STRIP=1` 只禁用 linuxdeploy 对已编译依赖的二次 strip，不会取消
 `Cargo.toml` 中 Rust Release profile 的 `strip = true`。
 
-Linux 主程序在 WebKitGTK 初始化前默认设置 `WEBKIT_DISABLE_DMABUF_RENDERER=1`，规避
-部分 Arch GPU/GBM 组合下窗口存在但 WebView 内容为空的问题。用户显式提供该环境变量时
-保留用户值；程序不强制设置 `GDK_BACKEND`，Wayland 与 X11 仍由桌面会话决定。
+Linux 主程序在 GTK/WebKitGTK 初始化前默认设置
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` 和 `GDK_BACKEND=x11`，与 `pnpm tauri dev` 的
+运行环境保持一致。这规避了部分 Arch GPU/GBM 组合下窗口存在但 WebView 内容为空的问题，
+也避免 Hyprland 原生 Wayland 后端与当前快速窗口行为存在差异。用户显式提供任一环境变量时
+保留用户值，因此仍可用 `GDK_BACKEND=wayland` 单独验证原生 Wayland 后端。
+
+这些是运行时兼容参数，不是 AppImage 构建参数。旧发行版或排查空白窗口时应显式使用：
+
+```bash
+env \
+  WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+  GDK_BACKEND=x11 \
+  "$HOME/Applications/agnes-agent_0.1.0_amd64.AppImage"
+```
+
+如果显式参数可以正常显示而直接启动为空白，必须先核对发行源码是否包含上述启动环境初始化，
+不能把该现象误判为 sidecar 或前端资源打包失败。
 
 ### 4.2 先构建前端和 sidecar
 
