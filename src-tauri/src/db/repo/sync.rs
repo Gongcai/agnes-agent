@@ -1000,6 +1000,9 @@ fn apply_remote_entity(
             )));
         }
         if current_revision >= entity.revision {
+            // A push conflict may arrive after this remote revision is already
+            // cached locally. Hydrate the pending conflict before returning.
+            hydrate_pending_conflict(tx, entity, now_ms)?;
             update_remote_server_seq(tx, entity, now_ms)?;
             return Ok(());
         }
@@ -1034,6 +1037,35 @@ fn apply_remote_entity(
         upsert_remote_state(tx, entity, now_ms)?;
     }
     Ok(())
+}
+
+fn hydrate_pending_conflict(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    now_ms: i64,
+) -> AppResult<bool> {
+    let expected_revision = tx
+        .query_row(
+            "SELECT remote_revision FROM sync_conflicts \
+             WHERE entity_type = ?1 AND entity_id = ?2 AND status = 'pending' \
+               AND remote_ready = 0",
+            params![entity.entity_type, entity.entity_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .optional()?;
+    if expected_revision
+        .flatten()
+        .is_some_and(|revision| revision != entity.revision)
+    {
+        return Ok(false);
+    }
+    if expected_revision.is_none() {
+        return Ok(false);
+    }
+
+    let conflict_id = record_remote_conflict(tx, entity, now_ms)?;
+    try_auto_resolve_conflict(tx, &conflict_id, now_ms)?;
+    Ok(true)
 }
 
 fn apply_remote_business_row(tx: &Transaction<'_>, entity: &RemoteEntityInput) -> AppResult<()> {
@@ -2806,6 +2838,24 @@ mod tests {
         })
     }
 
+    fn reading_book_payload(id: &str, model_knows_content: bool, version: i64) -> Value {
+        json!({
+            "id": id,
+            "title": "Jane Eyre",
+            "author": "Charlotte Bronte",
+            "source_hash": "a".repeat(64),
+            "model_knows_content": model_knows_content,
+            "content_context_allowed": false,
+            "content_context_decided": false,
+            "progress_cfi": null,
+            "created_at": "1",
+            "updated_at": version.to_string(),
+            "version": version,
+            "deleted_at": null,
+            "origin_device_id": REMOTE_DEVICE
+        })
+    }
+
     fn workspace_payload(id: &str, agent_id: &str) -> Value {
         json!({
             "id": id,
@@ -3675,6 +3725,68 @@ mod tests {
             )
             .unwrap();
         assert_eq!(next, ("pending".into(), Some(2)));
+    }
+
+    #[test]
+    fn push_conflict_hydrates_when_pull_matches_cached_revision() {
+        let mut conn = setup();
+        conn.execute_batch(crate::db::schema::KNOWLEDGE_SCHEMA)
+            .unwrap();
+        conn.execute_batch(crate::db::schema::READING_SCHEMA)
+            .unwrap();
+        let remote_payload = reading_book_payload("book-1", false, 1);
+        apply_bootstrap_page(
+            &mut conn,
+            "required",
+            &[remote(
+                "reading_book",
+                "book-1",
+                1,
+                1,
+                remote_payload.clone(),
+            )],
+            1,
+            None,
+            false,
+            1_000,
+        )
+        .unwrap();
+        crate::db::repo::reading::update_book_mode(&mut conn, "book-1", true).unwrap();
+        let local = claim_pending(&mut conn, 20, i64::MAX).unwrap();
+        apply_push_result(
+            &mut conn,
+            &[],
+            &[ConflictChange {
+                change_id: local[0].change_id.clone(),
+                current_revision: Some(1),
+            }],
+            2_000,
+        )
+        .unwrap();
+
+        let payload_hash: String = conn
+            .query_row(
+                "SELECT last_payload_hash FROM sync_entity_state \
+                 WHERE entity_type = 'reading_book' AND entity_id = 'book-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut remote_entity = remote("reading_book", "book-1", 1, 2, remote_payload);
+        remote_entity.payload_hash = payload_hash;
+        apply_pull_page(&mut conn, 1, &[remote_entity], 2, false, 3_000).unwrap();
+
+        let conflicts = list_conflicts(&conn).unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert!(conflicts[0].remote_ready);
+        assert_eq!(
+            conflicts[0].remote_payload.as_ref().unwrap()["model_knows_content"],
+            false
+        );
+        assert_eq!(
+            conflicts[0].local_payload.as_ref().unwrap()["model_knows_content"],
+            true
+        );
     }
 
     #[test]
