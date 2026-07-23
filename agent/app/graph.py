@@ -203,12 +203,13 @@ def get_available_tools(
             "type": "function",
             "function": {
                 "name": "list_files",
-                "description": "List files and directories below a workspace path using a glob pattern.",
+                "description": "Recursively list files and directories below a workspace path. The glob filters returned paths but does not control traversal; use max_depth: 1 for direct children only. Hidden entries are included when they match.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "description": "Directory to list; defaults to the workspace."},
                         "pattern": {"type": "string", "description": "Glob relative to path, such as **/*.py."},
+                        "max_depth": {"type": "integer", "minimum": 0, "maximum": 1000, "description": "Maximum path depth relative to path. 1 lists direct children only; omit for unlimited recursion."},
                         "max_results": {"type": "integer", "minimum": 1, "maximum": 5000}
                     }
                 }

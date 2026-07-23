@@ -928,6 +928,14 @@ def test_get_available_tools():
     assert "memory_md_view" in tool_names
     assert "memory_md_edit" in tool_names
 
+    list_files = next(
+        tool for tool in get_available_tools({})
+        if tool["function"]["name"] == "list_files"
+    )
+    max_depth = list_files["function"]["parameters"]["properties"]["max_depth"]
+    assert max_depth["minimum"] == 0
+    assert "direct children" in max_depth["description"]
+
     all_tool_names = [
         tool["function"]["name"] for tool in get_available_tools({})
     ]
