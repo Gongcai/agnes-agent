@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { CalendarDays, Clock3, Repeat2, RotateCcw, Trash2, X } from "lucide-react";
+import { useConfirmDialog } from "../../ConfirmDialog";
 import type {
   CalendarEvent,
   EventEditorValue,
@@ -64,6 +65,7 @@ export function EventEditorDialog({
   onDelete,
   onRestore,
 }: EventEditorDialogProps) {
+  const confirmDelete = useConfirmDialog();
   const initialSource = event ? sourceValues(event) : null;
   const initialTimezone =
     initialSource?.timezone ||
@@ -80,7 +82,6 @@ export function EventEditorDialog({
     event?.original_occurrence ? "occurrence" : "series",
   );
   const [error, setError] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const currentRule = scope === "series" ? seriesEvent?.recurrence_rule : event?.recurrence_rule;
   const timezoneOptions = useMemo(
     () => Array.from(new Set([timezone, ...commonTimezones])),
@@ -89,7 +90,6 @@ export function EventEditorDialog({
 
   const changeScope = (nextScope: "occurrence" | "series") => {
     setScope(nextScope);
-    setConfirmDelete(false);
     const source = nextScope === "series" ? seriesEvent : event;
     if (!source) return;
     const values = sourceValues(source);
@@ -306,17 +306,28 @@ export function EventEditorDialog({
 
         <footer className="flex min-h-16 items-center justify-between border-t border-stone-200 bg-stone-50/70 px-5 py-3">
           <div className="flex items-center gap-1">
-            {event && !confirmDelete && (
+            {event && (
               <button
                 type="button"
-                onClick={() => setConfirmDelete(true)}
+                onClick={async () => {
+                  const occurrence = scope === "occurrence";
+                  if (!await confirmDelete({
+                    title: occurrence ? "取消本次日程？" : "删除整个事件？",
+                    description: occurrence
+                      ? "本次日程将从重复事件中移除。"
+                      : "该事件及其所有重复日程将被删除，且无法恢复。",
+                    confirmLabel: occurrence ? "取消本次" : "删除事件",
+                  })) return;
+                  await onDelete(scope);
+                }}
+                disabled={busy}
                 className="grid h-9 w-9 place-items-center rounded-md text-rose-600 hover:bg-rose-50"
                 title={scope === "occurrence" ? "取消本次日程" : "删除事件"}
               >
                 <Trash2 className="h-4 w-4" />
               </button>
             )}
-            {event?.is_exception && scope === "occurrence" && !confirmDelete && (
+            {event?.is_exception && scope === "occurrence" && (
               <button
                 type="button"
                 onClick={onRestore}
@@ -327,45 +338,23 @@ export function EventEditorDialog({
                 <RotateCcw className="h-4 w-4" />
               </button>
             )}
-            {confirmDelete && (
-              <div className="flex items-center gap-2 text-xs text-rose-700">
-                <span>{scope === "occurrence" ? "取消本次？" : "删除整个事件？"}</span>
-                <button
-                  type="button"
-                  onClick={() => onDelete(scope)}
-                  disabled={busy}
-                  className="h-8 rounded-md bg-rose-600 px-3 font-medium text-white disabled:opacity-50"
-                >
-                  确认
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmDelete(false)}
-                  className="h-8 rounded-md px-2 text-stone-600 hover:bg-stone-100"
-                >
-                  返回
-                </button>
-              </div>
-            )}
           </div>
-          {!confirmDelete && (
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="h-9 rounded-md px-3 text-sm text-stone-600 hover:bg-stone-100"
-              >
-                取消
-              </button>
-              <button
-                type="submit"
-                disabled={busy || !calendarId}
-                className="h-9 rounded-md bg-[#4f7f68] px-4 text-sm font-medium text-white disabled:opacity-50"
-              >
-                保存
-              </button>
-            </div>
-          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-9 rounded-md px-3 text-sm text-stone-600 hover:bg-stone-100"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              disabled={busy || !calendarId}
+              className="h-9 rounded-md bg-[#4f7f68] px-4 text-sm font-medium text-white disabled:opacity-50"
+            >
+              保存
+            </button>
+          </div>
         </footer>
       </form>
     </div>

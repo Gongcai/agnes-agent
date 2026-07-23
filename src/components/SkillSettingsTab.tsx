@@ -19,6 +19,7 @@ import {
   uninstallSkill,
   type InstalledSkill,
 } from "../lib/skills";
+import { useConfirmDialog } from "./ConfirmDialog";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -27,6 +28,7 @@ function formatBytes(bytes: number): string {
 }
 
 export const SkillSettingsTab: React.FC = () => {
+  const confirmDelete = useConfirmDialog();
   const [skills, setSkills] = useState<InstalledSkill[]>([]);
   const [gitUrl, setGitUrl] = useState("");
   const [loading, setLoading] = useState(false);
@@ -111,7 +113,11 @@ export const SkillSettingsTab: React.FC = () => {
   };
 
   const removeSkill = async (skill: InstalledSkill) => {
-    if (!window.confirm(`卸载 Skill“${skill.name}”？安装目录会移入本地回收区。`)) return;
+    if (!await confirmDelete({
+      title: `卸载 Skill「${skill.name}」？`,
+      description: "安装目录会移入本地回收区，可从系统回收区恢复。",
+      confirmLabel: "卸载 Skill",
+    })) return;
     setBusySkillId(skill.id);
     setMessage(null);
     try {

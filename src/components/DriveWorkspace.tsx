@@ -43,6 +43,7 @@ import {
   storageProgress,
 } from "../lib/storage";
 import { useAgentStore } from "../store/useAgentStore";
+import { useConfirmDialog } from "./ConfirmDialog";
 
 interface ProviderDescriptor {
   id: string;
@@ -212,6 +213,7 @@ function SortableFileHeader({
 }
 
 export function DriveWorkspace() {
+  const confirmDelete = useConfirmDialog();
   const activeAgentId = useAgentStore((state) => state.activeAgentId);
   const [catalog, setCatalog] = useState<ProviderDescriptor[]>([]);
   const [accounts, setAccounts] = useState<StorageAccount[]>([]);
@@ -692,7 +694,11 @@ export function DriveWorkspace() {
 
   const removeAccount = async () => {
     if (!selectedAccount) return;
-    if (!window.confirm(`移除网盘账户「${selectedAccount.display_name}」？本地传输记录会保留。`)) return;
+    if (!await confirmDelete({
+      title: `移除网盘账户「${selectedAccount.display_name}」？`,
+      description: "账户授权会从本机移除，本地传输记录仍会保留。",
+      confirmLabel: "移除账户",
+    })) return;
     setLoading(true);
     setError(null);
     try {
@@ -989,7 +995,11 @@ export function DriveWorkspace() {
   const moveFilesToTrash = async (fileIds: string[]) => {
     if (!selectedAccount || !selectedProvider?.capabilities.delete_files || fileIds.length === 0) return;
     const count = fileIds.length;
-    if (!window.confirm(`将 ${count} 个项目移入回收站？可以在网盘网页端恢复。`)) return;
+    if (!await confirmDelete({
+      title: `将 ${count} 个项目移入回收站？`,
+      description: "这些项目会从当前目录移除，可在网盘网页端恢复。",
+      confirmLabel: "移入回收站",
+    })) return;
     try {
       setLoading(true);
       setError(null);

@@ -32,6 +32,7 @@ import { ENABLED_APP_FEATURES, type AppFeatureId, type ChatMode } from "../lib/f
 import { searchSessionsByTitle } from "../lib/sessionSearch";
 import { useAgentStore } from "../store/useAgentStore";
 import { NotificationCenter, type AppNotification } from "./NotificationCenter";
+import { useConfirmDialog } from "./ConfirmDialog";
 
 type SettingsTab = "profile" | "general" | "agents" | "memory" | "storage" | "models" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
 
@@ -95,6 +96,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenSettings,
   onNotificationNavigate,
 }) => {
+  const confirmDelete = useConfirmDialog();
   const {
     sessions,
     workspaces,
@@ -392,11 +394,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setRenameDialog({ kind: "session", id: ctxMenu.sessionId, currentName: ctxMenu.title, value: ctxMenu.title });
     closeCtxMenu();
   };
-  const handleCtxDelete = () => {
+  const handleCtxDelete = async () => {
     if (!ctxMenu) return;
-    if (!window.confirm(`确定删除会话「${ctxMenu.title}」吗？`)) { closeCtxMenu(); return; }
-    deleteSession(ctxMenu.sessionId).catch(console.error);
+    const { sessionId, title } = ctxMenu;
     closeCtxMenu();
+    if (!await confirmDelete({
+      title: `删除会话「${title}」？`,
+      description: "该会话中的全部消息将一并删除，且无法撤销。",
+      confirmLabel: "删除会话",
+    })) return;
+    await deleteSession(sessionId);
   };
 
   const handleWsCtxRename = () => {
@@ -438,11 +445,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
       setRenameSubmitting(false);
     }
   };
-  const handleWsCtxDelete = () => {
+  const handleWsCtxDelete = async () => {
     if (!wsCtxMenu) return;
-    if (!window.confirm(`删除工作区「${wsCtxMenu.name}」？其下会话将转为普通对话保留。`)) { closeWsCtxMenu(); return; }
-    deleteWorkspace(wsCtxMenu.workspaceId).catch(console.error);
+    const { workspaceId, name } = wsCtxMenu;
     closeWsCtxMenu();
+    if (!await confirmDelete({
+      title: `删除工作区「${name}」？`,
+      description: "工作区记录将被删除，其下会话会转为普通对话并继续保留。",
+      confirmLabel: "删除工作区",
+    })) return;
+    await deleteWorkspace(workspaceId);
   };
 
   const renderSessionBtn = (sess: { id: string; title: string; pinned?: boolean }) => {

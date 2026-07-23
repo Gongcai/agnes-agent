@@ -15,6 +15,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import { ProjectSelect, type ProjectSelectOption } from "./ProjectSelect";
 import { SkillSettingsTab } from "./SkillSettingsTab";
 import { TokenUsageCalendar, type TokenUsageDay } from "./TokenUsageCalendar";
+import { useConfirmDialog } from "./ConfirmDialog";
 import {
   embeddingModelName,
   formatMemoryTime,
@@ -715,6 +716,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   initialTab = "agents",
 }) => {
+  const confirmDelete = useConfirmDialog();
   const {
     agents,
     activeAgentId,
@@ -888,7 +890,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleDeleteAgent = async (agentId: string, name: string) => {
-    if (!window.confirm(`确定删除角色卡「${name}」吗？其所有会话与消息也会一并删除。`)) return;
+    if (!await confirmDelete({
+      title: `删除智能体「${name}」？`,
+      description: "该智能体的所有会话与消息也会一并删除，且无法恢复。",
+      confirmLabel: "删除智能体",
+    })) return;
     try {
       await deleteAgent(agentId);
       closeAgentEditor();
@@ -1391,7 +1397,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const deleteMcpServer = async (server: McpServer) => {
-    if (!window.confirm(`确定删除 MCP Server「${server.name}」及其本机凭证吗？`)) return;
+    if (!await confirmDelete({
+      title: `删除 MCP Server「${server.name}」？`,
+      description: "该 Server 的本机凭证也会一并删除。",
+      confirmLabel: "删除 Server",
+    })) return;
     try {
       await invoke("delete_mcp_server", { serverId: server.id });
       if (editingMcpId === server.id) setEditingMcpId(null);
@@ -1510,7 +1520,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleRevokeSyncDevice = async (device: SyncDevice) => {
     if (device.current || device.revokedAt != null) return;
-    if (!window.confirm(`确定撤销设备“${device.name}”吗？撤销只会阻止后续联网；若设备可能失控，请随后立即轮换密钥。`)) return;
+    if (!await confirmDelete({
+      title: `撤销设备「${device.name}」？`,
+      description: "撤销只会阻止该设备后续联网；若设备可能失控，请随后立即轮换密钥。",
+      confirmLabel: "撤销设备",
+    })) return;
     setRevokingDeviceId(device.id);
     setSyncStatusError(null);
     try {
@@ -1530,7 +1544,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     resolution: "keep_local" | "keep_remote",
   ) => {
     const target = resolution === "keep_local" ? "本机版本" : "云端版本";
-    if (!window.confirm(`确定采用${target}解决此同步冲突吗？`)) return;
+    if (!await confirmDelete({
+      title: `采用${target}？`,
+      description: "另一版本的冲突内容将被覆盖。",
+      confirmLabel: "解决冲突",
+    })) return;
     setResolvingConflictId(conflict.id);
     setSyncStatusError(null);
     try {
@@ -1563,6 +1581,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleClearSyncCredential = async () => {
+    if (!await confirmDelete({
+      title: "清除本机同步凭证？",
+      description: "清除后本机将停止同步，重新连接需要再次输入凭证。",
+      confirmLabel: "清除凭证",
+    })) return;
     setIsSavingSyncCredential(true);
     setSyncStatusError(null);
     try {
@@ -1593,7 +1616,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleBeginSyncE2eeRotation = async () => {
-    if (!window.confirm("轮换后，新写入将立即改用新密钥；其他设备需通过配对或本次恢复材料升级后才能读取。继续吗？")) return;
+    if (!await confirmDelete({
+      title: "轮换端到端加密密钥？",
+      description: "新写入将立即改用新密钥；其他设备需通过配对或本次恢复材料升级后才能读取。",
+      confirmLabel: "轮换密钥",
+    })) return;
     setIsConfiguringSyncE2ee(true);
     setSyncStatusError(null);
     try {
@@ -1652,7 +1679,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleDiscardSyncE2eeSetup = async () => {
-    if (!window.confirm("确定丢弃尚未确认的本机加密密钥吗？")) return;
+    if (!await confirmDelete({
+      title: "丢弃未确认的本机加密密钥？",
+      description: "尚未确认的密钥及当前设置进度将被清除。",
+      confirmLabel: "丢弃密钥",
+    })) return;
     setIsConfiguringSyncE2ee(true);
     setSyncStatusError(null);
     try {
@@ -1694,7 +1725,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleApproveSyncPairing = async () => {
     if (!syncPairingInvite || !syncPairingDevice) return;
-    if (!window.confirm(`允许“${syncPairingDevice.deviceName}”获取同步凭证与当前完整密钥集吗？`)) return;
+    if (!await confirmDelete({
+      title: `允许「${syncPairingDevice.deviceName}」加入同步？`,
+      description: "该设备将获取同步凭证与当前完整密钥集。",
+      confirmLabel: "允许加入",
+    })) return;
     setIsPairingSyncDevice(true);
     setSyncStatusError(null);
     try {
@@ -1883,7 +1918,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const removeStructuredMemory = async (memory: StructuredMemory) => {
-    if (!activeAgentId || !window.confirm(`确定删除记忆“${memory.name}”吗？`)) return;
+    if (!activeAgentId) return;
+    if (!await confirmDelete({
+      title: `删除记忆「${memory.name}」？`,
+      description: "该条结构化记忆将被删除，且无法恢复。",
+      confirmLabel: "删除记忆",
+    })) return;
     try {
       await invoke("delete_memory", {
         memoryId: memory.id,
@@ -1965,7 +2005,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleDeleteProvider = async (providerId: string) => {
-    if (!window.confirm("确定要删除此服务商配置吗？此操作不可撤销。")) return;
+    const providerName = providers.find((provider) => provider.id === providerId)?.name;
+    if (!await confirmDelete({
+      title: providerName ? `删除服务商「${providerName}」？` : "删除此服务商配置？",
+      description: "关联的模型配置将一并移除，且无法恢复。",
+      confirmLabel: "删除服务商",
+    })) return;
     await deleteProvider(providerId);
     if (editingProviderId === providerId) closeEditor();
   };
@@ -2157,7 +2202,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleRemovePdfModelPackage = async () => {
-    if (!window.confirm("移除 PDF 本地模型包后，将无法导入 PDF。确定继续吗？")) return;
+    if (!await confirmDelete({
+      title: "移除 PDF 本地模型包？",
+      description: "移除后将无法导入 PDF，重新使用时需要再次安装模型包。",
+      confirmLabel: "移除模型包",
+    })) return;
 
     setPdfModelBusy(true);
     setPdfModelMessage(null);
@@ -5854,6 +5903,7 @@ function formatLocalStorageBytes(bytes: number): string {
 }
 
 const ArtifactStorageTab: React.FC = () => {
+  const confirmDelete = useConfirmDialog();
   const [status, setStatus] = useState<ArtifactStorageStatus | null>(null);
   const [quotaGiB, setQuotaGiB] = useState("2");
   const [loading, setLoading] = useState(true);
@@ -5904,9 +5954,11 @@ const ArtifactStorageTab: React.FC = () => {
   };
 
   const cleanup = async () => {
-    if (!window.confirm("清理已有远端副本的本地制品缓存和过期临时文件？当前安装目录与唯一副本不会删除。")) {
-      return;
-    }
+    if (!await confirmDelete({
+      title: "清理本地制品缓存？",
+      description: "将删除已有远端副本的缓存和过期临时文件；当前安装目录与唯一副本不会删除。",
+      confirmLabel: "开始清理",
+    })) return;
     setCleaning(true);
     setError(null);
     setMessage(null);

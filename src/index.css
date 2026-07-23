@@ -1726,6 +1726,58 @@ pre,
   -webkit-backdrop-filter: blur(4px);
 }
 
+.agnes-confirm-overlay {
+  background: var(--claude-overlay);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.agnes-confirm-dialog {
+  background: var(--claude-surface);
+  border-color: var(--claude-border-strong) !important;
+  box-shadow: 0 20px 56px var(--claude-shadow);
+  color: var(--claude-ink);
+  font-family: var(--claude-ui-font);
+}
+
+.agnes-confirm-dialog-header,
+.agnes-confirm-dialog-footer {
+  border-color: var(--claude-border) !important;
+}
+
+.agnes-confirm-dialog-footer {
+  background: var(--claude-surface-soft);
+}
+
+.agnes-confirm-dialog-icon {
+  background: color-mix(in srgb, var(--claude-danger) 16%, transparent);
+  color: var(--claude-danger);
+}
+
+.agnes-confirm-dialog-description {
+  color: var(--claude-muted);
+}
+
+.agnes-confirm-dialog-close,
+.agnes-confirm-dialog-cancel {
+  color: var(--claude-muted);
+}
+
+.agnes-confirm-dialog-close:hover,
+.agnes-confirm-dialog-cancel:hover {
+  background: var(--claude-surface-strong);
+  color: var(--claude-ink);
+}
+
+.agnes-confirm-dialog-submit {
+  background: var(--claude-danger);
+  color: #fff;
+}
+
+.agnes-confirm-dialog-submit:hover {
+  background: var(--claude-danger-hover);
+}
+
 .agnes-rename-dialog {
   background: var(--claude-surface);
   border-color: var(--claude-border-strong) !important;

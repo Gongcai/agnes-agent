@@ -39,6 +39,7 @@ import { AnimatedDisclosure } from "./AnimatedDisclosure";
 import { ContextUsageRing } from "./ContextUsageRing";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ModifyMemoryModal } from "./ModifyMemoryModal";
+import { useConfirmDialog } from "./ConfirmDialog";
 import { listInstalledSkills, type InstalledSkill } from "../lib/skills";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -384,6 +385,7 @@ interface ChatUserProfile {
 export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   onOpenSettings,
 }) => {
+  const confirmDelete = useConfirmDialog();
   const {
     agents,
     sessions,
@@ -1006,10 +1008,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       <GitBranch className="h-3 w-3" />
                     </button>
                     <button
-                      onClick={() => {
-                        if (window.confirm("删除这条消息？")) {
-                          deleteMessage(message.id).catch(console.error);
-                        }
+                      onClick={async () => {
+                        if (!await confirmDelete({
+                          title: "删除这条消息？",
+                          description: "消息删除后无法恢复。",
+                          confirmLabel: "删除消息",
+                        })) return;
+                        await deleteMessage(message.id);
                       }}
                       disabled={!message.is_leaf || isStreaming || message.status === "pending" || message.status === "streaming"}
                       className="rounded p-1 text-stone-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-stone-400"

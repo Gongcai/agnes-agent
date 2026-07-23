@@ -39,6 +39,7 @@ import {
 import { AnimatedDisclosure } from "./AnimatedDisclosure";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { useAgentStore } from "../store/useAgentStore";
+import { useConfirmDialog } from "./ConfirmDialog";
 import {
   DEFAULT_READING_PREFERENCES,
   normalizeReadingPreferences,
@@ -262,6 +263,7 @@ const EpubPane: React.FC<{
   onPreferencesChange,
   onOpenSelectionMenu,
 }) => {
+  const confirmDelete = useConfirmDialog();
   const hostRef = useRef<HTMLDivElement>(null);
   const bookRef = useRef<Book | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
@@ -744,8 +746,13 @@ const EpubPane: React.FC<{
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
-                          if (window.confirm("删除这条高亮和批注？")) void onDeleteHighlight(highlight);
+                        onClick={async () => {
+                          if (!await confirmDelete({
+                            title: "删除这条高亮？",
+                            description: "关联的批注也会一并删除，且无法恢复。",
+                            confirmLabel: "删除高亮",
+                          })) return;
+                          await onDeleteHighlight(highlight);
                         }}
                         className="rounded p-1 text-stone-400 hover:bg-rose-50 hover:text-rose-600"
                         title="删除高亮"

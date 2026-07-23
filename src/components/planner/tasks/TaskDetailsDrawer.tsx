@@ -10,6 +10,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useConfirmDialog } from "../../ConfirmDialog";
 import type { RepeatOption, Task, TaskList, TaskUpdateChanges } from "../shared/types";
 import {
   commonTimezones,
@@ -47,6 +48,7 @@ export function TaskDetailsDrawer({
   onCreateSubtask,
   onDelete,
 }: TaskDetailsDrawerProps) {
+  const confirmDelete = useConfirmDialog();
   const taskTimezone = task.due_timezone || localTimezone;
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description || "");
@@ -60,7 +62,6 @@ export function TaskDetailsDrawer({
   const [timezone, setTimezone] = useState(taskTimezone);
   const [repeat, setRepeat] = useState<RepeatOption>(repeatOptionFromRule(task.recurrence_rule));
   const [subtaskTitle, setSubtaskTitle] = useState("");
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const timezoneOptions = useMemo(
     () => Array.from(new Set([timezone, ...commonTimezones])),
@@ -78,7 +79,6 @@ export function TaskDetailsDrawer({
     setDueTime(task.due_at ? isoToDateTimeInput(task.due_at, nextTimezone) : `${tomorrowKey()}T09:00`);
     setTimezone(nextTimezone);
     setRepeat(repeatOptionFromRule(task.recurrence_rule));
-    setConfirmDelete(false);
     setError(null);
   }, [task]);
 
@@ -327,45 +327,30 @@ export function TaskDetailsDrawer({
         </div>
 
         <footer className="flex min-h-16 shrink-0 items-center justify-between border-t border-stone-200 bg-white px-4 py-3">
-          {confirmDelete ? (
-            <div className="flex items-center gap-2 text-xs text-rose-700">
-              <span>删除任务及其步骤？</span>
-              <button
-                type="button"
-                onClick={onDelete}
-                disabled={busy}
-                className="h-8 rounded-md bg-rose-600 px-3 font-medium text-white disabled:opacity-50"
-              >
-                确认
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmDelete(false)}
-                className="h-8 rounded-md px-2 text-stone-600 hover:bg-stone-100"
-              >
-                返回
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setConfirmDelete(true)}
-              className="grid h-9 w-9 place-items-center rounded-md text-rose-600 hover:bg-rose-50"
-              title="删除任务"
-            >
-              <Trash2 className="h-4 w-4" />
-            </button>
-          )}
-          {!confirmDelete && (
-            <button
-              type="button"
-              onClick={save}
-              disabled={busy}
-              className="h-9 rounded-md bg-[#4f7f68] px-4 text-sm font-medium text-white disabled:opacity-50"
-            >
-              保存
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={async () => {
+              if (!await confirmDelete({
+                title: `删除任务「${task.title}」？`,
+                description: "任务及其所有步骤将一并删除，且无法恢复。",
+                confirmLabel: "删除任务",
+              })) return;
+              await onDelete();
+            }}
+            disabled={busy}
+            className="grid h-9 w-9 place-items-center rounded-md text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+            title="删除任务"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={busy}
+            className="h-9 rounded-md bg-[#4f7f68] px-4 text-sm font-medium text-white disabled:opacity-50"
+          >
+            保存
+          </button>
         </footer>
       </aside>
     </div>
