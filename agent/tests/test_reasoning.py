@@ -1022,9 +1022,10 @@ def test_apply_patch_schema_documents_its_exact_patch_format():
     patch_description = apply_patch["parameters"]["properties"]["patch"]["description"]
 
     assert "*** Add File" in description
-    assert "rename/move is not supported" in description
-    assert "matching is exact" in description
+    assert "*** Move to:" in description
+    assert "prefers exact complete lines" in description
     assert "*** Update File:" in patch_description
+    assert "*** End of File" in patch_description
     assert "\\ No newline at end of file" in patch_description
 
 

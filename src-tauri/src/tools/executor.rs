@@ -471,6 +471,50 @@ mod tests {
             fs::read_to_string(temp_project.join("added.txt")).unwrap(),
             "Added by patch\n"
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(temp_project.join("added.txt"))
+                .unwrap()
+                .permissions();
+            permissions.set_mode(0o751);
+            fs::set_permissions(temp_project.join("added.txt"), permissions).unwrap();
+        }
+
+        let move_args = json!({
+            "patch": "*** Begin Patch\n*** Update File: added.txt\n*** Move to: nested/renamed.txt\n*** End Patch\n"
+        });
+        let move_res = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-patch-move",
+                "apply_patch",
+                &move_args,
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(move_res["changed_files"].as_array().unwrap().len(), 2);
+        assert!(!temp_project.join("added.txt").exists());
+        assert_eq!(
+            fs::read_to_string(temp_project.join("nested/renamed.txt")).unwrap(),
+            "Added by patch\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                fs::metadata(temp_project.join("nested/renamed.txt"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o751
+            );
+        }
 
         let outside_file = temp_project.parent().unwrap().join("sandbox-denied.txt");
         let outside_write = json!({

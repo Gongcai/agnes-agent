@@ -31,22 +31,25 @@ class AgentState(TypedDict):
 
 
 APPLY_PATCH_DESCRIPTION = (
-    "Apply an exact Codex-style text patch to one or more UTF-8 files in the workspace. "
-    "Supported actions are *** Add File, *** Update File, and *** Delete File with relative paths; "
-    "rename/move is not supported. Update hunks begin with @@ and each hunk line must start with "
-    "a space for context, - for removal, or + for addition. Content and whitespace matching is exact, "
-    "although a missing final newline at EOF is tolerated."
+    "Apply a Codex-style text patch to one or more UTF-8 files in the workspace. "
+    "Supported actions are *** Add File, *** Update File, and *** Delete File with relative paths. "
+    "An update may include *** Move to: <path> to rename the file, with optional hunks. "
+    "Update hunks start with @@ or @@ <context>; each hunk line starts with a space for context, "
+    "- for removal, or + for addition. *** End of File anchors the final hunk at EOF. "
+    "Matching prefers exact complete lines, then tolerates Codex-compatible line whitespace differences; a missing final newline at EOF is also tolerated."
 )
 
 APPLY_PATCH_ARGUMENT_DESCRIPTION = """Complete patch from *** Begin Patch through *** End Patch.
 Example:
 *** Begin Patch
 *** Update File: src/example.txt
-@@
+*** Move to: src/main.txt
+@@ function_name
 -old text
 +new text
+*** End of File
 *** End Patch
-Add File content lines must start with +; Delete File has no body. Insertion-only hunks require a numeric header such as @@ -1,0 +1 @@. To keep a line without a trailing newline, place \\ No newline at end of file immediately after that context, removal, or addition line."""
+Add File content lines must start with +; Delete File has no body. Use @@ <context> to anchor a hunk to an unchanged line, or bare @@ for a search from the current position. Use *** End of File on the final hunk when it must match the file end. A move-only update may omit hunks. To preserve a line without a trailing newline, place \\ No newline at end of file immediately after that context, removal, or addition line."""
 
 
 def _usage_field(usage: Any, name: str) -> int:
