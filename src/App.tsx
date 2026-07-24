@@ -13,13 +13,16 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   announceUIPreferenceChange,
   applyColorScheme,
+  applyFontScale,
   normalizeBooleanPreference,
   normalizeColorScheme,
+  normalizeFontScale,
   setAutoFollowStreaming,
   setAutoExpandThoughts,
   UI_AUTO_FOLLOW_STREAMING_KEY,
   UI_AUTO_EXPAND_THOUGHTS_KEY,
   UI_COLOR_SCHEME_KEY,
+  UI_FONT_SCALE_KEY,
 } from "./lib/uiPreferences";
 
 const ReadingWorkspace = lazy(() =>
@@ -68,16 +71,19 @@ export default function App() {
       invoke<string | null>("get_setting", { key: UI_COLOR_SCHEME_KEY }),
       invoke<string | null>("get_setting", { key: UI_AUTO_EXPAND_THOUGHTS_KEY }),
       invoke<string | null>("get_setting", { key: UI_AUTO_FOLLOW_STREAMING_KEY }),
+      invoke<string | null>("get_setting", { key: UI_FONT_SCALE_KEY }),
     ])
-      .then(([colorSchemeValue, autoExpandThoughtsValue, autoFollowStreamingValue]) => {
+      .then(([colorSchemeValue, autoExpandThoughtsValue, autoFollowStreamingValue, fontScaleValue]) => {
         if (!active) return;
         const colorScheme = normalizeColorScheme(colorSchemeValue);
         const autoExpandThoughts = normalizeBooleanPreference(autoExpandThoughtsValue, true);
         const autoFollowStreaming = normalizeBooleanPreference(autoFollowStreamingValue, true);
+        const fontScale = normalizeFontScale(fontScaleValue);
         applyColorScheme(colorScheme);
+        applyFontScale(fontScale);
         setAutoExpandThoughts(autoExpandThoughts);
         setAutoFollowStreaming(autoFollowStreaming);
-        announceUIPreferenceChange({ colorScheme, autoExpandThoughts, autoFollowStreaming });
+        announceUIPreferenceChange({ colorScheme, fontScale, autoExpandThoughts, autoFollowStreaming });
       })
       .catch((error) => console.error("加载界面偏好失败", error));
     return () => { active = false; };

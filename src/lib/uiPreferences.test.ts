@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
+  fontScaleFactor,
   normalizeBooleanPreference,
   normalizeColorScheme,
+  normalizeFontScale,
   normalizeMaxOutputTokens,
   resolveColorScheme,
 } from "./uiPreferences";
@@ -34,5 +36,18 @@ describe("UI preference normalization", () => {
     expect(normalizeMaxOutputTokens("131072")).toBe(131_072);
     expect(normalizeMaxOutputTokens("64")).toBe(128);
     expect(normalizeMaxOutputTokens(2_000_000)).toBe(1_048_576);
+  });
+
+  it("normalizes the font scale and maps each step to a zoom factor", () => {
+    expect(normalizeFontScale("small")).toBe("small");
+    expect(normalizeFontScale("large")).toBe("large");
+    expect(normalizeFontScale("xlarge")).toBe("xlarge");
+    expect(normalizeFontScale("standard")).toBe("standard");
+    expect(normalizeFontScale(null)).toBe("standard");
+    expect(normalizeFontScale("bogus")).toBe("standard");
+    expect(fontScaleFactor("standard")).toBe(1);
+    expect(fontScaleFactor("small")).toBeLessThan(1);
+    expect(fontScaleFactor("large")).toBeGreaterThan(1);
+    expect(fontScaleFactor("xlarge")).toBeGreaterThan(fontScaleFactor("large"));
   });
 });

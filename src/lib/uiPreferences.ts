@@ -1,6 +1,7 @@
 export const UI_COLOR_SCHEME_KEY = "ui:color_scheme";
 export const UI_AUTO_EXPAND_THOUGHTS_KEY = "ui:auto_expand_thoughts";
 export const UI_AUTO_FOLLOW_STREAMING_KEY = "ui:auto_follow_streaming";
+export const UI_FONT_SCALE_KEY = "ui:font_scale";
 export const UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY = "ui:default_max_output_tokens";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 131_072;
 export const MIN_MAX_OUTPUT_TOKENS = 128;
@@ -8,15 +9,18 @@ export const MAX_MAX_OUTPUT_TOKENS = 1_048_576;
 
 export type ColorScheme = "light" | "dark" | "system";
 export type ResolvedColorScheme = Exclude<ColorScheme, "system">;
+export type FontScale = "small" | "standard" | "large" | "xlarge";
 
 export interface UIPreferenceChange {
   colorScheme?: ColorScheme;
   resolvedColorScheme?: ResolvedColorScheme;
+  fontScale?: FontScale;
   autoExpandThoughts?: boolean;
   autoFollowStreaming?: boolean;
 }
 
 const COLOR_SCHEME_CACHE_KEY = "agnes.ui.color_scheme";
+const FONT_SCALE_CACHE_KEY = "agnes.ui.font_scale";
 const AUTO_EXPAND_THOUGHTS_CACHE_KEY = "agnes.ui.auto_expand_thoughts";
 const AUTO_FOLLOW_STREAMING_CACHE_KEY = "agnes.ui.auto_follow_streaming";
 const UI_PREFERENCE_EVENT = "agnes-ui-preference-change";
@@ -142,6 +146,37 @@ export function applyColorScheme(scheme: ColorScheme): ResolvedColorScheme {
   writeCache(COLOR_SCHEME_CACHE_KEY, normalized);
   applyResolvedColorScheme(resolved);
   return resolved;
+}
+
+const FONT_SCALE_FACTORS: Record<FontScale, number> = {
+  small: 0.9,
+  standard: 1,
+  large: 1.15,
+  xlarge: 1.3,
+};
+
+export function normalizeFontScale(value: string | null | undefined): FontScale {
+  return value === "small" || value === "large" || value === "xlarge" ? value : "standard";
+}
+
+export function fontScaleFactor(scale: FontScale): number {
+  return FONT_SCALE_FACTORS[normalizeFontScale(scale)];
+}
+
+export function getCachedFontScale(): FontScale {
+  return normalizeFontScale(readCache(FONT_SCALE_CACHE_KEY));
+}
+
+export function applyFontScale(scale: FontScale): FontScale {
+  const normalized = normalizeFontScale(scale);
+  writeCache(FONT_SCALE_CACHE_KEY, normalized);
+  if (typeof document !== "undefined") {
+    // CSS zoom scales the whole UI uniformly (px + rem + icons), unlike a rem-only base
+    // font-size, so the ~half of the interface that uses fixed px sizes scales too.
+    document.documentElement.style.zoom = String(FONT_SCALE_FACTORS[normalized]);
+  }
+  announceUIPreferenceChange({ fontScale: normalized });
+  return normalized;
 }
 
 export function setAutoExpandThoughts(value: boolean): void {

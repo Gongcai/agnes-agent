@@ -5,9 +5,10 @@ import { AppContextMenu } from "./components/AppContextMenu";
 import { QuickWindow } from "./components/QuickWindow";
 import { ConfirmDialogProvider } from "./components/ConfirmDialog";
 import "./index.css";
-import { applyColorScheme, getCachedColorScheme } from "./lib/uiPreferences";
+import { applyColorScheme, applyFontScale, getCachedColorScheme, getCachedFontScale } from "./lib/uiPreferences";
 
 applyColorScheme(getCachedColorScheme());
+applyFontScale(getCachedFontScale());
 
 const isQuickWindow = new URLSearchParams(window.location.search).get("window") === "quick";
 

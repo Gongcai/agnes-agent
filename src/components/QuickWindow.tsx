@@ -23,9 +23,11 @@ import { MarkdownMessage } from "./MarkdownMessage";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   applyColorScheme,
+  applyFontScale,
   getCachedAutoExpandThoughts,
   getCachedAutoFollowStreaming,
   getCachedColorScheme,
+  getCachedFontScale,
   subscribeUIPreferenceChanges,
 } from "../lib/uiPreferences";
 import { setupTauriEventListeners, useAgentStore } from "../store/useAgentStore";
@@ -196,6 +198,7 @@ export const QuickWindow: React.FC = () => {
     const unlistenPromise = quickWindow.onFocusChanged(({ payload: focused }) => {
       if (focused) {
         applyColorScheme(getCachedColorScheme());
+        applyFontScale(getCachedFontScale());
         setAutoExpandThoughts(getCachedAutoExpandThoughts());
         setAutoFollowStreaming(getCachedAutoFollowStreaming());
         window.setTimeout(() => inputRef.current?.focus(), 50);

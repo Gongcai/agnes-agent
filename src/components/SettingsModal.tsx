@@ -52,14 +52,17 @@ import {
 import {
   announceUIPreferenceChange,
   applyColorScheme,
+  applyFontScale,
   getCachedAutoFollowStreaming,
   getCachedAutoExpandThoughts,
   getCachedColorScheme,
+  getCachedFontScale,
   DEFAULT_MAX_OUTPUT_TOKENS,
   MAX_MAX_OUTPUT_TOKENS,
   MIN_MAX_OUTPUT_TOKENS,
   normalizeBooleanPreference,
   normalizeColorScheme,
+  normalizeFontScale,
   normalizeMaxOutputTokens,
   setAutoFollowStreaming,
   setAutoExpandThoughts,
@@ -67,7 +70,9 @@ import {
   UI_AUTO_EXPAND_THOUGHTS_KEY,
   UI_COLOR_SCHEME_KEY,
   UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY,
+  UI_FONT_SCALE_KEY,
   type ColorScheme,
+  type FontScale,
 } from "../lib/uiPreferences";
 import { syncE2eeStatusMessage } from "../lib/syncStatus";
 
@@ -5615,6 +5620,7 @@ const GeneralTab: React.FC = () => {
   const [openMode, setOpenMode] = useState<string>("last");
   const [translationLanguage, setTranslationLanguage] = useState<"中文" | "English">("中文");
   const [colorScheme, setColorScheme] = useState<ColorScheme>(getCachedColorScheme);
+  const [fontScale, setFontScale] = useState<FontScale>(getCachedFontScale);
   const [autoExpandThoughts, setAutoExpandThoughtsState] = useState(getCachedAutoExpandThoughts);
   const [autoFollowStreaming, setAutoFollowStreamingState] = useState(getCachedAutoFollowStreaming);
   const [defaultMaxOutputTokens, setDefaultMaxOutputTokens] = useState(String(DEFAULT_MAX_OUTPUT_TOKENS));
@@ -5628,22 +5634,27 @@ const GeneralTab: React.FC = () => {
       invoke<string | null>("get_setting", { key: UI_AUTO_EXPAND_THOUGHTS_KEY }),
       invoke<string | null>("get_setting", { key: UI_AUTO_FOLLOW_STREAMING_KEY }),
       invoke<string | null>("get_setting", { key: UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY }),
+      invoke<string | null>("get_setting", { key: UI_FONT_SCALE_KEY }),
     ])
-      .then(([openModeValue, languageValue, colorSchemeValue, autoExpandThoughtsValue, autoFollowStreamingValue, maxOutputTokensValue]) => {
+      .then(([openModeValue, languageValue, colorSchemeValue, autoExpandThoughtsValue, autoFollowStreamingValue, maxOutputTokensValue, fontScaleValue]) => {
         const nextColorScheme = normalizeColorScheme(colorSchemeValue);
         const nextAutoExpandThoughts = normalizeBooleanPreference(autoExpandThoughtsValue, true);
         const nextAutoFollowStreaming = normalizeBooleanPreference(autoFollowStreamingValue, true);
+        const nextFontScale = normalizeFontScale(fontScaleValue);
         setOpenMode(openModeValue ?? "last");
         if (languageValue === "中文" || languageValue === "English") setTranslationLanguage(languageValue);
         setColorScheme(nextColorScheme);
+        setFontScale(nextFontScale);
         setAutoExpandThoughtsState(nextAutoExpandThoughts);
         setAutoFollowStreamingState(nextAutoFollowStreaming);
         setDefaultMaxOutputTokens(String(normalizeMaxOutputTokens(maxOutputTokensValue)));
         applyColorScheme(nextColorScheme);
+        applyFontScale(nextFontScale);
         setAutoExpandThoughts(nextAutoExpandThoughts);
         setAutoFollowStreaming(nextAutoFollowStreaming);
         announceUIPreferenceChange({
           colorScheme: nextColorScheme,
+          fontScale: nextFontScale,
           autoExpandThoughts: nextAutoExpandThoughts,
           autoFollowStreaming: nextAutoFollowStreaming,
         });
@@ -5687,6 +5698,21 @@ const GeneralTab: React.FC = () => {
       applyColorScheme(previous);
       announceUIPreferenceChange({ colorScheme: previous });
       console.error("保存界面主题失败", e);
+    }
+  };
+
+  const updateFontScale = async (scale: FontScale) => {
+    const previous = fontScale;
+    setFontScale(scale);
+    applyFontScale(scale);
+    announceUIPreferenceChange({ fontScale: scale });
+    try {
+      await invoke("set_setting", { key: UI_FONT_SCALE_KEY, value: scale });
+    } catch (e) {
+      setFontScale(previous);
+      applyFontScale(previous);
+      announceUIPreferenceChange({ fontScale: previous });
+      console.error("保存界面缩放失败", e);
     }
   };
 
@@ -5766,6 +5792,36 @@ const GeneralTab: React.FC = () => {
                 aria-pressed={active}
               >
                 <Icon className="h-3.5 w-3.5" />
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div>
+        <label className="mb-2 block font-semibold text-stone-500">字体大小</label>
+        <div className="grid grid-cols-4 gap-1 rounded-lg border border-stone-200 bg-stone-100 p-1">
+          {([
+            { value: "small" as const, label: "小" },
+            { value: "standard" as const, label: "标准" },
+            { value: "large" as const, label: "大" },
+            { value: "xlarge" as const, label: "特大" },
+          ]).map((option) => {
+            const active = fontScale === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                disabled={!loaded}
+                onClick={() => void updateFontScale(option.value)}
+                className={`flex items-center justify-center rounded-md px-3 py-2 text-xs font-semibold transition-colors disabled:opacity-50 ${
+                  active
+                    ? "border border-stone-200 bg-white text-stone-800 shadow-sm"
+                    : "border border-transparent text-stone-500 hover:text-stone-800"
+                }`}
+                aria-pressed={active}
+              >
                 {option.label}
               </button>
             );
