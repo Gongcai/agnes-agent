@@ -545,13 +545,14 @@ def assemble_prompt(
             f"path that is absent from this effective policy."
         )
 
-    current_datetime = context.get("currentDateTime")
-    if current_datetime:
-        system_parts.append(
-            f"# Current Local Time\n{current_datetime}\n"
-            "Use this as the current time for calendar and task requests. When calling calendar tools, "
-            "always send RFC 3339 / ISO 8601 instants with an explicit timezone offset or Z."
-        )
+    system_parts.append(
+        "# Date and Time\n"
+        "You have no built-in clock, and the current time is intentionally omitted here to keep "
+        "this prompt cache-stable. Whenever the request depends on the current date or time — "
+        "\"today\", \"now\", relative dates, scheduling, greetings, or any time-sensitive "
+        "reasoning — call the `get_current_time` tool first and rely on its result instead of "
+        "guessing."
+    )
 
     web_enabled = (tool_policy or {}).get("web", {}).get("enabled", True)
     network_allowed = (tool_policy or {}).get("network", {}).get("allow", True)

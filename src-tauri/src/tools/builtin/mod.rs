@@ -12,6 +12,7 @@ use crate::tools::sandbox::SandboxGuard;
 use crate::tools::terminal::TerminalManager;
 
 pub mod apply_patch;
+pub mod clock;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
@@ -111,6 +112,7 @@ pub trait BuiltinTool: Send + Sync {
 /// Return all registered built-in tools.
 pub fn builtin_tools() -> Vec<Box<dyn BuiltinTool>> {
     vec![
+        Box::new(clock::GetCurrentTimeTool),
         Box::new(shell::ShellTool),
         Box::new(shell::WriteStdinTool),
         Box::new(shell::StopTerminalTool),
@@ -218,7 +220,7 @@ pub fn is_write_op(tool: &str, args: &Value) -> bool {
         | "task_complete"
         | "task_update" => true,
         "file_read" | "list_files" | "grep" | "memory_search" | "memory_md_view" | "web_search"
-        | "web_fetch" | "browser_open" | "calendar_list" | "task_list" => false,
+        | "web_fetch" | "browser_open" | "calendar_list" | "task_list" | "get_current_time" => false,
         "shell" => {
             let cmd = args.get("command").and_then(|x| x.as_str()).unwrap_or("");
             shell::command_is_write(cmd)
@@ -345,6 +347,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "get_current_time",
                 "shell",
                 "write_stdin",
                 "stop_terminal",
@@ -391,7 +394,7 @@ mod tests {
             assert_eq!(compute_risk(tool, &json!({})), Risk::High);
             assert!(is_write_op(tool, &json!({})));
         }
-        for tool in ["calendar_list", "task_list"] {
+        for tool in ["calendar_list", "task_list", "get_current_time"] {
             assert_eq!(compute_risk(tool, &json!({})), Risk::Low);
             assert!(!is_write_op(tool, &json!({})));
         }

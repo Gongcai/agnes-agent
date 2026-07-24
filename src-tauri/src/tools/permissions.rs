@@ -98,6 +98,7 @@ pub fn approval_decision(mode: PermissionMode, tool: &str, risk: Risk) -> Approv
                     | "browser_open"
                     | "calendar_list"
                     | "task_list"
+                    | "get_current_time"
             );
             ApprovalDecision {
                 needs_approval: !accepts_without_prompt,
@@ -172,6 +173,7 @@ mod tests {
             "web_search",
             "web_fetch",
             "browser_open",
+            "get_current_time",
         ] {
             assert!(
                 !approval_decision(PermissionMode::AcceptEdits, tool, Risk::High).needs_approval

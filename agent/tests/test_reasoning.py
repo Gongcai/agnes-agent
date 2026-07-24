@@ -921,6 +921,7 @@ def test_debug_prompt_payload_includes_effective_tool_schemas():
     tool_names = [tool["function"]["name"] for tool in preview["tools"]]
 
     assert tool_names == [
+        "get_current_time",
         "memory_search",
         "memory_create",
         "memory_update",
@@ -975,6 +976,7 @@ def test_get_available_tools():
         tool["function"]["name"] for tool in get_available_tools({})
     ]
     assert all_tool_names == [
+        "get_current_time",
         "shell",
         "write_stdin",
         "stop_terminal",
@@ -1164,18 +1166,25 @@ def test_web_research_prompt_requires_sources_and_rejects_page_instructions():
     assert "# Web Research" not in offline_prompt
 
 
-def test_prompt_exposes_current_time_for_planner_requests():
+def test_current_time_is_exposed_as_a_tool_not_a_prompt_timestamp():
     system_prompt, _, _ = assemble_prompt(
         {
             "context": {
                 "agent": {"model": "gpt-4o", "toolPolicy": {}},
+                # Still supplied by callers, but must no longer be read into the prompt.
                 "currentDateTime": "2026-07-18T09:30:00+08:00",
             }
         }
     )
 
-    assert "2026-07-18T09:30:00+08:00" in system_prompt
-    assert "RFC 3339" in system_prompt
+    # The volatile timestamp must not leak into the cache-stable system prompt.
+    assert "2026-07-18T09:30:00+08:00" not in system_prompt
+    # Instead the prompt points the model at the get_current_time tool.
+    assert "# Date and Time" in system_prompt
+    assert "get_current_time" in system_prompt
+
+    tool_names = [tool["function"]["name"] for tool in get_available_tools({})]
+    assert "get_current_time" in tool_names
 
 
 def test_workspace_coding_instructions_are_only_injected_for_workspace_sessions():

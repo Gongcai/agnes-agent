@@ -84,7 +84,28 @@ def get_available_tools(
 ) -> List[Dict[str, Any]]:
     """Determine tools to expose to the LLM based on permissions policy."""
     tools = []
-    
+
+    # 0. Always-available core tools. The current time is intentionally exposed as a
+    # tool instead of injected into the system prompt so the prompt stays cache-stable.
+    tools.append({
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": (
+                "Get the current local date and time. Call this whenever the request depends "
+                "on the current date or time — \"today\", \"now\", relative dates, scheduling, "
+                "greetings, or any time-sensitive reasoning — and use the returned instant "
+                "instead of guessing. Returns an RFC 3339 / ISO 8601 instant with the local "
+                "UTC offset."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    })
+
     # 1. Shell Tool
     shell_enabled = tool_policy.get("shell", {}).get("enabled", True)
     if shell_enabled:

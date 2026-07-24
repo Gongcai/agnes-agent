@@ -1041,7 +1041,6 @@ pub async fn get_debug_prompt(
             "fallbackLlmConfigs": fallback_llm_configs,
             "taskLlmConfigs": task_llm_configs,
             "settings": { "user_context_limit": serde_json::Value::Null },
-            "currentDateTime": chrono::Local::now().to_rfc3339(),
             "recentMessages": history_json,
             "summary": summary,
             "explicitMemories": { "user_md": user_md, "memory_md": memory_md },
@@ -2109,7 +2108,6 @@ async fn start_agent_run(
                 "user_context_limit": cfg.session_context_limit,
                 "compress_threshold": cfg.compress_threshold
             },
-            "currentDateTime": chrono::Local::now().to_rfc3339(),
             "recentMessages": history_json,
             "summary": if is_regeneration { None } else { cfg.session_summary.clone() },
             "explicitMemories": {

@@ -453,7 +453,7 @@ impl ToolPolicy {
             "memory_search" | "memory_md_view" => ApprovalTier::Never,
             "memory_create" | "memory_update" | "memory_md_edit" => self.memory.approval,
             "web_search" | "web_fetch" | "browser_open" => self.web.approval,
-            "calendar_list" | "task_list" => ApprovalTier::Never,
+            "calendar_list" | "task_list" | "get_current_time" => ApprovalTier::Never,
             "calendar_create"
             | "calendar_event_create"
             | "calendar_update"
