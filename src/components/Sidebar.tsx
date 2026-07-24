@@ -30,6 +30,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { ENABLED_APP_FEATURES, type AppFeatureId, type ChatMode } from "../lib/features";
 import { searchSessionsByTitle } from "../lib/sessionSearch";
+import { viewportRectToLocalRect } from "../lib/zoomGeometry";
 import { useAgentStore } from "../store/useAgentStore";
 import { NotificationCenter, type AppNotification } from "./NotificationCenter";
 import { useConfirmDialog } from "./ConfirmDialog";
@@ -259,12 +260,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       const sidebarRect = sidebar.getBoundingClientRect();
       const targetRect = target.getBoundingClientRect();
-      setFeatureHighlight({
-        x: targetRect.left - sidebarRect.left,
-        y: targetRect.top - sidebarRect.top,
-        width: targetRect.width,
-        height: targetRect.height,
-      });
+      // Viewport rects include the root CSS zoom; absolute positioning uses local CSS pixels.
+      setFeatureHighlight(viewportRectToLocalRect(
+        sidebarRect,
+        targetRect,
+        sidebar.offsetWidth,
+      ));
     };
 
     const followLayoutTransition = (timestamp: number) => {
