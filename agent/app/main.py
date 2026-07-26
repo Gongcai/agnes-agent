@@ -15,7 +15,6 @@ from .image import process_image_attachments
 from .prompt import assemble_prompt, summarize_history
 from .graph import build_graph, get_available_tools
 from .models import LlmConfig, embed_texts
-from .memory_extract import extract_memories
 from .title import generate_session_title
 
 EMBEDDING_REQUEST_TIMEOUT_SECONDS = 30
@@ -49,59 +48,6 @@ def build_debug_prompt_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         "tools": get_available_tools(tool_policy, dynamic_tools),
         "discarded_messages": discarded,
     }
-
-
-INTERNAL_EMBEDDING_KEY = "__agnes_embedding"
-
-
-def prepare_memory_tool_arguments(
-    tool_name: str,
-    arguments: Dict[str, Any],
-    embedding_model: Optional[str],
-    embedding_config: Optional[LlmConfig],
-) -> Dict[str, Any]:
-    """Attach a trusted embedding without exposing it in the model's tool schema."""
-    prepared = dict(arguments)
-    prepared.pop(INTERNAL_EMBEDDING_KEY, None)
-    if not embedding_model or not embedding_config:
-        return prepared
-
-    field = "query" if tool_name == "memory_search" else "content"
-    if tool_name not in {"memory_search", "memory_create", "memory_update"}:
-        return prepared
-    text = prepared.get(field)
-    if not isinstance(text, str) or not text.strip():
-        return prepared
-
-    vector = embed_texts(embedding_model, [text.strip()], embedding_config)[0]
-    prepared[INTERNAL_EMBEDDING_KEY] = {
-        "model": embedding_config.model_ref or embedding_model,
-        "vector": vector,
-    }
-    return prepared
-
-
-def attach_extracted_memory_embeddings(
-    memories: list[Dict[str, Any]],
-    embedding_model: Optional[str],
-    embedding_config: Optional[LlmConfig],
-) -> list[Dict[str, Any]]:
-    """Batch-index extracted memories while preserving extractor output fields."""
-    if not memories or not embedding_model or not embedding_config:
-        return memories
-    vectors = embed_texts(
-        embedding_model,
-        [str(memory.get("content", "")).strip() for memory in memories],
-        embedding_config,
-    )
-    model_ref = embedding_config.model_ref or embedding_model
-    return [
-        {
-            **memory,
-            "embedding": {"model": model_ref, "vector": vector},
-        }
-        for memory, vector in zip(memories, vectors)
-    ]
 
 
 async def run_agent_graph(
@@ -141,13 +87,6 @@ async def run_agent_graph(
     if not isinstance(fallback_llm_configs, list):
         fallback_llm_configs = []
     title_request = payload.get("context", {}).get("sessionTitleRequest")
-    embedding_config_raw = task_llm_configs.get("embedding")
-    embedding_model = None
-    embedding_llm_config = None
-    if embedding_config_raw:
-        embedding_model = embedding_config_raw.get("litellmModel") or embedding_config_raw.get("model")
-        embedding_llm_config = LlmConfig.from_dict(embedding_config_raw)
-
     # 2. Async Callbacks for LangGraph config
     async def send_delta(content: str) -> None:
         """Send streaming assistant text delta back to Rust."""
@@ -172,21 +111,6 @@ async def run_agent_graph(
     async def execute_tool(tool_call_id: str, tool_name: str, arguments: Dict[str, Any]) -> str:
         """Send tool request to Rust and wait for the execution result."""
         print(f"[sidecar][tool] Requesting `{tool_name}` (id: {tool_call_id})", flush=True)
-        try:
-            arguments = await asyncio.to_thread(
-                prepare_memory_tool_arguments,
-                tool_name,
-                arguments,
-                embedding_model,
-                embedding_llm_config,
-            )
-        except Exception as embedding_error:
-            arguments = dict(arguments)
-            arguments.pop(INTERNAL_EMBEDDING_KEY, None)
-            print(
-                f"[sidecar][embedding] Tool embedding failed; using text fallback: {embedding_error}",
-                flush=True,
-            )
         tool_req = make(
             MsgType.TOOL_CALL_REQUEST,
             session_id=session_id,
@@ -232,13 +156,6 @@ async def run_agent_graph(
         agent_model,
         llm_config,
     )
-    memory_model, memory_llm_config = resolve_task_llm(
-        task_llm_configs,
-        "memory",
-        agent_model,
-        llm_config,
-    )
-
     graph_inputs = {
         "messages": messages,
         "system_prompt": system_prompt,
@@ -282,10 +199,6 @@ async def run_agent_graph(
         if not task_llm_configs.get("summary"):
             summary_model = active_model
             summary_llm_config = active_llm_config
-        if not task_llm_configs.get("memory"):
-            memory_model = active_model
-            memory_llm_config = active_llm_config
-        
         # 5. Extract rolling conversation summary (if budget was exceeded)
         new_summary = payload.get("context", {}).get("summary") or ""
         if discarded_messages:
@@ -298,37 +211,13 @@ async def run_agent_graph(
                 llm_config=summary_llm_config,
             )
             
-        # 6. Extract structured memories and attach local vectors when configured.
-        extracted_memories = []
-        try:
-            latest_messages = output_state.get("messages", [])
-            extracted_memories = extract_memories(
-                latest_messages,
-                memory_model,
-                llm_config=memory_llm_config,
-            )
-            extracted_memories = await asyncio.to_thread(
-                attach_extracted_memory_embeddings,
-                extracted_memories,
-                embedding_model,
-                embedding_llm_config,
-            )
-            if extracted_memories:
-                print(
-                    f"[sidecar][memory] Extracted {len(extracted_memories)} new memories",
-                    flush=True,
-                )
-        except Exception as mem_ex:
-            print(f"[sidecar][memory] Failed to extract memories: {mem_ex}", flush=True)
-
-        # 7. Run completed successfully -> send RUN_FINISHED
+        # 6. Run completed successfully -> send RUN_FINISHED
         finished_envelope = make(
             MsgType.RUN_FINISHED,
             session_id=session_id,
             run_id=run_id,
             payload={
                 "summary": new_summary,
-                "memories": extracted_memories,
                 "usage": output_state.get("token_usage") or {},
             }
         )

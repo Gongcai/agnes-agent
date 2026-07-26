@@ -1,8 +1,7 @@
 pub mod agents;
 pub mod artifacts;
-pub mod explicit_memories;
 pub mod knowledge;
-pub mod memory;
+pub mod memory_files;
 pub mod messages;
 pub mod model_providers;
 pub mod notifications;

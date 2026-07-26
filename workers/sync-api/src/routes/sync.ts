@@ -89,15 +89,14 @@ const BOOTSTRAP_ENTITY_ORDER_SQL = `CASE entity_type
   WHEN 'workspace' THEN 1
   WHEN 'session' THEN 2
   WHEN 'message' THEN 3
-  WHEN 'explicit_memory' THEN 4
-  WHEN 'memory' THEN 5
-  WHEN 'calendar' THEN 6
-  WHEN 'calendar_event' THEN 7
-  WHEN 'event_exception' THEN 8
-  WHEN 'task_list' THEN 9
-  WHEN 'task' THEN 10
-  WHEN 'reading_book' THEN 11
-  WHEN 'reading_highlight' THEN 12
+  WHEN 'memory_file' THEN 4
+  WHEN 'calendar' THEN 5
+  WHEN 'calendar_event' THEN 6
+  WHEN 'event_exception' THEN 7
+  WHEN 'task_list' THEN 8
+  WHEN 'task' THEN 9
+  WHEN 'reading_book' THEN 10
+  WHEN 'reading_highlight' THEN 11
   ELSE 99 END`;
 
 function bootstrapEntityOrder(entityType: string): number {
@@ -110,24 +109,22 @@ function bootstrapEntityOrder(entityType: string): number {
       return 2;
     case "message":
       return 3;
-    case "explicit_memory":
+    case "memory_file":
       return 4;
-    case "memory":
-      return 5;
     case "calendar":
-      return 6;
+      return 5;
     case "calendar_event":
-      return 7;
+      return 6;
     case "event_exception":
-      return 8;
+      return 7;
     case "task_list":
-      return 9;
+      return 8;
     case "task":
-      return 10;
+      return 9;
     case "reading_book":
-      return 11;
+      return 10;
     case "reading_highlight":
-      return 12;
+      return 11;
     default:
       return -1;
   }

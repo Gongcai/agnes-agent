@@ -12,7 +12,6 @@ pub fn classify(key: &str) -> SettingClass {
     }
     if key.starts_with("ui:")
         || key == crate::user_profile::USER_PROFILE_SETTING
-        || key.starts_with(crate::user_profile::AGENT_USER_PROFILE_MODE_PREFIX)
         || key == "models:role_assignments"
         || key == "mcp:servers:v1"
         || key == "web:search_providers:v1"
@@ -39,10 +38,6 @@ mod tests {
         assert_eq!(classify("ui:last_agent_id"), SettingClass::DeviceLocal);
         assert_eq!(
             classify(crate::user_profile::USER_PROFILE_SETTING),
-            SettingClass::DeviceLocal
-        );
-        assert_eq!(
-            classify("agent:user_profile_mode:agnes"),
             SettingClass::DeviceLocal
         );
         assert_eq!(

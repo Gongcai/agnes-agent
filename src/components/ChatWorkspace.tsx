@@ -253,6 +253,25 @@ function formattedToolArgs(args: string): string {
   return typeof parsed === "string" ? parsed : JSON.stringify(parsed, null, 2);
 }
 
+const MEMORY_MUTATION_TOOLS = new Set([
+  "memory_write",
+  "memory_str_replace",
+  "memory_append",
+  "memory_delete",
+]);
+
+function savedMemoryPath(toolCall: ToolCall): string | null {
+  if (!MEMORY_MUTATION_TOOLS.has(toolCall.tool) || toolCall.status !== "succeeded" || !toolCall.output) {
+    return null;
+  }
+  const output = parseToolArgs(toolCall.output);
+  if (!output || typeof output !== "object" || Array.isArray(output)) return null;
+  const result = output as Record<string, unknown>;
+  return result.ok === true && typeof result.summary === "string" && typeof result.path === "string"
+    ? result.path
+    : null;
+}
+
 const ToolCallCard: React.FC<{
   toolCall: ToolCall;
   onApprove: (toolCallId: string, approved: boolean) => Promise<void>;
@@ -262,6 +281,7 @@ const ToolCallCard: React.FC<{
   const shouldAutoExpand = isPending || tc.status === "failed" || tc.status === "denied";
   const [expanded, setExpanded] = useState(shouldAutoExpand);
   const preview = toolCallPreview(tc);
+  const memoryPath = savedMemoryPath(tc);
   const statusLabel = TOOL_STATUS_LABEL[tc.status] || tc.status;
 
   useEffect(() => {
@@ -277,10 +297,10 @@ const ToolCallCard: React.FC<{
       summaryClassName="agnes-tool-summary"
       summary={(
         <>
-          <span className="agnes-tool-title">工具调用</span>
+          <span className="agnes-tool-title">{memoryPath ? "已保存记忆" : "工具调用"}</span>
           <code className="agnes-tool-name">{tc.tool}</code>
-          <code className="agnes-tool-preview" title={preview}>
-            {preview}
+          <code className="agnes-tool-preview" title={memoryPath ?? preview}>
+            {memoryPath ?? preview}
           </code>
           <span className={`agnes-tool-status ${tc.status === "running" ? "animate-pulse" : ""}`}>
             <span className="agnes-tool-status-dot" aria-hidden="true" />

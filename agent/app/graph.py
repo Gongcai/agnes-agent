@@ -300,34 +300,27 @@ def get_available_tools(
             {
                 "type": "function",
                 "function": {
-                    "name": "memory_search",
-                    "description": "Search this agent's structured long-term memories by name, keywords, and content.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string"},
-                            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-                        },
-                        "required": ["query"],
-                    },
+                    "name": "memory_list",
+                    "description": "Refresh the complete virtual memory file listing for the current agent.",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
                 },
             },
             {
                 "type": "function",
                 "function": {
-                    "name": "memory_create",
-                    "description": "Create one structured long-term memory for this agent. The system assigns its ID, agent, creator, and timestamps.",
+                    "name": "memory_read",
+                    "description": "Read one or up to 20 complete virtual memory files and return version tokens for edits.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "name": {"type": "string"},
-                            "keywords": {
-                                "type": "array",
-                                "items": {"type": "string"},
+                            "path": {
+                                "oneOf": [
+                                    {"type": "string"},
+                                    {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 20, "uniqueItems": True},
+                                ]
                             },
-                            "content": {"type": "string"},
                         },
-                        "required": ["name", "content"],
+                        "required": ["path"],
                         "additionalProperties": False,
                     },
                 },
@@ -335,20 +328,16 @@ def get_available_tools(
             {
                 "type": "function",
                 "function": {
-                    "name": "memory_update",
-                    "description": "Update selected fields of one structured long-term memory belonging to this agent. The creator and creation time are preserved.",
+                    "name": "memory_write",
+                    "description": "Create or fully rewrite one virtual Markdown memory file using an opaque version token.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "memory_id": {"type": "string"},
-                            "name": {"type": "string"},
-                            "keywords": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
+                            "path": {"type": "string"},
                             "content": {"type": "string"},
+                            "if_version": {"type": "string"},
                         },
-                        "required": ["memory_id"],
+                        "required": ["path", "content", "if_version"],
                         "additionalProperties": False,
                     },
                 },
@@ -356,29 +345,50 @@ def get_available_tools(
             {
                 "type": "function",
                 "function": {
-                    "name": "memory_md_view",
-                    "description": "Read the complete MEMORY.md for this agent. Use after editing to verify final content.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "memory_md_edit",
-                    "description": "Append to MEMORY.md or replace one uniquely matching exact block. This cannot modify USER.md or arbitrary files.",
+                    "name": "memory_str_replace",
+                    "description": "Replace exactly one matching string in a virtual memory file. Empty new_str deletes that block.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "action": {"type": "string", "enum": ["append", "replace"]},
-                            "content": {"type": "string"},
-                            "old_text": {"type": "string"},
-                            "new_text": {"type": "string"},
+                            "path": {"type": "string"},
+                            "old_str": {"type": "string", "minLength": 1},
+                            "new_str": {"type": "string"},
+                            "if_version": {"type": "string"},
                         },
-                        "required": ["action"],
+                        "required": ["path", "old_str", "new_str", "if_version"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_append",
+                    "description": "Append new tagged fact lines to an existing virtual memory file.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "content": {"type": "string", "minLength": 1},
+                            "if_version": {"type": "string"},
+                        },
+                        "required": ["path", "content", "if_version"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_delete",
+                    "description": "Delete a complete virtual memory file only when the user explicitly requested it.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "if_version": {"type": "string"},
+                        },
+                        "required": ["path", "if_version"],
                         "additionalProperties": False,
                     },
                 },

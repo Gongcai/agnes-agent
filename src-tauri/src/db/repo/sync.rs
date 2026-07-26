@@ -217,28 +217,17 @@ struct MessageTextPartPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExplicitMemoryPayload {
+struct MemoryFilePayload {
     id: String,
     agent_id: String,
+    path: String,
     kind: String,
-    content: String,
-    created_at: String,
-    updated_at: String,
-    version: i64,
-    deleted_at: Option<String>,
-    #[serde(rename = "origin_device_id")]
-    _origin_device_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MemoryPayload {
-    id: String,
-    agent_id: String,
     name: String,
-    keywords: Vec<String>,
-    content: String,
-    creator: String,
+    description: String,
+    sources: Vec<String>,
+    aliases: Vec<String>,
+    markdown: String,
+    content_hash: String,
     status: String,
     created_at: String,
     updated_at: String,
@@ -923,8 +912,7 @@ fn validate_remote_entity(entity: &RemoteEntityInput) -> AppResult<()> {
                 | "workspace"
                 | "session"
                 | "message"
-                | "explicit_memory"
-                | "memory"
+                | "memory_file"
                 | "calendar"
                 | "calendar_event"
                 | "event_exception"
@@ -1081,10 +1069,7 @@ fn apply_remote_business_row(tx: &Transaction<'_>, entity: &RemoteEntityInput) -
         "workspace" => apply_remote_workspace(tx, entity, serde_json::from_value(payload)?),
         "session" => apply_remote_session(tx, entity, serde_json::from_value(payload)?),
         "message" => apply_remote_message(tx, entity, serde_json::from_value(payload)?),
-        "explicit_memory" => {
-            apply_remote_explicit_memory(tx, entity, serde_json::from_value(payload)?)
-        }
-        "memory" => apply_remote_memory(tx, entity, serde_json::from_value(payload)?),
+        "memory_file" => apply_remote_memory_file(tx, entity, serde_json::from_value(payload)?),
         "calendar" => apply_remote_calendar(tx, entity, serde_json::from_value(payload)?),
         "calendar_event" => {
             apply_remote_calendar_event(tx, entity, serde_json::from_value(payload)?)
@@ -1341,10 +1326,10 @@ fn apply_remote_message(
     Ok(())
 }
 
-fn apply_remote_explicit_memory(
+fn apply_remote_memory_file(
     tx: &Transaction<'_>,
     entity: &RemoteEntityInput,
-    payload: ExplicitMemoryPayload,
+    payload: MemoryFilePayload,
 ) -> AppResult<()> {
     validate_payload_identity(
         entity,
@@ -1352,95 +1337,64 @@ fn apply_remote_explicit_memory(
         payload.version,
         payload.deleted_at.as_deref(),
     )?;
-    let expected_id = super::explicit_memories::sync_entity_id(&payload.agent_id, &payload.kind)?;
-    if !is_valid_entity_id(&payload.agent_id) || expected_id != entity.entity_id {
-        return Err(AppError::Other(format!(
-            "explicit memory identity does not match `{}`",
-            entity.entity_id
-        )));
-    }
-    tx.execute(
-        "INSERT INTO explicit_memories (id, agent_id, kind, content, created_at, updated_at, \
-         version, deleted_at, origin_device_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8) \
-         ON CONFLICT(agent_id, kind) DO UPDATE SET content = excluded.content, \
-         created_at = excluded.created_at, updated_at = excluded.updated_at, \
-         version = excluded.version, deleted_at = NULL, origin_device_id = excluded.origin_device_id",
-        params![
-            entity.entity_id,
-            payload.agent_id,
-            payload.kind,
-            payload.content,
-            payload.created_at,
-            payload.updated_at,
-            payload.version,
-            entity.origin_device_id,
-        ],
-    )?;
-    Ok(())
-}
-
-fn apply_remote_memory(
-    tx: &Transaction<'_>,
-    entity: &RemoteEntityInput,
-    payload: MemoryPayload,
-) -> AppResult<()> {
-    validate_payload_identity(
-        entity,
-        &payload.id,
-        payload.version,
-        payload.deleted_at.as_deref(),
-    )?;
-    if payload.name.trim().is_empty()
-        || payload.content.trim().is_empty()
-        || !is_valid_entity_id(&payload.agent_id)
-        || !matches!(payload.creator.as_str(), "user" | "ai")
+    let expected_id = super::memory_files::sync_entity_id(&payload.agent_id, &payload.path)?;
+    if !is_valid_entity_id(&payload.agent_id)
         || payload.status != "active"
-        || super::memory::normalize_keywords(&payload.keywords) != payload.keywords
+        || entity.entity_id != expected_id
     {
         return Err(AppError::Other(format!(
-            "invalid memory payload for `{}`",
+            "invalid memory file payload for `{}`",
             entity.entity_id
         )));
     }
-    let previous = tx
-        .query_row(
-            "SELECT content, embedding_id FROM memory_store WHERE id = ?1",
-            [&entity.entity_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-        )
-        .optional()?;
-    let keywords = serde_json::to_string(&payload.keywords)?;
+    let validated =
+        super::memory_files::validate_synced_document(&payload.path, &payload.markdown)?;
+    if payload.kind != validated.kind
+        || payload.name != validated.name
+        || payload.description != validated.description
+        || payload.sources != validated.sources
+        || payload.aliases != validated.aliases
+        || payload.markdown != validated.markdown
+        || payload.content_hash != validated.content_hash
+    {
+        return Err(AppError::Other(format!(
+            "memory file metadata does not match Markdown for `{}`",
+            entity.entity_id
+        )));
+    }
     tx.execute(
-        "INSERT INTO memory_store (id, agent_id, name, keywords, content, creator, type, scope, \
-         source, confidence, status, created_at, updated_at, embedding_id, version, deleted_at, \
-         origin_device_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'Note', 'agent', 'sync', 1.0, 'active', ?7, ?8, \
-                 NULL, ?9, NULL, ?10) \
-         ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, name = excluded.name, \
-         keywords = excluded.keywords, content = excluded.content, creator = excluded.creator, \
-         status = 'active', created_at = excluded.created_at, updated_at = excluded.updated_at, \
-         embedding_id = CASE WHEN memory_store.content = excluded.content \
-                             THEN memory_store.embedding_id ELSE NULL END, \
-         version = excluded.version, deleted_at = NULL, origin_device_id = excluded.origin_device_id",
+        "INSERT INTO memory_files
+         (id, agent_id, path, kind, name, description, sources_json, aliases_json, markdown,
+          content_hash, version, status, created_at, updated_at, deleted_at, origin_device_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', ?12, ?13, NULL, ?14)
+         ON CONFLICT(agent_id, path) DO UPDATE SET id=excluded.id, kind=excluded.kind,
+          name=excluded.name, description=excluded.description, sources_json=excluded.sources_json,
+          aliases_json=excluded.aliases_json, markdown=excluded.markdown,
+          content_hash=excluded.content_hash, version=excluded.version, status='active',
+          created_at=excluded.created_at, updated_at=excluded.updated_at, deleted_at=NULL,
+          origin_device_id=excluded.origin_device_id",
         params![
             payload.id,
             payload.agent_id,
+            payload.path,
+            payload.kind,
             payload.name,
-            keywords,
-            payload.content,
-            payload.creator,
+            payload.description,
+            serde_json::to_string(&payload.sources)?,
+            serde_json::to_string(&payload.aliases)?,
+            payload.markdown,
+            payload.content_hash,
+            payload.version,
             payload.created_at,
             payload.updated_at,
-            payload.version,
             entity.origin_device_id,
         ],
     )?;
-    if let Some((old_content, Some(embedding_id))) = previous {
-        if old_content != payload.content {
-            super::memory::delete_embedding_by_id(tx, &embedding_id)?;
-        }
-    }
+    tx.execute(
+        "INSERT INTO memory_listing_state(agent_id, epoch) VALUES (?1, 1)
+         ON CONFLICT(agent_id) DO UPDATE SET epoch=epoch+1",
+        [&payload.agent_id],
+    )?;
     Ok(())
 }
 
@@ -1936,53 +1890,17 @@ fn apply_remote_delete(tx: &Transaction<'_>, entity: &RemoteEntityInput) -> AppR
                 ],
             )?;
         }
-        "explicit_memory" => {
-            let rows = {
-                let mut statement = tx.prepare(
-                    "SELECT id, agent_id, kind FROM explicit_memories WHERE deleted_at IS NULL",
-                )?;
-                let rows = statement
-                    .query_map([], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                rows
-            };
-            if let Some((local_id, _, _)) = rows.into_iter().find(|(_, agent_id, kind)| {
-                matches!(
-                    super::explicit_memories::sync_entity_id(agent_id, kind),
-                    Ok(sync_id) if sync_id == entity.entity_id
-                )
-            }) {
-                tx.execute(
-                    "UPDATE explicit_memories SET deleted_at = ?1, updated_at = ?1, \
-                     version = MAX(version + 1, ?2), origin_device_id = ?3 WHERE id = ?4",
-                    params![
-                        deleted_at,
-                        entity.revision,
-                        entity.origin_device_id,
-                        local_id
-                    ],
-                )?;
-            }
-        }
-        "memory" => {
-            let embedding_id = tx
+        "memory_file" => {
+            let agent_id = tx
                 .query_row(
-                    "SELECT embedding_id FROM memory_store WHERE id = ?1",
+                    "SELECT agent_id FROM memory_files WHERE id = ?1",
                     [&entity.entity_id],
-                    |row| row.get::<_, Option<String>>(0),
+                    |row| row.get::<_, String>(0),
                 )
-                .optional()?
-                .flatten();
+                .optional()?;
             tx.execute(
-                "UPDATE memory_store SET status = 'deleted', embedding_id = NULL, deleted_at = ?1, \
-                 updated_at = ?1, version = MAX(version + 1, ?2), origin_device_id = ?3 \
-                 WHERE id = ?4",
+                "UPDATE memory_files SET status='deleted', deleted_at=?1, updated_at=?1,
+                 version=MAX(version+1,?2), origin_device_id=?3 WHERE id=?4",
                 params![
                     deleted_at,
                     entity.revision,
@@ -1990,8 +1908,12 @@ fn apply_remote_delete(tx: &Transaction<'_>, entity: &RemoteEntityInput) -> AppR
                     entity.entity_id
                 ],
             )?;
-            if let Some(embedding_id) = embedding_id {
-                super::memory::delete_embedding_by_id(tx, &embedding_id)?;
+            if let Some(agent_id) = agent_id {
+                tx.execute(
+                    "INSERT INTO memory_listing_state(agent_id, epoch) VALUES (?1, 1)
+                     ON CONFLICT(agent_id) DO UPDATE SET epoch=epoch+1",
+                    [agent_id],
+                )?;
             }
         }
         "calendar" => {
@@ -2292,7 +2214,7 @@ fn try_auto_resolve_conflict(
                 | "session"
                 | "workspace"
                 | "message"
-                | "explicit_memory"
+                | "memory_file"
                 | "calendar"
                 | "calendar_event"
                 | "task_list"
@@ -2557,6 +2479,24 @@ fn normalize_resolution_payload(
     object.insert("updated_at".into(), (now_ms / 1_000).to_string().into());
     object.insert("origin_device_id".into(), device_id(tx)?.into());
     object.insert("deleted_at".into(), Value::Null);
+    if conflict.entity_type == "memory_file" {
+        let path = object
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::Other("Resolved memory file has no path".into()))?;
+        let markdown = object
+            .get("markdown")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::Other("Resolved memory file has no Markdown".into()))?;
+        let validated = super::memory_files::validate_synced_document(path, markdown)?;
+        object.insert("kind".into(), validated.kind.into());
+        object.insert("name".into(), validated.name.into());
+        object.insert("description".into(), validated.description.into());
+        object.insert("sources".into(), serde_json::to_value(validated.sources)?);
+        object.insert("aliases".into(), serde_json::to_value(validated.aliases)?);
+        object.insert("markdown".into(), validated.markdown.into());
+        object.insert("content_hash".into(), validated.content_hash.into());
+    }
     Ok((payload, local_version))
 }
 
@@ -2657,8 +2597,7 @@ fn parse_sync_entity_type(value: &str) -> AppResult<SyncEntityType> {
         "workspace" => Ok(SyncEntityType::Workspace),
         "session" => Ok(SyncEntityType::Session),
         "message" => Ok(SyncEntityType::Message),
-        "explicit_memory" => Ok(SyncEntityType::ExplicitMemory),
-        "memory" => Ok(SyncEntityType::Memory),
+        "memory_file" => Ok(SyncEntityType::MemoryFile),
         "calendar" => Ok(SyncEntityType::Calendar),
         "calendar_event" => Ok(SyncEntityType::CalendarEvent),
         "event_exception" => Ok(SyncEntityType::EventException),
@@ -2910,38 +2849,26 @@ mod tests {
         })
     }
 
-    fn explicit_memory_payload(id: &str, agent_id: &str, content: &str, version: i64) -> Value {
-        explicit_memory_payload_for_kind(id, agent_id, "memory_md", content, version)
-    }
-
-    fn explicit_memory_payload_for_kind(
-        id: &str,
-        agent_id: &str,
-        kind: &str,
-        content: &str,
-        version: i64,
-    ) -> Value {
+    fn memory_file_payload(id: &str, agent_id: &str, fact: &str, version: i64) -> Value {
+        let markdown = format!(
+            "---\nname: package-manager\ndescription: Package manager preferences\nsources: [chat]\naliases: []\n---\n- [stated] {fact}\n"
+        );
+        let validated = crate::db::repo::memory_files::validate_synced_document(
+            "/topics/package-manager.md",
+            &markdown,
+        )
+        .unwrap();
         json!({
             "id": id,
             "agent_id": agent_id,
-            "kind": kind,
-            "content": content,
-            "created_at": "1",
-            "updated_at": version.to_string(),
-            "version": version,
-            "deleted_at": null,
-            "origin_device_id": REMOTE_DEVICE
-        })
-    }
-
-    fn memory_payload(id: &str, agent_id: &str, content: &str, version: i64) -> Value {
-        json!({
-            "id": id,
-            "agent_id": agent_id,
-            "name": "Remote fact",
-            "keywords": ["remote", "fact"],
-            "content": content,
-            "creator": "ai",
+            "path": "/topics/package-manager.md",
+            "kind": validated.kind,
+            "name": validated.name,
+            "description": validated.description,
+            "sources": validated.sources,
+            "aliases": validated.aliases,
+            "content_hash": validated.content_hash,
+            "markdown": validated.markdown,
             "status": "active",
             "created_at": "1",
             "updated_at": version.to_string(),
@@ -3479,10 +3406,11 @@ mod tests {
     }
 
     #[test]
-    fn remote_message_and_memories_apply_without_echo_and_invalidate_stale_vectors() {
+    fn remote_message_and_memory_file_apply_without_echo() {
         let mut conn = setup();
-        let explicit_id =
-            crate::db::repo::explicit_memories::sync_entity_id("agent-1", "memory_md").unwrap();
+        let memory_file_id =
+            crate::db::repo::memory_files::sync_entity_id("agent-1", "/topics/package-manager.md")
+                .unwrap();
         let entities = vec![
             remote(
                 "agent",
@@ -3513,21 +3441,14 @@ mod tests {
                 message_payload("message-1", "session-1"),
             ),
             remote(
-                "explicit_memory",
-                &explicit_id,
+                "memory_file",
+                &memory_file_id,
                 1,
                 5,
-                explicit_memory_payload(&explicit_id, "agent-1", "# Remote memory", 1),
-            ),
-            remote(
-                "memory",
-                "memory-1",
-                1,
-                6,
-                memory_payload("memory-1", "agent-1", "First remote content", 1),
+                memory_file_payload(&memory_file_id, "agent-1", "Uses pnpm", 1),
             ),
         ];
-        apply_bootstrap_page(&mut conn, "required", &entities, 6, None, false, 2_000).unwrap();
+        apply_bootstrap_page(&mut conn, "required", &entities, 5, None, false, 2_000).unwrap();
 
         let message: (String, String) = conn
             .query_row(
@@ -3538,73 +3459,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!(message, ("complete".into(), "Remote answer".into()));
-        let explicit_content: String = conn
+        let memory_content: String = conn
             .query_row(
-                "SELECT content FROM explicit_memories WHERE agent_id = 'agent-1' AND kind = 'memory_md'",
-                [],
+                "SELECT markdown FROM memory_files WHERE id = ?1",
+                [&memory_file_id],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(explicit_content, "# Remote memory");
+        assert!(memory_content.contains("Uses pnpm"));
         assert_eq!(status(&conn).unwrap().pending_count, 0);
 
-        conn.execute(
-            "INSERT INTO embedding_items (id, ref_type, ref_id, model, dims, content_hash, created_at) \
-             VALUES ('embedding-1', 'memory', 'memory-1', 'embed/model', 3, 'old', '1')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE memory_store SET embedding_id = 'embedding-1' WHERE id = 'memory-1'",
-            [],
-        )
-        .unwrap();
         apply_pull_page(
             &mut conn,
+            5,
+            &[remote(
+                "memory_file",
+                &memory_file_id,
+                2,
+                6,
+                memory_file_payload(&memory_file_id, "agent-1", "Uses pnpm workspaces", 2),
+            )],
             6,
-            &[
-                remote(
-                    "explicit_memory",
-                    &explicit_id,
-                    2,
-                    7,
-                    explicit_memory_payload(&explicit_id, "agent-1", "# Updated remote memory", 2),
-                ),
-                remote(
-                    "memory",
-                    "memory-1",
-                    2,
-                    8,
-                    memory_payload("memory-1", "agent-1", "Updated remote content", 2),
-                ),
-            ],
-            8,
             false,
             3_000,
         )
         .unwrap();
 
-        let memory: (String, Option<String>) = conn
+        let memory: String = conn
             .query_row(
-                "SELECT content, embedding_id FROM memory_store WHERE id = 'memory-1'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(memory, ("Updated remote content".into(), None));
-        let embedding_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM embedding_items", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(embedding_count, 0);
-        let explicit_content: String = conn
-            .query_row(
-                "SELECT content FROM explicit_memories WHERE agent_id = 'agent-1' AND kind = 'memory_md'",
-                [],
+                "SELECT markdown FROM memory_files WHERE id = ?1",
+                [&memory_file_id],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(explicit_content, "# Updated remote memory");
-        assert_eq!(status(&conn).unwrap().last_pull_cursor, 8);
+        assert!(memory.contains("Uses pnpm workspaces"));
+        assert_eq!(status(&conn).unwrap().last_pull_cursor, 6);
         assert_eq!(status(&conn).unwrap().pending_count, 0);
     }
 
@@ -3904,114 +3793,6 @@ mod tests {
         assert_eq!(
             event,
             ("resolved".into(), "auto_merge".into(), "[\"title\"]".into())
-        );
-        let pending_base: i64 = conn
-            .query_row(
-                "SELECT base_revision FROM sync_outbox WHERE status = 'pending' \
-                 ORDER BY rowid DESC LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(pending_base, 2);
-    }
-
-    #[test]
-    fn explicit_memory_diff3_auto_merges_and_requeues_against_remote_revision() {
-        let mut conn = setup();
-        let user_id =
-            crate::db::repo::explicit_memories::sync_entity_id("agent-1", "user_md").unwrap();
-        let memory_id =
-            crate::db::repo::explicit_memories::sync_entity_id("agent-1", "memory_md").unwrap();
-        let base = "# Profile\n\nLanguage: C++\n\n# Preferences\n\nTheme: light\n";
-        let local = "# Profile\n\nLanguage: C++ and Rust\n\n# Preferences\n\nTheme: light\n";
-        let remote_content = "# Profile\n\nLanguage: C++\n\n# Preferences\n\nTheme: dark\n";
-        apply_bootstrap_page(
-            &mut conn,
-            "required",
-            &[
-                remote(
-                    "agent",
-                    "agent-1",
-                    1,
-                    1,
-                    agent_payload("agent-1", "Agent", 1),
-                ),
-                remote(
-                    "explicit_memory",
-                    &user_id,
-                    1,
-                    2,
-                    explicit_memory_payload_for_kind(&user_id, "agent-1", "user_md", "# User\n", 1),
-                ),
-                remote(
-                    "explicit_memory",
-                    &memory_id,
-                    1,
-                    3,
-                    explicit_memory_payload(&memory_id, "agent-1", base, 1),
-                ),
-            ],
-            3,
-            None,
-            false,
-            2_000,
-        )
-        .unwrap();
-        crate::db::repo::explicit_memories::save_pair(
-            &mut conn,
-            "agent-1",
-            "unused-user-id",
-            "# User\n",
-            "unused-memory-id",
-            local,
-        )
-        .unwrap();
-        assert_eq!(claim_pending(&mut conn, 20, i64::MAX).unwrap().len(), 1);
-
-        apply_pull_page(
-            &mut conn,
-            3,
-            &[remote(
-                "explicit_memory",
-                &memory_id,
-                2,
-                4,
-                explicit_memory_payload(&memory_id, "agent-1", remote_content, 2),
-            )],
-            4,
-            false,
-            3_000,
-        )
-        .unwrap();
-
-        assert!(list_conflicts(&conn).unwrap().is_empty());
-        let content: String = conn
-            .query_row(
-                "SELECT content FROM explicit_memories \
-                 WHERE agent_id = 'agent-1' AND kind = 'memory_md'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            content,
-            "# Profile\n\nLanguage: C++ and Rust\n\n# Preferences\n\nTheme: dark\n"
-        );
-        let event: (String, String, String) = conn
-            .query_row(
-                "SELECT status, resolution, conflicting_fields FROM sync_conflicts",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(
-            event,
-            (
-                "resolved".into(),
-                "auto_merge".into(),
-                "[\"content\"]".into()
-            )
         );
         let pending_base: i64 = conn
             .query_row(

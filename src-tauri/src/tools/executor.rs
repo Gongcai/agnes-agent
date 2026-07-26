@@ -82,7 +82,7 @@ impl ToolExecutor {
         policy: &ToolPolicy,
         permission_mode: PermissionMode,
     ) -> AppResult<serde_json::Value> {
-        let public_arguments = crate::tools::builtin::memory_entry::public_arguments(arguments);
+        let public_arguments = crate::tools::audit_arguments(tool, arguments);
 
         // A. Resolve the Code binding or app-managed shared Home workspace.
         let workspace_cwd = crate::tools::workspace::resolve_workspace_cwd(
@@ -649,212 +649,74 @@ mod tests {
             .await
             .is_err());
 
-        db.insert_memory(crate::db::repo::memory::NewMemory {
-            id: "memory-1".into(),
-            agent_id: "test-agent".into(),
-            name: "Package manager".into(),
-            keywords: vec!["pnpm".into(), "frontend".into()],
-            content: "Use pnpm for frontend dependencies.".into(),
-            creator: "user".into(),
-            memory_type: "Preference".into(),
-            scope: "agent".into(),
-            source: "test".into(),
-            confidence: 1.0,
-            embedding_id: None,
-        })
-        .await
-        .unwrap();
-        let memory_result = executor
+        let memory_content = "---\nname: package-manager\ndescription: Package manager preference\nsources: [chat]\naliases: []\n---\n- [stated] Uses pnpm\n";
+        let created = executor
             .execute(
                 "sess-1",
                 None,
-                "tc-memory-search-1",
-                "memory_search",
-                &json!({"query": "pnpm"}),
-                &policy,
-            )
-            .await
-            .unwrap();
-        assert_eq!(memory_result["memories"][0]["name"], "Package manager");
-        assert_eq!(
-            memory_result["memories"][0]["content"],
-            "Use pnpm for frontend dependencies."
-        );
-        assert_eq!(memory_result["memories"][0]["id"], "memory-1");
-        assert!(memory_result["memories"][0].get("agent_id").is_none());
-
-        let spoofed_create = executor
-            .execute(
-                "sess-1",
-                None,
-                "tc-memory-create-spoofed",
-                "memory_create",
+                "tc-memory-write",
+                "memory_write",
                 &json!({
-                    "name": "Spoofed",
-                    "content": "This must not be created.",
-                    "creator": "user"
-                }),
-                &policy,
-            )
-            .await;
-        assert!(spoofed_create.is_err());
-
-        let create_result = executor
-            .execute(
-                "sess-1",
-                None,
-                "tc-memory-create-1",
-                "memory_create",
-                &json!({
-                    "name": "Rust test command",
-                    "keywords": ["cargo", " rust ", "cargo"],
-                    "content": "Use cargo test for the Rust core.",
-                    "__agnes_embedding": {
-                        "model": "test/embed-3",
-                        "vector": [1.0, 0.0, 0.0]
-                    }
+                    "path": "/topics/package-manager.md",
+                    "content": memory_content,
+                    "if_version": "new"
                 }),
                 &policy,
             )
             .await
             .unwrap();
-        let created = &create_result["memory"];
-        let created_id = created["id"].as_str().unwrap().to_string();
-        let created_at = created["created_at"].as_str().unwrap().to_string();
-        assert_eq!(created["creator"], "ai");
-        assert_eq!(created["keywords"], json!(["cargo", "rust"]));
-        assert!(created.get("agent_id").is_none());
-        assert_eq!(
-            db.get_memory(created_id.clone(), "test-agent".into())
-                .await
-                .unwrap()
-                .unwrap()
-                .embedding_model
-                .as_deref(),
-            Some("test/embed-3")
-        );
-        assert!(!db
-            .get_tool_call("tc-memory-create-1".into())
-            .await
-            .unwrap()
-            .unwrap()
-            .params
-            .unwrap()
-            .contains("__agnes_embedding"));
+        assert_eq!(created["ok"], true);
+        let version = created["version"].as_str().unwrap();
 
-        let created_search = executor
+        let appended = executor
             .execute(
                 "sess-1",
                 None,
-                "tc-memory-search-created",
-                "memory_search",
-                &json!({"query": "cargo test"}),
-                &policy,
-            )
-            .await
-            .unwrap();
-        assert_eq!(created_search["memories"][0]["id"], created_id);
-
-        let update_result = executor
-            .execute(
-                "sess-1",
-                None,
-                "tc-memory-update-1",
-                "memory_update",
+                "tc-memory-append",
+                "memory_append",
                 &json!({
-                    "memory_id": created_id,
-                    "keywords": ["tests"],
-                    "content": "Run cargo test --no-fail-fast for the Rust core.",
-                    "__agnes_embedding": {
-                        "model": "test/embed-3",
-                        "vector": [0.0, 1.0, 0.0]
-                    }
+                    "path": "/topics/package-manager.md",
+                    "content": "- [stated] Uses pnpm workspaces",
+                    "if_version": version
                 }),
                 &policy,
             )
             .await
             .unwrap();
-        let updated = &update_result["memory"];
-        assert_eq!(updated["name"], "Rust test command");
-        assert_eq!(updated["creator"], "ai");
-        assert_eq!(updated["created_at"], created_at);
-        assert_eq!(updated["keywords"], json!(["tests"]));
+        assert_eq!(appended["ok"], true);
 
-        let semantic_search = executor
+        let read = executor
             .execute(
                 "sess-1",
                 None,
-                "tc-memory-search-semantic",
-                "memory_search",
+                "tc-memory-read",
+                "memory_read",
+                &json!({"path": "/topics/package-manager.md"}),
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert!(read["files"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("pnpm workspaces"));
+
+        let conflict = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-memory-conflict",
+                "memory_append",
                 &json!({
-                    "query": "no literal words match this query",
-                    "__agnes_embedding": {
-                        "model": "test/embed-3",
-                        "vector": [0.0, 0.99, 0.01]
-                    }
+                    "path": "/topics/package-manager.md",
+                    "content": "- [stated] Uses a stale token",
+                    "if_version": version
                 }),
                 &policy,
             )
             .await
             .unwrap();
-        assert_eq!(semantic_search["memories"][0]["id"], updated["id"]);
-        assert!(!db
-            .get_tool_call("tc-memory-search-semantic".into())
-            .await
-            .unwrap()
-            .unwrap()
-            .params
-            .unwrap()
-            .contains("__agnes_embedding"));
-
-        let updated_search = executor
-            .execute(
-                "sess-1",
-                None,
-                "tc-memory-search-updated",
-                "memory_search",
-                &json!({"query": "no-fail-fast"}),
-                &policy,
-            )
-            .await
-            .unwrap();
-        assert_eq!(updated_search["memories"][0]["id"], updated["id"]);
-        assert!(updated_search["memories"][0].get("agent_id").is_none());
-
-        db.insert_memory(crate::db::repo::memory::NewMemory {
-            id: "other-memory".into(),
-            agent_id: "other-agent".into(),
-            name: "Private memory".into(),
-            keywords: vec![],
-            content: "Only the other agent can update this.".into(),
-            creator: "ai".into(),
-            memory_type: "Note".into(),
-            scope: "agent".into(),
-            source: "test".into(),
-            confidence: 1.0,
-            embedding_id: None,
-        })
-        .await
-        .unwrap();
-        let cross_agent_update = executor
-            .execute(
-                "sess-1",
-                None,
-                "tc-memory-update-cross-agent",
-                "memory_update",
-                &json!({"memory_id": "other-memory", "content": "Compromised"}),
-                &policy,
-            )
-            .await;
-        assert!(cross_agent_update.is_err());
-        assert_eq!(
-            db.get_memory("other-memory".into(), "other-agent".into())
-                .await
-                .unwrap()
-                .unwrap()
-                .content,
-            "Only the other agent can update this."
-        );
+        assert_eq!(conflict["code"], "VERSION_CONFLICT");
 
         // Calendar UI writes and planner tool writes share the same local
         // provider/database. This protects both directions of visibility.

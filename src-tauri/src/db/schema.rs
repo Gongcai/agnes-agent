@@ -97,41 +97,58 @@ CREATE TABLE IF NOT EXISTS message_parts (
   metadata TEXT
 );
 
-CREATE TABLE IF NOT EXISTS memory_store (
+CREATE TABLE IF NOT EXISTS memory_files (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL REFERENCES agents(id),
-  name TEXT NOT NULL DEFAULT '',
-  keywords TEXT,
-  content TEXT,
-  creator TEXT NOT NULL DEFAULT 'ai', -- user|ai, assigned by the trusted entry point
-  type TEXT,
-  scope TEXT,
-  source TEXT,
-  confidence REAL,
-  status TEXT DEFAULT 'active',    -- active|archived|deleted
-  expires_at TEXT,
-  pinned INTEGER DEFAULT 0,
-  source_message_id TEXT,
-  last_used_at TEXT,
-  created_at TEXT,
-  updated_at TEXT,
-  embedding_id TEXT,
+  path TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('profile', 'preferences', 'topic', 'area', 'person')),
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  sources_json TEXT NOT NULL,
+  aliases_json TEXT NOT NULL,
+  markdown TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
   version INTEGER NOT NULL DEFAULT 1,
-  deleted_at TEXT,
-  origin_device_id TEXT
-);
-
-CREATE TABLE IF NOT EXISTS explicit_memories (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL REFERENCES agents(id),
-  kind TEXT NOT NULL CHECK(kind IN ('user_md', 'memory_md')),
-  content TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'deleted')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  version INTEGER NOT NULL DEFAULT 1,
   deleted_at TEXT,
   origin_device_id TEXT,
-  UNIQUE(agent_id, kind)
+  UNIQUE(agent_id, path)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS memory_files_active_name
+ON memory_files(agent_id, name)
+WHERE status = 'active' AND deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS memory_file_revisions (
+  id TEXT PRIMARY KEY,
+  memory_file_id TEXT NOT NULL REFERENCES memory_files(id),
+  base_version INTEGER,
+  resulting_version INTEGER NOT NULL,
+  operation TEXT NOT NULL CHECK(operation IN ('create', 'write', 'replace', 'append', 'delete', 'sync')),
+  before_markdown TEXT,
+  after_markdown TEXT,
+  actor_surface TEXT NOT NULL,
+  session_id TEXT,
+  message_id TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS memory_file_conflicts (
+  id TEXT PRIMARY KEY,
+  memory_file_id TEXT NOT NULL REFERENCES memory_files(id),
+  base_hash TEXT,
+  local_markdown TEXT NOT NULL,
+  remote_markdown TEXT NOT NULL,
+  remote_version INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS memory_listing_state (
+  agent_id TEXT PRIMARY KEY REFERENCES agents(id),
+  epoch INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS embedding_items (

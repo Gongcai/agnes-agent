@@ -21,7 +21,6 @@ export interface ModelRoleAssignments {
   main_model: string | null;
   image_model: string | null;
   summary_model: string | null;
-  memory_model: string | null;
   speech_model: string | null;
   quick_model: string | null;
   embedding_model: string | null;
@@ -32,7 +31,6 @@ const EMPTY_MODEL_ROLES: ModelRoleAssignments = {
   main_model: null,
   image_model: null,
   summary_model: null,
-  memory_model: null,
   speech_model: null,
   quick_model: null,
   embedding_model: null,

@@ -30,41 +30,27 @@ pub enum DbCommand {
         id: String,
         resp: oneshot::Sender<AppResult<()>>,
     },
-    InsertMemory {
-        row: repo::memory::NewMemory,
-        resp: oneshot::Sender<AppResult<bool>>,
-    },
-    ListMemories {
+    ListMemoryFiles {
         agent_id: String,
-        resp: oneshot::Sender<AppResult<Vec<repo::memory::MemoryRow>>>,
+        resp: oneshot::Sender<AppResult<repo::memory_files::MemoryListing>>,
     },
-    GetMemory {
-        id: String,
+    LoadMemoryPromptSnapshot {
         agent_id: String,
-        resp: oneshot::Sender<AppResult<Option<repo::memory::MemoryRow>>>,
+        resp: oneshot::Sender<AppResult<repo::memory_files::MemoryPromptSnapshot>>,
     },
-    UpdateMemory {
-        id: String,
+    ReadMemoryFiles {
         agent_id: String,
-        changes: repo::memory::MemoryUpdate,
-        resp: oneshot::Sender<AppResult<()>>,
+        paths: Vec<String>,
+        resp: oneshot::Sender<AppResult<Vec<repo::memory_files::MemoryReadResult>>>,
     },
-    DeleteMemory {
-        id: String,
+    MutateMemoryFile {
         agent_id: String,
-        resp: oneshot::Sender<AppResult<()>>,
-    },
-    ListExplicitMemories {
-        agent_id: String,
-        resp: oneshot::Sender<AppResult<Vec<repo::explicit_memories::ExplicitMemoryRow>>>,
-    },
-    SaveExplicitMemories {
-        agent_id: String,
-        user_id: String,
-        user_md: String,
-        memory_id: String,
-        memory_md: String,
-        resp: oneshot::Sender<AppResult<()>>,
+        path: String,
+        mutation: repo::memory_files::MemoryMutation,
+        actor_surface: String,
+        session_id: Option<String>,
+        message_id: Option<String>,
+        resp: oneshot::Sender<AppResult<repo::memory_files::MemoryMutationOutcome>>,
     },
     GetSetting {
         key: String,
@@ -82,21 +68,6 @@ pub enum DbCommand {
     ListSettingsWithPrefix {
         prefix: String,
         resp: oneshot::Sender<AppResult<Vec<(String, String)>>>,
-    },
-    UpsertMemoryEmbedding {
-        embedding_id: String,
-        memory_id: String,
-        model: String,
-        content: String,
-        vector: Vec<f32>,
-        resp: oneshot::Sender<AppResult<bool>>,
-    },
-    SearchMemories {
-        query_text: String,
-        agent_id: String,
-        limit: usize,
-        query_embedding: Option<repo::memory::QueryEmbedding>,
-        resp: oneshot::Sender<AppResult<Vec<repo::memory::MemoryRow>>>,
     },
     ListKnowledgeCollections {
         agent_id: String,
@@ -773,78 +744,58 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn insert_memory(&self, row: repo::memory::NewMemory) -> AppResult<bool> {
-        let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::InsertMemory { row, resp })?;
-        rx.await
-            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
-    }
-
-    pub async fn list_memories(&self, agent_id: String) -> AppResult<Vec<repo::memory::MemoryRow>> {
-        let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::ListMemories { agent_id, resp })?;
-        rx.await
-            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
-    }
-
-    pub async fn get_memory(
+    pub async fn list_memory_files(
         &self,
-        id: String,
         agent_id: String,
-    ) -> AppResult<Option<repo::memory::MemoryRow>> {
+    ) -> AppResult<repo::memory_files::MemoryListing> {
         let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::GetMemory { id, agent_id, resp })?;
+        self.send(DbCommand::ListMemoryFiles { agent_id, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn update_memory(
+    pub async fn load_memory_prompt_snapshot(
         &self,
-        id: String,
         agent_id: String,
-        changes: repo::memory::MemoryUpdate,
-    ) -> AppResult<()> {
+    ) -> AppResult<repo::memory_files::MemoryPromptSnapshot> {
         let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::UpdateMemory {
-            id,
+        self.send(DbCommand::LoadMemoryPromptSnapshot { agent_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn read_memory_files(
+        &self,
+        agent_id: String,
+        paths: Vec<String>,
+    ) -> AppResult<Vec<repo::memory_files::MemoryReadResult>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ReadMemoryFiles {
             agent_id,
-            changes,
+            paths,
             resp,
         })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
-    pub async fn delete_memory(&self, id: String, agent_id: String) -> AppResult<()> {
-        let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::DeleteMemory { id, agent_id, resp })?;
-        rx.await
-            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
-    }
-
-    pub async fn list_explicit_memories(
+    pub async fn mutate_memory_file(
         &self,
         agent_id: String,
-    ) -> AppResult<Vec<repo::explicit_memories::ExplicitMemoryRow>> {
+        path: String,
+        mutation: repo::memory_files::MemoryMutation,
+        actor_surface: String,
+        session_id: Option<String>,
+        message_id: Option<String>,
+    ) -> AppResult<repo::memory_files::MemoryMutationOutcome> {
         let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::ListExplicitMemories { agent_id, resp })?;
-        rx.await
-            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
-    }
-
-    pub async fn save_explicit_memories(
-        &self,
-        agent_id: String,
-        user_md: String,
-        memory_md: String,
-    ) -> AppResult<()> {
-        let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::SaveExplicitMemories {
+        self.send(DbCommand::MutateMemoryFile {
             agent_id,
-            user_id: uuid::Uuid::new_v4().to_string(),
-            user_md,
-            memory_id: uuid::Uuid::new_v4().to_string(),
-            memory_md,
+            path,
+            mutation,
+            actor_surface,
+            session_id,
+            message_id,
             resp,
         })?;
         rx.await
@@ -878,46 +829,6 @@ impl DbActorHandle {
     ) -> AppResult<Vec<(String, String)>> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::ListSettingsWithPrefix { prefix, resp })?;
-        rx.await
-            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
-    }
-
-    pub async fn upsert_memory_embedding(
-        &self,
-        embedding_id: String,
-        memory_id: String,
-        model: String,
-        content: String,
-        vector: Vec<f32>,
-    ) -> AppResult<bool> {
-        let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::UpsertMemoryEmbedding {
-            embedding_id,
-            memory_id,
-            model,
-            content,
-            vector,
-            resp,
-        })?;
-        rx.await
-            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
-    }
-
-    pub async fn search_memories(
-        &self,
-        query_text: String,
-        agent_id: String,
-        limit: usize,
-        query_embedding: Option<repo::memory::QueryEmbedding>,
-    ) -> AppResult<Vec<repo::memory::MemoryRow>> {
-        let (resp, rx) = oneshot::channel();
-        self.send(DbCommand::SearchMemories {
-            query_text,
-            agent_id,
-            limit,
-            query_embedding,
-            resp,
-        })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -2468,39 +2379,36 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 DbCommand::DeleteAgent { id, resp } => {
                     let _ = resp.send(repo::agents::delete(&mut conn, &id));
                 }
-                DbCommand::InsertMemory { row, resp } => {
-                    let _ = resp.send(repo::memory::insert(&mut conn, &row));
+                DbCommand::ListMemoryFiles { agent_id, resp } => {
+                    let _ = resp.send(repo::memory_files::listing(&conn, &agent_id));
                 }
-                DbCommand::ListMemories { agent_id, resp } => {
-                    let _ = resp.send(repo::memory::list(&conn, &agent_id));
+                DbCommand::LoadMemoryPromptSnapshot { agent_id, resp } => {
+                    let _ = resp.send(repo::memory_files::prompt_snapshot(&conn, &agent_id));
                 }
-                DbCommand::GetMemory { id, agent_id, resp } => {
-                    let _ = resp.send(repo::memory::get(&conn, &id, &agent_id));
-                }
-                DbCommand::UpdateMemory {
-                    id,
+                DbCommand::ReadMemoryFiles {
                     agent_id,
-                    changes,
+                    paths,
                     resp,
                 } => {
-                    let _ = resp.send(repo::memory::update(&mut conn, &id, &agent_id, &changes));
+                    let _ = resp.send(repo::memory_files::read_many(&conn, &agent_id, &paths));
                 }
-                DbCommand::DeleteMemory { id, agent_id, resp } => {
-                    let _ = resp.send(repo::memory::delete(&mut conn, &id, &agent_id));
-                }
-                DbCommand::ListExplicitMemories { agent_id, resp } => {
-                    let _ = resp.send(repo::explicit_memories::list(&conn, &agent_id));
-                }
-                DbCommand::SaveExplicitMemories {
+                DbCommand::MutateMemoryFile {
                     agent_id,
-                    user_id,
-                    user_md,
-                    memory_id,
-                    memory_md,
+                    path,
+                    mutation,
+                    actor_surface,
+                    session_id,
+                    message_id,
                     resp,
                 } => {
-                    let _ = resp.send(repo::explicit_memories::save_pair(
-                        &mut conn, &agent_id, &user_id, &user_md, &memory_id, &memory_md,
+                    let _ = resp.send(repo::memory_files::mutate(
+                        &mut conn,
+                        &agent_id,
+                        &path,
+                        mutation,
+                        &actor_surface,
+                        session_id.as_deref(),
+                        message_id.as_deref(),
                     ));
                 }
                 DbCommand::GetSetting { key, resp } => {
@@ -2514,38 +2422,6 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::ListSettingsWithPrefix { prefix, resp } => {
                     let _ = resp.send(repo::settings::list_with_prefix(&conn, &prefix));
-                }
-                DbCommand::UpsertMemoryEmbedding {
-                    embedding_id,
-                    memory_id,
-                    model,
-                    content,
-                    vector,
-                    resp,
-                } => {
-                    let _ = resp.send(repo::memory::upsert_memory_embedding(
-                        &mut conn,
-                        &embedding_id,
-                        &memory_id,
-                        &model,
-                        &content,
-                        &vector,
-                    ));
-                }
-                DbCommand::SearchMemories {
-                    query_text,
-                    agent_id,
-                    limit,
-                    query_embedding,
-                    resp,
-                } => {
-                    let _ = resp.send(repo::memory::search_hybrid(
-                        &conn,
-                        &query_text,
-                        &agent_id,
-                        limit,
-                        query_embedding.as_ref(),
-                    ));
                 }
                 DbCommand::ListKnowledgeCollections { agent_id, resp } => {
                     let _ = resp.send(repo::knowledge::list_collections(&conn, &agent_id));

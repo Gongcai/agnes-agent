@@ -19,12 +19,7 @@ pub mod file_write;
 pub mod git;
 pub mod grep;
 pub mod list_files;
-pub mod memory_create;
-pub(crate) mod memory_entry;
-pub mod memory_md_edit;
-pub mod memory_md_view;
-pub mod memory_search;
-pub mod memory_update;
+pub mod memory_files;
 pub mod planner;
 pub mod shell;
 pub mod web;
@@ -123,11 +118,12 @@ pub fn builtin_tools() -> Vec<Box<dyn BuiltinTool>> {
         Box::new(grep::GrepTool),
         Box::new(apply_patch::ApplyPatchTool),
         Box::new(git::GitTool),
-        Box::new(memory_search::MemorySearchTool),
-        Box::new(memory_create::MemoryCreateTool),
-        Box::new(memory_update::MemoryUpdateTool),
-        Box::new(memory_md_view::MemoryMdViewTool),
-        Box::new(memory_md_edit::MemoryMdEditTool),
+        Box::new(memory_files::MemoryListTool),
+        Box::new(memory_files::MemoryReadTool),
+        Box::new(memory_files::MemoryWriteTool),
+        Box::new(memory_files::MemoryStrReplaceTool),
+        Box::new(memory_files::MemoryAppendTool),
+        Box::new(memory_files::MemoryDeleteTool),
         Box::new(web::WebSearchTool),
         Box::new(web::WebFetchTool),
         Box::new(web::BrowserOpenTool),
@@ -210,17 +206,20 @@ pub fn is_write_op(tool: &str, args: &Value) -> bool {
         "file_write"
         | "file_edit"
         | "apply_patch"
-        | "memory_create"
-        | "memory_update"
-        | "memory_md_edit"
+        | "memory_write"
+        | "memory_str_replace"
+        | "memory_append"
+        | "memory_delete"
         | "calendar_create"
         | "calendar_event_create"
         | "calendar_update"
         | "task_create"
         | "task_complete"
         | "task_update" => true,
-        "file_read" | "list_files" | "grep" | "memory_search" | "memory_md_view" | "web_search"
-        | "web_fetch" | "browser_open" | "calendar_list" | "task_list" | "get_current_time" => false,
+        "file_read" | "list_files" | "grep" | "memory_list" | "memory_read" | "web_search"
+        | "web_fetch" | "browser_open" | "calendar_list" | "task_list" | "get_current_time" => {
+            false
+        }
         "shell" => {
             let cmd = args.get("command").and_then(|x| x.as_str()).unwrap_or("");
             shell::command_is_write(cmd)
@@ -358,11 +357,12 @@ mod tests {
                 "grep",
                 "apply_patch",
                 "git",
-                "memory_search",
-                "memory_create",
-                "memory_update",
-                "memory_md_view",
-                "memory_md_edit",
+                "memory_list",
+                "memory_read",
+                "memory_write",
+                "memory_str_replace",
+                "memory_append",
+                "memory_delete",
                 "web_search",
                 "web_fetch",
                 "browser_open",
@@ -379,10 +379,12 @@ mod tests {
         assert!(builtin_tools()
             .into_iter()
             .all(|tool| tool.schema()["function"]["name"] == tool.name()));
-        for tool in ["memory_create", "memory_update"] {
+        for tool in ["memory_write", "memory_str_replace", "memory_append"] {
             assert_eq!(compute_risk(tool, &json!({})), Risk::Medium);
             assert!(is_write_op(tool, &json!({})));
         }
+        assert_eq!(compute_risk("memory_delete", &json!({})), Risk::High);
+        assert!(is_write_op("memory_delete", &json!({})));
         for tool in [
             "calendar_create",
             "calendar_event_create",

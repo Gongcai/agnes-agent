@@ -1,44 +1,26 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  embeddingModelName,
-  formatMemoryTime,
-  memoryEmbeddingProgress,
-  memoryMatchesQuery,
-  parseMemoryKeywords,
-} from "./memory";
+import { createMemoryFileTemplate, memoryFileMatchesQuery } from "./memory";
 
-describe("structured memory helpers", () => {
-  it("normalizes optional keywords", () => {
-    expect(parseMemoryKeywords(" Rust, workspace，Rust,  SQLite ")).toEqual([
-      "Rust",
-      "workspace",
-      "SQLite",
-    ]);
-    expect(parseMemoryKeywords("  ")).toEqual([]);
-  });
-
-  it("matches names, keywords, and content", () => {
-    const memory = {
-      name: "Rust execution core",
-      keywords: ["workspace", "SQLite"],
-      content: "The desktop app owns tool execution.",
+describe("memory filesystem helpers", () => {
+  it("matches paths, descriptions, and aliases", () => {
+    const file = {
+      path: "/areas/agnes-agent.md",
+      description: "Agnes 项目的持续决策",
+      aliases: ["agnes-repo"],
     };
-    expect(memoryMatchesQuery(memory, "RUST")).toBe(true);
-    expect(memoryMatchesQuery(memory, "sqlite")).toBe(true);
-    expect(memoryMatchesQuery(memory, "tool execution")).toBe(true);
-    expect(memoryMatchesQuery(memory, "android")).toBe(false);
+    expect(memoryFileMatchesQuery(file, "AGNES-AGENT")).toBe(true);
+    expect(memoryFileMatchesQuery(file, "持续决策")).toBe(true);
+    expect(memoryFileMatchesQuery(file, "agnes-repo")).toBe(true);
+    expect(memoryFileMatchesQuery(file, "旅行")).toBe(false);
   });
 
-  it("keeps invalid timestamps readable", () => {
-    expect(formatMemoryTime("not-a-time")).toBe("not-a-time");
-  });
-
-  it("formats embedding coverage and model references", () => {
-    expect(memoryEmbeddingProgress(3, 4)).toBe(75);
-    expect(memoryEmbeddingProgress(1, 0)).toBe(0);
-    expect(memoryEmbeddingProgress(8, 4)).toBe(100);
-    expect(embeddingModelName("provider-id/Qwen3-Embedding-8B")).toBe("Qwen3-Embedding-8B");
-    expect(embeddingModelName(null)).toBe("未配置嵌入模型");
+  it("creates a valid user-surface Markdown template", () => {
+    expect(createMemoryFileTemplate("/topics/package-manager.md")).toContain(
+      "name: package-manager\n",
+    );
+    expect(createMemoryFileTemplate("/topics/package-manager.md")).toContain("sources: [user]");
+    expect(createMemoryFileTemplate("topics/package-manager.md")).toBe("");
+    expect(createMemoryFileTemplate("/other/file.md")).toBe("");
   });
 });

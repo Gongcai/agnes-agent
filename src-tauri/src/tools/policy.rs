@@ -450,8 +450,10 @@ impl ToolPolicy {
             "file_read" | "list_files" | "grep" => ApprovalTier::Never,
             "file_write" | "file_edit" | "apply_patch" => self.file.approval,
             "git" => self.git.approval,
-            "memory_search" | "memory_md_view" => ApprovalTier::Never,
-            "memory_create" | "memory_update" | "memory_md_edit" => self.memory.approval,
+            "memory_list" | "memory_read" => ApprovalTier::Never,
+            "memory_write" | "memory_str_replace" | "memory_append" | "memory_delete" => {
+                self.memory.approval
+            }
             "web_search" | "web_fetch" | "browser_open" => self.web.approval,
             "calendar_list" | "task_list" | "get_current_time" => ApprovalTier::Never,
             "calendar_create"

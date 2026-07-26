@@ -56,7 +56,6 @@ pub struct ModelRoleAssignments {
     pub main_model: Option<String>,
     pub image_model: Option<String>,
     pub summary_model: Option<String>,
-    pub memory_model: Option<String>,
     pub speech_model: Option<String>,
     pub quick_model: Option<String>,
     pub embedding_model: Option<String>,
@@ -69,7 +68,6 @@ pub enum ModelRole {
     Main,
     Image,
     Summary,
-    Memory,
     Speech,
     Quick,
     Embedding,
@@ -81,7 +79,6 @@ impl ModelRole {
             Self::Main => "主模型",
             Self::Image => "图片处理模型",
             Self::Summary => "对话总结模型",
-            Self::Memory => "记忆更新模型",
             Self::Speech => "语音理解模型",
             Self::Quick => "快速模型",
             Self::Embedding => "嵌入模型",
@@ -90,9 +87,7 @@ impl ModelRole {
 
     pub fn accepts(self, capabilities: &ModelCapabilities) -> bool {
         match self {
-            Self::Main | Self::Summary | Self::Memory | Self::Quick => {
-                capabilities.supports_text_generation()
-            }
+            Self::Main | Self::Summary | Self::Quick => capabilities.supports_text_generation(),
             Self::Image => capabilities.supports_image_understanding(),
             Self::Speech => capabilities.supports_text_output(),
             Self::Embedding => capabilities.embedding,
@@ -115,12 +110,11 @@ impl ModelRoleAssignments {
         Ok(())
     }
 
-    pub fn selections(&self) -> [(ModelRole, Option<&str>); 7] {
+    pub fn selections(&self) -> [(ModelRole, Option<&str>); 6] {
         [
             (ModelRole::Main, self.main_model.as_deref()),
             (ModelRole::Image, self.image_model.as_deref()),
             (ModelRole::Summary, self.summary_model.as_deref()),
-            (ModelRole::Memory, self.memory_model.as_deref()),
             (ModelRole::Speech, self.speech_model.as_deref()),
             (ModelRole::Quick, self.quick_model.as_deref()),
             (ModelRole::Embedding, self.embedding_model.as_deref()),
@@ -133,7 +127,6 @@ impl ModelRoleAssignments {
             &mut self.main_model,
             &mut self.image_model,
             &mut self.summary_model,
-            &mut self.memory_model,
             &mut self.speech_model,
             &mut self.quick_model,
             &mut self.embedding_model,
@@ -155,7 +148,6 @@ impl ModelRoleAssignments {
             (ModelRole::Main, &mut self.main_model),
             (ModelRole::Image, &mut self.image_model),
             (ModelRole::Summary, &mut self.summary_model),
-            (ModelRole::Memory, &mut self.memory_model),
             (ModelRole::Speech, &mut self.speech_model),
             (ModelRole::Quick, &mut self.quick_model),
             (ModelRole::Embedding, &mut self.embedding_model),
@@ -546,7 +538,6 @@ mod tests {
                 "main_model":"openai/gpt-4o",
                 "image_model":null,
                 "summary_model":"openai/gpt-4o-mini",
-                "memory_model":null,
                 "speech_model":null,
                 "quick_model":null,
                 "embedding_model":null

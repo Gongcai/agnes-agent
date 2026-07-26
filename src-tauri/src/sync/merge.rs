@@ -6,6 +6,14 @@ use crate::error::{AppError, AppResult};
 use crate::sync::hlc::HybridTimestamp;
 
 const NON_SEMANTIC_FIELDS: &[&str] = &["updated_at", "version", "origin_device_id"];
+const MEMORY_DERIVED_FIELDS: &[&str] = &[
+    "kind",
+    "name",
+    "description",
+    "sources",
+    "aliases",
+    "content_hash",
+];
 const SESSION_HLC_FIELDS: &[&str] = &[
     "title",
     "context_limit",
@@ -72,6 +80,9 @@ pub fn merge_entity(
         if NON_SEMANTIC_FIELDS.contains(&key.as_str()) {
             continue;
         }
+        if entity_type == "memory_file" && MEMORY_DERIVED_FIELDS.contains(&key.as_str()) {
+            continue;
+        }
         if key == "created_at" {
             if let Some(value) = base
                 .and_then(|object| object.get(&key))
@@ -98,7 +109,7 @@ pub fn merge_entity(
                 remote_value,
                 hlc_order.unwrap_or(Ordering::Equal),
             )
-        } else if entity_type == "explicit_memory" && key == "content" {
+        } else if entity_type == "memory_file" && key == "markdown" {
             let Some(content) = merge_text(base_value, local_value, remote_value) else {
                 conflicts.push(key);
                 continue;
@@ -306,17 +317,31 @@ mod tests {
     }
 
     #[test]
-    fn explicit_memory_diff3_merges_separate_hunks_and_rejects_overlap() {
+    fn memory_file_diff3_merges_separate_hunks_and_rejects_overlap() {
         let base_content = "# Profile\n\nLanguage: C++\n\n# Preferences\n\nTheme: light\n";
         let local_content =
             "# Profile\n\nLanguage: C++ and Rust\n\n# Preferences\n\nTheme: light\n";
         let remote_content = "# Profile\n\nLanguage: C++\n\n# Preferences\n\nTheme: dark\n";
-        let payload = |content| json!({"id": "memory-1", "content": content});
+        let payload = |content, hash| {
+            json!({
+                "id": "memory-1",
+                "agent_id": "agent-1",
+                "path": "/topics/language.md",
+                "kind": "topic",
+                "name": "language",
+                "description": "Language and theme preferences",
+                "sources": ["chat"],
+                "aliases": [],
+                "content_hash": hash,
+                "markdown": content,
+                "status": "active"
+            })
+        };
         let outcome = merge_entity(
-            "explicit_memory",
-            Some(&payload(base_content)),
-            &payload(local_content),
-            &payload(remote_content),
+            "memory_file",
+            Some(&payload(base_content, "base")),
+            &payload(local_content, "local"),
+            &payload(remote_content, "remote"),
             "1000-0001-local",
             "1000-0001-remote",
         )
@@ -324,30 +349,34 @@ mod tests {
         assert_eq!(
             outcome,
             MergeOutcome::Merged {
-                payload: payload(
-                    "# Profile\n\nLanguage: C++ and Rust\n\n# Preferences\n\nTheme: dark\n"
-                ),
-                resolved_fields: vec!["content".into()],
+                payload: json!({
+                    "id": "memory-1",
+                    "agent_id": "agent-1",
+                    "path": "/topics/language.md",
+                    "markdown": "# Profile\n\nLanguage: C++ and Rust\n\n# Preferences\n\nTheme: dark\n",
+                    "status": "active"
+                }),
+                resolved_fields: vec!["markdown".into()],
             }
         );
 
-        let local = payload("# Profile\n\nLanguage: Rust\n");
-        let remote = payload("# Profile\n\nLanguage: Zig\n");
+        let local = payload("# Profile\n\nLanguage: Rust\n", "local");
+        let remote = payload("# Profile\n\nLanguage: Zig\n", "remote");
         assert_eq!(
             merge_entity(
-                "explicit_memory",
-                Some(&payload("# Profile\n\nLanguage: C++\n")),
+                "memory_file",
+                Some(&payload("# Profile\n\nLanguage: C++\n", "base")),
                 &local,
                 &remote,
                 "1000-0001-local",
                 "1000-0001-remote",
             )
             .unwrap(),
-            MergeOutcome::Conflict(vec!["content".into()])
+            MergeOutcome::Conflict(vec!["markdown".into()])
         );
         assert_eq!(
             merge_entity(
-                "explicit_memory",
+                "memory_file",
                 None,
                 &local,
                 &remote,
@@ -355,7 +384,7 @@ mod tests {
                 "1000-0001-remote",
             )
             .unwrap(),
-            MergeOutcome::Conflict(vec!["content".into()])
+            MergeOutcome::Conflict(vec!["markdown".into()])
         );
     }
 }

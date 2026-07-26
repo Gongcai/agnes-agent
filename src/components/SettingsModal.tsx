@@ -16,13 +16,7 @@ import { ProjectSelect, type ProjectSelectOption } from "./ProjectSelect";
 import { SkillSettingsTab } from "./SkillSettingsTab";
 import { TokenUsageCalendar, type TokenUsageDay } from "./TokenUsageCalendar";
 import { useConfirmDialog } from "./ConfirmDialog";
-import {
-  embeddingModelName,
-  formatMemoryTime,
-  memoryEmbeddingProgress,
-  memoryMatchesQuery,
-  parseMemoryKeywords,
-} from "../lib/memory";
+import { createMemoryFileTemplate, memoryFileMatchesQuery } from "../lib/memory";
 import {
   beginSyncE2eeSetup,
   beginSyncE2eeRotation,
@@ -101,27 +95,35 @@ interface TokenUsageStats {
   days: TokenUsageDay[];
 }
 
-interface StructuredMemory {
-  id: string;
-  agent_id: string;
-  name: string;
-  keywords: string[];
-  content: string;
-  creator: "user" | "ai";
-  created_at: string;
-  updated_at: string;
+interface MemoryFileListingItem {
+  path: string;
+  description: string;
+  aliases: string[];
+  sources: string[];
 }
 
-interface MemoryEmbeddingStatus {
-  total: number;
-  indexed: number;
-  pending: number;
-  model_ref: string | null;
+interface MemoryFileListing {
+  files: MemoryFileListingItem[];
+  listingEpoch: number;
 }
 
-interface MemoryVectorizationResult {
-  indexed_now: number;
-  status: MemoryEmbeddingStatus;
+interface MemoryFileReadResult {
+  path: string;
+  exists: boolean;
+  content: string | null;
+  version: string | null;
+  contentHash: string | null;
+}
+
+interface MemoryFileMutationOutcome {
+  ok: boolean;
+  code: string | null;
+  message: string;
+  path: string;
+  version: string | null;
+  currentContent: string | null;
+  currentVersion: string | null;
+  listingEpoch: number;
 }
 
 interface UserProfile {
@@ -136,14 +138,6 @@ interface UserProfile {
   headingsLists: string;
   emoji: string;
   verbosity: string;
-}
-
-type UserProfileInheritanceMode = "auto" | "inherit" | "isolated";
-
-interface AgentUserProfileInheritance {
-  mode: UserProfileInheritanceMode;
-  effective: boolean;
-  userMdEmpty: boolean;
 }
 
 const EMPTY_USER_PROFILE: UserProfile = {
@@ -251,12 +245,6 @@ const PROFILE_PREFERENCE_FIELDS: readonly {
   },
 ];
 
-const PROFILE_INHERITANCE_OPTIONS: readonly ProjectSelectOption<UserProfileInheritanceMode>[] = [
-  { value: "auto", label: "自动（USER.md 为空时继承）" },
-  { value: "inherit", label: "继承全局用户资料" },
-  { value: "isolated", label: "不继承" },
-];
-
 interface ArtifactStorageStatus {
   quotaBytes: number;
   usedBytes: number;
@@ -285,25 +273,12 @@ interface PdfModelPackageStatus {
   error: string | null;
 }
 
-interface MemoryFormValues {
-  name: string;
-  keywords: string;
-  content: string;
-}
-
-const EMPTY_MEMORY_FORM: MemoryFormValues = {
-  name: "",
-  keywords: "",
-  content: "",
-};
-
 const SYNC_ENTITY_LABELS: Record<string, string> = {
   agent: "角色卡",
   workspace: "工作区",
   session: "会话",
   message: "消息",
-  explicit_memory: "必注入记忆",
-  memory: "结构化记忆",
+  memory_file: "记忆文件",
   calendar: "日历",
   calendar_event: "日历事件",
   event_exception: "事件例外",
@@ -506,10 +481,9 @@ const MODEL_ROLE_OPTIONS: {
   { key: "main_model", label: "主模型", desc: "会话与角色均未指定模型时使用" },
   { key: "image_model", label: "图片处理模型", desc: "图片转自然语言、视觉理解和 OCR" },
   { key: "summary_model", label: "对话总结模型", desc: "滚动压缩历史对话，建议选择便宜模型" },
-  { key: "memory_model", label: "记忆更新模型", desc: "抽取需要长期保存的事实和偏好" },
   { key: "speech_model", label: "语音理解模型", desc: "预留语音转文本调用入口" },
   { key: "quick_model", label: "快速模型", desc: "生成会话标题；预留划线翻译、搜索和名词解释" },
-  { key: "embedding_model", label: "嵌入模型", desc: "生成本地记忆向量，维度由模型响应自动确定" },
+  { key: "embedding_model", label: "嵌入模型", desc: "为知识库生成本地语义检索索引" },
 ];
 
 function modelSupportsRole(model: ModelDescriptor, role: ModelRoleField): boolean {
@@ -750,23 +724,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isSavingUserProfile, setIsSavingUserProfile] = useState(false);
   const [userProfileMessage, setUserProfileMessage] = useState<{ success: boolean; text: string } | null>(null);
   
-  // Memory MD state
-  const [userMdText, setUserMdText] = useState("");
-  const [memoryMdText, setMemoryMdText] = useState("");
-  const [isEditingUserMd, setIsEditingUserMd] = useState(false);
-  const [isEditingMemoryMd, setIsEditingMemoryMd] = useState(false);
-  const [structuredMemories, setStructuredMemories] = useState<StructuredMemory[]>([]);
+  // Memory filesystem state
+  const [memoryFiles, setMemoryFiles] = useState<MemoryFileListingItem[]>([]);
   const [memorySearch, setMemorySearch] = useState("");
-  const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
-  const [memoryForm, setMemoryForm] = useState<MemoryFormValues>(EMPTY_MEMORY_FORM);
+  const [selectedMemoryPath, setSelectedMemoryPath] = useState<string | null>(null);
+  const [memoryDraft, setMemoryDraft] = useState("");
+  const [memoryVersion, setMemoryVersion] = useState<string | null>(null);
+  const [newMemoryPath, setNewMemoryPath] = useState("");
+  const [isCreatingMemory, setIsCreatingMemory] = useState(false);
+  const [isLoadingMemory, setIsLoadingMemory] = useState(false);
   const [isSavingMemory, setIsSavingMemory] = useState(false);
   const [memoryError, setMemoryError] = useState<string | null>(null);
-  const [memoryEmbeddingStatus, setMemoryEmbeddingStatus] = useState<MemoryEmbeddingStatus | null>(null);
-  const [isVectorizingMemories, setIsVectorizingMemories] = useState(false);
-  const [memoryVectorMessage, setMemoryVectorMessage] = useState<{ success: boolean; text: string } | null>(null);
-  const [profileInheritance, setProfileInheritance] = useState<AgentUserProfileInheritance | null>(null);
-  const [isSavingProfileInheritance, setIsSavingProfileInheritance] = useState(false);
-  const [profileInheritanceError, setProfileInheritanceError] = useState<string | null>(null);
 
   // Audit state
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -1099,23 +1067,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  const saveProfileInheritance = async (mode: UserProfileInheritanceMode) => {
-    if (!activeAgentId) return;
-    setIsSavingProfileInheritance(true);
-    setProfileInheritanceError(null);
-    try {
-      const result = await invoke<AgentUserProfileInheritance>("set_agent_user_profile_inheritance", {
-        agentId: activeAgentId,
-        mode,
-      });
-      setProfileInheritance(result);
-    } catch (error) {
-      setProfileInheritanceError(String(error));
-    } finally {
-      setIsSavingProfileInheritance(false);
-    }
-  };
-
   const loadDebugPrompt = () => {
     if (!activeAgentId) return;
     setDebugLoading(true);
@@ -1137,38 +1088,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [availableModels, setAvailableModels] = useState<ModelDescriptor[]>([]);
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
 
-  // Sync memory text when activeAgentId changes
+  // Reload the selected Agent's virtual memory filesystem.
   useEffect(() => {
     if (activeAgentId && activeTab === "memory") {
-      setProfileInheritance(null);
-      setProfileInheritanceError(null);
-      setMemoryEmbeddingStatus(null);
-      setMemoryVectorMessage(null);
-      Promise.all([
-        invoke<{ user_md: string; memory_md: string }>("get_explicit_memories", {
-          agentId: activeAgentId,
-        }),
-        invoke<StructuredMemory[]>("list_memories", { agentId: activeAgentId }),
-        invoke<MemoryEmbeddingStatus>("get_memory_embedding_status", { agentId: activeAgentId }),
-        invoke<AgentUserProfileInheritance>("get_agent_user_profile_inheritance", {
-          agentId: activeAgentId,
-        }),
-      ])
-        .then(([explicit, memories, embeddingStatus, inheritance]) => {
-          setUserMdText(explicit.user_md);
-          setMemoryMdText(explicit.memory_md);
-          setStructuredMemories(memories);
-          setMemoryEmbeddingStatus(embeddingStatus);
-          setProfileInheritance(inheritance);
-          setIsEditingUserMd(false);
-          setIsEditingMemoryMd(false);
-          setEditingMemoryId(null);
-          setMemoryError(null);
+      setIsLoadingMemory(true);
+      setMemoryError(null);
+      invoke<MemoryFileListing>("list_memory_files", { agentId: activeAgentId })
+        .then(async (listing) => {
+          setMemoryFiles(listing.files);
+          const nextPath = listing.files[0]?.path ?? null;
+          setSelectedMemoryPath(nextPath);
+          setIsCreatingMemory(false);
+          setNewMemoryPath("");
+          if (!nextPath) {
+            setMemoryDraft("");
+            setMemoryVersion(null);
+            return;
+          }
+          const file = await invoke<MemoryFileReadResult>("read_memory_file", {
+            agentId: activeAgentId,
+            path: nextPath,
+          });
+          setMemoryDraft(file.content ?? "");
+          setMemoryVersion(file.version);
         })
         .catch((error) => {
-          console.error(error);
-          setMemoryVectorMessage({ success: false, text: String(error) });
-        });
+          setMemoryError(String(error));
+        })
+        .finally(() => setIsLoadingMemory(false));
     }
   }, [activeAgentId, activeTab]);
 
@@ -1801,120 +1748,80 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleSaveUserMd = () => {
-    if (!activeAgentId) return;
-    invoke("save_explicit_memories", {
-      agentId: activeAgentId,
-      userMd: userMdText,
-      memoryMd: memoryMdText,
-    })
-      .then(async () => {
-        setIsEditingUserMd(false);
-        const inheritance = await invoke<AgentUserProfileInheritance>("get_agent_user_profile_inheritance", {
-          agentId: activeAgentId,
-        });
-        setProfileInheritance(inheritance);
-      })
-      .catch(console.error);
+  const refreshMemoryFiles = async (): Promise<MemoryFileListingItem[]> => {
+    if (!activeAgentId) return [];
+    const listing = await invoke<MemoryFileListing>("list_memory_files", { agentId: activeAgentId });
+    setMemoryFiles(listing.files);
+    return listing.files;
   };
 
-  const handleSaveMemoryMd = () => {
+  const selectMemoryFile = async (path: string) => {
     if (!activeAgentId) return;
-    invoke("save_explicit_memories", {
-      agentId: activeAgentId,
-      userMd: userMdText,
-      memoryMd: memoryMdText,
-    })
-      .then(() => setIsEditingMemoryMd(false))
-      .catch(console.error);
-  };
-
-  const refreshStructuredMemories = async () => {
-    if (!activeAgentId) return;
-    const [memories, embeddingStatus] = await Promise.all([
-      invoke<StructuredMemory[]>("list_memories", { agentId: activeAgentId }),
-      invoke<MemoryEmbeddingStatus>("get_memory_embedding_status", { agentId: activeAgentId }),
-    ]);
-    setStructuredMemories(memories);
-    setMemoryEmbeddingStatus(embeddingStatus);
-    setMemoryVectorMessage(null);
-  };
-
-  const vectorizeStructuredMemories = async () => {
-    if (!activeAgentId || isVectorizingMemories) return;
-    setIsVectorizingMemories(true);
-    setMemoryVectorMessage(null);
+    setSelectedMemoryPath(path);
+    setIsCreatingMemory(false);
+    setNewMemoryPath("");
+    setIsLoadingMemory(true);
+    setMemoryError(null);
     try {
-      const result = await invoke<MemoryVectorizationResult>("vectorize_memories", {
+      const file = await invoke<MemoryFileReadResult>("read_memory_file", {
         agentId: activeAgentId,
+        path,
       });
-      setMemoryEmbeddingStatus(result.status);
-      setMemoryVectorMessage({
-        success: true,
-        text: result.indexed_now > 0
-          ? `本次完成 ${result.indexed_now} 条记忆向量化`
-          : "当前记忆向量索引已是最新状态",
-      });
+      setMemoryDraft(file.content ?? "");
+      setMemoryVersion(file.version);
     } catch (error) {
-      setMemoryVectorMessage({ success: false, text: String(error) });
-      invoke<MemoryEmbeddingStatus>("get_memory_embedding_status", { agentId: activeAgentId })
-        .then(setMemoryEmbeddingStatus)
-        .catch(console.error);
+      setMemoryError(String(error));
     } finally {
-      setIsVectorizingMemories(false);
+      setIsLoadingMemory(false);
     }
   };
 
   const openNewMemory = () => {
-    setEditingMemoryId("new");
-    setMemoryForm(EMPTY_MEMORY_FORM);
+    setIsCreatingMemory(true);
+    setSelectedMemoryPath(null);
+    setNewMemoryPath("");
+    setMemoryDraft("");
+    setMemoryVersion(null);
     setMemoryError(null);
   };
 
-  const openMemoryEditor = (memory: StructuredMemory) => {
-    setEditingMemoryId(memory.id);
-    setMemoryForm({
-      name: memory.name,
-      keywords: memory.keywords.join(", "),
-      content: memory.content,
-    });
-    setMemoryError(null);
+  const updateNewMemoryPath = (path: string) => {
+    setNewMemoryPath(path);
+    setMemoryDraft(createMemoryFileTemplate(path));
   };
 
-  const closeMemoryEditor = () => {
-    setEditingMemoryId(null);
-    setMemoryForm(EMPTY_MEMORY_FORM);
-    setMemoryError(null);
-  };
-
-  const saveStructuredMemory = async () => {
-    if (!activeAgentId || !editingMemoryId) return;
-    if (!memoryForm.name.trim() || !memoryForm.content.trim()) {
-      setMemoryError("名称和记忆内容不能为空");
+  const saveMemoryFile = async () => {
+    if (!activeAgentId) return;
+    const path = isCreatingMemory ? newMemoryPath.trim() : selectedMemoryPath;
+    if (!path || !memoryDraft.trim()) {
+      setMemoryError("路径和 Markdown 内容不能为空");
       return;
     }
-    const keywords = parseMemoryKeywords(memoryForm.keywords);
     setIsSavingMemory(true);
     setMemoryError(null);
     try {
-      if (editingMemoryId === "new") {
-        await invoke("create_memory", {
-          agentId: activeAgentId,
-          name: memoryForm.name,
-          keywords,
-          content: memoryForm.content,
-        });
-      } else {
-        await invoke("update_memory", {
-          memoryId: editingMemoryId,
-          agentId: activeAgentId,
-          name: memoryForm.name,
-          keywords,
-          content: memoryForm.content,
-        });
+      const command = isCreatingMemory ? "save_memory_file" : "update_memory_file";
+      const outcome = await invoke<MemoryFileMutationOutcome>(command, {
+        agentId: activeAgentId,
+        path,
+        content: memoryDraft,
+        ...(!isCreatingMemory ? { ifVersion: memoryVersion } : {}),
+      });
+      if (!outcome.ok) {
+        if (outcome.code === "VERSION_CONFLICT" && outcome.currentContent && outcome.currentVersion) {
+          setMemoryDraft(outcome.currentContent);
+          setMemoryVersion(outcome.currentVersion);
+          setMemoryError("文件已在其他位置更新，编辑器已载入最新版本，请核对后重新保存。");
+        } else {
+          setMemoryError(`${outcome.code ?? "SAVE_FAILED"}: ${outcome.message}`);
+        }
+        return;
       }
-      await refreshStructuredMemories();
-      closeMemoryEditor();
+      await refreshMemoryFiles();
+      setSelectedMemoryPath(path);
+      setIsCreatingMemory(false);
+      setNewMemoryPath("");
+      setMemoryVersion(outcome.version);
     } catch (error) {
       setMemoryError(String(error));
     } finally {
@@ -1922,31 +1829,35 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  const removeStructuredMemory = async (memory: StructuredMemory) => {
-    if (!activeAgentId) return;
+  const removeMemoryFile = async () => {
+    if (!activeAgentId || !selectedMemoryPath || !memoryVersion) return;
     if (!await confirmDelete({
-      title: `删除记忆「${memory.name}」？`,
-      description: "该条结构化记忆将被删除，且无法恢复。",
-      confirmLabel: "删除记忆",
+      title: `删除 ${selectedMemoryPath}？`,
+      description: "该文件将从当前 Agent 的持久记忆中删除。",
+      confirmLabel: "删除文件",
     })) return;
     try {
-      await invoke("delete_memory", {
-        memoryId: memory.id,
+      const outcome = await invoke<MemoryFileMutationOutcome>("delete_memory_file", {
         agentId: activeAgentId,
+        path: selectedMemoryPath,
+        ifVersion: memoryVersion,
       });
-      await refreshStructuredMemories();
-      if (editingMemoryId === memory.id) closeMemoryEditor();
+      if (!outcome.ok) {
+        setMemoryError(`${outcome.code ?? "DELETE_FAILED"}: ${outcome.message}`);
+        return;
+      }
+      const files = await refreshMemoryFiles();
+      const nextPath = files[0]?.path ?? null;
+      setSelectedMemoryPath(nextPath);
+      setMemoryDraft("");
+      setMemoryVersion(null);
+      if (nextPath) await selectMemoryFile(nextPath);
     } catch (error) {
       setMemoryError(String(error));
     }
   };
 
-  const visibleMemories = structuredMemories.filter((memory) =>
-    memoryMatchesQuery(memory, memorySearch),
-  );
-  const embeddingProgress = memoryEmbeddingStatus
-    ? memoryEmbeddingProgress(memoryEmbeddingStatus.indexed, memoryEmbeddingStatus.total)
-    : 0;
+  const visibleMemoryFiles = memoryFiles.filter((file) => memoryFileMatchesQuery(file, memorySearch));
 
   // --- Provider editor helpers ---
   const openAddProvider = () => {
@@ -3039,321 +2950,114 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             {/* 2. MEMORY TAB */}
             {activeTab === "memory" && (
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-sm font-semibold text-stone-850">本地记忆文件编辑</h3>
-                  <p className="text-[11px] text-stone-400">
-                    直接编辑或保存当前 Agent 的 USER.md (背景画像) 与 MEMORY.md (事实积累)。
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-stone-200 bg-stone-50/70 px-4 py-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-semibold text-stone-700">全局用户资料</div>
-                    <p className="mt-1 text-[11px] leading-5 text-stone-500">
-                      {!profileInheritance
-                        ? "正在读取继承设置…"
-                        : profileInheritance.mode === "inherit" && !profileInheritance.userMdEmpty
-                          ? "全局资料会在运行时追加到现有 USER.md 末尾，不会覆盖或写回原内容。"
-                          : profileInheritance.mode === "inherit"
-                            ? "当前继承全局用户资料。"
-                            : profileInheritance.mode === "isolated"
-                              ? "当前仅使用此 Agent 的 USER.md，不继承全局资料。"
-                              : profileInheritance.effective
-                                ? "自动模式：USER.md 为空，当前会继承全局用户资料。"
-                                : "自动模式：USER.md 已有内容，当前仅使用 Agent 自己的资料。"}
-                    </p>
-                    {profileInheritanceError && (
-                      <p className="mt-1 text-[11px] text-rose-600">{profileInheritanceError}</p>
-                    )}
-                  </div>
-                  <ProjectSelect
-                    value={profileInheritance?.mode ?? "auto"}
-                    disabled={!profileInheritance || isSavingProfileInheritance}
-                    options={PROFILE_INHERITANCE_OPTIONS}
-                    onChange={(mode) => void saveProfileInheritance(mode)}
-                    className="min-w-56 shrink-0"
-                    ariaLabel="全局用户资料继承方式"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                  {/* USER.md */}
-                  <div className="space-y-2 flex flex-col">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="font-semibold text-stone-500">USER.md (AI只读，用户画像)</span>
-                      {isEditingUserMd ? (
-                        <div className="flex gap-2 font-medium">
-                          <button
-                            onClick={() => setIsEditingUserMd(false)}
-                            className="text-stone-400 hover:text-stone-600"
-                          >
-                            取消
-                          </button>
-                          <button
-                            onClick={handleSaveUserMd}
-                            className="text-emerald-600 hover:text-emerald-700 font-semibold"
-                          >
-                            保存
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => setIsEditingUserMd(true)}
-                          className="text-[#6C806A] hover:text-[#556654] font-medium"
-                        >
-                          编辑
-                        </button>
-                      )}
-                    </div>
-                    {isEditingUserMd ? (
-                      <textarea
-                        value={userMdText}
-                        onChange={(e) => setUserMdText(e.target.value)}
-                        className="h-72 w-full bg-white border border-stone-300 rounded-lg p-3 font-mono text-[10px] focus:outline-none"
-                      />
-                    ) : (
-                      <pre className="h-72 w-full bg-[#FAF9F5]/45 border border-stone-200 rounded-lg p-3 font-sans text-xs text-stone-600 overflow-y-auto whitespace-pre-wrap select-text leading-relaxed">
-                        {userMdText || "# USER.md\n\n(暂无本地画像信息，请点击右上角编辑)"}
-                      </pre>
-                    )}
-                  </div>
-
-                  {/* MEMORY.md */}
-                  <div className="space-y-2 flex flex-col">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="font-semibold text-stone-500">MEMORY.md (AI可写，事实积累)</span>
-                      {isEditingMemoryMd ? (
-                        <div className="flex gap-2 font-medium">
-                          <button
-                            onClick={() => setIsEditingMemoryMd(false)}
-                            className="text-stone-400 hover:text-stone-600"
-                          >
-                            取消
-                          </button>
-                          <button
-                            onClick={handleSaveMemoryMd}
-                            className="text-emerald-600 hover:text-emerald-700 font-semibold"
-                          >
-                            保存
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => setIsEditingMemoryMd(true)}
-                          className="text-[#6C806A] hover:text-[#556654] font-medium"
-                        >
-                          编辑
-                        </button>
-                      )}
-                    </div>
-                    {isEditingMemoryMd ? (
-                      <textarea
-                        value={memoryMdText}
-                        onChange={(e) => setMemoryMdText(e.target.value)}
-                        className="h-72 w-full bg-white border border-stone-300 rounded-lg p-3 font-mono text-[10px] focus:outline-none"
-                      />
-                    ) : (
-                      <pre className="h-72 w-full bg-[#FAF9F5]/45 border border-stone-200 rounded-lg p-3 font-sans text-xs text-stone-600 overflow-y-auto whitespace-pre-wrap select-text leading-relaxed">
-                        {memoryMdText || "# MEMORY.md\n\n(暂无事实积累，请点击右上角编辑)"}
-                      </pre>
-                    )}
-                  </div>
-                </div>
-
-                <div className="border-t border-stone-200 pt-5 space-y-4">
+              <div className="space-y-4">
+                <div className="space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <h3 className="text-sm font-semibold text-stone-850">结构化记忆库</h3>
+                    <div>
+                      <h3 className="text-sm font-semibold text-stone-850">持久记忆文件</h3>
+                      <p className="mt-1 text-[11px] text-stone-400">当前 Agent 的虚拟 Markdown 文件系统</p>
+                    </div>
                     <button
                       type="button"
                       onClick={openNewMemory}
                       className="inline-flex items-center gap-1.5 rounded-md bg-[#6C806A] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#596C58]"
                     >
                       <Plus className="h-3.5 w-3.5" />
-                      新建记忆
+                      新建文件
                     </button>
                   </div>
-
-                  <div className="flex min-h-14 flex-wrap items-center justify-between gap-3 border-y border-stone-200 bg-stone-50/70 px-3 py-2.5">
-                    <div className="flex min-w-0 flex-1 items-center gap-3">
-                      <Database className="h-4 w-4 shrink-0 text-stone-500" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                          <span
-                            className="max-w-full truncate font-semibold text-stone-700"
-                            title={memoryEmbeddingStatus?.model_ref || undefined}
-                          >
-                            {memoryEmbeddingStatus
-                              ? embeddingModelName(memoryEmbeddingStatus.model_ref)
-                              : "正在读取向量索引"}
-                          </span>
-                          {memoryEmbeddingStatus && (
-                            <span className="text-stone-500">
-                              {memoryEmbeddingStatus.indexed}/{memoryEmbeddingStatus.total} 已向量化
-                            </span>
-                          )}
-                        </div>
-                        <div className="mt-1 flex items-center gap-2">
-                          <div className="h-1.5 w-28 shrink-0 overflow-hidden rounded-full bg-stone-200">
-                            <div
-                              className={`h-full rounded-full transition-[width] ${
-                                memoryEmbeddingStatus?.pending === 0 && memoryEmbeddingStatus.total > 0
-                                  ? "bg-emerald-500"
-                                  : "bg-amber-500"
-                              }`}
-                              style={{ width: `${embeddingProgress}%` }}
-                            />
-                          </div>
-                          <span className="text-[10px] text-stone-400">
-                            {!memoryEmbeddingStatus
-                              ? "读取中"
-                              : !memoryEmbeddingStatus.model_ref
-                                ? "向量检索关闭"
-                                : memoryEmbeddingStatus.total === 0
-                                  ? "记忆库为空"
-                                  : memoryEmbeddingStatus.pending > 0
-                                    ? `${memoryEmbeddingStatus.pending} 条待处理 · ${embeddingProgress}%`
-                                    : `索引已同步 · ${embeddingProgress}%`}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={vectorizeStructuredMemories}
-                      disabled={
-                        isVectorizingMemories
-                        || !memoryEmbeddingStatus?.model_ref
-                        || memoryEmbeddingStatus.total === 0
-                        || memoryEmbeddingStatus.pending === 0
-                      }
-                      title="向量化当前 Agent 的待处理记忆"
-                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-semibold text-stone-700 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-45"
-                    >
-                      <RefreshCw className={`h-3.5 w-3.5 ${isVectorizingMemories ? "animate-spin" : ""}`} />
-                      {isVectorizingMemories ? "向量化中" : "向量化"}
-                    </button>
-                  </div>
-
-                  {memoryVectorMessage && (
-                    <p
-                      aria-live="polite"
-                      className={`text-xs ${memoryVectorMessage.success ? "text-emerald-700" : "text-red-600"}`}
-                    >
-                      {memoryVectorMessage.text}
-                    </p>
-                  )}
 
                   <div className="relative max-w-sm">
                     <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-stone-400" />
                     <input
                       value={memorySearch}
                       onChange={(event) => setMemorySearch(event.target.value)}
-                      placeholder="搜索名称、关键词或内容"
+                      placeholder="搜索路径、描述或别名"
                       className="h-9 w-full rounded-md border border-stone-200 bg-white pl-8 pr-3 text-xs text-stone-700 focus:border-stone-400 focus:outline-none"
                     />
                   </div>
 
-                  {editingMemoryId && (
-                    <div className="border-y border-stone-200 bg-stone-50/70 py-4">
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                        <label className="space-y-1 text-[11px] font-medium text-stone-500">
-                          <span>名称</span>
-                          <input
-                            value={memoryForm.name}
-                            onChange={(event) => setMemoryForm((form) => ({ ...form, name: event.target.value }))}
-                            className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-xs text-stone-800 focus:border-stone-400 focus:outline-none"
-                          />
-                        </label>
-                        <label className="space-y-1 text-[11px] font-medium text-stone-500">
-                          <span>关键词</span>
-                          <input
-                            value={memoryForm.keywords}
-                            onChange={(event) => setMemoryForm((form) => ({ ...form, keywords: event.target.value }))}
-                            placeholder="多个关键词用逗号分隔"
-                            className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-xs text-stone-800 focus:border-stone-400 focus:outline-none"
-                          />
-                        </label>
-                      </div>
-                      <label className="mt-3 block space-y-1 text-[11px] font-medium text-stone-500">
-                        <span>记忆内容</span>
-                        <textarea
-                          value={memoryForm.content}
-                          onChange={(event) => setMemoryForm((form) => ({ ...form, content: event.target.value }))}
-                          className="min-h-28 w-full resize-y rounded-md border border-stone-200 bg-white p-3 text-xs leading-relaxed text-stone-800 focus:border-stone-400 focus:outline-none"
-                        />
-                      </label>
-                      {memoryError && <p className="mt-2 text-xs text-red-600">{memoryError}</p>}
-                      <div className="mt-3 flex justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={closeMemoryEditor}
-                          className="rounded-md px-3 py-1.5 text-xs font-medium text-stone-500 hover:bg-stone-200"
-                        >
-                          取消
-                        </button>
-                        <button
-                          type="button"
-                          onClick={saveStructuredMemory}
-                          disabled={isSavingMemory}
-                          className="rounded-md bg-[#6C806A] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#596C58] disabled:opacity-50"
-                        >
-                          {isSavingMemory ? "保存中..." : "保存"}
-                        </button>
-                      </div>
+                  <div className="grid min-h-[430px] grid-cols-1 border-y border-stone-200 lg:grid-cols-[minmax(220px,0.8fr)_minmax(0,2fr)]">
+                    <div className="border-b border-stone-200 py-2 lg:border-b-0 lg:border-r">
+                      {isLoadingMemory && memoryFiles.length === 0 ? (
+                        <p className="px-3 py-8 text-center text-xs text-stone-400">正在读取记忆文件...</p>
+                      ) : visibleMemoryFiles.length === 0 ? (
+                        <p className="px-3 py-8 text-center text-xs text-stone-400">暂无记忆文件</p>
+                      ) : (
+                        <div className="space-y-0.5">
+                          {visibleMemoryFiles.map((file) => (
+                            <button
+                              key={file.path}
+                              type="button"
+                              onClick={() => void selectMemoryFile(file.path)}
+                              className={`w-full px-3 py-2.5 text-left transition-colors ${
+                                selectedMemoryPath === file.path && !isCreatingMemory
+                                  ? "bg-stone-100 text-stone-900"
+                                  : "text-stone-600 hover:bg-stone-50"
+                              }`}
+                            >
+                              <span className="block break-all font-mono text-[11px] font-semibold">{file.path}</span>
+                              <span className="mt-1 line-clamp-2 block text-[10px] leading-4 text-stone-400">{file.description}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  )}
 
-                  <div className="divide-y divide-stone-200 border-y border-stone-200">
-                    {visibleMemories.length === 0 ? (
-                      <p className="py-10 text-center text-xs text-stone-400">暂无结构化记忆</p>
-                    ) : (
-                      visibleMemories.map((memory) => (
-                        <article key={memory.id} className="py-4">
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <h4 className="break-words text-sm font-semibold text-stone-800">{memory.name}</h4>
-                                <span className="rounded-sm border border-stone-200 bg-stone-50 px-1.5 py-0.5 text-[10px] font-medium text-stone-500">
-                                  {memory.creator === "ai" ? "AI 创建" : "用户创建"}
-                                </span>
-                                <time className="text-[10px] text-stone-400">{formatMemoryTime(memory.created_at)}</time>
-                              </div>
-                              {memory.keywords.length > 0 && (
-                                <div className="mt-2 flex flex-wrap gap-1.5">
-                                  {memory.keywords.map((keyword) => (
-                                    <span key={keyword} className="rounded-sm bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">
-                                      {keyword}
-                                    </span>
-                                  ))}
-                                </div>
+                    <div className="flex min-w-0 flex-col p-3">
+                      {isCreatingMemory && (
+                        <label className="mb-3 block space-y-1 text-[11px] font-medium text-stone-500">
+                          <span>虚拟路径</span>
+                          <input
+                            value={newMemoryPath}
+                            onChange={(event) => updateNewMemoryPath(event.target.value)}
+                            placeholder="/topics/example.md"
+                            className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 font-mono text-xs text-stone-800 focus:border-stone-400 focus:outline-none"
+                          />
+                        </label>
+                      )}
+                      {selectedMemoryPath || isCreatingMemory ? (
+                        <>
+                          <div className="mb-2 flex min-h-8 items-center justify-between gap-3">
+                            <span className="min-w-0 truncate font-mono text-[11px] font-semibold text-stone-600">
+                              {isCreatingMemory ? newMemoryPath || "新记忆文件" : selectedMemoryPath}
+                            </span>
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              {!isCreatingMemory && (
+                                <button
+                                  type="button"
+                                  onClick={() => void removeMemoryFile()}
+                                  title="删除文件"
+                                  className="rounded p-1.5 text-stone-400 hover:bg-red-50 hover:text-red-600"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
                               )}
-                              <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-stone-600">{memory.content}</p>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-1">
                               <button
                                 type="button"
-                                onClick={() => openMemoryEditor(memory)}
-                                title="编辑记忆"
-                                className="rounded p-1.5 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                                onClick={() => void saveMemoryFile()}
+                                disabled={isSavingMemory || isLoadingMemory}
+                                className="rounded-md bg-[#6C806A] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#596C58] disabled:opacity-50"
                               >
-                                <Pencil className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => removeStructuredMemory(memory)}
-                                title="删除记忆"
-                                className="rounded p-1.5 text-stone-400 hover:bg-red-50 hover:text-red-600"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
+                                {isSavingMemory ? "保存中..." : "保存"}
                               </button>
                             </div>
                           </div>
-                        </article>
-                      ))
-                    )}
+                          <textarea
+                            value={memoryDraft}
+                            onChange={(event) => setMemoryDraft(event.target.value)}
+                            disabled={isLoadingMemory}
+                            spellCheck={false}
+                            className="min-h-[340px] flex-1 resize-y rounded-md border border-stone-200 bg-white p-3 font-mono text-[11px] leading-5 text-stone-800 focus:border-stone-400 focus:outline-none disabled:opacity-60"
+                          />
+                        </>
+                      ) : (
+                        <div className="flex flex-1 items-center justify-center text-xs text-stone-400">选择或新建一个记忆文件</div>
+                      )}
+                      {memoryError && <p className="mt-2 text-xs text-red-600">{memoryError}</p>}
+                    </div>
                   </div>
-                  {!editingMemoryId && memoryError && <p className="text-xs text-red-600">{memoryError}</p>}
+
                 </div>
               </div>
             )}

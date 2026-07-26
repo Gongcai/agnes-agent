@@ -13,7 +13,6 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::agent::protocol::{msg_type, Envelope};
 use crate::agent::AgentManager;
-use crate::db::repo::memory::NewMemory;
 use crate::db::repo::messages::NewMessagePart;
 use crate::db::repo::tools::NewToolCall;
 use crate::db::DbActorHandle;
@@ -502,7 +501,7 @@ async fn handle_conn<R: tauri::Runtime>(
                         .get("arguments")
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
-                    let public_args = crate::tools::builtin::memory_entry::public_arguments(&args);
+                    let public_args = crate::tools::audit_arguments(&tool_name, &args);
 
                     // 确保 ActiveRun 已创建（AI 首个输出可能是工具调用，此前无 ASSISTANT_DELTA）。
                     // 否则取消时无 ActiveRun 可 drain、状态不更新，消息会消失。
@@ -885,7 +884,6 @@ async fn handle_conn<R: tauri::Runtime>(
                     .get("summary")
                     .and_then(|x| x.as_str())
                     .unwrap_or("");
-                let memories_val = env.payload.get("memories").and_then(|x| x.as_array());
                 let usage = env.payload.get("usage").map(|value| {
                     (
                         value
@@ -914,84 +912,7 @@ async fn handle_conn<R: tauri::Runtime>(
                         .await;
                 }
 
-                // 获取 Agent ID
-                let mut agent_id = String::new();
-                if let Ok(Some(sess)) = db.get_session(session_id.clone()).await {
-                    agent_id = sess.agent_id;
-                }
-
-                // 2. Insert extracted structured memories and their optional local vectors.
-                if let Some(mems) = memories_val {
-                    for m in mems {
-                        let content = m.get("content").and_then(|x| x.as_str()).unwrap_or("");
-                        let name = m
-                            .get("name")
-                            .and_then(|value| value.as_str())
-                            .filter(|value| !value.trim().is_empty())
-                            .map(ToString::to_string)
-                            .unwrap_or_else(|| content.chars().take(60).collect());
-                        let keywords = m
-                            .get("keywords")
-                            .and_then(|value| value.as_array())
-                            .map(|values| {
-                                values
-                                    .iter()
-                                    .filter_map(|value| value.as_str().map(ToString::to_string))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default();
-                        let m_type = m.get("type").and_then(|x| x.as_str()).unwrap_or("Fact");
-                        let confidence =
-                            m.get("confidence").and_then(|x| x.as_f64()).unwrap_or(0.8);
-                        let source = m.get("source").and_then(|x| x.as_str()).unwrap_or("");
-
-                        if !content.is_empty() && !agent_id.is_empty() {
-                            let mem_id = uuid::Uuid::new_v4().to_string();
-
-                            let new_mem = NewMemory {
-                                id: mem_id.clone(),
-                                agent_id: agent_id.clone(),
-                                name,
-                                keywords,
-                                content: content.to_string(),
-                                creator: "ai".to_string(),
-                                memory_type: m_type.to_string(),
-                                scope: "agent".to_string(),
-                                source: source.to_string(),
-                                confidence,
-                                embedding_id: None,
-                            };
-                            match db.insert_memory(new_mem).await {
-                                Ok(true) => {
-                                    if let Some(embedding) = m.get("embedding").and_then(
-                                        crate::tools::builtin::memory_entry::parse_embedding_value,
-                                    ) {
-                                        if let Err(error) = db
-                                            .upsert_memory_embedding(
-                                                uuid::Uuid::new_v4().to_string(),
-                                                mem_id,
-                                                embedding.model,
-                                                content.to_string(),
-                                                embedding.vector,
-                                            )
-                                            .await
-                                        {
-                                            eprintln!("[memory] Failed to index extracted memory: {error}");
-                                        }
-                                    }
-                                }
-                                Ok(false) => {}
-                                Err(error) => {
-                                    eprintln!(
-                                        "[memory] Failed to persist extracted memory: {error}"
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 3. 落地最终的 assistant 思考及正文消息片段（本回合的，已累计的在前序回合 drain 过）。
+                // 2. 落地最终的 assistant 思考及正文消息片段（本回合的，已累计的在前序回合 drain 过）。
                 // A provider may finish without sending a delta (for example, an
                 // exhausted reasoning response). Create the run record from the
                 // explicit manager mapping so that this cannot leave a pending

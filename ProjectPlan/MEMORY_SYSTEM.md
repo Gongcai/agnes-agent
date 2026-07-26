@@ -1,6 +1,6 @@
 # Agnes 持久记忆文件系统详细设计
 
-> 状态：目标设计，替换现有 `USER.md / MEMORY.md / memory_store` 双轨实现
+> 状态：核心替换已实施，原 `USER.md / MEMORY.md / memory_store` 双轨实现已下线
 >
 > 更新日期：2026-07-27
 >
@@ -8,6 +8,15 @@
 
 本文定义 Agnes 新一代持久记忆系统。系统以“Agent 可操作的虚拟 Markdown 文件系统”为
 唯一长期记忆模型，并将 `MEMORY_FILESYSTEM_PROMPT.md` 作为运行时记忆规则的权威来源。
+
+截至 2026-07-27，运行时核心链路已按本文完成破坏式切换：SQLite canonical store、六个 Agent
+工具、单快照 prompt 注入、设置页 Markdown 编辑、CAS、可信 surface 校验、E2EE `memory_file`
+同步及冲突合并均已接入；旧表、旧工具、后台 extractor 和记忆向量流程已删除。正式提示词随
+sidecar 打包，并通过版本常量和 SHA-256 golden test 防止资源漂移。
+
+以下属于产品化增强，不阻塞新架构作为唯一记忆系统运行：修订历史/撤销 UI、正文 FTS 与
+backlink 导航、细粒度本地指标面板、完整行为 eval 集，以及真实双设备的人工验收。这些增强
+继续直接基于 `memory_files` 实现，不恢复任何旧兼容层。
 
 这是开发阶段的破坏式重构，不保留旧实现的兼容层：
 
@@ -859,35 +868,37 @@ UI 可维护 FTS5 派生索引搜索路径、名称、描述、别名和正文�
 
 ---
 
-## 13. 实施顺序
+## 13. 实施状态
 
 ### Phase 1：领域模型与本地工具
 
-- 建立 `memory_files`、有限 revisions、conflicts 和 listing epoch；
-- 实现统一 parser/validator/path normalizer；
-- 实现六个工具、CAS、审计和 Saved memory event；
-- 删除旧 memory tools、extractor 和记忆 embedding 回填；
-- 使用全新开发数据库启动，不实现旧数据迁移。
+- [x] 建立 `memory_files`、revisions、conflicts 和 listing epoch；
+- [x] 实现统一 parser/validator/path normalizer；
+- [x] 实现六个工具、CAS、脱敏审计和 Saved memory 对话反馈；
+- [x] 删除旧 memory tools、extractor 和记忆 embedding 回填；
+- [x] 使用全新开发数据库启动，不实现旧数据迁移。
 
 ### Phase 2：Prompt compiler
 
-- 将 `MEMORY_FILESYSTEM_PROMPT.md` 打包为唯一模板；
-- 实现 Agent name 替换、动态块转义、snapshot 与 token 预算；
-- 删除 `MEMORY_MANAGEMENT_INSTRUCTIONS` 和 USER/MEMORY 注入；
-- 添加 prompt golden test 和工具 schema snapshot test。
+- [x] 将 `MEMORY_FILESYSTEM_PROMPT.md` 打包为唯一模板；
+- [x] 实现 Agent name 替换、动态块转义、单次 DB snapshot 与 token 预算；
+- [x] 删除 `MEMORY_MANAGEMENT_INSTRUCTIONS` 和 USER/MEMORY 注入；
+- [x] 添加 prompt 版本/hash golden test 和工具 schema 覆盖测试。
 
 ### Phase 3：前端
 
-- 用文件树和 Markdown 编辑器替换旧记忆设置页；
-- 接入 saved chip、版本冲突、历史撤销和本地 FTS；
-- 移除向量模型、覆盖率和手动向量化相关记忆 UI。
+- [x] 用虚拟路径列表和完整 Markdown 编辑器替换旧记忆设置页；
+- [x] 接入 Saved memory 反馈、删除确认和版本冲突重载；
+- [x] 移除向量覆盖率和手动向量化相关记忆 UI；
+- [ ] 增加目录树、修订历史/撤销、正文 FTS、backlink 和 dangling-link 导航。
 
 ### Phase 4：同步
 
-- 增加 `memory_file` E2EE payload、outbox 和 D1 migration；
-- 删除 `explicit_memory` / `memory` sync repository 和 Worker 路由；
-- 实现 revision CAS、冲突落盘和恢复流程；
-- 清空开发云端旧记忆实体后做两设备验收。
+- [x] 增加 `memory_file` E2EE payload、事务内 outbox 和 D1 migration；
+- [x] 删除 `explicit_memory` / `memory` sync repository 和 Worker 路由；
+- [x] 实现确定性实体 ID、revision CAS、三方合并、冲突落盘和恢复流程；
+- [x] migration 清理开发云端旧记忆实体；
+- [ ] 使用两个真实设备完成端到端人工验收。
 
 ---
 
@@ -949,21 +960,27 @@ UI 可维护 FTS5 派生索引搜索路径、名称、描述、别名和正文�
 
 ---
 
-## 15. 完成标准
+## 15. 验收状态
 
-以下条件全部满足后，新系统才算替换完成：
+### 15.1 核心替换（已完成）
 
-- 运行时代码和 prompt 中不再出现 USER.md/MEMORY.md 双轨决策；
-- Agent 只收到 `memory_list/read/write/str_replace/append/delete` 六个记忆工具；
-- `MEMORY_FILESYSTEM_PROMPT.md` 是唯一正式模板，prompt golden test 可检测漂移；
-- profile、preferences、listing 每轮从同一 Agent snapshot 正确注入；
-- 所有写入使用 CAS，冲突不会覆盖外部修改；
-- chat 只创建 `[stated]`，隐私省略与行为 guardrail eval 通过；
-- 前端文件树、编辑、删除、历史和 Saved memory chip 可用；
-- 新 `memory_file` 完成 E2EE 同步和双设备冲突验收；
-- 旧表、旧工具、旧 extractor、旧记忆向量任务和旧同步实体均已删除；
-- Rust、Python、前端、Worker 的相关测试全部通过；
-- RAG 的 sqlite-vec、文档检索和加密向量制品不受本次删除影响。
+- [x] 运行时代码和 prompt 中不再存在 USER.md/MEMORY.md 双轨决策；
+- [x] Agent 只收到 `memory_list/read/write/str_replace/append/delete` 六个记忆工具；
+- [x] `MEMORY_FILESYSTEM_PROMPT.md` 是唯一正式模板，版本/hash golden test 可检测漂移；
+- [x] profile、preferences、listing 每轮从同一 Agent DB snapshot 正确注入；
+- [x] 所有本地写入使用 CAS，远端派生字段重算且冲突不会静默覆盖；
+- [x] chat 与 UI 只能新建 `[stated]`，并必须原样保留可信 surface 的其他标签；
+- [x] 前端可列出、创建、编辑、删除文件并处理 CAS 冲突；
+- [x] 新 `memory_file` 已进入 E2EE payload、outbox、bootstrap 和冲突恢复链路；
+- [x] 旧表、旧工具、旧 extractor、旧记忆向量任务和旧同步实体均已删除；
+- [x] RAG 的 sqlite-vec、文档检索和加密向量制品不受本次删除影响。
+
+### 15.2 产品化增强（后续）
+
+- [ ] 补齐隐私省略、别名归档、读前判断和回复措辞的完整对话行为 eval；
+- [ ] 前端提供修订历史、撤销、正文 FTS、backlink 与 dangling-link 导航；
+- [ ] 实现第 12 节的细粒度本地指标与诊断视图；
+- [ ] 在两个真实设备上完成非冲突收敛、同 base 冲突和删除/修改冲突人工验收。
 
 本文件负责系统设计；模型逐条执行的行为规范以
 `ProjectPlan/MEMORY_FILESYSTEM_PROMPT.md` 为准。二者出现冲突时，应先修正文档与模板使其一致，

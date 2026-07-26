@@ -4,7 +4,6 @@ use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 
 pub const USER_PROFILE_SETTING: &str = "user:profile:v1";
-pub const AGENT_USER_PROFILE_MODE_PREFIX: &str = "agent:user_profile_mode:";
 
 const MAX_AVATAR_LENGTH: usize = 5 * 1024 * 1024;
 const MAX_SHORT_FIELD_LENGTH: usize = 120;
@@ -252,44 +251,6 @@ fn push_preference_line(
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum UserProfileInheritanceMode {
-    #[default]
-    Auto,
-    Inherit,
-    Isolated,
-}
-
-impl UserProfileInheritanceMode {
-    fn as_setting_value(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Inherit => "inherit",
-            Self::Isolated => "isolated",
-        }
-    }
-
-    fn from_setting_value(value: Option<&str>) -> Self {
-        match value {
-            Some("inherit") => Self::Inherit,
-            Some("isolated") => Self::Isolated,
-            _ => Self::Auto,
-        }
-    }
-}
-
-fn agent_mode_setting(agent_id: &str) -> AppResult<String> {
-    if agent_id.is_empty()
-        || !agent_id
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
-        return Err(AppError::Other("Invalid agent id for user profile".into()));
-    }
-    Ok(format!("{AGENT_USER_PROFILE_MODE_PREFIX}{agent_id}"))
-}
-
 pub async fn load_user_profile(db: &DbActorHandle) -> AppResult<UserProfile> {
     let Some(raw) = db.get_setting(USER_PROFILE_SETTING.to_string()).await? else {
         return Ok(UserProfile::default());
@@ -303,61 +264,6 @@ pub async fn save_user_profile(db: &DbActorHandle, profile: &UserProfile) -> App
     let raw = serde_json::to_string(profile)
         .map_err(|error| AppError::Other(format!("用户资料无法序列化：{error}")))?;
     db.set_setting(USER_PROFILE_SETTING.to_string(), raw).await
-}
-
-pub async fn load_agent_inheritance_mode(
-    db: &DbActorHandle,
-    agent_id: &str,
-) -> AppResult<UserProfileInheritanceMode> {
-    let key = agent_mode_setting(agent_id)?;
-    let value = db.get_setting(key).await?;
-    Ok(UserProfileInheritanceMode::from_setting_value(
-        value.as_deref(),
-    ))
-}
-
-pub async fn save_agent_inheritance_mode(
-    db: &DbActorHandle,
-    agent_id: &str,
-    mode: UserProfileInheritanceMode,
-) -> AppResult<()> {
-    let key = agent_mode_setting(agent_id)?;
-    if mode == UserProfileInheritanceMode::Auto {
-        db.delete_setting(key).await
-    } else {
-        db.set_setting(key, mode.as_setting_value().to_string())
-            .await
-    }
-}
-
-pub fn should_inherit(mode: UserProfileInheritanceMode, user_md: &str) -> bool {
-    match mode {
-        UserProfileInheritanceMode::Auto => user_md.trim().is_empty(),
-        UserProfileInheritanceMode::Inherit => true,
-        UserProfileInheritanceMode::Isolated => false,
-    }
-}
-
-pub fn merge_user_profile(user_md: &str, profile_md: &str, inherit: bool) -> String {
-    if !inherit || profile_md.trim().is_empty() {
-        return user_md.to_string();
-    }
-    if user_md.trim().is_empty() {
-        return profile_md.to_string();
-    }
-    format!("{}\n\n---\n\n{}", user_md.trim_end(), profile_md.trim())
-}
-
-pub async fn load_effective_explicit_memories(
-    db: &DbActorHandle,
-    agent_id: &str,
-) -> AppResult<(String, String)> {
-    let (user_md, memory_md) = crate::memory::load_explicit_memories(db, agent_id).await?;
-    let mode = load_agent_inheritance_mode(db, agent_id).await?;
-    let profile_md = load_user_profile(db).await?.to_markdown();
-    let effective_user_md =
-        merge_user_profile(&user_md, &profile_md, should_inherit(mode, &user_md));
-    Ok((effective_user_md, memory_md))
 }
 
 #[cfg(test)]
@@ -401,34 +307,5 @@ mod tests {
     #[test]
     fn empty_profile_does_not_create_a_section() {
         assert_eq!(UserProfile::default().to_markdown(), "");
-    }
-
-    #[test]
-    fn auto_inherits_only_when_agent_user_md_is_empty() {
-        assert!(should_inherit(UserProfileInheritanceMode::Auto, " \n"));
-        assert!(!should_inherit(
-            UserProfileInheritanceMode::Auto,
-            "# Agent 用户信息"
-        ));
-    }
-
-    #[test]
-    fn manual_inheritance_appends_without_overwriting_agent_content() {
-        let original = "# Agent 用户信息\n\n用户自己填写的内容。";
-        let profile = populated_profile().to_markdown();
-        let merged = merge_user_profile(original, &profile, true);
-        assert!(merged.starts_with(original));
-        assert!(merged.ends_with(&profile));
-        assert_eq!(merged.matches(original).count(), 1);
-    }
-
-    #[test]
-    fn isolated_mode_never_inherits() {
-        let original = "Agent 原始 USER.md";
-        assert!(!should_inherit(UserProfileInheritanceMode::Isolated, ""));
-        assert_eq!(
-            merge_user_profile(original, "## 全局用户资料", false),
-            original
-        );
     }
 }

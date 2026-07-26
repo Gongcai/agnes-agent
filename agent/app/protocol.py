@@ -25,7 +25,6 @@ class MsgType(str, Enum):
     SESSION_TITLE_UPDATE = "session_title_update"
     ASSISTANT_DELTA = "assistant_delta"
     MODEL_FALLBACK = "model_fallback"
-    MEMORY_QUERY_REQUEST = "memory_query_request"
     USER_MESSAGE = "user_message"
     DEBUG_PROMPT = "debug_prompt"
     DEBUG_PROMPT_RESULT = "debug_prompt_result"

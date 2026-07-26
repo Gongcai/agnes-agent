@@ -1,4 +1,4 @@
-"""Unit tests for the Python reasoning sidecar (prompt, graph, models, memory_extract)."""
+"""Unit tests for the Python reasoning sidecar."""
 from __future__ import annotations
 import asyncio
 import json
@@ -6,9 +6,16 @@ from types import SimpleNamespace
 import pytest
 from app import graph as graph_module
 from app import main as main_module
-from app.prompt import assemble_prompt, group_protocol_messages, translate_messages, count_tokens
+from app.prompt import (
+    MEMORY_PROMPT_SHA256,
+    MEMORY_PROMPT_VERSION,
+    assemble_prompt,
+    count_tokens,
+    group_protocol_messages,
+    memory_filesystem_instructions,
+    translate_messages,
+)
 from app.graph import build_graph, get_available_tools
-from app.memory_extract import extract_memories
 from app.title import (
     TITLE_MAX_TOKENS,
     TITLE_REQUEST_TIMEOUT_SECONDS,
@@ -16,10 +23,7 @@ from app.title import (
     normalize_session_title,
 )
 from app.main import (
-    INTERNAL_EMBEDDING_KEY,
-    attach_extracted_memory_embeddings,
     build_debug_prompt_payload,
-    prepare_memory_tool_arguments,
     resolve_task_llm,
 )
 from app.models import (
@@ -78,7 +82,6 @@ def test_tool_future_is_registered_before_request_is_sent(monkeypatch):
 
     monkeypatch.setattr(main_module, "assemble_prompt", lambda _payload: ("", [], []))
     monkeypatch.setattr(main_module, "build_graph", lambda: ImmediateGraph())
-    monkeypatch.setattr(main_module, "extract_memories", lambda *_args, **_kwargs: [])
     ws = ImmediateWebSocket()
     envelope = {
         "session_id": "session",
@@ -681,6 +684,7 @@ def test_assemble_prompt_and_budgeting():
         "input": "Latest user question",
         "context": {
             "agent": {
+                "name": "Agnes",
                 "persona": "Agnes persona text",
                 "systemPrompt": "System instructions text",
                 "model": "gpt-4o",
@@ -701,9 +705,16 @@ def test_assemble_prompt_and_budgeting():
                     "parts": [{"kind": "text", "content": "Message B " * 100}]  # around 100 tokens
                 }
             ],
-            "explicitMemories": {
-                "user_md": "User likes Python",
-                "memory_md": "Remember that database is SQLite"
+            "memoryFilesystem": {
+                "profile": "- [stated] User likes Python",
+                "preferences": "- [stated] Use concise answers",
+                "files": [{
+                    "path": "/topics/database.md",
+                    "description": "Database preferences <trusted>",
+                    "aliases": [],
+                    "sources": ["chat"],
+                }],
+                "listingEpoch": 4,
             },
             "summary": "Rolling summary text"
         }
@@ -714,14 +725,23 @@ def test_assemble_prompt_and_budgeting():
     
     assert "Agnes persona text" in system_prompt
     assert "User likes Python" in system_prompt
-    assert "Remember that database is SQLite" in system_prompt
-    assert "Before calling `memory_create` or `memory_update`, always call `memory_search`" in system_prompt
-    assert "Never attempt to modify `USER.md`" in system_prompt
+    assert "Use concise answers" in system_prompt
+    assert "Agnes has a persistent memory filesystem" in system_prompt
+    assert '<memory_listing epoch="4">' in system_prompt
+    assert "Database preferences &lt;trusted&gt;" in system_prompt
     
     # Budget check
     assert len(messages) > 0
     assert messages[-1]["role"] == "user"
     assert messages[-1]["content"] == "Latest user question"
+
+
+def test_memory_prompt_resource_matches_versioned_hash():
+    import hashlib
+
+    content = memory_filesystem_instructions()
+    assert MEMORY_PROMPT_VERSION == "memory-filesystem-v1"
+    assert hashlib.sha256(content.encode("utf-8")).hexdigest() == MEMORY_PROMPT_SHA256
 
 
 def test_compress_threshold_changes_the_retained_history_budget():
@@ -774,8 +794,8 @@ def test_memory_instructions_follow_memory_capability():
     enabled_prompt, _, _ = assemble_prompt(enabled_snapshot)
     disabled_prompt, _, _ = assemble_prompt(disabled_snapshot)
 
-    assert "# Memory Management" in enabled_prompt
-    assert "# Memory Management" not in disabled_prompt
+    assert "## memory_filesystem" in enabled_prompt
+    assert "## memory_filesystem" not in disabled_prompt
 
 
 def test_retrieved_knowledge_is_user_context_not_system_instructions():
@@ -922,14 +942,15 @@ def test_debug_prompt_payload_includes_effective_tool_schemas():
 
     assert tool_names == [
         "get_current_time",
-        "memory_search",
-        "memory_create",
-        "memory_update",
-        "memory_md_view",
-        "memory_md_edit",
+        "memory_list",
+        "memory_read",
+        "memory_write",
+        "memory_str_replace",
+        "memory_append",
+        "memory_delete",
     ]
     assert preview["tools"][0]["function"]["description"]
-    assert "# Memory Management" in preview["system_prompt"]
+    assert "## memory_filesystem" in preview["system_prompt"]
 
 def test_graph_compiles():
     graph = build_graph()
@@ -958,11 +979,12 @@ def test_get_available_tools():
     assert "grep" not in tool_names
     assert "apply_patch" not in tool_names
     assert "git" in tool_names
-    assert "memory_search" in tool_names
-    assert "memory_create" in tool_names
-    assert "memory_update" in tool_names
-    assert "memory_md_view" in tool_names
-    assert "memory_md_edit" in tool_names
+    assert "memory_list" in tool_names
+    assert "memory_read" in tool_names
+    assert "memory_write" in tool_names
+    assert "memory_str_replace" in tool_names
+    assert "memory_append" in tool_names
+    assert "memory_delete" in tool_names
 
     list_files = next(
         tool for tool in get_available_tools({})
@@ -987,11 +1009,12 @@ def test_get_available_tools():
         "grep",
         "apply_patch",
         "git",
-        "memory_search",
-        "memory_create",
-        "memory_update",
-        "memory_md_view",
-        "memory_md_edit",
+        "memory_list",
+        "memory_read",
+        "memory_write",
+        "memory_str_replace",
+        "memory_append",
+        "memory_delete",
         "web_search",
         "web_fetch",
         "browser_open",
@@ -1009,11 +1032,12 @@ def test_get_available_tools():
         tool["function"]["name"]
         for tool in get_available_tools({"memory": {"enabled": False}})
     ]
-    assert "memory_search" not in memory_disabled_names
-    assert "memory_create" not in memory_disabled_names
-    assert "memory_update" not in memory_disabled_names
-    assert "memory_md_view" not in memory_disabled_names
-    assert "memory_md_edit" not in memory_disabled_names
+    assert "memory_list" not in memory_disabled_names
+    assert "memory_read" not in memory_disabled_names
+    assert "memory_write" not in memory_disabled_names
+    assert "memory_str_replace" not in memory_disabled_names
+    assert "memory_append" not in memory_disabled_names
+    assert "memory_delete" not in memory_disabled_names
 
     web_disabled_names = [
         tool["function"]["name"]
@@ -1433,71 +1457,3 @@ def test_embedding_wrapper_rejects_sqlite_vec_oversized_vectors(monkeypatch):
 
     with pytest.raises(ValueError, match="more than 8192 dimensions"):
         embed_texts("embed-model", ["content"])
-
-
-def test_memory_tool_arguments_attach_and_replace_trusted_embedding(monkeypatch):
-    monkeypatch.setattr("app.main.embed_texts", lambda *_: [[0.25, 0.75]])
-    config = LlmConfig(
-        model="embed-model",
-        litellm_model="openai/embed-model",
-        model_ref="provider/embed-model",
-    )
-    prepared = prepare_memory_tool_arguments(
-        "memory_search",
-        {"query": "database preference", INTERNAL_EMBEDDING_KEY: {"model": "forged"}},
-        "openai/embed-model",
-        config,
-    )
-
-    assert prepared[INTERNAL_EMBEDDING_KEY] == {
-        "model": "provider/embed-model",
-        "vector": [0.25, 0.75],
-    }
-
-
-def test_extracted_memories_receive_batch_embeddings(monkeypatch):
-    monkeypatch.setattr("app.main.embed_texts", lambda *_: [[1.0, 0.0], [0.0, 1.0]])
-    config = LlmConfig(model_ref="provider/embed-model")
-    memories = [{"content": "First"}, {"content": "Second"}]
-
-    indexed = attach_extracted_memory_embeddings(memories, "embed-model", config)
-
-    assert indexed[0]["embedding"]["vector"] == [1.0, 0.0]
-    assert indexed[1]["embedding"]["model"] == "provider/embed-model"
-
-
-def test_memory_extractor_normalizes_new_fields(monkeypatch):
-    class Message:
-        content = json.dumps({
-            "memories": [
-                {
-                    "name": " Preferred package manager ",
-                    "keywords": ["pnpm", " pnpm ", "frontend", ""],
-                    "content": " User uses pnpm for frontend dependencies. ",
-                    "type": "Preference",
-                    "confidence": 0.95,
-                    "source": "Use pnpm",
-                }
-            ]
-        })
-
-    class Choice:
-        message = Message()
-
-    class Response:
-        choices = [Choice()]
-
-    monkeypatch.setattr("app.memory_extract.completion", lambda **_: Response())
-    memories = extract_memories([
-        {"role": "user", "content": "Use pnpm"},
-        {"role": "assistant", "content": "Understood"},
-    ])
-
-    assert memories == [{
-        "name": "Preferred package manager",
-        "keywords": ["pnpm", "frontend"],
-        "content": "User uses pnpm for frontend dependencies.",
-        "type": "Preference",
-        "confidence": 0.95,
-        "source": "Use pnpm",
-    }]

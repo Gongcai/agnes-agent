@@ -63,6 +63,13 @@ pub struct ApprovalDecision {
 
 /// Resolve human approval for the active session mode.
 pub fn approval_decision(mode: PermissionMode, tool: &str, risk: Risk) -> ApprovalDecision {
+    if tool == "memory_delete" {
+        return ApprovalDecision {
+            needs_approval: true,
+            reason: "删除整份记忆文件需要用户明确确认。",
+            is_secondary_confirmation: true,
+        };
+    }
     match mode {
         PermissionMode::AskForApproval => ApprovalDecision {
             needs_approval: true,
@@ -88,11 +95,11 @@ pub fn approval_decision(mode: PermissionMode, tool: &str, risk: Risk) -> Approv
                     | "file_write"
                     | "file_edit"
                     | "apply_patch"
-                    | "memory_search"
-                    | "memory_create"
-                    | "memory_update"
-                    | "memory_md_view"
-                    | "memory_md_edit"
+                    | "memory_list"
+                    | "memory_read"
+                    | "memory_write"
+                    | "memory_str_replace"
+                    | "memory_append"
                     | "web_search"
                     | "web_fetch"
                     | "browser_open"
@@ -165,11 +172,11 @@ mod tests {
             "file_write",
             "file_edit",
             "apply_patch",
-            "memory_search",
-            "memory_create",
-            "memory_update",
-            "memory_md_view",
-            "memory_md_edit",
+            "memory_list",
+            "memory_read",
+            "memory_write",
+            "memory_str_replace",
+            "memory_append",
             "web_search",
             "web_fetch",
             "browser_open",

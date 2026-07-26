@@ -125,7 +125,6 @@ Rust → Python:
 Python → Rust:
   assistant_delta    流式推理 token
   tool_call_request  请求执行某工具
-  memory_query_request  推理中二次记忆检索
   run_finished       本轮结束
   run_error          本轮出错
 
@@ -148,15 +147,19 @@ Python → Rust:
     "input": "用户本轮输入",
     "context": {
       "agent": {}, "settings": {}, "recentMessages": [],
-      "summary": "...", "explicitMemories": [],
-      "retrievedMemories": [], "projectContext": []
+      "summary": "...",
+      "memoryFilesystem": {
+        "profile": null, "preferences": null,
+        "files": [], "listingEpoch": 0
+      },
+      "projectContext": []
     }
   }
 }
 ```
 Python 本轮内只做：prompt 拼装 / 模型调用 / 工具决策。持久记忆通过与其他工具相同的
 `tool_call_request` 调用 Rust 六个 memory tools；不再有后台抽取结果或专用
-`memory_query_request` 协议。
+专用记忆查询协议。
 
 ### 3.3 工具调用 + 人类确认 + capability sandbox
 1. Python 发 `tool_call_request` → Rust。

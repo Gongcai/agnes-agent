@@ -45,7 +45,7 @@ fn ensure_sync_metadata(conn: &Connection) -> AppResult<()> {
         "agents",
         "sessions",
         "messages",
-        "memory_store",
+        "memory_files",
         "workspaces",
     ] {
         ensure_column(conn, table, "version", "INTEGER NOT NULL DEFAULT 1")?;
@@ -56,6 +56,26 @@ fn ensure_sync_metadata(conn: &Connection) -> AppResult<()> {
             [],
         )?;
     }
+    Ok(())
+}
+
+fn drop_legacy_memory_storage(conn: &Connection) -> AppResult<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS explicit_memories;
+         DROP TABLE IF EXISTS memory_store;",
+    )?;
+    conn.execute(
+        "DELETE FROM sync_outbox WHERE entity_type IN ('explicit_memory', 'memory')",
+        [],
+    )?;
+    conn.execute(
+        "DELETE FROM sync_entity_state WHERE entity_type IN ('explicit_memory', 'memory')",
+        [],
+    )?;
+    conn.execute(
+        "DELETE FROM sync_conflicts WHERE entity_type IN ('explicit_memory', 'memory')",
+        [],
+    )?;
     Ok(())
 }
 
@@ -99,58 +119,6 @@ fn migrate_workspace_bindings(conn: &Connection) -> AppResult<()> {
         [&timestamp],
     )?;
     conn.execute("ALTER TABLE workspaces DROP COLUMN folder_path", [])?;
-    Ok(())
-}
-
-fn legacy_explicit_memory_key(key: &str) -> Option<(&str, &str)> {
-    let value = key.strip_prefix("agent:")?;
-    for kind in ["user_md", "memory_md"] {
-        if let Some(agent_id) = value.strip_suffix(&format!(":{kind}")) {
-            if !agent_id.is_empty() {
-                return Some((agent_id, kind));
-            }
-        }
-    }
-    None
-}
-
-fn migrate_explicit_memories(conn: &mut Connection) -> AppResult<()> {
-    let legacy_rows: Vec<(String, String)> = {
-        let mut stmt =
-            conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'agent:%' ORDER BY key")?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-    let timestamp = now();
-    let tx = conn.transaction()?;
-    for (key, content) in legacy_rows {
-        let Some((agent_id, kind)) = legacy_explicit_memory_key(&key) else {
-            continue;
-        };
-        let agent_exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM agents WHERE id = ?1)",
-            [agent_id],
-            |row| row.get(0),
-        )?;
-        if !agent_exists {
-            continue;
-        }
-        tx.execute(
-            "INSERT INTO explicit_memories \
-             (id, agent_id, kind, content, created_at, updated_at, version) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1) \
-             ON CONFLICT(agent_id, kind) DO NOTHING",
-            params![
-                uuid::Uuid::new_v4().to_string(),
-                agent_id,
-                kind,
-                content,
-                timestamp,
-            ],
-        )?;
-        tx.execute("DELETE FROM settings WHERE key = ?1", [&key])?;
-    }
-    tx.commit()?;
     Ok(())
 }
 
@@ -533,6 +501,7 @@ fn migrate_legacy_documents(conn: &mut Connection) -> AppResult<()> {
 /// 应用 DB 建表与预置数据。
 pub fn apply(conn: &mut Connection) -> AppResult<()> {
     conn.execute_batch(crate::db::schema::SCHEMA)?;
+    drop_legacy_memory_storage(conn)?;
     ensure_planner_task_metadata(conn)?;
     ensure_planner_sync_metadata(conn)?;
     rename_legacy_document_tables(conn)?;
@@ -744,52 +713,9 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         [],
     )?;
 
-    // Add structured memory fields to existing databases.
-    let has_memory_name: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('memory_store') WHERE name = 'name'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(false);
-    if !has_memory_name {
-        conn.execute(
-            "ALTER TABLE memory_store ADD COLUMN name TEXT NOT NULL DEFAULT ''",
-            [],
-        )?;
-    }
-    let has_memory_keywords: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('memory_store') WHERE name = 'keywords'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(false);
-    if !has_memory_keywords {
-        conn.execute("ALTER TABLE memory_store ADD COLUMN keywords TEXT", [])?;
-    }
-    let has_memory_creator: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('memory_store') WHERE name = 'creator'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(false);
-    if !has_memory_creator {
-        conn.execute(
-            "ALTER TABLE memory_store ADD COLUMN creator TEXT NOT NULL DEFAULT 'ai'",
-            [],
-        )?;
-    }
-    conn.execute(
-        "UPDATE memory_store SET name = substr(trim(content), 1, 60) WHERE trim(name) = ''",
-        [],
-    )?;
-
     ensure_sync_metadata(conn)?;
     ensure_sync_runtime_state(conn)?;
     migrate_workspace_bindings(conn)?;
-    migrate_explicit_memories(conn)?;
     crate::db::repo::reading::enqueue_existing_sync_entities(conn)?;
 
     Ok(())
@@ -951,50 +877,6 @@ mod tests {
     }
 
     #[test]
-    fn adds_structured_memory_fields_to_existing_databases() {
-        unsafe {
-            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        let legacy_schema = crate::db::schema::SCHEMA
-            .lines()
-            .filter(|line| {
-                !line.contains("name TEXT NOT NULL DEFAULT ''")
-                    && !line.contains("keywords TEXT")
-                    && !line.contains("creator TEXT NOT NULL DEFAULT 'ai'")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        conn.execute_batch(&legacy_schema).unwrap();
-        conn.execute(
-            "INSERT INTO agents (id, name) VALUES ('agnes', 'Agnes')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO memory_store (id, agent_id, content) VALUES ('memory-1', 'agnes', 'Legacy memory content')",
-            [],
-        )
-        .unwrap();
-
-        apply(&mut conn).unwrap();
-
-        let (name, keywords, creator): (String, Option<String>, String) = conn
-            .query_row(
-                "SELECT name, keywords, creator FROM memory_store WHERE id = 'memory-1'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(name, "Legacy memory content");
-        assert!(keywords.is_none());
-        assert_eq!(creator, "ai");
-    }
-
-    #[test]
     fn migrates_placeholder_documents_into_versioned_collections() {
         unsafe {
             let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
@@ -1050,59 +932,6 @@ mod tests {
     }
 
     #[test]
-    fn migrates_legacy_explicit_memory_settings_to_entities() {
-        unsafe {
-            let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        apply(&mut conn).unwrap();
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('agent:agnes:user_md', 'User profile')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('agent:agnes:memory_md', 'Stable memory')",
-            [],
-        )
-        .unwrap();
-
-        apply(&mut conn).unwrap();
-
-        let rows: Vec<(String, String, String)> = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, kind, content FROM explicit_memories \
-                     WHERE agent_id = 'agnes' ORDER BY kind",
-                )
-                .unwrap();
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap()
-        };
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].1, "memory_md");
-        assert_eq!(rows[0].2, "Stable memory");
-        assert_eq!(rows[1].1, "user_md");
-        assert_eq!(rows[1].2, "User profile");
-        assert!(rows
-            .iter()
-            .all(|(id, _, _)| uuid::Uuid::parse_str(id).is_ok()));
-        let legacy_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM settings WHERE key LIKE 'agent:%:_md'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(legacy_count, 0);
-    }
-
-    #[test]
     fn moves_legacy_workspace_paths_to_device_local_bindings() {
         unsafe {
             let _ = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
@@ -1143,12 +972,12 @@ mod tests {
             "CREATE TABLE agents (id TEXT PRIMARY KEY); \
              CREATE TABLE sessions (id TEXT PRIMARY KEY); \
              CREATE TABLE messages (id TEXT PRIMARY KEY); \
-             CREATE TABLE memory_store (id TEXT PRIMARY KEY); \
+             CREATE TABLE memory_files (id TEXT PRIMARY KEY); \
              CREATE TABLE workspaces (id TEXT PRIMARY KEY); \
              INSERT INTO agents (id) VALUES ('agent-1'); \
              INSERT INTO sessions (id) VALUES ('session-1'); \
              INSERT INTO messages (id) VALUES ('message-1'); \
-             INSERT INTO memory_store (id) VALUES ('memory-1'); \
+             INSERT INTO memory_files (id) VALUES ('memory-1'); \
              INSERT INTO workspaces (id) VALUES ('workspace-1');",
         )
         .unwrap();
@@ -1159,7 +988,7 @@ mod tests {
             "agents",
             "sessions",
             "messages",
-            "memory_store",
+            "memory_files",
             "workspaces",
         ] {
             assert!(has_column(&conn, table, "version"));

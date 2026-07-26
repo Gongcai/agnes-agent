@@ -1,5 +1,5 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -80,6 +80,8 @@ if (suppliedBinary) {
     "langchain_core",
     "--collect-submodules",
     "tiktoken_ext",
+    "--add-data",
+    `${resolve(projectDir, "ProjectPlan", "MEMORY_FILESYSTEM_PROMPT.md")}${delimiter}app_resources`,
     "agentd.py",
   ];
   const result = spawnSync("uv", pyInstallerArgs, {

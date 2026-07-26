@@ -1,6 +1,12 @@
 """Prompt compiler and context budget manager."""
 from __future__ import annotations
+from functools import lru_cache
+from html import escape
+import hashlib
 import json
+import os
+from pathlib import Path
+import sys
 from typing import Any, Dict, List, Tuple, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -11,13 +17,60 @@ from .image import attachment_data_url
 from .models import get_max_context_tokens, completion
 
 
-MEMORY_MANAGEMENT_INSTRUCTIONS = """# Memory Management
-Use the two memory stores deliberately:
+MEMORY_PROMPT_FILENAME = "MEMORY_FILESYSTEM_PROMPT.md"
+MEMORY_PROMPT_VERSION = "memory-filesystem-v1"
+MEMORY_PROMPT_SHA256 = "415f9394cf7c5c7c3c6018e9d6b401cd024035bd40218bd7ae97e27d6c874924"
 
-- `MEMORY.md` is the small, always-loaded set of high-confidence facts that must be known in every future conversation. Use `memory_md_view` when you need its latest complete contents, use `memory_md_edit` for controlled changes, and verify with `memory_md_view` when the exact final document matters. Never attempt to modify `USER.md`.
-- The structured memory store is for durable facts, preferences, decisions, and project context that can be retrieved on demand. Do not store transient tasks, raw tool output, secrets, or internal reasoning.
 
-Before calling `memory_create` or `memory_update`, always call `memory_search` with a concise query for the relevant subject. If a suitable memory already exists, update it by its stable `id`; create a new memory only when no existing entry represents the same fact. If results are ambiguous or conflicting, refine the search or ask the user instead of overwriting uncertain information. Avoid duplicate memories."""
+@lru_cache(maxsize=1)
+def memory_filesystem_instructions() -> str:
+    """Load the single canonical memory prompt in development and frozen builds."""
+    candidates = []
+    configured = os.environ.get("AGNES_MEMORY_PROMPT_PATH")
+    if configured:
+        candidates.append(Path(configured))
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        candidates.append(Path(bundle_root) / "app_resources" / MEMORY_PROMPT_FILENAME)
+    candidates.append(Path(__file__).resolve().parents[2] / "ProjectPlan" / MEMORY_PROMPT_FILENAME)
+    for path in candidates:
+        if path.is_file():
+            content = path.read_text(encoding="utf-8")
+            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            if digest != MEMORY_PROMPT_SHA256:
+                raise RuntimeError(
+                    f"Canonical memory prompt hash changed without bumping {MEMORY_PROMPT_VERSION}"
+                )
+            return content
+    raise RuntimeError(f"Canonical memory prompt is missing: {MEMORY_PROMPT_FILENAME}")
+
+
+def memory_prompt_blocks(agent: Dict[str, Any], memory: Dict[str, Any]) -> str:
+    """Compile the trusted template and escaped per-agent memory snapshot."""
+    raw_name = str(agent.get("name") or "Agnes").replace("\r", " ").replace("\n", " ")
+    agent_name = raw_name[:80] or "Agnes"
+    instructions = memory_filesystem_instructions().replace("{{Agent_Name}}", agent_name)
+    profile = str(memory.get("profile") or "(not yet written)")
+    preferences = str(memory.get("preferences") or "(not yet written)")
+    files = memory.get("files") if isinstance(memory.get("files"), list) else []
+    listing_lines = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        listing_lines.extend([
+            f"- path: {escape(str(item.get('path') or ''))}",
+            f"  description: {escape(str(item.get('description') or ''))}",
+            f"  aliases: {escape(json.dumps(item.get('aliases') or [], ensure_ascii=False))}",
+            f"  sources: {escape(json.dumps(item.get('sources') or [], ensure_ascii=False))}",
+        ])
+    listing = "\n".join(listing_lines) if listing_lines else "(empty)"
+    epoch = int(memory.get("listingEpoch") or 0)
+    return (
+        f"{instructions}\n\n"
+        f"<profile>\n{escape(profile)}\n</profile>\n\n"
+        f"<preferences>\n{escape(preferences)}\n</preferences>\n\n"
+        f"<memory_listing epoch=\"{epoch}\">\n{listing}\n</memory_listing>"
+    )
 
 WEB_RESEARCH_INSTRUCTIONS = """# Web Research
 Use web tools when the answer depends on current, external, or source-specific information.
@@ -570,19 +623,11 @@ def assemble_prompt(
     if isinstance(reading, dict):
         system_parts.append(reading_instructions(reading))
         
-    # 3. Memory behavior and explicit files (USER.md / MEMORY.md)
+    # 3. Persistent virtual memory filesystem
     memory_enabled = (tool_policy or {}).get("memory", {}).get("enabled", True)
     if memory_enabled:
-        system_parts.append(MEMORY_MANAGEMENT_INSTRUCTIONS)
-
-    explicit_mem = context.get("explicitMemories", {})
-    user_md = explicit_mem.get("user_md")
-    memory_md = explicit_mem.get("memory_md")
-    
-    if user_md:
-        system_parts.append(f"# User Profile (USER.md - Read Only)\n{user_md}")
-    if memory_md:
-        system_parts.append(f"# Key Memories & Facts (MEMORY.md - Read/Write)\n{memory_md}")
+        memory = context.get("memoryFilesystem") or {}
+        system_parts.append(memory_prompt_blocks(agent, memory))
         
     # 4. Project context & workspace files
     project_context = context.get("projectContext", [])
@@ -637,13 +682,6 @@ def assemble_prompt(
             "knowledge is supplied, cite it using the stable chunk ID included with the excerpt."
         )
             
-    # 5. Retrieved memories (Vector Search)
-    retrieved_memories = context.get("retrievedMemories", [])
-    if retrieved_memories:
-        system_parts.append("# Retrieved Information (Memory Store)")
-        for item in retrieved_memories:
-            system_parts.append(f"- {item}")
-
     system_prompt = "\n\n".join(system_parts)
     
     # 7. Calculate token budgets

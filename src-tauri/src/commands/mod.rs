@@ -912,9 +912,7 @@ pub async fn get_debug_prompt(
         _ => model_name.clone(),
     };
 
-    // 读取 USER.md / MEMORY.md（SQLite canonical 真相源）
-    let (user_md, memory_md) =
-        crate::user_profile::load_effective_explicit_memories(&state.db, &agent.id).await?;
+    let memory_filesystem = crate::memory::load_filesystem_snapshot(&state.db, &agent.id).await?;
 
     // 读取会话历史与摘要（如有）
     let mut history_json = Vec::new();
@@ -1017,6 +1015,7 @@ pub async fn get_debug_prompt(
         "input": "",
         "context": {
             "agent": {
+                "name": agent.name,
                 "persona": agent.persona,
                 "systemPrompt": agent.system_prompt,
                 "model": agent_model_str,
@@ -1043,8 +1042,7 @@ pub async fn get_debug_prompt(
             "settings": { "user_context_limit": serde_json::Value::Null },
             "recentMessages": history_json,
             "summary": summary,
-            "explicitMemories": { "user_md": user_md, "memory_md": memory_md },
-            "retrievedMemories": [],
+            "memoryFilesystem": memory_filesystem,
             "retrievedKnowledge": retrieved_knowledge,
             "readingContext": reading_book.as_ref().map(reading_prompt_context),
             "workspace": workspace_context,
@@ -1665,7 +1663,6 @@ async fn resolve_task_llm_configs(
     for (key, selection) in [
         ("image", roles.image_model.as_deref()),
         ("summary", roles.summary_model.as_deref()),
-        ("memory", roles.memory_model.as_deref()),
         ("speech", roles.speech_model.as_deref()),
         ("quick", roles.quick_model.as_deref()),
         ("embedding", roles.embedding_model.as_deref()),
@@ -1946,9 +1943,9 @@ async fn start_agent_run(
     session_title_request: Option<serde_json::Value>,
 ) -> AppResult<()> {
     eprintln!("[agent][run] Preparing run for session={session_id} assistant={assistant_msg_id}");
-    let (user_md, memory_md) =
-        crate::user_profile::load_effective_explicit_memories(&state.db, &cfg.agent.id).await?;
-    eprintln!("[agent][run] Explicit memories loaded session={session_id}");
+    let memory_filesystem =
+        crate::memory::load_filesystem_snapshot(&state.db, &cfg.agent.id).await?;
+    eprintln!("[agent][run] Memory filesystem snapshot loaded session={session_id}");
 
     let path = state
         .db
@@ -2080,6 +2077,7 @@ async fn start_agent_run(
         "input": "",
         "context": {
             "agent": {
+                "name": cfg.agent.name,
                 "persona": cfg.agent.persona,
                 "systemPrompt": cfg.agent.system_prompt,
                 "model": cfg.effective_model,
@@ -2110,11 +2108,7 @@ async fn start_agent_run(
             },
             "recentMessages": history_json,
             "summary": if is_regeneration { None } else { cfg.session_summary.clone() },
-            "explicitMemories": {
-                "user_md": user_md,
-                "memory_md": memory_md
-            },
-            "retrievedMemories": [],
+            "memoryFilesystem": memory_filesystem,
             "retrievedKnowledge": retrieved_knowledge,
             "readingContext": reading_book.as_ref().map(reading_prompt_context),
             "workspace": workspace_context,
@@ -2297,54 +2291,6 @@ pub async fn approve_tool(
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct ExplicitMemoriesDto {
-    pub user_md: String,
-    pub memory_md: String,
-}
-
-#[tauri::command]
-pub async fn get_explicit_memories(
-    state: tauri::State<'_, AppState>,
-    agent_id: String,
-) -> AppResult<ExplicitMemoriesDto> {
-    let (user_md, memory_md) = crate::memory::load_explicit_memories(&state.db, &agent_id).await?;
-    Ok(ExplicitMemoriesDto { user_md, memory_md })
-}
-
-#[tauri::command]
-pub async fn save_explicit_memories(
-    state: tauri::State<'_, AppState>,
-    agent_id: String,
-    user_md: String,
-    memory_md: String,
-) -> AppResult<()> {
-    crate::memory::save_explicit_memories(&state.db, &agent_id, &user_md, &memory_md).await?;
-    state.sync.schedule();
-    Ok(())
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentUserProfileInheritanceDto {
-    pub mode: crate::user_profile::UserProfileInheritanceMode,
-    pub effective: bool,
-    pub user_md_empty: bool,
-}
-
-async fn agent_user_profile_inheritance_dto(
-    state: &AppState,
-    agent_id: &str,
-) -> AppResult<AgentUserProfileInheritanceDto> {
-    let (user_md, _) = crate::memory::load_explicit_memories(&state.db, agent_id).await?;
-    let mode = crate::user_profile::load_agent_inheritance_mode(&state.db, agent_id).await?;
-    Ok(AgentUserProfileInheritanceDto {
-        mode,
-        effective: crate::user_profile::should_inherit(mode, &user_md),
-        user_md_empty: user_md.trim().is_empty(),
-    })
-}
-
 #[tauri::command]
 pub async fn get_user_profile(
     state: tauri::State<'_, AppState>,
@@ -2363,142 +2309,98 @@ pub async fn save_user_profile(
 }
 
 #[tauri::command]
-pub async fn get_agent_user_profile_inheritance(
+pub async fn list_memory_files(
     state: tauri::State<'_, AppState>,
     agent_id: String,
-) -> AppResult<AgentUserProfileInheritanceDto> {
-    agent_user_profile_inheritance_dto(&state, &agent_id).await
+) -> AppResult<crate::db::repo::memory_files::MemoryListing> {
+    state.db.list_memory_files(agent_id).await
 }
 
 #[tauri::command]
-pub async fn set_agent_user_profile_inheritance(
+pub async fn read_memory_file(
     state: tauri::State<'_, AppState>,
     agent_id: String,
-    mode: crate::user_profile::UserProfileInheritanceMode,
-) -> AppResult<AgentUserProfileInheritanceDto> {
-    crate::user_profile::save_agent_inheritance_mode(&state.db, &agent_id, mode).await?;
-    state.sync.schedule();
-    agent_user_profile_inheritance_dto(&state, &agent_id).await
-}
-
-#[tauri::command]
-pub async fn list_memories(
-    state: tauri::State<'_, AppState>,
-    agent_id: String,
-) -> AppResult<Vec<crate::db::repo::memory::MemoryRow>> {
-    state.db.list_memories(agent_id).await
-}
-
-#[derive(Serialize)]
-pub struct MemoryVectorizationResult {
-    pub indexed_now: usize,
-    pub status: crate::embeddings::MemoryIndexStatus,
-}
-
-#[tauri::command]
-pub async fn get_memory_embedding_status(
-    state: tauri::State<'_, AppState>,
-    agent_id: String,
-) -> AppResult<crate::embeddings::MemoryIndexStatus> {
-    let roles = load_model_roles(&state.db).await?;
-    crate::embeddings::agent_memory_index_status(
-        &state.db,
-        &agent_id,
-        roles.embedding_model.as_deref(),
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn vectorize_memories(
-    state: tauri::State<'_, AppState>,
-    agent_id: String,
-) -> AppResult<MemoryVectorizationResult> {
-    let roles = load_model_roles(&state.db).await?;
-    let model_ref = roles
-        .embedding_model
-        .as_deref()
-        .ok_or_else(|| AppError::Other("尚未配置嵌入模型".into()))?;
-    let config = resolve_routed_llm_config(&state, Some(model_ref))
-        .await?
-        .ok_or_else(|| AppError::Other("嵌入模型配置不可用".into()))?;
-    let indexed_now =
-        crate::embeddings::ensure_agent_memory_index(&state.db, &state.agent, &agent_id, &config)
-            .await?;
-    let status =
-        crate::embeddings::agent_memory_index_status(&state.db, &agent_id, Some(model_ref)).await?;
-    Ok(MemoryVectorizationResult {
-        indexed_now,
-        status,
-    })
-}
-
-#[tauri::command]
-pub async fn create_memory(
-    state: tauri::State<'_, AppState>,
-    agent_id: String,
-    name: String,
-    keywords: Vec<String>,
-    content: String,
-) -> AppResult<String> {
-    let id = uuid::Uuid::new_v4().to_string();
-    let inserted = state
-        .db
-        .insert_memory(crate::db::repo::memory::NewMemory {
-            id: id.clone(),
-            agent_id,
-            name,
-            keywords,
-            content,
-            creator: "user".into(),
-            memory_type: "Note".into(),
-            scope: "agent".into(),
-            source: "memory_manager".into(),
-            confidence: 1.0,
-            embedding_id: None,
-        })
-        .await?;
-    if !inserted {
-        return Err(AppError::Other("已存在名称和内容完全相同的记忆".into()));
-    }
-    state.sync.schedule();
-    Ok(id)
-}
-
-#[tauri::command]
-pub async fn update_memory(
-    state: tauri::State<'_, AppState>,
-    memory_id: String,
-    agent_id: String,
-    name: String,
-    keywords: Vec<String>,
-    content: String,
-) -> AppResult<()> {
+    path: String,
+) -> AppResult<crate::db::repo::memory_files::MemoryReadResult> {
     state
         .db
-        .update_memory(
-            memory_id,
-            agent_id,
-            crate::db::repo::memory::MemoryUpdate {
-                name,
-                keywords,
-                content,
-            },
-        )
-        .await?;
-    state.sync.schedule();
-    Ok(())
+        .read_memory_files(agent_id, vec![path])
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Other("Memory file read returned no result".into()))
 }
 
 #[tauri::command]
-pub async fn delete_memory(
+pub async fn save_memory_file(
     state: tauri::State<'_, AppState>,
-    memory_id: String,
     agent_id: String,
-) -> AppResult<()> {
-    state.db.delete_memory(memory_id, agent_id).await?;
-    state.sync.schedule();
-    Ok(())
+    path: String,
+    content: String,
+) -> AppResult<crate::db::repo::memory_files::MemoryMutationOutcome> {
+    save_memory_file_with_version(state, agent_id, path, content, "new".to_string()).await
+}
+
+#[tauri::command]
+pub async fn update_memory_file(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    path: String,
+    content: String,
+    if_version: String,
+) -> AppResult<crate::db::repo::memory_files::MemoryMutationOutcome> {
+    save_memory_file_with_version(state, agent_id, path, content, if_version).await
+}
+
+async fn save_memory_file_with_version(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    path: String,
+    content: String,
+    if_version: String,
+) -> AppResult<crate::db::repo::memory_files::MemoryMutationOutcome> {
+    let outcome = state
+        .db
+        .mutate_memory_file(
+            agent_id,
+            path,
+            crate::db::repo::memory_files::MemoryMutation::Write {
+                content,
+                if_version,
+            },
+            "user".to_string(),
+            None,
+            None,
+        )
+        .await?;
+    if outcome.ok {
+        state.sync.schedule();
+    }
+    Ok(outcome)
+}
+
+#[tauri::command]
+pub async fn delete_memory_file(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    path: String,
+    if_version: String,
+) -> AppResult<crate::db::repo::memory_files::MemoryMutationOutcome> {
+    let outcome = state
+        .db
+        .mutate_memory_file(
+            agent_id,
+            path,
+            crate::db::repo::memory_files::MemoryMutation::Delete { if_version },
+            "user".to_string(),
+            None,
+            None,
+        )
+        .await?;
+    if outcome.ok {
+        state.sync.schedule();
+    }
+    Ok(outcome)
 }
 
 const MAX_LOCAL_KNOWLEDGE_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
