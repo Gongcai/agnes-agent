@@ -37,7 +37,7 @@ Shell 使用 PTY 会话运行，短命令返回完整输出，长命令返回 `s
 `write_stdin` 增量轮询或发送输入，并通过 `stop_terminal` 终止会话及其进程组。每个
 会话输出均有策略上限，超出部分保留截断标记。
 
-> `memory_search`、`memory_create`、`memory_update` 与 `MEMORY.md` 专用工具已随记忆系统实现；只读 `web_search/web_fetch/browser_open` 见 `WEB_AND_MCP.md`，有状态浏览器操作与 `ssh` 仍留待后续单独设计。
+> 新持久记忆系统使用 `memory_list/read/write/str_replace/append/delete` 六个虚拟文件工具，工具边界见 `MEMORY_SYSTEM.md`；只读 `web_search/web_fetch/browser_open` 见 `WEB_AND_MCP.md`，有状态浏览器操作与 `ssh` 仍留待后续单独设计。
 
 ### 工具模块拆分
 `src-tauri/src/tools/` 改为：
@@ -257,7 +257,7 @@ pub struct NetworkPolicy { pub allow: bool }
 ## 十一、实施结果与安全边界（2026-07-16）
 
 - Phase A–E 已完成；对应提交：`4b4a056`、`1e65bcf`、`a02fa80`、`e070c4d`、`dc6cce5`。
-- Rust 内置工具共 26 个：基础文件/命令/Git 10 个（含 PTY 终端控制）、记忆 5 个、日历待办 8 个、联网研究 3 个；Python sidecar 已声明同一组 schema。记忆工具只访问当前 session 所属 Agent，不能接受任意路径或外部 `agent_id`。结构化记忆写工具固定由系统生成创建人和时间等字段。`web_search/web_fetch/browser_open` 仅访问公开网络，受 Web capability、总网络开关、SSRF 防护、响应/正文上限和提示词注入隔离共同约束；浏览器工具额外使用临时无登录 Profile 和只读请求拦截。
+- 2026-07-16 的旧实现共有 26 个 Rust 内置工具，其中旧记忆工具 5 个；按 `MEMORY_SYSTEM.md` 重构后，旧记忆工具直接替换为 6 个虚拟文件工具，目标总数为 27，不保留旧别名。Python sidecar 必须声明同一组 schema。记忆工具只访问当前 session 所属 Agent，只接受受限虚拟路径，不能传外部 `agent_id`。`web_search/web_fetch/browser_open` 仅访问公开网络，受 Web capability、总网络开关、SSRF 防护、响应/正文上限和提示词注入隔离共同约束；浏览器工具额外使用临时无登录 Profile 和只读请求拦截。
 - Linux 已验证 Landlock workspace 写边界、symlink 逃逸拒绝、软链接额外可写根目录、bubblewrap loopback 网络隔离、受保护元数据只读覆盖，以及 bubblewrap + PTY 组合运行。
 - 原生文件工具由路径能力层保护；Landlock 仅施加给 shell/git 子进程，避免污染桌面主进程。
 - 非 Linux 或 Landlock 不可用时，文件工具仍受严格路径检查；shell/git 的内核级文件隔离会降级。bubblewrap 不可用且网络关闭时仅能启发式拒绝已知网络动作，不能视为完整网络沙箱。

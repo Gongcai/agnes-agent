@@ -19,7 +19,7 @@ Execution + Data Plane (Rust / src-tauri)   ← 唯一资源拥有者
 
 Reasoning Plane (Python sidecar / agent)
   LangGraph + LiteLLM
-  只做：prompt 拼装 / 模型推理 / 工具*选择* / 记忆抽取*建议*
+  只做：prompt 拼装 / 模型推理 / 工具*选择*（包括本轮记忆读写决策）
   绝不直接访问 DB / 文件系统 / shell
 ```
 
@@ -47,7 +47,7 @@ agnes-agent/
 │       ├── db/                 # rusqlite + DbActor + repo/
 │       ├── tools/              # ToolExecutor + 各工具实现 + tool_policy
 │       ├── fs.rs pty.rs ssh.rs
-│       ├── memory/             # memory_search 实现 / USER·MEMORY.md 读写
+│       ├── memory/             # 虚拟记忆文件、Markdown 校验、CAS 与 listing
 │       └── sync/               # 增量同步（V0.3，先留接口）
 ├── agent/                # Python sidecar（uv 管理）
 │   ├── pyproject.toml
@@ -57,7 +57,6 @@ agnes-agent/
 │   │   ├── graph.py          # LangGraph 状态机
 │   │   ├── prompt.py         # 用 ContextSnapshot 拼装 prompt（含 ①② 预算/压缩）
 │   │   ├── tools.py          # 工具*定义*（执行走 Rust）
-│   │   ├── memory_extract.py # 记忆抽取*建议*（写回 memory_store）
 │   │   └── models.py         # LiteLLM + 模型注册表
 │   └── tests/
 ├── document-parser/      # 隔离文档解析 sidecar（Office 轻量后端，按需启动）
@@ -155,7 +154,9 @@ Python → Rust:
   }
 }
 ```
-Python 本轮内只做：prompt 拼装 / 模型调用 / 工具决策 / 记忆抽取建议。若推理中确需二次检索，再发 `memory_query_request`（单一往返，不批量拉表）。
+Python 本轮内只做：prompt 拼装 / 模型调用 / 工具决策。持久记忆通过与其他工具相同的
+`tool_call_request` 调用 Rust 六个 memory tools；不再有后台抽取结果或专用
+`memory_query_request` 协议。
 
 ### 3.3 工具调用 + 人类确认 + capability sandbox
 1. Python 发 `tool_call_request` → Rust。
@@ -182,9 +183,9 @@ Python 本轮内只做：prompt 拼装 / 模型调用 / 工具决策 / 记忆抽
     DevUvLauncher      → std::process::Command 启动 `uv run python -m app.main`
     BundledBinLauncher → 发布态加载 externalBin（agentd 二进制）
   ```
-- `tools/`：`ToolExecutor` + 每工具模块（shell/file/git/ssh/memory_search/browser），统一 trait；MCP 外部工具 V0.5 以同类 trait 接入。
+- `tools/`：`ToolExecutor` + 每工具模块（shell/file/git/ssh/memory/browser），统一 trait；MCP 外部工具 V0.5 以同类 trait 接入。
 - `storage/`：网盘领域 DTO、`FileSourceProvider / FileUploadProvider / FileManagementProvider / ObjectStorageProvider / QuotaProvider / ProviderFactory` 窄端口、Keyring 凭证 adapter、开放注册表与 `StorageService`。`ProviderFactory` 同时提供可选的一次性授权和 challenge/poll 两阶段授权，凭证结果不经过 renderer。`google_drive` 通过官方 API 实现 Desktop OAuth + PKCE、Drive v3 文件源/断点上传、用户文件移入回收站及 `appDataFolder` 对象存储；`quark_drive` 通过 community HTTP adapter 实现文本/JSON Cookie 与二维码授权、文件源、分片上传、配额和移入回收站，但不实现应用对象存储。业务层和 renderer 不依赖任一服务商 API 类型。
-- `memory/`：实现 `memory_search`（sqlite-vec cosine 向量 + 字符串包含匹配，RRF 融合）；负责 `USER.md`/`MEMORY.md` 读写（DB 为真相源，见 §8）。
+- `memory/`：实现按 Agent 隔离的虚拟 Markdown 记忆文件系统、frontmatter/事实标签校验、目录 listing、版本 CAS、有限修订与冲突恢复（见 §8 和 `MEMORY_SYSTEM.md`）。
 - `state.rs`：Tauri `State` 托管 `DbActor` 句柄 / `AgentManager` / `Config`。
 
 ---
@@ -194,7 +195,7 @@ Python 本轮内只做：prompt 拼装 / 模型调用 / 工具决策 / 记忆抽
 - `graph.py`：LangGraph 状态机（多步、检查点、可中断等待 approval）。
 - `prompt.py`：**会话内记忆 ①② 的实现点**——依据 `run_request.context` 中的 `recentMessages`/`summary` 与预算（`model_context_limit` ∩ `user_context_limit` − reserved）保 `recency_window` 原文、滚动压缩；按 `PROJECT.md` 拼装顺序组装最终 prompt。**不直接读 DB**，数据全来自 ContextSnapshot。
 - `tools.py`：给 LLM 看的工具*定义*（schema），实际执行经 Agent Protocol 委托 Rust。
-- `memory_extract.py`：后台从对话抽取事实，建议写入 `memory_store`（带 `confidence`/`source`/`agent_id`），经 Rust 落地。
+- 持久记忆不再使用独立后台 extractor；模型依据正式记忆提示词在当前轮通过 Rust 工具读写。
 - `models.py`：LiteLLM 统一接入 + 模型注册表（含 `max_context_tokens` 驱动预算）。
 
 ---
@@ -247,11 +248,22 @@ message_parts(
   ordinal INTEGER, mime_type TEXT, tool_call_id TEXT,
   content TEXT, metadata TEXT
 )
-memory_store(
-  id PK, agent_id FK, content TEXT, type TEXT, scope TEXT,
-  source TEXT, confidence REAL, status TEXT /*active|archived|deleted*/,
-  expires_at TEXT, pinned INTEGER, source_message_id TEXT, last_used_at TEXT,
-  created_at TEXT, updated_at TEXT, embedding_id FK
+memory_files(
+  id PK, agent_id FK, path TEXT, kind TEXT, name TEXT,
+  description TEXT, sources_json TEXT, aliases_json TEXT,
+  markdown TEXT, content_hash TEXT, version INTEGER,
+  status TEXT /*active|deleted*/, origin_device_id TEXT,
+  created_at TEXT, updated_at TEXT, deleted_at TEXT
+)
+memory_file_revisions(
+  id PK, memory_file_id FK, base_version INTEGER, resulting_version INTEGER,
+  operation TEXT, before_markdown TEXT, after_markdown TEXT,
+  actor_surface TEXT, session_id TEXT, message_id TEXT, created_at TEXT
+)
+memory_file_conflicts(
+  id PK, memory_file_id FK, base_hash TEXT,
+  local_markdown TEXT, remote_markdown TEXT, remote_version INTEGER,
+  created_at TEXT, resolved_at TEXT
 )
 embedding_items(                     -- 元数据表（与向量索引分离）
   id TEXT PK, ref_type TEXT, ref_id TEXT,
@@ -281,44 +293,45 @@ sync_log(
 settings(key PK, value TEXT)
 ```
 
-**embeddings 拆分原因**：sqlite-vec 需要专门的向量虚拟表/索引表，不与普通 metadata 混在一张表。`embedding_items` 保留 model revision、dims、normalization、instruction/content hash 等 profile 信息，用于重算、去重和失效判定。当前记忆嵌入允许 1 到 8192 维，查询按 Agent 和 profile 隔离；RAG 扩展后改用 collection/profile namespace，避免多 Agent 重复索引。
+**embeddings 拆分原因**：sqlite-vec 需要专门的向量虚拟表/索引表，不与普通 metadata 混在一张表。`embedding_items` 保留 model revision、dims、normalization、instruction/content hash 等 profile 信息，用于 RAG 重算、去重和失效判定。持久记忆文件不生成 embedding；向量索引只服务知识库等可重建检索数据。
 
 **向量制品边界**：原始向量行、sqlite-vec 虚拟表和运行中 SQLite 文件不进 D1。大型 RAG 可按 document version + embedding/parser/chunker fingerprint 导出便携分片，客户端压缩、E2EE 后存入 R2/Google Drive；其他设备验证指纹与 Hash 后导入本地 sqlite-vec。
 
-**可同步实体的版本/墓碑**：`agents/sessions/messages/explicit_memories/memory_store/workspaces` 均具备 `updated_at`、`deleted_at`、`version`、`origin_device_id`，配合后续事务性 outbox（HLC + `entity_version`）支撑离线同步与冲突解决。聊天消息正文完成后不可变；记忆、workspace 逻辑信息和 Agent 配置必须有版本。通用 settings 与 workspace 本地路径不作为同步实体。
+**可同步实体的版本/墓碑**：`agents/sessions/messages/memory_files/workspaces` 均具备 `updated_at`、`deleted_at`、`version`、`origin_device_id`，配合事务性 outbox、revision CAS 与 HLC 支撑离线同步与冲突解决。聊天消息正文完成后不可变；记忆文件、workspace 逻辑信息和 Agent 配置必须有版本。通用 settings、记忆本地修订与 workspace 本地路径不作为同步实体。
 
 迁移用 `rusqlite` + 自维护 `migrations/`（或 refinery）。
 
 ---
 
-## 8. 记忆子系统落点（DB canonical + Markdown view）
+## 8. 记忆子系统落点（DB canonical + 虚拟 Markdown 文件）
 
 | 层 | 实现位置 | 存储 |
 |----|----------|------|
 | ① Recent Context | Python `prompt.py`（用 ContextSnapshot.recentMessages） | SQLite `messages` |
 | ② Conversation Summary | Python `prompt.py`（滚动压缩）→ Rust 写 `sessions.summary` | SQLite `sessions.summary` |
-| ③ USER.md / MEMORY.md | Rust `memory/` 读写 | **DB 为真相源**；md 为导出给人看的 materialized view |
-| ④ memory_store | Rust `memory_search` 混合检索；Python `memory_extract` 建议写与 LiteLLM embedding | SQLite `memory_store` + `embedding_items`/`vec_embeddings_{dims}` |
+| ③ Always-on Memory Index | Rust `memory/` 生成 profile/preferences/listing snapshot；Python `prompt.py` 组装 | SQLite `memory_files` 派生元数据 |
+| ④ On-demand Memory Files | Rust 六个 memory tools + Markdown validator + CAS | SQLite `memory_files` + 本地 revisions/conflicts |
 
-**本地索引维护规则**：每次 Agent 运行前，Rust 按 `embedding_id`、模型引用和正文 SHA-256
-批量找出缺失或失效记录，再通过 Agent Protocol 请求 Python/LiteLLM 生成向量。写入使用动态
-维度 sqlite-vec 表与 cosine 距离，Agent 和模型引用作为 partition key 在 KNN 前过滤；
-字符串和向量候选以 RRF 融合。模型未配置或嵌入失败时
-降级为字符串检索，不阻断 Agent 运行。向量及可信内部工具参数不会进入同步、审计或消息历史。
+**记忆导航规则**：每轮注入当前 Agent 的完整轻量 listing，以及 `/profile.md`、
+`/preferences.md` 正文；其他文件由模型根据 path、description、aliases 按需 `memory_read`。
+持久记忆不再使用 sqlite-vec、RRF 或运行前向量回填。UI 可维护可重建的本地 FTS5 索引，
+但不向 Agent 暴露 `memory_search`。
 
-**USER.md / MEMORY.md 真相源规则**：SQLite（`settings` / `memory_store` / agent 记忆）是 canonical；`USER.md`/`MEMORY.md` 是其可读写视图。用户编辑 md → Rust 解析并**回写 DB**。这样同步与冲突解决才有单一归口，不被文件路径/mtime 干扰。
+**真相源规则**：SQLite `memory_files.markdown` 保存完整规范 Markdown；path、description、sources、
+aliases 等列由同一事务解析生成。虚拟文件不是宿主机任意路径，Agent 和 UI 均通过同一 repository、
+validator 与 CAS 写入，避免 DB、文件和同步产生多个真相源。
 
 **记忆优先级（拼装顺序）**：
 ```text
 1. 本轮用户输入
 2. 当前会话 recent context
 3. 当前会话 summary
-4. 当前 Agent persona / memory
-5. 当前 workspace / project memory
-6. 全局 USER profile
-7. 向量召回 memory_store
+4. 当前 Agent persona
+5. 当前 Agent profile / preferences / memory listing
+6. 当前 workspace / project context
+7. 按需 memory_read 返回的相关文件
 ```
-全局用户画像（`USER.md` 基底）**可关闭**：Agent 设置里可关掉"继承全局用户画像"，仅用 per-Agent 记忆。
+长期记忆仅属于当前 Agent，不再提供全局用户画像的隐式继承开关。
 
 ---
 
@@ -346,8 +359,8 @@ settings(key PK, value TEXT)
 
 ## 12. 测试策略
 
-- Rust：`cargo test` 覆盖 DbActor、Agent Protocol 编解码、ToolExecutor（含 policy 判定）、memory_search。
-- Python：`pytest` 覆盖 graph、prompt 预算/压缩、memory_extract、tools schema，以及 DOCX/PPTX/XLSX 的结构化解析。
+- Rust：`cargo test` 覆盖 DbActor、Agent Protocol 编解码、ToolExecutor（含 policy 判定）、memory parser/validator/CAS。
+- Python：`pytest` 覆盖 graph、prompt 预算/压缩、memory 动态块与 tools schema，以及 DOCX/PPTX/XLSX 的结构化解析。
 - 前端：`vitest` + RTL 覆盖组件与 IPC 封装。
 - 契约测试：Agent Protocol 消息 Rust⇄Python 往返一致性。
 
@@ -386,7 +399,7 @@ pnpm test                         # vitest
 | DB 驱动 | `rusqlite` + DbActor | 更适合本地 SQLite、FTS5、sqlite-vec |
 | 前端状态 | Zustand + TanStack Query（+ RHF + Zod 表单） | 轻量够用，不上 Redux |
 | UI | shadcn/ui + Tailwind | 现成可改组件，适配桌面工具 |
-| USER.md | 保留，但 **DB 为真相源** | 方便同步与冲突解决 |
+| 持久记忆 | per-Agent 虚拟 Markdown 文件系统，**DB 为真相源** | 单一模型、按需读取、CAS 防覆盖 |
 | memory summary | `sessions.summary` | summary 是会话级状态 |
 | 工具权限 | capability + approval + sandbox + audit | 审批非唯一防线 |
 | sync | append-only + version/tombstone | 为离线同步准备 |

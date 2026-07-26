@@ -25,7 +25,7 @@ R2 是对象存储，不是关系数据库或向量数据库。D1 也不存放�
 | 数据 | 本地存储 | 云端存储 | 真相源 | 可否重建 |
 |---|---|---|---|---|
 | Agent / Session / Message | SQLite | D1 E2EE 实体 | SQLite + 同步协议 | 否 |
-| USER.md / MEMORY.md / memory_store 文本 | SQLite | D1 E2EE 实体 | SQLite + 同步协议 | 否 |
+| per-Agent 虚拟 Markdown 记忆文件 | SQLite | D1 E2EE `memory_file` 实体 | SQLite + 同步协议 | 否 |
 | 日历 / 待办 | SQLite | D1 E2EE 实体 | SQLite + 同步协议 | 否 |
 | 源文件 / 附件 | 本地内容库 | R2 / Drive 加密对象 | 文件版本清单 | 否 |
 | 抽取文本 / chunk | SQLite 或本地制品 | 可选加密制品 | 源文件 + 解析器指纹 | 是 |
@@ -41,9 +41,9 @@ R2 是对象存储，不是关系数据库或向量数据库。D1 也不存放�
 
 ### 3.1 记忆继续按 Agent 隔离
 
-- `USER.md / MEMORY.md / memory_store` 继续一对一属于 Agent。
-- 记忆文本参与 D1 同步，本地向量可重建。
-- 记忆条目数量通常远小于 RAG chunk，默认不为每次变化上传独立向量包；可在大规模时按 Agent + embedding profile 生成快照。
+- `memory_files` 一对一属于 Agent，模型只看到虚拟路径，不看到 `agent_id` 或宿主机路径。
+- 记忆 Markdown 以 `memory_file` 实体参与 D1 E2EE 同步；有限 revisions/conflicts 和 UI FTS 保持本机。
+- 持久记忆不生成 embedding 或向量包；sqlite-vec 与加密向量制品仅服务 RAG/知识库。
 
 ### 3.2 RAG 使用独立知识库
 

@@ -1,6 +1,7 @@
 # Cloudflare D1 云同步设计
 
 > 状态：Phase 0-4 已完成，E2EE Worker 已部署且 production D1 为空
+> 记忆同步状态：旧实体实现已废弃；`memory_file` 破坏式替换见 Phase M，尚未实施
 > 调研日期：2026-07-17
 > 适用版本：V0.3 Cloudflare 同步、V0.4 Android 轻客户端  
 > 关联文档：`PROJECT.md`、`architecture.md`、`UI_DESIGN.md`、`STORAGE_AND_RAG.md`
@@ -162,8 +163,7 @@ D1 的云端 schema 不复用 `src-tauri/src/db/schema.rs`。本地库包含 `sq
 | message text parts | 是 | 包含于 `message` payload | 小实体整体同步，避免 parts 到达早于 message |
 | reasoning part | 默认否 | — | 可能包含敏感推理或供应商不允许持久化的内容 |
 | tool call/result part | 默认仅同步脱敏摘要 | `message` 可选字段 | 原始参数和结果可能含文件、路径、令牌和命令输出 |
-| USER.md / MEMORY.md | 是 | `explicit_memory` | 从通用 settings 中独立为明确实体 |
-| memory_store 文本 | 是 | `memory` | 不包含 embedding_id 的设备本地含义 |
+| per-Agent 虚拟 Markdown 记忆文件 | 是 | `memory_file` | path 与正文均 E2EE；有限 revisions/conflicts 和 UI FTS 仅本机保存 |
 | embedding_items / vec_embeddings_{dims} | 不进 D1 | — | 每台设备可本地重算；大型 RAG 可下载指纹匹配的加密制品 |
 | model_providers | 首版否 | — | Ollama/API Base 等通常是设备配置 |
 | provider API Key | 绝不 | — | 必须迁移至 OS Keyring |
@@ -202,14 +202,14 @@ Android 可以看到某个 session 属于哪个逻辑 workspace，但没有本�
 Phase 3A 已将逻辑 `workspace_id` 纳入 Session payload，同时继续排除
 `workspace_bindings.folder_path / last_validated_at`。Workspace 创建、重命名、删除与 outbox
 在同一事务提交；远端 Workspace 只创建逻辑行，不会在新设备伪造路径绑定。bootstrap 按
-`agent -> workspace -> session -> message -> explicit_memory -> memory` 排序，确保分页应用时
+`agent -> workspace -> session -> message -> memory_file` 排序，确保分页应用时
 本地 SQLite 外键依赖先到达。
 
 ### 5.3 Settings 分类
 
 `settings(key, value)` 目前混合了三类完全不同的数据，必须显式拆分或分类：
 
-1. **可同步业务数据**：例如每个 Agent 的 USER.md / MEMORY.md；建议迁为独立实体；
+1. **可同步业务数据**：例如每个 Agent 的 `memory_file` 虚拟 Markdown 文档实体；
 2. **设备本地设置**：`ui:last_agent_id`、`ui:last_session_id`、窗口状态、本地模型端点；
 3. **秘密**：`provider:{id}:api_key`、同步认证凭证、加密密钥。
 
@@ -652,8 +652,7 @@ Worker 只负责认证、幂等、CAS 和保存冲突所需版本，不解析或
 | `session` | 标题、pin、模型偏好可按字段三方合并；同字段冲突用 HLC tie-break，并记录 conflict event |
 | `session.summary` | 不能简单 LWW；保留较新消息覆盖范围对应的摘要，必要时标记本地重新生成 |
 | `agent` | 非重叠字段三方合并；persona/system_prompt 同字段冲突保留双方版本并提示选择 |
-| `explicit_memory` | 不静默 LWW；保留 base/local/remote，尝试文本三方合并，失败则生成冲突副本 |
-| `memory` | 不同 ID 自然并存；同一 ID 修改冲突保留两个 revision，用户或后续去重流程处理 |
+| `memory_file` | revision CAS；保留 base/local/remote，frontmatter 集合字段可确定性合并，正文语义冲突由当前 Agent 或用户处理，不静默 LWW |
 | `workspace` | 只合并逻辑元数据；folder binding 从不进入冲突系统 |
 | 设备本地 settings | 不同步，无冲突 |
 
@@ -992,6 +991,22 @@ D1 Time Travel 在免费层保留 7 天，默认启用且可按时间点恢复�
 ---
 
 ## 19. 分阶段实施路线
+
+> 2026-07-27 记忆系统已改为 `MEMORY_SYSTEM.md` 定义的 `memory_file` 虚拟文件模型。下方
+> 2026-07-16 的 `explicit_memory / memory_store` 条目仅保留为旧实现记录，不再是目标契约；
+> 重构时直接删除旧实体和开发数据，不编写迁移或兼容层。新同步工作以本节最前的 Phase M 为准。
+
+### Phase M：持久记忆同步破坏式替换
+
+- [ ] 新增 E2EE `memory_file` payload 与严格字段白名单；
+- [ ] bootstrap 改为 `agent -> workspace -> session -> message -> memory_file`；
+- [ ] 增加 memory file revision CAS 与本地 base/local/remote 冲突记录；
+- [ ] 删除 `explicit_memory / memory` Worker、Rust repository、MergeEngine 分支和 D1 开发数据；
+- [ ] 不迁移旧 USER.md、MEMORY.md 或 memory_store 文本；
+- [ ] 完成两设备并发修改、删除冲突、墓碑防复活与 E2EE 日志审计验收。
+
+完成标准：两台设备以新 `memory_file` 实体确定性收敛，任何正文冲突都不静默 LWW，旧记忆
+实体不再出现在运行时同步白名单。
 
 ### Phase 0：同步前的数据边界修正
 

@@ -2,7 +2,7 @@
 
 项目规划与设计文档：技术栈、架构、数据模型、AGENTS 角色卡、记忆系统、版本路线图与关键决策。开发规范（语言、命令、代码质量）见 `CODEBUDDY.md`。
 
-记忆系统的实体字段、检索行为与 AI 工具契约详见 `ProjectPlan/MEMORY_SYSTEM.md`。
+记忆系统的实体字段、文件导航行为与 AI 工具契约详见 `ProjectPlan/MEMORY_SYSTEM.md`；正式运行时规则见 `ProjectPlan/MEMORY_FILESYSTEM_PROMPT.md`。
 
 Read With AI 的 EPUB、划线与讨论上下文边界详见 `ProjectPlan/READ_WITH_AI.md`。
 
@@ -72,13 +72,13 @@ Linux 桌面端的标准发行构建、Arch Linux AppImage 兼容处理与产物
 
 # 本地数据库（SQLite 表）
 
-`agents / sessions / messages / message_parts / explicit_memories / memory_store / workspace_bindings / embeddings / knowledge_collections / documents / document_versions / document_chunks / blob_objects / calendars / calendar_events / task_lists / tasks / tool_calls / sync_outbox / settings`
+`agents / sessions / messages / message_parts / memory_files / memory_file_revisions / memory_file_conflicts / workspace_bindings / embeddings / knowledge_collections / documents / document_versions / document_chunks / blob_objects / calendars / calendar_events / task_lists / tasks / tool_calls / sync_outbox / settings`
 
 - `agents`：角色卡（人设/指令/默认模型/工具权限），见"AGENTS / 角色卡"。
 - `sessions.agent_id` → `agents.id`（多对一：一个 Agent 可有多个 session，但每个 session 只属于一个 Agent）。
-- `memory_store.agent_id`：长期记忆库按 Agent 隔离。
+- `memory_files.agent_id`：长期记忆虚拟文件系统按 Agent 隔离；SQLite 是唯一真相源。
 
-**同步策略**：云端只同步白名单内的结构化用户实体（agents/sessions/messages/explicit_memories/memory_store/workspaces/calendars/calendar_events/event_exceptions/task_lists/tasks，文件清单后续扩展）；通用 settings 保持设备本地。**原始向量行和 sqlite-vec 表不进 D1**：每台设备可本地重建，也可在 embedding/parser/chunker 指纹完全一致时从 R2/Google Drive 下载客户端加密的便携向量制品。D1 只保存最新版本、密文 Hash、Provider 副本和设备落地状态。事务性 outbox 使用 `device_id + HLC` 做增量 push/pull 与冲突解决；聊天消息正文完成后不可变，记忆和角色配置才需字段级冲突处理。
+**同步策略**：云端只同步白名单内的结构化用户实体（agents/sessions/messages/memory_files/workspaces/calendars/calendar_events/event_exceptions/task_lists/tasks，文件清单后续扩展）；通用 settings 和本地记忆修订保持设备本地。**原始向量行和 sqlite-vec 表不进 D1**：每台设备可本地重建，也可在 embedding/parser/chunker 指纹完全一致时从 R2/Google Drive 下载客户端加密的便携 RAG 向量制品。D1 只保存最新版本、密文 Hash、Provider 副本和设备落地状态。事务性 outbox 使用 revision CAS、`device_id + HLC` 做增量 push/pull；聊天消息正文完成后不可变，记忆文件并发修改不静默 LWW，而是保留 base/local/remote 后合并。
 
 # AGENTS / 角色卡
 
@@ -101,18 +101,18 @@ created_at / updated_at
 ```
 
 - **session ↔ agent**：多对一。一个 Agent 可有多个 session，每个 session 只属于一个 Agent（`sessions.agent_id`）。
-- **长期记忆 ↔ agent**：每个 Agent 独立的 USER.md / MEMORY.md / memory_store（见记忆系统）。
+- **长期记忆 ↔ agent**：每个 Agent 有独立的持久记忆虚拟文件系统（见 `MEMORY_SYSTEM.md`）。
 - **注入顺序**：角色卡（persona + system_prompt + tool_policy）拼在 system prompt 最前，决定"这个 Agent 是谁、能做什么"。
 
 # 记忆系统（四层）
 
-**与 AGENTS 的关系**：一个 session 只属于一个具体 AGENTS（角色卡）；长期记忆（③+④）也按 AGENTS 隔离——每个 Agent 有自己独立的 USER.md / MEMORY.md / memory_store。因此"记忆"是 per-Agent 的，不是全局单一的。
+**与 AGENTS 的关系**：一个 session 只属于一个具体 Agent；长期记忆（③+④）也按 Agent 隔离。每个 Agent 拥有一套 SQLite-backed 虚拟 Markdown 文件系统，不存在全局画像隐式继承，也不与其他 Agent 共用记忆。
 
 ```text
-① Recent Context        — session 内，原文，短期（靠预算+压缩约束）
-② Conversation Summary   — session 内，滚动压缩，短期
-③ 必注入记忆(本地文本)    — USER.md + MEMORY.md，按 Agent 隔离，每次 session 直接进 prompt
-④ 按需记忆库(向量+字符串) — 按 Agent 隔离，通过工具检索，不每次注入
+① Recent Context          — session 内最近消息原文，受预算约束
+② Conversation Summary    — session 内较早消息的滚动摘要
+③ Always-on Memory Index  — <profile> + <preferences> + <memory_listing>
+④ On-demand Memory Files  — /topics、/areas、/people 正文，通过工具按需读取
 ```
 
 ## ①+② Session 内记忆（短期，切换 session 即消失）
@@ -125,23 +125,21 @@ created_at / updated_at
 - 切换 session：working_set 直接丢弃，原始 messages 仍在库；重载时重建，超预算立刻压缩。并发多 session 各占独立预算。
 - 配置字段：`context_limit / compress_threshold / recency_window / reserved_output_tokens / summarizer_model`，模型注册表需 `max_context_tokens`。
 
-## ③ 必注入记忆（本地文本文件，直接注入 prompt）
+## ③ Always-on Memory Index
 
-- 存储：SQLite `explicit_memories` 是 canonical 真相源，每个 Agent 固定以 `user_md / memory_md` 两种 kind 保存 `USER.md`（用户基础信息，**仅用户可改，AI 只读**）和 `MEMORY.md`（需每次都记住的事实，**AI 和用户都能改**）；本地 Markdown 文件是可读、可编辑的物化视图。
-- 作用域：按 Agent 隔离，路径 `~/.agnes/agents/{agent_id}/memory/USER.md` + `MEMORY.md`。可选：全局用户画像 `~/.agnes/memory/USER.md` 作为跨 Agent 共享基底，注入时与 per-Agent 的合并（若冲突以 per-Agent 为准）。
-- 注入：session 启动读取，直接拼进 system prompt 每轮都在，作为稳定基底。
-- 修改：用户手改或说"记住…" → AI 调 `memory_md_edit` 追加或精确替换，并可用 `memory_md_view` 再次查看。AI 改 USER.md 被工具层写保护禁止；需更新时提示用户。
-- 原"Explicit Memory"即收敛为 `explicit_memories` 中的 USER.md/MEMORY.md 文档实体：使用稳定 UUID、版本和墓碑参与同步，不再混入通用 settings。
+- `/profile.md` 保存稳定身份背景，正文以 `<profile>` 注入；`/preferences.md` 保存合法的交互偏好，正文以 `<preferences>` 注入。
+- `<memory_listing>` 注入当前 Agent 每个活跃文件的虚拟 path、description、aliases 和 sources，不注入其他正文。
+- 三个动态块每轮从同一 SQLite snapshot 生成；不存在时明确标记 `(not yet written)` 或 `(empty)`。
+- listing 不得因上下文预算截断；通过单 Agent 文件数和元数据长度上限控制规模。
 
-## ④ 按需记忆库（SQLite + 向量 + 字符串，工具检索）
+## ④ On-demand Memory Files
 
-- 存储：`memory_store` 表（区别于 MEMORY.md 文件）：
-  用户可见字段固定为 `name / keywords? / created_at / content / creator(user|ai)`；另有 `id / agent_id / status / version / embedding_id` 等内部字段。`agent_id` 保证记忆库按 Agent 隔离，详细约束见 `MEMORY_SYSTEM.md`。
-- 检索（混合）：AI 按需调 `memory_search(q)`。名称、关键词和内容参与字符串匹配；配置嵌入模型后，仅对 `content` 建立按实际维度分表的 sqlite-vec cosine 索引，并以 RRF 融合字符串与同 Agent、同模型的向量候选，返回 top-k 作为工具结果进入上下文。模型未配置或向量调用失败时自动降级为字符串检索。
-- 索引维护：每次 Agent 运行前批量回填缺失、正文变化或模型切换后的记忆向量；正文修改和删除会清理旧向量。记忆管理页按当前 Agent 展示当前模型、覆盖率和待处理数量，并允许手动触发同一批量回填链路。sqlite-vec 支持的维度范围为 1 到 8192，向量仅保存在本机，不参与云同步。
-- 写入：后台 memory extractor 从对话抽取，或 AI 调用 `memory_create` / `memory_update` 写入当前 Agent 的结构化记忆；Rust 强制 AI 创建入口标记 `creator=ai`，用户从记忆管理界面创建时强制标记 `creator=user`。创建时间和创建人均由系统生成，不接受调用方伪造，更新时保持不变。
-- AI 工具边界：`memory_search` 返回稳定 `id` 供 `memory_update` 使用，但不返回 `agent_id`；`memory_create` 和 `memory_update` 都从当前 session 解析 Agent，不能跨 Agent 写入。提示词已要求 AI 写入前先检索相关记忆，再判断新增或更新；基础工具层不强制该调用顺序。
-- `MEMORY.md`：AI 使用 `memory_md_view` 再次查看，使用 `memory_md_edit` 进行追加或唯一精确替换；工具只能操作当前 Agent 的 `MEMORY.md`，不能修改 `USER.md` 或任意文件。
+- 路径固定为 `/topics/<domain>.md`、`/areas/<name>.md` 和 `/people/<name>.md`；每个主题只归档一次，通过 `[[name]]` 交叉引用。
+- AI 通过 `memory_list / memory_read / memory_write / memory_str_replace / memory_append / memory_delete` 操作，不接触宿主机路径，也不能传 `agent_id`。
+- Markdown frontmatter 固定为 `name / description / sources / aliases`；chat surface 只能新写用户明确说过的 `[stated]` 事实。
+- 所有修改必须带 read 返回的 opaque version token，以 CAS 防止多会话和多 surface 覆盖；整文件删除还必须有本轮用户明确授权。
+- 不提供向量检索，不运行后台 extractor。模型在当前轮按 listing 读取相关主题，并在事实出现时立即写入；写入失败不阻断主要回答。
+- SQLite `memory_files` 是 canonical 真相源；有限 revisions/conflicts 用于本地撤销和冲突恢复。详细 schema、工具契约、隐私边界和测试见 `MEMORY_SYSTEM.md`，逐条模型行为以 `MEMORY_FILESYSTEM_PROMPT.md` 为准。
 
 ## Prompt 拼装顺序
 
@@ -149,15 +147,14 @@ created_at / updated_at
 System Prompt
 ↓ Agent 角色卡（人设 / system_prompt / tool_policy）   ← 决定"这个 Agent 是谁、能做什么"
 ↓ 安全规则（基于 Agent 的 tool_policy）
-↓ 记忆决策规则（先检索再新增/更新，区分 MEMORY.md 与结构化记忆库）
-↓ USER.md                （per-Agent，每次必注入，仅用户可改）
-↓ MEMORY.md              （per-Agent，每次必注入，ai+用户可改）
+↓ MEMORY_FILESYSTEM_PROMPT.md（正式记忆行为规则）
+↓ <profile> + <preferences> + <memory_listing>（per-Agent snapshot）
 ↓ Home 注入通用共享工作区纪律；Code 注入编码工作流（工作区范围、先读项目指令、工具与验证纪律）
 ↓ 当前项目上下文
 ↓ [按本轮选择] Active Skills（低于系统安全规则与 Tool Policy）
 ↓ ② Conversation Summary
 ↓ ① Recent Context
-↓ [按需] AI 调 memory_search（限定 agent_id）→ 检索结果作工具返回拼入
+↓ [按需] AI 调 memory_read（agent_id 由 session 解析）→ 文件正文作为工具结果
 ↓ 用户本轮输入
 ```
 
@@ -168,8 +165,9 @@ Home 普通会话共享一个设备本地的通用工作区，首选系统 Docum
 
 ## 同步影响
 
-- USER.md / MEMORY.md：纯文本，随其他文本全量同步上云（D1）。
-- memory_store 文本同步；embedding 默认各端本地重算。大型 RAG 向量可作为指纹严格匹配的加密制品在 R2/Google Drive 间复用，但不进入 D1 payload。
+- `memory_file` 是唯一记忆同步实体，path 与 Markdown 正文均经客户端 E2EE 后进入 D1 增量协议。
+- 服务端使用 revision CAS；跨设备并发修改保留 base/local/remote，不静默 LWW。有限修订和 UI FTS 只保存在本机。
+- 记忆系统不再生成 embedding；知识库/RAG 的原始向量仍默认各端本地重算，大型 RAG 向量可作为指纹严格匹配的加密制品在 R2/Google Drive 间复用，但不进入 D1 payload。
 
 # 知识库、网盘与个人效率子功能
 
@@ -181,10 +179,10 @@ Home 普通会话共享一个设备本地的通用工作区，首选系统 Docum
 
 # 版本路线图与当前进度
 
-| 版本 | 范围 | 当前状态（2026-07-21） |
+| 版本 | 范围 | 当前状态（2026-07-27） |
 |---|---|---|
 | V0.1 | Tauri 2 + React 聊天 UI + SQLite + Python LangGraph sidecar + LiteLLM | 已完成：开发态通过 `uv` 启动，发布态使用 PyInstaller 冻结为按 target triple 命名的 `agentd` 并由 Tauri `externalBin` 内置；发布构建会自动执行独立 WebSocket 协议握手测试，安装后不依赖 Python 或 `uv` |
-| V0.2 | message summary + memory extractor + 结构化记忆库 + sqlite-vec + prompt assembler | 已完成：摘要、抽取、结构化字段、AI 创建/更新、记忆决策提示词、`MEMORY.md` 专用工具、动态维度 sqlite-vec + RRF 混合检索；已使用 Qwen3-Embedding-8B 完成真实服务端到端验证，手动向量化、覆盖率统计与检索链路均可用 |
+| V0.2 | message summary + 持久记忆文件系统 + prompt assembler | 会话摘要已完成；旧结构化/向量记忆实现将直接删除并按 `MEMORY_SYSTEM.md` 重构为虚拟 Markdown 文件系统，不做数据迁移。正式行为提示词为 `MEMORY_FILESYSTEM_PROMPT.md` |
 | V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | Phase 0-4 已完成：密文传输、SPAKE2 新设备配对、两阶段密钥轮换、Recovery Bundle 多版本恢复和线上日志审计均已完成；Worker 已部署，真实桌面端已用测试数据完成 E2EE 同步、手动排空和断点续推验收。远端当前仅保留测试设备与测试同步数据，未上传真实业务内容 |
 | V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 暂缓：先稳定桌面客户端与本地 Agent 能力，再启动 Android 客户端 |
 | V0.5 | MCP + Skills + diff review + workspace sandbox + tool audit + 多模型 fallback | 已完成桌面端基础闭环：工具、审批、Linux 沙箱、审计、模型路由、内置 `web_search/web_fetch/browser_open`、可配置 SearXNG/Brave Search Provider、MCP Client、主模型零输出故障回退、兼容 `SKILL.md` 的本地/Git 安装与运行时资源边界，以及 `file_write/file_edit/apply_patch` 批准前变更预览均已接入；沙箱支持规范化软链接的额外可写根目录，`uv`/pnpm/Cargo 等开发工具可复用真实用户缓存和工具链目录；浏览器为隔离无登录的严格只读渲染能力。diff review 当前按整次文件工具调用批准或拒绝，不预测 Shell/Git/MCP 的任意副作用，也不提供逐 hunk 选择 |
@@ -195,7 +193,7 @@ Home 普通会话共享一个设备本地的通用工作区，首选系统 Docum
 # 关键决策约束
 
 - 项目定位是"带 Agent 能力的酒馆式多角色聊天"，不是纯 Agent 工具：核心是可创建多个 AGENTS（角色卡），每个有独立人设/系统提示词/工具权限/长期记忆。
-- session 与 AGENTS 多对一；长期记忆（USER.md / MEMORY.md / memory_store）按 AGENTS 隔离，不是全局单一记忆。
+- session 与 AGENTS 多对一；长期记忆虚拟文件系统按 Agent 隔离，不是全局单一记忆，也不隐式继承全局画像。
 - 桌面端是执行器，安卓端轻交互，不要在 Android 内置完整 Agent 作为 MVP。
 - 当前优先稳定桌面端与本地 Agent 基础能力；Android 客户端在桌面端稳定后再恢复排期。
 - 向量库本地优先，不跨端同步；云端只同步文本与用户数据。
