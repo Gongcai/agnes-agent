@@ -126,6 +126,16 @@ interface MemoryFileMutationOutcome {
   listingEpoch: number;
 }
 
+type UserProfileInheritanceMode = "auto" | "inherit" | "isolated";
+
+interface AgentUserMdState {
+  content: string;
+  mode: UserProfileInheritanceMode;
+  effective: boolean;
+  userMdEmpty: boolean;
+  version: string | null;
+}
+
 interface UserProfile {
   avatar: string;
   name: string;
@@ -153,6 +163,12 @@ const EMPTY_USER_PROFILE: UserProfile = {
   emoji: "default",
   verbosity: "default",
 };
+
+const PROFILE_INHERITANCE_OPTIONS: readonly ProjectSelectOption<UserProfileInheritanceMode>[] = [
+  { value: "auto", label: "自动（USER.md 为空时继承）" },
+  { value: "inherit", label: "始终继承基础信息" },
+  { value: "isolated", label: "不继承基础信息" },
+];
 
 const GENDER_OPTIONS: readonly ProjectSelectOption[] = [
   { value: "", label: "未设置" },
@@ -735,6 +751,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isLoadingMemory, setIsLoadingMemory] = useState(false);
   const [isSavingMemory, setIsSavingMemory] = useState(false);
   const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [agentUserMd, setAgentUserMd] = useState<AgentUserMdState | null>(null);
+  const [agentUserMdDraft, setAgentUserMdDraft] = useState("");
+  const [isSavingAgentUserMd, setIsSavingAgentUserMd] = useState(false);
+  const [agentUserMdError, setAgentUserMdError] = useState<string | null>(null);
 
   // Audit state
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -1093,8 +1113,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (activeAgentId && activeTab === "memory") {
       setIsLoadingMemory(true);
       setMemoryError(null);
-      invoke<MemoryFileListing>("list_memory_files", { agentId: activeAgentId })
-        .then(async (listing) => {
+      setAgentUserMdError(null);
+      Promise.all([
+        invoke<MemoryFileListing>("list_memory_files", { agentId: activeAgentId }),
+        invoke<AgentUserMdState>("get_agent_user_md", { agentId: activeAgentId }),
+      ])
+        .then(async ([listing, userMd]) => {
+          setAgentUserMd(userMd);
+          setAgentUserMdDraft(userMd.content);
           setMemoryFiles(listing.files);
           const nextPath = listing.files[0]?.path ?? null;
           setSelectedMemoryPath(nextPath);
@@ -1114,6 +1140,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         })
         .catch((error) => {
           setMemoryError(String(error));
+          setAgentUserMdError(String(error));
         })
         .finally(() => setIsLoadingMemory(false));
     }
@@ -1826,6 +1853,44 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setMemoryError(String(error));
     } finally {
       setIsSavingMemory(false);
+    }
+  };
+
+  const saveAgentUserMd = async (
+    mode: UserProfileInheritanceMode = agentUserMd?.mode ?? "auto",
+  ) => {
+    if (!activeAgentId) return;
+    setIsSavingAgentUserMd(true);
+    setAgentUserMdError(null);
+    try {
+      const outcome = await invoke<MemoryFileMutationOutcome>("save_agent_user_md", {
+        agentId: activeAgentId,
+        content: agentUserMdDraft,
+        mode,
+        ifVersion: agentUserMd?.version ?? null,
+      });
+      if (!outcome.ok) {
+        const current = await invoke<AgentUserMdState>("get_agent_user_md", {
+          agentId: activeAgentId,
+        });
+        setAgentUserMd(current);
+        setAgentUserMdDraft(current.content);
+        setAgentUserMdError(
+          outcome.code === "VERSION_CONFLICT"
+            ? "USER.md 已在其他位置更新，已载入最新内容，请核对后重试。"
+            : `${outcome.code ?? "SAVE_FAILED"}: ${outcome.message}`,
+        );
+        return;
+      }
+      const saved = await invoke<AgentUserMdState>("get_agent_user_md", {
+        agentId: activeAgentId,
+      });
+      setAgentUserMd(saved);
+      setAgentUserMdDraft(saved.content);
+    } catch (error) {
+      setAgentUserMdError(String(error));
+    } finally {
+      setIsSavingAgentUserMd(false);
     }
   };
 
@@ -2952,6 +3017,64 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {activeTab === "memory" && (
               <div className="space-y-4">
                 <div className="space-y-4">
+                  <section className="space-y-3 border-b border-stone-200 pb-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-sm font-semibold text-stone-850">USER.md</h3>
+                          <span className="rounded border border-stone-200 bg-stone-50 px-1.5 py-0.5 text-[9px] font-semibold text-stone-500">
+                            AI 只读
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[11px] leading-5 text-stone-400">
+                          每轮固定注入当前 Agent 的基础信息；只有你可以编辑。
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void saveAgentUserMd()}
+                        disabled={isSavingAgentUserMd || isLoadingMemory}
+                        className="rounded-md bg-[#6C806A] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#596C58] disabled:opacity-50"
+                      >
+                        {isSavingAgentUserMd ? "保存中..." : "保存 USER.md"}
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-[11px] leading-5 text-stone-500">
+                        {!agentUserMd
+                          ? "正在读取继承设置..."
+                          : agentUserMd.mode === "inherit" && !agentUserMd.userMdEmpty
+                            ? "基础信息会追加到当前 USER.md，不覆盖你编辑的内容。"
+                            : agentUserMd.mode === "inherit"
+                              ? "当前继承全局基础信息。"
+                              : agentUserMd.mode === "isolated"
+                                ? "当前仅使用此 Agent 的 USER.md。"
+                                : agentUserMd.effective
+                                  ? "自动模式：USER.md 为空，当前继承全局基础信息。"
+                                  : "自动模式：USER.md 已编辑，当前仅使用这里的内容。"}
+                      </p>
+                      <ProjectSelect
+                        value={agentUserMd?.mode ?? "auto"}
+                        disabled={!agentUserMd || isSavingAgentUserMd}
+                        options={PROFILE_INHERITANCE_OPTIONS}
+                        onChange={(mode) => void saveAgentUserMd(mode)}
+                        className="min-w-56"
+                        ariaLabel="USER.md 基础信息继承方式"
+                      />
+                    </div>
+
+                    <textarea
+                      value={agentUserMdDraft}
+                      onChange={(event) => setAgentUserMdDraft(event.target.value)}
+                      disabled={isLoadingMemory}
+                      placeholder="# USER.md\n\n填写希望所有对话固定了解的基础信息"
+                      spellCheck={false}
+                      className="min-h-40 w-full resize-y rounded-md border border-stone-200 bg-white p-3 font-mono text-[11px] leading-5 text-stone-800 focus:border-stone-400 focus:outline-none disabled:opacity-60"
+                    />
+                    {agentUserMdError && <p className="text-xs text-red-600">{agentUserMdError}</p>}
+                  </section>
+
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <h3 className="text-sm font-semibold text-stone-850">持久记忆文件</h3>

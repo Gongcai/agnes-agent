@@ -149,6 +149,8 @@ Python → Rust:
       "agent": {}, "settings": {}, "recentMessages": [],
       "summary": "...",
       "memoryFilesystem": {
+        "user": "# USER.md\n...",
+        "userMode": "auto",
         "profile": null, "preferences": null,
         "files": [], "listingEpoch": 0
       },
@@ -312,10 +314,10 @@ settings(key PK, value TEXT)
 |----|----------|------|
 | ① Recent Context | Python `prompt.py`（用 ContextSnapshot.recentMessages） | SQLite `messages` |
 | ② Conversation Summary | Python `prompt.py`（滚动压缩）→ Rust 写 `sessions.summary` | SQLite `sessions.summary` |
-| ③ Always-on Memory Index | Rust `memory/` 生成 profile/preferences/listing snapshot；Python `prompt.py` 组装 | SQLite `memory_files` 派生元数据 |
+| ③ Always-on User And Memory Index | Rust `memory/` 生成 USER/profile/preferences/listing snapshot；Python `prompt.py` 组装 | SQLite `memory_files` + 设备本地基础资料 |
 | ④ On-demand Memory Files | Rust 六个 memory tools + Markdown validator + CAS | SQLite `memory_files` + 本地 revisions/conflicts |
 
-**记忆导航规则**：每轮注入当前 Agent 的完整轻量 listing，以及 `/profile.md`、
+**记忆导航规则**：每轮固定注入用户管理、AI 只读的 `USER.md` 有效视图；同时注入当前 Agent 的完整轻量 listing，以及 `/profile.md`、
 `/preferences.md` 正文；其他文件由模型根据 path、description、aliases 按需 `memory_read`。
 持久记忆不再使用 sqlite-vec、RRF 或运行前向量回填。UI 可维护可重建的本地 FTS5 索引，
 但不向 Agent 暴露 `memory_search`。

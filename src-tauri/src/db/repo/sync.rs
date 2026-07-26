@@ -2878,6 +2878,37 @@ mod tests {
         })
     }
 
+    fn user_md_payload(id: &str, agent_id: &str, content: &str, version: i64) -> Value {
+        let markdown = crate::db::repo::memory_files::build_agent_user_md(
+            content,
+            crate::user_profile::UserProfileInheritanceMode::Inherit,
+        )
+        .unwrap();
+        let validated = crate::db::repo::memory_files::validate_synced_document(
+            crate::db::repo::memory_files::USER_MD_PATH,
+            &markdown,
+        )
+        .unwrap();
+        json!({
+            "id": id,
+            "agent_id": agent_id,
+            "path": crate::db::repo::memory_files::USER_MD_PATH,
+            "kind": validated.kind,
+            "name": validated.name,
+            "description": validated.description,
+            "sources": validated.sources,
+            "aliases": validated.aliases,
+            "content_hash": validated.content_hash,
+            "markdown": validated.markdown,
+            "status": "active",
+            "created_at": "1",
+            "updated_at": version.to_string(),
+            "version": version,
+            "deleted_at": null,
+            "origin_device_id": REMOTE_DEVICE
+        })
+    }
+
     fn calendar_payload(id: &str) -> Value {
         json!({
             "id": id,
@@ -3494,6 +3525,46 @@ mod tests {
             .unwrap();
         assert!(memory.contains("Uses pnpm workspaces"));
         assert_eq!(status(&conn).unwrap().last_pull_cursor, 6);
+        assert_eq!(status(&conn).unwrap().pending_count, 0);
+    }
+
+    #[test]
+    fn remote_user_md_applies_as_hidden_read_only_profile() {
+        let mut conn = setup();
+        let user_md_id = crate::db::repo::memory_files::sync_entity_id(
+            "agent-1",
+            crate::db::repo::memory_files::USER_MD_PATH,
+        )
+        .unwrap();
+        let entities = vec![
+            remote(
+                "agent",
+                "agent-1",
+                1,
+                1,
+                agent_payload("agent-1", "Agent", 1),
+            ),
+            remote(
+                "memory_file",
+                &user_md_id,
+                1,
+                2,
+                user_md_payload(&user_md_id, "agent-1", "# User\n\nRemote baseline", 1),
+            ),
+        ];
+
+        apply_bootstrap_page(&mut conn, "required", &entities, 2, None, false, 2_000).unwrap();
+
+        let state = crate::db::repo::memory_files::get_agent_user_md(&conn, "agent-1").unwrap();
+        assert_eq!(state.content, "# User\n\nRemote baseline");
+        assert_eq!(
+            state.mode,
+            crate::user_profile::UserProfileInheritanceMode::Inherit
+        );
+        assert!(crate::db::repo::memory_files::listing(&conn, "agent-1")
+            .unwrap()
+            .files
+            .is_empty());
         assert_eq!(status(&conn).unwrap().pending_count, 0);
     }
 

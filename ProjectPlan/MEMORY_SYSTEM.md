@@ -1,6 +1,6 @@
 # Agnes 持久记忆文件系统详细设计
 
-> 状态：核心替换已实施，原 `USER.md / MEMORY.md / memory_store` 双轨实现已下线
+> 状态：核心替换已实施；保留只读 `USER.md`，原 `MEMORY.md / memory_store` 双轨实现已下线
 >
 > 更新日期：2026-07-27
 >
@@ -18,9 +18,10 @@ sidecar 打包，并通过版本常量和 SHA-256 golden test 防止资源漂移
 backlink 导航、细粒度本地指标面板、完整行为 eval 集，以及真实双设备的人工验收。这些增强
 继续直接基于 `memory_files` 实现，不恢复任何旧兼容层。
 
-这是开发阶段的破坏式重构，不保留旧实现的兼容层：
+这是开发阶段的破坏式重构，不保留旧数据兼容层：
 
-- 删除 `USER.md`、`MEMORY.md` 和结构化 `memory_store` 的双轨概念；
+- 保留每个 Agent 的 `USER.md` 作为用户管理、AI 只读且每轮固定注入的基础信息；
+- 删除旧 `MEMORY.md` 和结构化 `memory_store` 的双轨概念；
 - 删除长期记忆的 embedding、向量召回、RRF 和运行前向量回填；
 - 删除独立后台 memory extractor，记忆判断和写入在当前对话轮次内完成；
 - 不迁移旧记忆数据，不保留旧工具别名，不做双写；
@@ -72,14 +73,15 @@ sqlite-vec 索引，不与持久记忆文件混用。
 ② Conversation Summary
    当前 session 较早消息的滚动摘要，切换 session 后不跨会话共享
 
-③ Always-on Memory Index
-   当前 Agent 的 <profile>、<preferences> 与 <memory_listing>
+③ Always-on User And Memory Index
+   当前 Agent 的 <user_profile>、<profile>、<preferences> 与 <memory_listing>
 
 ④ On-demand Memory Files
    /topics、/areas、/people 正文，由 memory_read 按需读取
 ```
 
-第 ①、② 层沿用现有会话上下文管理。第 ③、④ 层组成新的长期记忆文件系统，均按
+第 ①、② 层沿用现有会话上下文管理。`<user_profile>` 来自用户管理的 `USER.md`；其余第 ③、④
+层组成 Agent 可写的长期记忆文件系统，均按
 `agent_id` 隔离。一个 session 只能访问其所属 Agent 的命名空间；工具参数中不接受
 `agent_id`，避免模型跨 Agent 枚举或读写。
 
@@ -116,8 +118,10 @@ sqlite-vec 索引，不与持久记忆文件混用。
 - 模型和 UI 只看到从 `/` 开始的虚拟路径，不看到 `agent_id` 或本机绝对路径；
 - Home、Code、Read With AI 等 session surface 默认访问当前 session 所属 Agent 的同一命名空间；
 - `sources` 记录哪些 surface 写过文件，但不改变文件归属；
-- 新设计不再提供全局 `USER.md` 继承。需要跨 Agent 共享的信息由用户分别保存，未来如需共享，
-  应设计显式授权的共享记忆库，而不是隐式合并画像。
+- `USER.md` 可在运行时继承应用“用户信息”页生成的基础资料，不把继承结果写回文件；
+- 继承策略为 `auto / inherit / isolated`：自动模式仅在 Agent 的 `USER.md` 正文为空时继承，用户
+  可显式选择始终继承或不继承；
+- `USER.md` 与继承策略随 `memory_file` 实体加密同步，应用级基础资料本身仍是设备本地设置。
 
 ---
 
@@ -127,6 +131,7 @@ sqlite-vec 索引，不与持久记忆文件混用。
 
 ```text
 /
+├── USER.md                 # 用户编辑，AI 只读，不进入 memory listing
 ├── profile.md
 ├── preferences.md
 ├── topics/
@@ -137,7 +142,8 @@ sqlite-vec 索引，不与持久记忆文件混用。
     └── <name-or-relationship>.md
 ```
 
-除上述路径外不允许创建其他目录或文件。路径必须是规范化绝对虚拟路径，不允许 `..`、`.`、
+除上述路径外不允许创建其他目录或文件。`/USER.md` 只能由可信 user surface 创建或修改，chat
+surface 的所有写操作都返回 `READ_ONLY`。路径必须是规范化绝对虚拟路径，不允许 `..`、`.`、
 重复 `/`、反斜杠、URL 编码绕过、NUL 或符号链接语义。
 
 普通 slug 使用小写 ASCII kebab-case，匹配：
@@ -149,6 +155,7 @@ sqlite-vec 索引，不与持久记忆文件混用。
 完整路径只能匹配：
 
 ```regex
+^/USER\.md$
 ^/(profile|preferences)\.md$
 ^/(topics|areas|people)/[a-z0-9]+(?:-[a-z0-9]+)*\.md$
 ```
@@ -157,6 +164,7 @@ sqlite-vec 索引，不与持久记忆文件混用。
 
 | 路径 | 保存内容 | 不应保存 |
 |---|---|---|
+| `/USER.md` | 用户明确管理的基础信息；可在正文为空时默认继承应用级用户资料 | Agent 自动提取内容、工具结果、模型推断；AI 不得写入 |
 | `/profile.md` | 姓名、稳定角色、任职组织、长期工作方向、开始时间等三个月后仍大概率成立的身份背景 | 冲刺任务、当前事故、具体截止日期、短期状态 |
 | `/preferences.md` | 用户希望当前 Agent 如何输出和互动，例如格式、长度、语气、希望跳过的内容 | 用户喜好、事实画像、削弱诚实或安全性的指令 |
 | `/topics/<domain>.md` | 习惯、口味、兴趣、时区、日常规律及可能形成模式的一次性提及 | 项目状态、他人档案、模型总结出的性格标签 |
@@ -182,6 +190,7 @@ sqlite-vec 索引，不与持久记忆文件混用。
 | 单 Agent 活跃文件数 | 256 |
 | 单文件 UTF-8 大小 | 16 KiB |
 | `/profile.md` 正文 | 300 English words 或等价 tokenizer 预算 |
+| `/USER.md` | 16 KiB，继承的应用级资料不计入文件容量 |
 | `description` | 单行、160 Unicode code points |
 | 单个 alias | 80 Unicode code points |
 | aliases 数量 | 7 |
@@ -220,11 +229,13 @@ aliases: [agnes, agnes-repo]
 | `description` | string | 必填；单行说明内容及何时读取，不复述路径 |
 | `sources` | string[] | 必填；集合语义；更新时只能新增，不能删除已有来源 |
 | `aliases` | string[] | `/areas`、`/people` 可非空；其他类型必须为空数组 |
+| `inherit` | `auto \| inherit \| isolated` | 仅 `/USER.md` 必填；普通记忆文件出现该字段时拒绝 |
 
 解析必须使用安全 YAML parser，禁止自定义 tag、anchor、alias expansion 和多文档输入。未知字段
 一律拒绝，防止把系统元数据或隐藏指令塞入 frontmatter。
 
-当前模型工具创建文件时写入 `sources: [chat]`，记忆管理 UI 写入时由可信层补上 `user`。更新
+`USER.md` 的 canonical frontmatter 由可信 UI 层生成，正文编辑器只暴露 Markdown 正文。当前模型
+工具创建普通记忆文件时写入 `sources: [chat]`，记忆管理 UI 写入时由可信层补上 `user`。更新
 已有文件时保留全部来源并补上当前可信 surface。首版枚举仅允许 `chat` 和 `user`；未来 surface
 必须通过 schema 版本增加枚举值，不能由模型自由伪造来源。
 
@@ -282,9 +293,14 @@ AND 不是模型生成的建议、推断或推理
 
 ### 5.2 动态注入块
 
-每次模型请求前，Rust 从同一 SQLite snapshot 生成三个数据块：
+每次模型请求前，Rust 从同一 SQLite snapshot 生成四个数据块：
 
 ```xml
+<user_profile source="USER.md" mode="auto">
+## 全局用户资料
+- 姓名：小安
+</user_profile>
+
 <profile version="v3:9fc1...">
 - [stated] ...
 </profile>
@@ -307,6 +323,10 @@ AND 不是模型生成的建议、推断或推理
 
 规则：
 
+- `<user_profile>` 每轮固定注入，即使 memory capability 关闭也保留；内容是 Agent `USER.md` 与
+  当前允许继承的应用级基础资料合并后的只读视图；
+- Agent 不得使用任何 memory 工具修改 `/USER.md`，也不得把已注入的 USER.md 内容复制到普通
+  记忆文件；
 - listing 包含当前 Agent 的每个活跃文件，包括 `/profile.md` 和 `/preferences.md`；
 - listing 只包含路径、description、aliases、sources，不包含正文摘要或模型生成的额外解释；
 - `/profile.md` 与 `/preferences.md` 注入正文事实，不重复注入 frontmatter；
@@ -322,15 +342,16 @@ AND 不是模型生成的建议、推断或推理
 1. 平台基础 System Prompt
 2. Agent 角色卡 persona / system_prompt
 3. 安全规则、Tool Policy、审批与 sandbox 边界
-4. MEMORY_FILESYSTEM_PROMPT.md（替换 {{Agent_Name}}）
-5. <profile>
-6. <preferences>
-7. <memory_listing>
-8. Home / Code / Read With AI 模式规则与项目上下文
-9. Active Skills
-10. Conversation Summary
-11. Recent Context
-12. 当前用户输入
+4. `<user_profile source="USER.md" mode="...">` 只读基础资料
+5. MEMORY_FILESYSTEM_PROMPT.md（替换 {{Agent_Name}}）
+6. <profile>
+7. <preferences>
+8. <memory_listing>
+9. Home / Code / Read With AI 模式规则与项目上下文
+10. Active Skills
+11. Conversation Summary
+12. Recent Context
+13. 当前用户输入
 ```
 
 `<preferences>` 只能调整允许用户配置的输出表现，优先级低于 1-4 和工具边界。记忆工具通过
@@ -644,6 +665,9 @@ CREATE TABLE memory_file_conflicts (
 - 前端 USER.md/MEMORY.md 双编辑器、结构化记忆表单和向量覆盖率 UI；
 - 同步实体 `explicit_memory`、`memory` 及其 payload/repository。
 
+保留的 `USER.md` 不恢复 `explicit_memories`：它作为路径为 `/USER.md` 的特殊 `memory_file` 保存，
+复用同一套 canonical Markdown、CAS、revision、outbox 和 E2EE 同步链路，并从普通 listing 隐藏。
+
 `embedding_items` 与 sqlite-vec 仍由 RAG/知识库使用，不能因为删除记忆向量而全局删除。
 
 ### 8.3 事务
@@ -799,10 +823,12 @@ Agent 自然使用相关事实，不提“根据你的记忆/档案/数据”“
 
 ### 11.1 记忆管理页
 
-旧的 USER.md/MEMORY.md 双卡片和结构化记忆列表替换为：
+旧的 USER.md/MEMORY.md 双卡片和结构化记忆列表替换为“只读基础资料 + 记忆文件系统”：
 
 ```text
 记忆
+├─ USER.md 正文编辑器（AI 只读）
+├─ 基础信息继承策略（自动 / 始终继承 / 不继承）
 ├─ 搜索框（本地 path/name/description/aliases/正文 FTS，仅用于 UI）
 ├─ Agent 选择器
 ├─ 文件树
@@ -881,13 +907,14 @@ UI 可维护 FTS5 派生索引搜索路径、名称、描述、别名和正文�
 ### Phase 2：Prompt compiler
 
 - [x] 将 `MEMORY_FILESYSTEM_PROMPT.md` 打包为唯一模板；
-- [x] 实现 Agent name 替换、动态块转义、单次 DB snapshot 与 token 预算；
-- [x] 删除 `MEMORY_MANAGEMENT_INSTRUCTIONS` 和 USER/MEMORY 注入；
+- [x] 实现 Agent name 替换、USER.md 固定注入、动态块转义、单次 DB snapshot 与 token 预算；
+- [x] 删除 `MEMORY_MANAGEMENT_INSTRUCTIONS` 和旧 USER/MEMORY 双文档注入；
 - [x] 添加 prompt 版本/hash golden test 和工具 schema 覆盖测试。
 
 ### Phase 3：前端
 
 - [x] 用虚拟路径列表和完整 Markdown 编辑器替换旧记忆设置页；
+- [x] 保留 AI 只读 USER.md 编辑器和 auto/inherit/isolated 基础信息继承控制；
 - [x] 接入 Saved memory 反馈、删除确认和版本冲突重载；
 - [x] 移除向量覆盖率和手动向量化相关记忆 UI；
 - [ ] 增加目录树、修订历史/撤销、正文 FTS、backlink 和 dangling-link 导航。
@@ -964,7 +991,7 @@ UI 可维护 FTS5 派生索引搜索路径、名称、描述、别名和正文�
 
 ### 15.1 核心替换（已完成）
 
-- [x] 运行时代码和 prompt 中不再存在 USER.md/MEMORY.md 双轨决策；
+- [x] USER.md 是独立只读基础层，运行时代码和 prompt 中不再存在旧 USER.md/MEMORY.md 双轨决策；
 - [x] Agent 只收到 `memory_list/read/write/str_replace/append/delete` 六个记忆工具；
 - [x] `MEMORY_FILESYSTEM_PROMPT.md` 是唯一正式模板，版本/hash golden test 可检测漂移；
 - [x] profile、preferences、listing 每轮从同一 Agent DB snapshot 正确注入；

@@ -135,6 +135,7 @@
 ### 3.2 页面 2：记忆高级维护 (Memory Inspector)
 主界面“记忆”子功能承担日常查看、搜索和编辑；设置中心仅保留按 Agent 切换、批量整理、本地 FTS 重建、冲突处理和历史修订等低频管理功能。
 *   **虚拟文件维护**：
+    *   顶部保留 Agent 级 `USER.md` 正文编辑器与“自动 / 始终继承 / 不继承”选择；该文件每轮固定注入且对 AI 只读。
     *   选择角色后展示 `/profile.md`、`/preferences.md`、`/topics`、`/areas`、`/people` 文件树；提供 frontmatter 表单、Markdown 编辑/预览、backlinks 和 dangling links。
     *   用户保存与 Agent 工具共用同一 parser、validator 和 CAS repository，不直接修改数据库或宿主机文件。
 *   **冲突与历史**：

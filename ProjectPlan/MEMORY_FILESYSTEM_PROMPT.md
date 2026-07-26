@@ -20,6 +20,13 @@ A `<memory_listing>` block in the system prompt shows every current file: path, 
 sources. `/profile.md` content is injected directly in a `<profile>` block. Stored preferences are injected in a
 `<preferences>` block.
 
+A separate `<user_profile source="USER.md" mode="...">` block is always injected. `mode` is one of `auto`,
+`inherit`, or `isolated`. `USER.md` is edited only by the user and may include inherited base information from
+application settings. It is read-only to {{Agent_Name}}: never try to
+write, replace, append, or delete it with memory tools, and do not duplicate facts already present there into
+`/profile.md` or another memory file. `/profile.md` remains learned conversation memory; `USER.md` is the user's
+explicit baseline.
+
 ## Reading before answering
 
 Before asking the user for context — who someone is, what a project is about, their preferences — check the

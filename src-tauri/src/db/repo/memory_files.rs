@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{AppError, AppResult};
+use crate::user_profile::UserProfileInheritanceMode;
 
 pub const MAX_MEMORY_FILES: i64 = 256;
 pub const MAX_MEMORY_FILE_BYTES: usize = 16 * 1024;
@@ -15,6 +16,9 @@ const MAX_DESCRIPTION_CHARS: usize = 160;
 const MAX_ALIAS_CHARS: usize = 80;
 const MAX_ALIASES: usize = 7;
 const MAX_PROFILE_WORDS: usize = 300;
+pub const USER_MD_PATH: &str = "/USER.md";
+const USER_MD_DESCRIPTION: &str =
+    "User-managed read-only background information for every conversation";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -71,9 +75,19 @@ pub struct MemoryListing {
 
 #[derive(Debug, Clone)]
 pub struct MemoryPromptSnapshot {
+    pub user_md: AgentUserMdState,
+    pub base_profile_json: Option<String>,
     pub profile: Option<String>,
     pub preferences: Option<String>,
     pub listing: MemoryListing,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUserMdState {
+    pub content: String,
+    pub mode: UserProfileInheritanceMode,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -117,11 +131,14 @@ struct MemoryFrontmatter {
     description: String,
     sources: Vec<String>,
     aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inherit: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct ParsedMemoryFile {
     kind: String,
+    is_user_md: bool,
     frontmatter: MemoryFrontmatter,
     facts: Vec<String>,
 }
@@ -184,6 +201,7 @@ fn parse_path(path: &str) -> Result<(String, String), DomainError> {
         return Err(DomainError::new("INVALID_PATH", "Invalid memory path"));
     }
     let (kind, stem) = match path {
+        USER_MD_PATH => ("profile", "USER"),
         "/profile.md" => ("profile", "profile"),
         "/preferences.md" => ("preferences", "preferences"),
         _ => {
@@ -274,6 +292,19 @@ fn parse_document(path: &str, content: &str) -> Result<ParsedMemoryFile, DomainE
             "Frontmatter name must match the path stem",
         ));
     }
+    let is_user_md = path == USER_MD_PATH;
+    if is_user_md {
+        let mode = frontmatter.inherit.as_deref().ok_or_else(|| {
+            DomainError::new("INVALID_FRONTMATTER", "USER.md requires an inherit mode")
+        })?;
+        UserProfileInheritanceMode::parse(mode)
+            .map_err(|error| DomainError::new("INVALID_FRONTMATTER", error.to_string()))?;
+    } else if frontmatter.inherit.is_some() {
+        return Err(DomainError::new(
+            "INVALID_FRONTMATTER",
+            "Only USER.md may define an inherit mode",
+        ));
+    }
     if frontmatter.description.trim().is_empty()
         || frontmatter.description.contains(['\r', '\n'])
         || frontmatter.description.chars().count() > MAX_DESCRIPTION_CHARS
@@ -326,19 +357,21 @@ fn parse_document(path: &str, content: &str) -> Result<ParsedMemoryFile, DomainE
     } else {
         body.lines().map(str::to_string).collect::<Vec<_>>()
     };
-    for fact in &facts {
-        if fact.trim().is_empty()
-            || !(fact.starts_with("- [stated] ")
-                || fact.starts_with("- [observed] ")
-                || fact.starts_with("- [inferred] "))
-        {
-            return Err(DomainError::new(
-                "INVALID_FACT_TAG",
-                "Every memory body line must be a tagged fact bullet",
-            ));
+    if !is_user_md {
+        for fact in &facts {
+            if fact.trim().is_empty()
+                || !(fact.starts_with("- [stated] ")
+                    || fact.starts_with("- [observed] ")
+                    || fact.starts_with("- [inferred] "))
+            {
+                return Err(DomainError::new(
+                    "INVALID_FACT_TAG",
+                    "Every memory body line must be a tagged fact bullet",
+                ));
+            }
         }
     }
-    if kind == "profile"
+    if path == "/profile.md"
         && facts
             .iter()
             .flat_map(|line| line.split_whitespace())
@@ -352,6 +385,7 @@ fn parse_document(path: &str, content: &str) -> Result<ParsedMemoryFile, DomainE
     }
     Ok(ParsedMemoryFile {
         kind,
+        is_user_md,
         frontmatter,
         facts,
     })
@@ -382,6 +416,12 @@ fn normalize_for_surface(
             "Unsupported memory actor surface",
         ));
     }
+    if parsed.is_user_md && actor_surface == "chat" {
+        return Err(DomainError::new(
+            "READ_ONLY",
+            "USER.md is managed by the user and is read-only for chat",
+        ));
+    }
     if let Some(previous) = previous {
         if previous.frontmatter.sources.iter().any(|source| {
             !parsed
@@ -395,7 +435,7 @@ fn normalize_for_surface(
                 "Existing memory sources cannot be removed",
             ));
         }
-        if matches!(actor_surface, "chat" | "user") {
+        if !parsed.is_user_md && matches!(actor_surface, "chat" | "user") {
             for fact in &parsed.facts {
                 if (fact.starts_with("- [observed] ") || fact.starts_with("- [inferred] "))
                     && !previous.facts.contains(fact)
@@ -420,7 +460,8 @@ fn normalize_for_surface(
         if actor_surface != "sync" {
             parsed.frontmatter.sources = previous.frontmatter.sources.clone();
         }
-    } else if matches!(actor_surface, "chat" | "user")
+    } else if !parsed.is_user_md
+        && matches!(actor_surface, "chat" | "user")
         && parsed
             .facts
             .iter()
@@ -529,7 +570,8 @@ origin_device_id";
 pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<MemoryFileRow>> {
     let mut statement = conn.prepare(&format!(
         "SELECT {SELECT_COLUMNS} FROM memory_files \
-         WHERE agent_id = ?1 AND status = 'active' AND deleted_at IS NULL ORDER BY path"
+         WHERE agent_id = ?1 AND path <> '/USER.md' \
+         AND status = 'active' AND deleted_at IS NULL ORDER BY path"
     ))?;
     let rows = statement.query_map([agent_id], row_from_sql)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -596,8 +638,52 @@ fn prompt_body(conn: &Connection, agent_id: &str, path: &str) -> AppResult<Optio
     Ok((!body.is_empty()).then_some(body))
 }
 
+pub fn get_agent_user_md(conn: &Connection, agent_id: &str) -> AppResult<AgentUserMdState> {
+    let Some(file) = get(conn, agent_id, USER_MD_PATH)? else {
+        return Ok(AgentUserMdState {
+            content: String::new(),
+            mode: UserProfileInheritanceMode::Auto,
+            version: None,
+        });
+    };
+    let parsed = parse_document(USER_MD_PATH, &file.markdown).map_err(|error| {
+        AppError::Other(format!("Stored USER.md is invalid: {}", error.message))
+    })?;
+    let mode =
+        UserProfileInheritanceMode::parse(parsed.frontmatter.inherit.as_deref().unwrap_or("auto"))?;
+    Ok(AgentUserMdState {
+        content: parsed.facts.join("\n"),
+        mode,
+        version: Some(file.version_token()),
+    })
+}
+
+pub fn build_agent_user_md(content: &str, mode: UserProfileInheritanceMode) -> AppResult<String> {
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    let body = normalized.trim();
+    let parsed = ParsedMemoryFile {
+        kind: "profile".to_string(),
+        is_user_md: true,
+        frontmatter: MemoryFrontmatter {
+            name: "USER".to_string(),
+            description: USER_MD_DESCRIPTION.to_string(),
+            sources: vec!["user".to_string()],
+            aliases: Vec::new(),
+            inherit: Some(mode.as_str().to_string()),
+        },
+        facts: if body.is_empty() {
+            Vec::new()
+        } else {
+            body.lines().map(str::to_string).collect()
+        },
+    };
+    render_document(&parsed).map_err(|error| AppError::Other(error.message))
+}
+
 pub fn prompt_snapshot(conn: &Connection, agent_id: &str) -> AppResult<MemoryPromptSnapshot> {
     Ok(MemoryPromptSnapshot {
+        user_md: get_agent_user_md(conn, agent_id)?,
+        base_profile_json: super::settings::get(conn, crate::user_profile::USER_PROFILE_SETTING)?,
         profile: prompt_body(conn, agent_id, "/profile.md")?,
         preferences: prompt_body(conn, agent_id, "/preferences.md")?,
         listing: listing(conn, agent_id)?,
@@ -715,6 +801,15 @@ pub fn mutate(
 ) -> AppResult<MemoryMutationOutcome> {
     if let Err(error) = parse_path(path) {
         return current_or_failure(conn, agent_id, path, error.code, error.message);
+    }
+    if path == USER_MD_PATH && actor_surface == "chat" {
+        return current_or_failure(
+            conn,
+            agent_id,
+            path,
+            "READ_ONLY",
+            "USER.md is managed by the user and is read-only for chat",
+        );
     }
     let current = get_any(conn, agent_id, path)?;
     let active_current = current
@@ -1234,6 +1329,61 @@ mod tests {
             first,
             sync_entity_id("agent-1", "/topics/travel.md").unwrap()
         );
+    }
+
+    #[test]
+    fn user_md_is_user_managed_hidden_and_versioned() {
+        let mut conn = setup();
+        let content = "# USER.md\n\n- Works on Agnes\n- Prefers concise answers";
+        let document = build_agent_user_md(content, UserProfileInheritanceMode::Inherit).unwrap();
+        let created = mutate(
+            &mut conn,
+            "agnes",
+            USER_MD_PATH,
+            MemoryMutation::Write {
+                content: document.clone(),
+                if_version: "new".into(),
+            },
+            "user",
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(created.ok);
+
+        let state = get_agent_user_md(&conn, "agnes").unwrap();
+        assert_eq!(state.content, content);
+        assert_eq!(state.mode, UserProfileInheritanceMode::Inherit);
+        assert!(listing(&conn, "agnes").unwrap().files.is_empty());
+
+        let rejected = mutate(
+            &mut conn,
+            "agnes",
+            USER_MD_PATH,
+            MemoryMutation::Write {
+                content: document,
+                if_version: state.version.clone().unwrap(),
+            },
+            "chat",
+            Some("session-1"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(rejected.code.as_deref(), Some("READ_ONLY"));
+
+        let delete_rejected = mutate(
+            &mut conn,
+            "agnes",
+            USER_MD_PATH,
+            MemoryMutation::Delete {
+                if_version: state.version.unwrap(),
+            },
+            "chat",
+            Some("session-1"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(delete_rejected.code.as_deref(), Some("READ_ONLY"));
     }
 
     #[test]

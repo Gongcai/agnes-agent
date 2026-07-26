@@ -706,6 +706,8 @@ def test_assemble_prompt_and_budgeting():
                 }
             ],
             "memoryFilesystem": {
+                "user": "# USER.md\n\nUser works on <Agnes>",
+                "userMode": "inherit",
                 "profile": "- [stated] User likes Python",
                 "preferences": "- [stated] Use concise answers",
                 "files": [{
@@ -724,6 +726,8 @@ def test_assemble_prompt_and_budgeting():
     system_prompt, messages, discarded = assemble_prompt(snapshot, reserved_tokens=1500)
     
     assert "Agnes persona text" in system_prompt
+    assert '<user_profile source="USER.md" mode="inherit">' in system_prompt
+    assert "User works on &lt;Agnes&gt;" in system_prompt
     assert "User likes Python" in system_prompt
     assert "Use concise answers" in system_prompt
     assert "Agnes has a persistent memory filesystem" in system_prompt
@@ -740,7 +744,7 @@ def test_memory_prompt_resource_matches_versioned_hash():
     import hashlib
 
     content = memory_filesystem_instructions()
-    assert MEMORY_PROMPT_VERSION == "memory-filesystem-v1"
+    assert MEMORY_PROMPT_VERSION == "memory-filesystem-v2"
     assert hashlib.sha256(content.encode("utf-8")).hexdigest() == MEMORY_PROMPT_SHA256
 
 
@@ -788,6 +792,10 @@ def test_memory_instructions_follow_memory_capability():
                 "toolPolicy": {"memory": {"enabled": False}},
             },
             "settings": {},
+            "memoryFilesystem": {
+                "user": "User-managed baseline",
+                "userMode": "invalid-mode",
+            },
         }
     }
 
@@ -796,6 +804,9 @@ def test_memory_instructions_follow_memory_capability():
 
     assert "## memory_filesystem" in enabled_prompt
     assert "## memory_filesystem" not in disabled_prompt
+    assert "Read-only User Profile (USER.md)" in disabled_prompt
+    assert "User-managed baseline" in disabled_prompt
+    assert '<user_profile source="USER.md" mode="auto">' in disabled_prompt
 
 
 def test_retrieved_knowledge_is_user_context_not_system_instructions():

@@ -127,9 +127,10 @@ created_at / updated_at
 
 ## ③ Always-on Memory Index
 
+- `USER.md` 是每个 Agent 的用户管理、AI 只读基础资料，每轮以 `<user_profile>` 固定注入；正文为空时默认继承“用户信息”页生成的基础资料，用户可选择始终继承或不继承。
 - `/profile.md` 保存稳定身份背景，正文以 `<profile>` 注入；`/preferences.md` 保存合法的交互偏好，正文以 `<preferences>` 注入。
 - `<memory_listing>` 注入当前 Agent 每个活跃文件的虚拟 path、description、aliases 和 sources，不注入其他正文。
-- 三个动态块每轮从同一 SQLite snapshot 生成；不存在时明确标记 `(not yet written)` 或 `(empty)`。
+- USER/profile/preferences/listing 四个动态块每轮从同一 SQLite snapshot 生成；不存在时明确标记 `(not provided)`、`(not yet written)` 或 `(empty)`。
 - listing 不得因上下文预算截断；通过单 Agent 文件数和元数据长度上限控制规模。
 
 ## ④ On-demand Memory Files

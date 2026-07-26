@@ -430,6 +430,8 @@ fn main() {
             commands::approve_tool,
             commands::get_user_profile,
             commands::save_user_profile,
+            commands::get_agent_user_md,
+            commands::save_agent_user_md,
             commands::list_memory_files,
             commands::read_memory_file,
             commands::save_memory_file,

@@ -251,6 +251,52 @@ fn push_preference_line(
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UserProfileInheritanceMode {
+    #[default]
+    Auto,
+    Inherit,
+    Isolated,
+}
+
+impl UserProfileInheritanceMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Inherit => "inherit",
+            Self::Isolated => "isolated",
+        }
+    }
+
+    pub fn parse(value: &str) -> AppResult<Self> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "inherit" => Ok(Self::Inherit),
+            "isolated" => Ok(Self::Isolated),
+            _ => Err(AppError::Other("USER.md 继承方式无效".into())),
+        }
+    }
+}
+
+pub fn should_inherit(mode: UserProfileInheritanceMode, user_md: &str) -> bool {
+    match mode {
+        UserProfileInheritanceMode::Auto => user_md.trim().is_empty(),
+        UserProfileInheritanceMode::Inherit => true,
+        UserProfileInheritanceMode::Isolated => false,
+    }
+}
+
+pub fn merge_user_profile(user_md: &str, profile_md: &str, inherit: bool) -> String {
+    if !inherit || profile_md.trim().is_empty() {
+        return user_md.trim().to_string();
+    }
+    if user_md.trim().is_empty() {
+        return profile_md.trim().to_string();
+    }
+    format!("{}\n\n---\n\n{}", user_md.trim(), profile_md.trim())
+}
+
 pub async fn load_user_profile(db: &DbActorHandle) -> AppResult<UserProfile> {
     let Some(raw) = db.get_setting(USER_PROFILE_SETTING.to_string()).await? else {
         return Ok(UserProfile::default());
@@ -307,5 +353,33 @@ mod tests {
     #[test]
     fn empty_profile_does_not_create_a_section() {
         assert_eq!(UserProfile::default().to_markdown(), "");
+    }
+
+    #[test]
+    fn auto_inherits_only_when_agent_user_md_is_empty() {
+        assert!(should_inherit(UserProfileInheritanceMode::Auto, " \n"));
+        assert!(!should_inherit(
+            UserProfileInheritanceMode::Auto,
+            "# Agent 用户信息"
+        ));
+    }
+
+    #[test]
+    fn explicit_inheritance_appends_without_overwriting_agent_content() {
+        let original = "# Agent 用户信息\n\n用户自己填写的内容。";
+        let profile = populated_profile().to_markdown();
+        let merged = merge_user_profile(original, &profile, true);
+        assert!(merged.starts_with(original));
+        assert!(merged.ends_with(&profile));
+    }
+
+    #[test]
+    fn isolated_mode_never_inherits() {
+        let original = "Agent 原始 USER.md";
+        assert!(!should_inherit(UserProfileInheritanceMode::Isolated, ""));
+        assert_eq!(
+            merge_user_profile(original, "## 全局用户资料", false),
+            original
+        );
     }
 }

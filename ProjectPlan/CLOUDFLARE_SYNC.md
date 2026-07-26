@@ -998,11 +998,11 @@ D1 Time Travel 在免费层保留 7 天，默认启用且可按时间点恢复�
 
 ### Phase M：持久记忆同步破坏式替换
 
-- [ ] 新增 E2EE `memory_file` payload 与严格字段白名单；
-- [ ] bootstrap 改为 `agent -> workspace -> session -> message -> memory_file`；
-- [ ] 增加 memory file revision CAS 与本地 base/local/remote 冲突记录；
-- [ ] 删除 `explicit_memory / memory` Worker、Rust repository、MergeEngine 分支和 D1 开发数据；
-- [ ] 不迁移旧 USER.md、MEMORY.md 或 memory_store 文本；
+- [x] 新增 E2EE `memory_file` payload 与严格字段白名单；
+- [x] bootstrap 改为 `agent -> workspace -> session -> message -> memory_file`；
+- [x] 增加 memory file revision CAS 与本地 base/local/remote 冲突记录；
+- [x] 删除 `explicit_memory / memory` Worker、Rust repository、MergeEngine 分支和 D1 开发数据；
+- [x] 不迁移旧 USER.md、MEMORY.md 或 memory_store 文本；
 - [ ] 完成两设备并发修改、删除冲突、墓碑防复活与 E2EE 日志审计验收。
 
 完成标准：两台设备以新 `memory_file` 实体确定性收敛，任何正文冲突都不静默 LWW，旧记忆

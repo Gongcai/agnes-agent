@@ -2309,6 +2309,43 @@ pub async fn save_user_profile(
 }
 
 #[tauri::command]
+pub async fn get_agent_user_md(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+) -> AppResult<crate::memory::AgentUserProfileSnapshot> {
+    crate::memory::load_agent_user_profile(&state.db, &agent_id).await
+}
+
+#[tauri::command]
+pub async fn save_agent_user_md(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    content: String,
+    mode: crate::user_profile::UserProfileInheritanceMode,
+    if_version: Option<String>,
+) -> AppResult<crate::db::repo::memory_files::MemoryMutationOutcome> {
+    let document = crate::db::repo::memory_files::build_agent_user_md(&content, mode)?;
+    let outcome = state
+        .db
+        .mutate_memory_file(
+            agent_id,
+            crate::db::repo::memory_files::USER_MD_PATH.to_string(),
+            crate::db::repo::memory_files::MemoryMutation::Write {
+                content: document,
+                if_version: if_version.unwrap_or_else(|| "new".to_string()),
+            },
+            "user".to_string(),
+            None,
+            None,
+        )
+        .await?;
+    if outcome.ok {
+        state.sync.schedule();
+    }
+    Ok(outcome)
+}
+
+#[tauri::command]
 pub async fn list_memory_files(
     state: tauri::State<'_, AppState>,
     agent_id: String,
