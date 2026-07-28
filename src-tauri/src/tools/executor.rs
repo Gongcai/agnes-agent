@@ -11,6 +11,7 @@ use crate::error::{AppError, AppResult};
 use crate::mcp::McpManager;
 use crate::secrets::SharedSecretStore;
 use crate::tools::builtin::{builtin_tools, SearchSecretAccess, ToolCtx};
+use crate::tools::permissions::SandboxEscalation;
 use crate::tools::policy::ToolPolicy;
 use crate::tools::terminal::TerminalManager;
 use crate::tools::PermissionMode;
@@ -66,6 +67,7 @@ impl ToolExecutor {
             arguments,
             policy,
             permission_mode,
+            None,
         )
         .await
     }
@@ -81,6 +83,7 @@ impl ToolExecutor {
         arguments: &serde_json::Value,
         policy: &ToolPolicy,
         permission_mode: PermissionMode,
+        sandbox_escalation: Option<SandboxEscalation>,
     ) -> AppResult<serde_json::Value> {
         let public_arguments = crate::tools::audit_arguments(tool, arguments);
 
@@ -94,7 +97,10 @@ impl ToolExecutor {
         let skill_roots = resolve_selected_skill_roots(&self.db, session_id).await;
 
         // B. Merge workspace and selected read-only Skill roots into the effective policy.
-        let effective_policy = effective_policy(policy, &workspace_cwd, &skill_roots);
+        let mut effective_policy = effective_policy(policy, &workspace_cwd, &skill_roots);
+        if let Some(escalation) = &sandbox_escalation {
+            crate::tools::permissions::apply_sandbox_escalation(&mut effective_policy, escalation);
+        }
 
         // C. Record the same effective policy that will govern physical execution.
         let new_tc = NewToolCall {
@@ -534,18 +540,40 @@ mod tests {
         assert!(outside_result.is_err());
         assert!(!outside_file.exists());
 
-        let bad_read_args = json!({ "path": "/etc/passwd" });
-        let read_err = executor
+        #[cfg(unix)]
+        let outside_read_args = json!({ "path": "/etc/passwd" });
+        #[cfg(unix)]
+        let outside_read = executor
             .execute(
                 "sess-1",
                 None,
-                "tc-read-bad",
+                "tc-read-outside",
                 "file_read",
-                &bad_read_args,
+                &outside_read_args,
                 &policy,
             )
-            .await;
-        assert!(read_err.is_err());
+            .await
+            .unwrap();
+        #[cfg(unix)]
+        assert!(outside_read["content"].as_str().unwrap().contains("root:"));
+
+        let temp_file =
+            std::env::temp_dir().join(format!("agnes-tool-executor-{}.txt", uuid::Uuid::new_v4()));
+        let temp_write_args =
+            json!({"path": temp_file.to_string_lossy(), "content": "temporary output"});
+        executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-write-temp",
+                "file_write",
+                &temp_write_args,
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(&temp_file).unwrap(), "temporary output");
+        fs::remove_file(&temp_file).unwrap();
 
         let shell_args = json!({ "command": "echo 'Hello Shell'" });
         let shell_res = executor
@@ -559,6 +587,26 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Hello Shell"));
+
+        let temp_shell_args = json!({
+            "command": "pwd",
+            "cwd": std::env::temp_dir().to_string_lossy()
+        });
+        let temp_shell_res = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-shell-temp-cwd",
+                "shell",
+                &temp_shell_args,
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert!(temp_shell_res["stdout"]
+            .as_str()
+            .unwrap()
+            .contains(&std::env::temp_dir().to_string_lossy().to_string()));
 
         let bad_shell_args = json!({ "command": "echo 'Bad'", "cwd": "/" });
         let shell_err = executor

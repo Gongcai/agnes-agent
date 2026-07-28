@@ -554,6 +554,7 @@ interface AgentFormValues {
       landlock: boolean;
       bwrap: "auto" | "disabled" | "required";
       rlimits: boolean;
+      allow_read_outside_workspace: boolean;
       writable_roots: string[];
       [key: string]: unknown;
     };
@@ -596,6 +597,7 @@ const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
     landlock: true,
     bwrap: "auto",
     rlimits: false,
+    allow_read_outside_workspace: true,
     writable_roots: ["~/.cache", "~/.local", "~/.cargo", "~/.rustup"],
   },
 };
@@ -695,6 +697,7 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
       // Resource limits are opt-in because fixed low limits break compilers
       // and package managers. Preserve an explicit legacy `true` value.
       rlimits: sandbox?.rlimits === true,
+      allow_read_outside_workspace: sandbox?.allow_read_outside_workspace !== false,
       writable_roots: Array.isArray(sandbox?.writable_roots)
         ? sandbox.writable_roots.filter((path: unknown): path is string => typeof path === "string" && path.trim().length > 0)
         : [...DEFAULT_TOOL_POLICY.sandbox.writable_roots],
@@ -2906,6 +2909,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               }`}
                             >
                               {agentForm.toolPolicy.network.allow ? "允许联网" : "隔离网络"}
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-between py-1.5 border-b border-stone-100">
+                            <span className="text-xs text-stone-700">工作区外读取</span>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={agentForm.toolPolicy.sandbox.allow_read_outside_workspace}
+                              onClick={() =>
+                                setAgentForm((form) => ({
+                                  ...form,
+                                  toolPolicy: {
+                                    ...form.toolPolicy,
+                                    sandbox: {
+                                      ...form.toolPolicy.sandbox,
+                                      allow_read_outside_workspace:
+                                        !form.toolPolicy.sandbox.allow_read_outside_workspace,
+                                    },
+                                  },
+                                }))
+                              }
+                              className={`px-2 py-1 rounded-md text-[10px] font-semibold border transition-colors ${
+                                agentForm.toolPolicy.sandbox.allow_read_outside_workspace
+                                  ? "bg-blue-50 text-blue-700 border-blue-200"
+                                  : "bg-stone-50 text-stone-600 border-stone-200"
+                              }`}
+                            >
+                              {agentForm.toolPolicy.sandbox.allow_read_outside_workspace
+                                ? "允许只读"
+                                : "仅策略目录"}
                             </button>
                           </div>
                           <div className="border-b border-stone-100 py-2">

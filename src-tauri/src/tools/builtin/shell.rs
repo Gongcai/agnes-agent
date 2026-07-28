@@ -40,6 +40,7 @@ impl BuiltinTool for ShellTool {
                     "properties": {
                         "command": {"type": "string", "description": "Command to execute."},
                         "cwd": {"type": "string", "description": "Optional working directory; defaults to the workspace."},
+                        "sandbox_permissions": {"type": "string", "enum": ["require_escalated"], "description": "Request one-call filesystem escalation when the command must write outside normal writable roots. This always requires approval."},
                         "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "How long to wait before returning a running terminal session."},
                         "timeout_sec": {"type": "integer", "minimum": 0, "maximum": 86400, "description": "Optional total command lifetime; zero means no hard deadline."}
                     },
@@ -332,7 +333,7 @@ async fn fail<T>(ctx: &ToolCtx<'_>, message: &str) -> AppResult<T> {
     Err(AppError::Other(message.to_string()))
 }
 
-fn validate_shell_write_scope(
+pub(crate) fn validate_shell_write_scope(
     command: &str,
     cwd: &Path,
     sandbox: &dyn crate::tools::sandbox::SandboxGuard,

@@ -40,7 +40,8 @@ impl BuiltinTool for GitTool {
                             "items": {"type": "string"},
                             "description": "Arguments passed directly to git, for example ['status', '--short']."
                         },
-                        "cwd": {"type": "string", "description": "Optional working directory; defaults to the workspace."}
+                        "cwd": {"type": "string", "description": "Optional working directory; defaults to the workspace."},
+                        "sandbox_permissions": {"type": "string", "enum": ["require_escalated"], "description": "Request one-call filesystem escalation for a repository outside normal writable roots. This always requires approval."}
                     },
                     "required": ["args"]
                 }

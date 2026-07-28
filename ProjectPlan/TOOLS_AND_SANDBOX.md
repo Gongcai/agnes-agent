@@ -15,7 +15,7 @@
 
 ## 二、设计目标与原则
 
-- **默认安全**：workspace 之外只读、网络按策略控制（默认开）、危险动作默认审批。
+- **默认安全**：采用 Codex workspace 模式的“全文件系统只读 + 有限写入”；可按角色关闭 workspace 外读取，网络按策略控制（默认开），危险动作默认审批。
 - **分层防御**：路径白名单（已有）+ Landlock FS 隔离（新增）+ 资源限额 + 超时 + 输出截断 + 审批。
 - **workspace 为中心**：工具默认 cwd = workspace.folder_path；FS 写范围默认限定 workspace。
 - **风险驱动审批**：统一 tier `never | on-write | on-risk | always`，risk_level 真正驱动审批。
@@ -130,10 +130,10 @@ match tier {
 crate `landlock`。对每个工具子进程（shell/git）与 file 工具操作应用 FS 访问规则：
 - **workspace 目录**：读 + 写 + 执行（遍历）。
 - **额外可写根目录**：`sandbox.writable_roots` 读 + 写；默认覆盖开发工具状态目录 `~/.cache`、`~/.local`、`~/.cargo`、`~/.rustup`，可在 Agent 工具策略中调整。
-- **只读根目录**（`policy.file.allowed_roots` 除 workspace）：只读。
-- **系统目录** `/usr` `/bin` `/lib*` `/etc`（必要部分）：只读。
+- **只读范围**：默认允许读取 workspace 外文件；`sandbox.allow_read_outside_workspace=false` 时仅允许 `policy.file.allowed_roots`、可写根、系统临时目录和命令运行所需的系统目录。
+- **系统目录** `/usr` `/bin` `/lib*` `/etc`（命令运行必要部分）：只读。
 - **临时目录** `$TMPDIR`（或 `/tmp`）：读写（部分工具需要）。
-- **其它路径**：默认拒绝（Landlock 的 deny-by-default）。
+- **其它路径**：默认只读、拒绝写入；严格读取模式下由 Landlock deny-by-default 拒绝未授权读取。
 
 额外可写根目录在授权前解析到真实路径，因此用户将开发缓存软链接到其他磁盘后，Landlock 与 Bubblewrap 授权的是同一个规范化目标。`shell`/`git` 通过当前桌面二进制的内部 helper 启动：helper 在单线程进程中应用 Landlock/rlimit 后 `exec` 目标程序，避免在 Tauri 多线程主进程的 `pre_exec` 阶段执行复杂逻辑。原生文件工具不把不可逆的 Landlock 规则施加到 Tauri 主线程，而是统一使用 symlink-aware 的规范化路径与 `SandboxGuard` 读写能力检查。
 
@@ -224,6 +224,7 @@ pub struct SandboxPolicy {
     pub landlock: bool,
     pub bwrap: BwrapMode,             // Auto | Disabled | Required
     pub rlimits: bool,
+    pub allow_read_outside_workspace: bool, // 默认 true，Codex workspace 风格
     pub writable_roots: Vec<String>,  // workspace 之外显式授权的读写根目录
     pub cpu_time_sec: u64,
     pub memory_bytes: u64,
@@ -266,6 +267,8 @@ pub struct NetworkPolicy { pub allow: bool }
 ## 已决策点
 - **沙箱主防线**：Landlock（Linux）；Windows 用路径白名单降级，后续 Phase F 引入 Job Object + Restricted Token。
 - **开发工具状态目录**：采用与 Codex `workspace-write + writable_roots` 相同的边界模型；包管理器和测试运行器使用真实用户缓存/工具链目录，不重定向到项目专属缓存。
+- **读取边界**：默认允许 workspace 外只读访问；严格角色可关闭 `allow_read_outside_workspace`，恢复显式根目录白名单。
+- **单次越界授权**：文件、Shell 或 Git 的越界写入会触发 sandbox escalation 审批；批准仅扩展当前工具调用，不修改会话或 Agent 的持久策略。文件工具按目标父目录授权，Shell/Git 按已展示的单条命令授权；无法静态识别副作用的命令可显式传 `sandbox_permissions=require_escalated` 请求审批。
 - **网络默认**：默认开（`allow=true`）；用户可在工作区策略关闭，关闭后用 bwrap `--unshare-net` 或启发式拦截。
 - **新工具范围**：file_edit + list_files + grep + apply_patch（codex 风格统一补丁）。
 

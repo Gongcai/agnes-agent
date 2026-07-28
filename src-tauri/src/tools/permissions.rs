@@ -1,8 +1,10 @@
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
 use crate::tools::policy::{BwrapMode, Risk, ToolPolicy};
+use crate::tools::sandbox::{PolicySandbox, SandboxGuard};
 
 /// Session-level autonomy mode applied on top of the agent's enabled tool capabilities.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -59,6 +61,124 @@ pub struct ApprovalDecision {
     pub needs_approval: bool,
     pub reason: &'static str,
     pub is_secondary_confirmation: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxEscalation {
+    FileWriteRoot(PathBuf),
+    ProcessFilesystem,
+}
+
+/// Determine whether one tool call needs a temporary filesystem exception.
+pub fn sandbox_escalation_for_tool_call(
+    tool: &str,
+    args: &serde_json::Value,
+    policy: &ToolPolicy,
+    workspace_cwd: Option<&Path>,
+) -> Option<SandboxEscalation> {
+    let sandbox = PolicySandbox::new(policy, workspace_cwd);
+    match tool {
+        "file_write" | "file_edit" => {
+            let target = resolve_tool_path(args.get("path")?.as_str()?, workspace_cwd, policy);
+            sandbox.check_write(&target).err().map(|_| {
+                SandboxEscalation::FileWriteRoot(target.parent().unwrap_or(&target).to_path_buf())
+            })
+        }
+        "apply_patch" => {
+            let base = resolve_tool_path(
+                args.get("cwd")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("."),
+                workspace_cwd,
+                policy,
+            );
+            sandbox
+                .check_write(&base)
+                .err()
+                .map(|_| SandboxEscalation::FileWriteRoot(base))
+        }
+        "shell" => {
+            let explicitly_requested = args
+                .get("sandbox_permissions")
+                .and_then(serde_json::Value::as_str)
+                == Some("require_escalated");
+            let cwd = resolve_tool_path(
+                args.get("cwd")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("."),
+                workspace_cwd,
+                policy,
+            );
+            let command = args
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let outside_cwd = policy.check_shell(&cwd.to_string_lossy()).is_err()
+                || sandbox.check_cwd(&cwd).is_err();
+            let outside_write = policy.shell.deny_write_outside_workspace
+                && crate::tools::builtin::shell::validate_shell_write_scope(
+                    command, &cwd, &sandbox, 0,
+                )
+                .is_err();
+            (explicitly_requested || outside_cwd || outside_write)
+                .then_some(SandboxEscalation::ProcessFilesystem)
+        }
+        "git" => {
+            let explicitly_requested = args
+                .get("sandbox_permissions")
+                .and_then(serde_json::Value::as_str)
+                == Some("require_escalated");
+            let cwd = resolve_tool_path(
+                args.get("cwd")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("."),
+                workspace_cwd,
+                policy,
+            );
+            (explicitly_requested || sandbox.check_cwd(&cwd).is_err())
+                .then_some(SandboxEscalation::ProcessFilesystem)
+        }
+        _ => None,
+    }
+}
+
+/// Apply an approved exception to the policy copy used by one physical call.
+pub fn apply_sandbox_escalation(policy: &mut ToolPolicy, escalation: &SandboxEscalation) {
+    match escalation {
+        SandboxEscalation::FileWriteRoot(root) => {
+            let root = root.to_string_lossy().to_string();
+            if !policy.sandbox.writable_roots.contains(&root) {
+                policy.sandbox.writable_roots.push(root);
+            }
+        }
+        SandboxEscalation::ProcessFilesystem => {
+            policy.shell.allowed_cwd = vec!["/".to_string()];
+            policy.shell.deny_write_outside_workspace = false;
+            if !policy.sandbox.writable_roots.iter().any(|root| root == "/") {
+                policy.sandbox.writable_roots.push("/".to_string());
+            }
+        }
+    }
+}
+
+fn resolve_tool_path(path: &str, workspace_cwd: Option<&Path>, policy: &ToolPolicy) -> PathBuf {
+    let expanded = crate::tools::policy::expand_home(path);
+    let resolved = if expanded.is_absolute() {
+        expanded
+    } else {
+        workspace_cwd
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                policy
+                    .shell
+                    .allowed_cwd
+                    .first()
+                    .map(|path| crate::tools::policy::expand_home(path))
+            })
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(expanded)
+    };
+    crate::tools::builtin::normalize_path(&resolved)
 }
 
 /// Resolve human approval for the active session mode.
@@ -244,5 +364,68 @@ mod tests {
         assert!(sandbox
             .check_write(Path::new("/tmp/workspace/.git/config"))
             .is_ok());
+    }
+
+    #[test]
+    fn outside_file_write_gets_a_scoped_approval_root() {
+        let workspace = Path::new("/workspace");
+        let policy = ToolPolicy::default();
+        let escalation = sandbox_escalation_for_tool_call(
+            "file_write",
+            &serde_json::json!({"path": "/opt/agnes/output.txt", "content": "ok"}),
+            &policy,
+            Some(workspace),
+        )
+        .unwrap();
+        assert_eq!(
+            escalation,
+            SandboxEscalation::FileWriteRoot(PathBuf::from("/opt/agnes"))
+        );
+
+        let mut approved = policy;
+        apply_sandbox_escalation(&mut approved, &escalation);
+        let sandbox = PolicySandbox::new(&approved, Some(workspace));
+        assert!(sandbox
+            .check_write(Path::new("/opt/agnes/output.txt"))
+            .is_ok());
+        assert!(sandbox.check_write(Path::new("/opt/other.txt")).is_err());
+    }
+
+    #[test]
+    fn shell_outside_write_requires_per_call_process_escalation() {
+        let mut policy = ToolPolicy::default();
+        policy.shell.allowed_cwd = vec!["/workspace".into()];
+        policy.file.allowed_roots = vec!["/workspace".into()];
+        let args = serde_json::json!({"command": "touch /opt/agnes-output"});
+        let escalation = sandbox_escalation_for_tool_call(
+            "shell",
+            &args,
+            &policy,
+            Some(Path::new("/workspace")),
+        );
+        assert_eq!(escalation, Some(SandboxEscalation::ProcessFilesystem));
+
+        apply_sandbox_escalation(&mut policy, escalation.as_ref().unwrap());
+        let sandbox = PolicySandbox::new(&policy, Some(Path::new("/workspace")));
+        assert!(sandbox.check_write(Path::new("/opt/agnes-output")).is_ok());
+    }
+
+    #[test]
+    fn shell_can_explicitly_request_escalation_for_opaque_tools() {
+        let mut policy = ToolPolicy::default();
+        policy.shell.allowed_cwd = vec!["/workspace".into()];
+        let args = serde_json::json!({
+            "command": "python build.py",
+            "sandbox_permissions": "require_escalated"
+        });
+        assert_eq!(
+            sandbox_escalation_for_tool_call(
+                "shell",
+                &args,
+                &policy,
+                Some(Path::new("/workspace"))
+            ),
+            Some(SandboxEscalation::ProcessFilesystem)
+        );
     }
 }

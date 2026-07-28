@@ -1300,9 +1300,31 @@ def test_home_prompt_describes_the_redacted_effective_workspace_boundary():
     )
 
     assert "# Effective Tool Boundaries" in system_prompt
+    assert "Local filesystem reads are allowed outside `$WORKSPACE`" in system_prompt
     assert "Normal writes are limited to `$WORKSPACE`" in system_prompt
     assert "~/Projects" not in system_prompt
     assert local_workspace not in system_prompt
+
+
+def test_strict_read_policy_limits_reads_to_configured_roots():
+    system_prompt, _, _ = assemble_prompt(
+        {
+            "context": {
+                "agent": {
+                    "model": "gpt-4o",
+                    "permissionMode": "auto",
+                    "toolPolicy": {
+                        "shell": {"allowed_cwd": ["$WORKSPACE"]},
+                        "file": {"allowed_roots": ["$WORKSPACE"]},
+                        "sandbox": {"allow_read_outside_workspace": False},
+                    },
+                }
+            }
+        }
+    )
+
+    assert "Reads are limited to the configured file roots" in system_prompt
+    assert "Local filesystem reads are allowed outside `$WORKSPACE`" not in system_prompt
 
 
 def test_full_access_prompt_does_not_claim_writes_are_workspace_limited():

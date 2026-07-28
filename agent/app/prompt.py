@@ -588,6 +588,9 @@ def assemble_prompt(
         permission_mode = str(agent.get("permissionMode") or "auto")
         shell_roots = (tool_policy.get("shell") or {}).get("allowed_cwd") or []
         file_roots = (tool_policy.get("file") or {}).get("allowed_roots") or []
+        allow_read_outside_workspace = (tool_policy.get("sandbox") or {}).get(
+            "allow_read_outside_workspace", True
+        )
         writable_roots = (tool_policy.get("sandbox") or {}).get("writable_roots") or []
         has_workspace_boundary = "$WORKSPACE" in shell_roots or "$WORKSPACE" in file_roots
         if permission_mode == "full_access":
@@ -603,7 +606,13 @@ def assemble_prompt(
             )
             boundary_summary = (
                 "`$WORKSPACE` is the current effective workspace. Relative file paths and shell "
-                "commands use it by default. Normal writes are limited to `$WORKSPACE`, configured "
+                "commands use it by default. "
+                + (
+                    "Local filesystem reads are allowed outside `$WORKSPACE`, but remain read-only. "
+                    if allow_read_outside_workspace
+                    else "Reads are limited to the configured file roots. "
+                )
+                + "Normal writes are limited to `$WORKSPACE`, configured "
                 "sandbox writable roots, and system temporary directories such as `$TMPDIR` or `/tmp`; "
                 "additional readable roots in the policy do not automatically grant write access."
                 f"{writable_summary}"
@@ -617,8 +626,8 @@ def assemble_prompt(
             f"# Effective Tool Boundaries\n"
             f"Permission mode: `{permission_mode}`.\n{boundary_summary}\n"
             f"The effective capability policy is:\n{json.dumps(tool_policy, indent=2)}\n"
-            f"Always explain your rationale briefly before calling tools. Never infer access to a "
-            f"path that is absent from this effective policy."
+            f"Always explain your rationale briefly before calling tools. Treat read access and "
+            f"write access as separate capabilities."
         )
 
     system_parts.append(

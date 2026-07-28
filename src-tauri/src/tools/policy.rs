@@ -213,6 +213,7 @@ pub struct SandboxPolicy {
     pub landlock: bool,
     pub bwrap: BwrapMode,
     pub rlimits: bool,
+    pub allow_read_outside_workspace: bool,
     pub writable_roots: Vec<String>,
     pub cpu_time_sec: u64,
     pub memory_bytes: u64,
@@ -279,6 +280,9 @@ impl Default for SandboxPolicy {
             // Hard process/file/memory limits are opt-in. Fixed low limits
             // make ordinary compilers and package managers unusable.
             rlimits: false,
+            // Match Codex workspace mode: reads are broadly available while
+            // writes remain constrained to explicit writable roots.
+            allow_read_outside_workspace: true,
             writable_roots: vec![
                 "~/.cache".into(),
                 "~/.local".into(),
@@ -382,10 +386,17 @@ impl ToolPolicy {
             return Err("Shell 执行工具已被禁用".into());
         }
         let cwd_path = PathBuf::from(cwd);
-        if !is_path_under_roots(&cwd_path, &self.shell.allowed_cwd) {
+        let temporary_roots = crate::tools::sandbox::temporary_write_paths()
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        if !is_path_under_roots(&cwd_path, &self.shell.allowed_cwd)
+            && !is_path_under_roots(&cwd_path, &self.sandbox.writable_roots)
+            && !is_path_under_roots(&cwd_path, &temporary_roots)
+        {
             return Err(format!(
-                "工作目录 `{}` 不在允许的 shell 执行目录列表内 ({:?})",
-                cwd, self.shell.allowed_cwd
+                "工作目录 `{}` 不在 workspace、额外可写目录或系统临时目录内",
+                cwd
             ));
         }
         Ok(())
@@ -396,9 +407,17 @@ impl ToolPolicy {
         if !self.file.enabled {
             return Err("文件工具已被禁用".into());
         }
+        if self.sandbox.allow_read_outside_workspace {
+            return Ok(());
+        }
         let file_path = PathBuf::from(path);
+        let temporary_roots = crate::tools::sandbox::temporary_write_paths()
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
         if !is_path_under_roots(&file_path, &self.file.allowed_roots)
             && !is_path_under_roots(&file_path, &self.sandbox.writable_roots)
+            && !is_path_under_roots(&file_path, &temporary_roots)
         {
             return Err(format!(
                 "访问的路径 `{}` 不在允许的只读或可写根目录内",
@@ -410,7 +429,13 @@ impl ToolPolicy {
 
     /// 验证文件写入策略。
     pub fn check_file_write(&self, path: &str) -> Result<(), String> {
-        self.check_file_read(path) // 写入必须先满足路径范围限制
+        let _ = path;
+        if !self.file.enabled {
+            return Err("文件工具已被禁用".into());
+        }
+        // PolicySandbox owns the write boundary. Read access must not imply
+        // write access, and strict read mode must not block writable roots.
+        Ok(())
     }
 
     /// 验证 git 策略。
@@ -535,6 +560,7 @@ mod tests {
         assert_eq!(value["git"]["timeout_sec"], 30);
         assert_eq!(value["network"]["allow"], true);
         assert_eq!(value["sandbox"]["bwrap"], "auto");
+        assert_eq!(value["sandbox"]["allow_read_outside_workspace"], true);
         assert_eq!(
             value["sandbox"]["writable_roots"],
             serde_json::json!(["~/.cache", "~/.local", "~/.cargo", "~/.rustup"])
@@ -550,6 +576,18 @@ mod tests {
             policy.sandbox.writable_roots,
             vec!["~/.cache", "~/.local", "~/.cargo", "~/.rustup"]
         );
+        assert!(policy.sandbox.allow_read_outside_workspace);
+    }
+
+    #[test]
+    fn workspace_mode_reads_broadly_but_strict_mode_honors_roots() {
+        let mut policy = ToolPolicy::default();
+        policy.file.allowed_roots = vec!["/workspace".into()];
+        assert!(policy.check_file_read("/etc/passwd").is_ok());
+
+        policy.sandbox.allow_read_outside_workspace = false;
+        assert!(policy.check_file_read("/etc/passwd").is_err());
+        assert!(policy.check_file_read("/workspace/README.md").is_ok());
     }
 
     #[test]

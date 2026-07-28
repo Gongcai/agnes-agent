@@ -122,6 +122,11 @@ def get_available_tools(
                     "properties": {
                         "command": {"type": "string", "description": "The command to run."},
                         "cwd": {"type": "string", "description": "Optional working directory. Defaults to current workspace."},
+                        "sandbox_permissions": {
+                            "type": "string",
+                            "enum": ["require_escalated"],
+                            "description": "Request one-call filesystem escalation when this command must write outside normal writable roots. This always requires approval."
+                        },
                         "yield_time_ms": {
                             "type": "integer",
                             "minimum": 0,
@@ -286,7 +291,12 @@ def get_available_tools(
                             "items": {"type": "string"},
                             "description": "Arguments to pass to git (e.g. ['status', '--short'])."
                         },
-                        "cwd": {"type": "string", "description": "Working directory. Defaults to workspace."}
+                        "cwd": {"type": "string", "description": "Working directory. Defaults to workspace."},
+                        "sandbox_permissions": {
+                            "type": "string",
+                            "enum": ["require_escalated"],
+                            "description": "Request one-call filesystem escalation for a repository outside normal writable roots. This always requires approval."
+                        }
                     },
                     "required": ["args"]
                 }

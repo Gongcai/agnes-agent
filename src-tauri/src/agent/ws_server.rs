@@ -556,6 +556,24 @@ async fn handle_conn<R: tauri::Runtime>(
                     )
                     .await;
                     policy = crate::tools::executor::effective_policy(&policy, &workspace_cwd, &[]);
+                    let sandbox_escalation = (permission_mode != PermissionMode::FullAccess)
+                        .then(|| {
+                            crate::tools::permissions::sandbox_escalation_for_tool_call(
+                                &tool_name,
+                                &args,
+                                &policy,
+                                workspace_cwd.as_deref(),
+                            )
+                        })
+                        .flatten();
+                    let approval_required =
+                        approval_decision.needs_approval || sandbox_escalation.is_some();
+                    let approval_reason =
+                        if sandbox_escalation.is_some() && !approval_decision.needs_approval {
+                            "本次调用需要临时越过 workspace 写边界；批准只对这一次调用生效。"
+                        } else {
+                            approval_decision.reason
+                        };
                     let role_policy_requires_approval =
                         crate::tools::builtin::needs_approval(&tool_name, &args, &policy);
                     let diff_preview = crate::tools::review::preview_tool_call(
@@ -575,7 +593,7 @@ async fn handle_conn<R: tauri::Runtime>(
 
                     // Emit the tool call before approval or execution so every permission mode
                     // gets a live card in the frontend.
-                    let tool_event_name = if approval_decision.needs_approval {
+                    let tool_event_name = if approval_required {
                         "agent://tool_call_pending"
                     } else {
                         "agent://tool_call_started"
@@ -590,14 +608,15 @@ async fn handle_conn<R: tauri::Runtime>(
                     "cwd": effective_cwd,
                     "network_allowed": policy.network.allow,
                     "landlock": policy.sandbox.landlock,
+                    "sandbox_escalation": sandbox_escalation.is_some(),
                     "permission_mode": permission_mode.as_str(),
-                    "approval_reason": approval_decision.reason,
+                    "approval_reason": approval_reason,
                     "is_secondary_confirmation": approval_decision.is_secondary_confirmation,
                     "role_policy_requires_approval": role_policy_requires_approval,
                     "diff": diff_preview,
-                    "status": if approval_decision.needs_approval { "pending_approval" } else { "running" },
+                    "status": if approval_required { "pending_approval" } else { "running" },
                 }));
-                    if approval_decision.needs_approval {
+                    if approval_required {
                         if let Some(state) = app_handle.try_state::<AppState>() {
                             if let Err(error) = state
                                 .notifications
@@ -619,7 +638,7 @@ async fn handle_conn<R: tauri::Runtime>(
 
                     let mut approved = true;
                     let mut cancelled_during_approval = false;
-                    if approval_decision.needs_approval {
+                    if approval_required {
                         // 1. 注册 Oneshot Channel 并将协程挂起
                         let (approval_tx, approval_rx) = tokio::sync::oneshot::channel::<bool>();
                         manager.register_approval(tc_id.clone(), approval_tx);
@@ -714,6 +733,7 @@ async fn handle_conn<R: tauri::Runtime>(
                             &args,
                             &policy,
                             permission_mode,
+                            sandbox_escalation.clone(),
                         ) => result,
                         _ = &mut cancel_rx => {
                             tool_executor.stop_run(&run_id);

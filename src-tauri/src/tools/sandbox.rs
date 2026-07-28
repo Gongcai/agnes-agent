@@ -145,18 +145,25 @@ impl PolicySandbox {
 
         let temp_write_roots = temporary_write_paths();
 
-        let mut read_roots = policy
-            .file
-            .allowed_roots
-            .iter()
-            .map(|path| normalize_root(&expand_home(path)))
-            .collect::<Vec<_>>();
-        let cwd_roots = policy
+        let mut read_roots = if policy.sandbox.allow_read_outside_workspace {
+            filesystem_read_roots()
+        } else {
+            policy
+                .file
+                .allowed_roots
+                .iter()
+                .map(|path| normalize_root(&expand_home(path)))
+                .collect::<Vec<_>>()
+        };
+        let mut cwd_roots = policy
             .shell
             .allowed_cwd
             .iter()
             .map(|path| normalize_root(&expand_home(path)))
             .collect::<Vec<_>>();
+        cwd_roots.extend(configured_write_roots.iter().cloned());
+        cwd_roots.extend(temp_write_roots.iter().cloned());
+        deduplicate_paths(&mut cwd_roots);
 
         let primary_write_root = workspace_cwd
             .map(normalize_root)
@@ -346,12 +353,21 @@ impl PolicySandbox {
             if *isolate_network {
                 command_args.push(OsString::from("--unshare-net"));
             }
+            let root_is_writable = self
+                .process_spec
+                .read_write
+                .iter()
+                .any(|path| path == Path::new("/"));
             command_args.extend(
                 [
                     "--unshare-pid",
                     "--die-with-parent",
                     "--new-session",
-                    "--ro-bind",
+                    if root_is_writable {
+                        "--bind"
+                    } else {
+                        "--ro-bind"
+                    },
                     "/",
                     "/",
                     "--dev-bind",
@@ -649,7 +665,22 @@ fn system_read_paths() -> Vec<PathBuf> {
         .collect()
 }
 
-fn temporary_write_paths() -> Vec<PathBuf> {
+fn filesystem_read_roots() -> Vec<PathBuf> {
+    #[cfg(unix)]
+    {
+        vec![PathBuf::from("/")]
+    }
+    #[cfg(not(unix))]
+    {
+        std::env::current_dir()
+            .ok()
+            .and_then(|path| path.ancestors().last().map(Path::to_path_buf))
+            .into_iter()
+            .collect()
+    }
+}
+
+pub(crate) fn temporary_write_paths() -> Vec<PathBuf> {
     let mut paths = ["/tmp", "/var/tmp", "/dev/null", "/dev/zero", "/dev/full"]
         .into_iter()
         .map(PathBuf::from)
@@ -830,6 +861,8 @@ mod tests {
         let sandbox = PolicySandbox::new(&policy, Some(&workspace));
 
         assert!(sandbox.check_read(&root.join("Cargo.toml")).is_ok());
+        #[cfg(unix)]
+        assert!(sandbox.check_read(Path::new("/etc/passwd")).is_ok());
         assert!(sandbox.check_write(&workspace.join("output.txt")).is_ok());
         assert!(sandbox.check_write(&root.join("outside.txt")).is_err());
         for protected in [".git", ".codex", ".agents"] {
@@ -854,6 +887,24 @@ mod tests {
     }
 
     #[test]
+    fn strict_read_mode_rejects_paths_outside_configured_roots() {
+        let root = std::env::current_dir().unwrap();
+        let workspace = root.join("target/sandbox-strict-read-workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut policy = ToolPolicy::default();
+        policy.sandbox.allow_read_outside_workspace = false;
+        policy.file.allowed_roots = vec![workspace.to_string_lossy().to_string()];
+        policy.shell.allowed_cwd = vec![workspace.to_string_lossy().to_string()];
+        let sandbox = PolicySandbox::new(&policy, Some(&workspace));
+
+        assert!(sandbox.check_read(&workspace.join("README.md")).is_ok());
+        #[cfg(unix)]
+        assert!(sandbox.check_read(Path::new("/etc/passwd")).is_err());
+
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
     fn native_tools_can_use_system_temp_paths() {
         let workspace = std::env::current_dir()
             .unwrap()
@@ -865,10 +916,8 @@ mod tests {
         policy.shell.allowed_cwd = vec![workspace.to_string_lossy().to_string()];
         let sandbox = PolicySandbox::new(&policy, Some(&workspace));
 
-        let temp_file = std::env::temp_dir().join(format!(
-            "agnes-sandbox-temp-{}.txt",
-            uuid::Uuid::new_v4()
-        ));
+        let temp_file =
+            std::env::temp_dir().join(format!("agnes-sandbox-temp-{}.txt", uuid::Uuid::new_v4()));
         assert!(sandbox.check_read(&temp_file).is_ok());
         assert!(sandbox.check_write(&temp_file).is_ok());
 

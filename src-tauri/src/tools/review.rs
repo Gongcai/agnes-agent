@@ -212,25 +212,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn does_not_preview_files_outside_allowed_roots() {
-        let root = std::env::temp_dir().join(format!("agnes-review-{}", uuid::Uuid::new_v4()));
-        let outside = std::env::temp_dir().join(format!("agnes-review-{}", uuid::Uuid::new_v4()));
+    async fn strict_mode_does_not_preview_files_outside_allowed_roots() {
+        let test_root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("agnes-review-{}", uuid::Uuid::new_v4()));
+        let root = test_root.join("workspace");
+        let outside = test_root.join("outside");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         let path = outside.join("private.txt");
         std::fs::write(&path, "private\n").unwrap();
 
+        let mut policy = policy_for(&root);
+        policy.sandbox.allow_read_outside_workspace = false;
         let preview = preview_tool_call(
             "file_edit",
             &json!({"path": path, "old_string": "private", "new_string": "public"}),
             Some(&root),
-            &policy_for(&root),
+            &policy,
         )
         .await;
 
         assert!(preview.is_none());
-        std::fs::remove_dir_all(root).unwrap();
-        std::fs::remove_dir_all(outside).unwrap();
+        std::fs::remove_dir_all(test_root).unwrap();
     }
 
     #[tokio::test]
