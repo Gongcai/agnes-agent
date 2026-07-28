@@ -28,9 +28,16 @@ pub struct ActiveRun {
     pub accumulated_text: String,
     pub accumulated_thought: String,
     pub current_ordinal: i32,
-    /// 当前是否处于 <thought> 思维链中（跨 chunk 持久，避免多段思维链路由错乱）
+    /// Whether the current stream position is inside at least one thought tag.
     pub in_thought: bool,
+    /// Thought tags may be nested when a provider returns tags inside its
+    /// native reasoning channel and may also be split across stream chunks.
+    pub thought_depth: usize,
+    pub pending_thought_tag: String,
 }
+
+const THOUGHT_OPEN_TAG: &str = "<thought>";
+const THOUGHT_CLOSE_TAG: &str = "</thought>";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct AssistantDeltaSegment {
@@ -61,28 +68,62 @@ fn push_assistant_delta_segment(
     }
 }
 
-fn route_assistant_delta(run: &mut ActiveRun, content: &str) -> Vec<AssistantDeltaSegment> {
-    let mut segments = Vec::new();
-    let mut remaining = content;
-    while !remaining.is_empty() {
-        if run.in_thought {
-            if let Some(index) = remaining.find("</thought>") {
-                push_assistant_delta_segment(run, &mut segments, "thought", &remaining[..index]);
-                run.in_thought = false;
-                remaining = &remaining[index + "</thought>".len()..];
-            } else {
-                push_assistant_delta_segment(run, &mut segments, "thought", remaining);
-                remaining = "";
-            }
-        } else if let Some(index) = remaining.find("<thought>") {
-            push_assistant_delta_segment(run, &mut segments, "text", &remaining[..index]);
-            run.in_thought = true;
-            remaining = &remaining[index + "<thought>".len()..];
-        } else {
-            push_assistant_delta_segment(run, &mut segments, "text", remaining);
-            remaining = "";
+fn trailing_thought_tag_prefix_len(value: &str) -> usize {
+    let max_len = THOUGHT_CLOSE_TAG.len().max(THOUGHT_OPEN_TAG.len());
+    for len in (1..=max_len.min(value.len())).rev() {
+        let start = value.len() - len;
+        if !value.is_char_boundary(start) {
+            continue;
+        }
+        let suffix = &value[start..];
+        if THOUGHT_OPEN_TAG.starts_with(suffix) || THOUGHT_CLOSE_TAG.starts_with(suffix) {
+            return len;
         }
     }
+    0
+}
+
+fn next_thought_tag(value: &str) -> Option<(usize, bool)> {
+    match (value.find(THOUGHT_OPEN_TAG), value.find(THOUGHT_CLOSE_TAG)) {
+        (Some(open), Some(close)) if open <= close => Some((open, true)),
+        (Some(_), Some(close)) => Some((close, false)),
+        (Some(open), None) => Some((open, true)),
+        (None, Some(close)) => Some((close, false)),
+        (None, None) => None,
+    }
+}
+
+fn route_assistant_delta(run: &mut ActiveRun, content: &str) -> Vec<AssistantDeltaSegment> {
+    let mut segments = Vec::new();
+    let mut combined = std::mem::take(&mut run.pending_thought_tag);
+    combined.push_str(content);
+    let mut remaining = combined.as_str();
+
+    loop {
+        let kind = if run.thought_depth > 0 {
+            "thought"
+        } else {
+            "text"
+        };
+        if let Some((index, is_open)) = next_thought_tag(remaining) {
+            push_assistant_delta_segment(run, &mut segments, kind, &remaining[..index]);
+            if is_open {
+                run.thought_depth = run.thought_depth.saturating_add(1);
+                remaining = &remaining[index + THOUGHT_OPEN_TAG.len()..];
+            } else {
+                run.thought_depth = run.thought_depth.saturating_sub(1);
+                remaining = &remaining[index + THOUGHT_CLOSE_TAG.len()..];
+            }
+            continue;
+        }
+
+        let pending_len = trailing_thought_tag_prefix_len(remaining);
+        let emit_end = remaining.len() - pending_len;
+        push_assistant_delta_segment(run, &mut segments, kind, &remaining[..emit_end]);
+        run.pending_thought_tag.push_str(&remaining[emit_end..]);
+        break;
+    }
+    run.in_thought = run.thought_depth > 0;
     segments
 }
 
@@ -90,6 +131,9 @@ fn route_assistant_delta(run: &mut ActiveRun, content: &str) -> Vec<AssistantDel
 /// 在「工具调用前」与「运行结束时」各调用一次，保持「回复-工具调用-回复」的回合顺序，
 /// 避免跨回合合并成一段正文（accumulated_text 不再跨回合累加）。
 fn drain_accumulated(run: &mut ActiveRun, out: &mut Vec<NewMessagePart>) {
+    // A leftover buffer is necessarily an incomplete reserved control tag.
+    // Never persist it as user-visible text or reasoning.
+    run.pending_thought_tag.clear();
     if !run.accumulated_thought.is_empty() {
         let t = run.accumulated_thought.trim().to_string();
         if !t.is_empty() {
@@ -124,6 +168,8 @@ fn drain_accumulated(run: &mut ActiveRun, out: &mut Vec<NewMessagePart>) {
     }
     run.accumulated_thought.clear();
     run.in_thought = false;
+    run.thought_depth = 0;
+    run.pending_thought_tag.clear();
 }
 
 // 在 AgentManager 里扩展对 ActiveRun 的管理。
@@ -362,6 +408,8 @@ async fn handle_conn<R: tauri::Runtime>(
                                     accumulated_thought: String::new(),
                                     current_ordinal: 0,
                                     in_thought: false,
+                                    thought_depth: 0,
+                                    pending_thought_tag: String::new(),
                                 },
                             );
                         }
@@ -445,6 +493,8 @@ async fn handle_conn<R: tauri::Runtime>(
                                 accumulated_thought: String::new(),
                                 current_ordinal: 0,
                                 in_thought: false,
+                                thought_depth: 0,
+                                pending_thought_tag: String::new(),
                             },
                         );
                     }
@@ -519,6 +569,8 @@ async fn handle_conn<R: tauri::Runtime>(
                                         accumulated_thought: String::new(),
                                         current_ordinal: 0,
                                         in_thought: false,
+                                        thought_depth: 0,
+                                        pending_thought_tag: String::new(),
                                     },
                                 );
                             }
@@ -949,6 +1001,8 @@ async fn handle_conn<R: tauri::Runtime>(
                                 accumulated_thought: String::new(),
                                 current_ordinal: 0,
                                 in_thought: false,
+                                thought_depth: 0,
+                                pending_thought_tag: String::new(),
                             },
                         );
                     }
@@ -1185,6 +1239,8 @@ mod tests {
             accumulated_thought: String::new(),
             current_ordinal: 0,
             in_thought: false,
+            thought_depth: 0,
+            pending_thought_tag: String::new(),
         }
     }
 
@@ -1219,6 +1275,83 @@ mod tests {
         assert!(!run.in_thought);
         assert_eq!(run.accumulated_thought, "private reasoning continues");
         assert_eq!(run.accumulated_text, "public answer");
+    }
+
+    #[test]
+    fn assistant_delta_tags_may_span_multiple_stream_chunks() {
+        let mut run = test_run();
+
+        assert!(route_assistant_delta(&mut run, "<tho").is_empty());
+        let middle = route_assistant_delta(&mut run, "ught>private reasoning</th");
+        let last = route_assistant_delta(&mut run, "ought>public answer");
+
+        assert_eq!(
+            middle,
+            vec![AssistantDeltaSegment {
+                kind: "thought",
+                content: "private reasoning".into(),
+            }]
+        );
+        assert_eq!(
+            last,
+            vec![AssistantDeltaSegment {
+                kind: "text",
+                content: "public answer".into(),
+            }]
+        );
+        assert!(!run.in_thought);
+        assert_eq!(run.accumulated_thought, "private reasoning");
+        assert_eq!(run.accumulated_text, "public answer");
+    }
+
+    #[test]
+    fn nested_thought_tags_do_not_leak_or_close_the_outer_reasoning_early() {
+        let mut run = test_run();
+
+        assert!(route_assistant_delta(&mut run, "<thought>").is_empty());
+        assert!(route_assistant_delta(&mut run, "<thou").is_empty());
+        let reasoning =
+            route_assistant_delta(&mut run, "ght>private reasoning</thought> still private");
+        let answer = route_assistant_delta(&mut run, "</thought>public answer");
+
+        assert_eq!(
+            reasoning,
+            vec![AssistantDeltaSegment {
+                kind: "thought",
+                content: "private reasoning still private".into(),
+            }]
+        );
+        assert_eq!(
+            answer,
+            vec![AssistantDeltaSegment {
+                kind: "text",
+                content: "public answer".into(),
+            }]
+        );
+        assert!(!run.in_thought);
+        assert!(!run.accumulated_thought.contains("<thought>"));
+        assert!(!run.accumulated_thought.contains("</thought>"));
+        assert_eq!(run.accumulated_text, "public answer");
+    }
+
+    #[test]
+    fn incomplete_control_tag_suffix_is_not_persisted() {
+        let mut run = test_run();
+        let streamed = route_assistant_delta(&mut run, "public answer</thou");
+        let mut parts = Vec::new();
+
+        drain_accumulated(&mut run, &mut parts);
+
+        assert_eq!(
+            streamed,
+            vec![AssistantDeltaSegment {
+                kind: "text",
+                content: "public answer".into(),
+            }]
+        );
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].kind, "text");
+        assert_eq!(parts[0].content, "public answer");
     }
 
     #[tokio::test]

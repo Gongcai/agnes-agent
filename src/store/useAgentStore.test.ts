@@ -9,6 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import {
   buildOptimisticEditBranch,
   buildOptimisticRegenerationBranch,
+  normalizePersistedAssistantThoughtTags,
   preserveLatestRunRenderKeys,
   type Message,
   useAgentStore,
@@ -219,7 +220,35 @@ describe("optimistic conversation branches", () => {
   });
 });
 
-describe("typed assistant deltas", () => {
+describe("assistant delta routing", () => {
+  it("reclassifies complete thought tags in persisted malformed parts", () => {
+    const normalized = normalizePersistedAssistantThoughtTags({
+      ...assistant,
+      parts: [
+        {
+          id: "persisted-thought",
+          kind: "thought",
+          content: "<thought>private</thought> still private</thought>public",
+        },
+        {
+          id: "persisted-text",
+          kind: "text",
+          content: "prefix<thought>hidden</thought>answer",
+        },
+      ],
+    });
+
+    expect(normalized.parts).toMatchObject([
+      { kind: "thought", content: "private still private" },
+      { kind: "text", content: "public" },
+      { kind: "text", content: "prefix" },
+      { kind: "thought", content: "hidden" },
+      { kind: "text", content: "answer" },
+    ]);
+    expect(normalized.parts.some((part) => part.content.includes("<thought>"))).toBe(false);
+    expect(normalized.parts.some((part) => part.content.includes("</thought>"))).toBe(false);
+  });
+
   it("keeps reasoning out of text after an in-flight message is reloaded", () => {
     const reloadedAssistant: Message = {
       ...assistant,
@@ -253,6 +282,38 @@ describe("typed assistant deltas", () => {
       { kind: "thought", content: "private reasoning continues" },
       { kind: "text", content: "public answer" },
     ]);
+    expect(streamed._streamingInThought).toBe(false);
+
+    useAgentStore.setState({ activeSessionId: null, isStreaming: false, messages: [] });
+  });
+
+  it("keeps split and nested legacy thought tags out of rendered content", () => {
+    const streamingAssistant: Message = {
+      ...assistant,
+      id: "assistant-legacy-stream",
+      status: "streaming",
+      parts: [],
+    };
+    useAgentStore.setState({
+      activeSessionId: "session-1",
+      isStreaming: true,
+      messages: [user, streamingAssistant],
+    });
+
+    useAgentStore.getState().appendStreamingDelta("<tho");
+    useAgentStore.getState().appendStreamingDelta("ught><thou");
+    useAgentStore.getState().appendStreamingDelta(
+      "ght>private reasoning</thought> still private</th",
+    );
+    useAgentStore.getState().appendStreamingDelta("ought>public answer");
+
+    const streamed = useAgentStore.getState().messages.at(-1)!;
+    expect(streamed.parts).toMatchObject([
+      { kind: "thought", content: "private reasoning still private" },
+      { kind: "text", content: "public answer" },
+    ]);
+    expect(streamed.parts.some((part) => part.content.includes("<thought>"))).toBe(false);
+    expect(streamed.parts.some((part) => part.content.includes("</thought>"))).toBe(false);
     expect(streamed._streamingInThought).toBe(false);
 
     useAgentStore.setState({ activeSessionId: null, isStreaming: false, messages: [] });

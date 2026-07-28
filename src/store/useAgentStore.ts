@@ -132,6 +132,10 @@ export interface Message {
   context_tokens: number;
   /** 流式暂存：当前是否处于 <thought> 思维链中。仅用于直播渲染，不落库。 */
   _streamingInThought?: boolean;
+  /** Transient nested thought-tag depth for legacy untyped stream events. */
+  _streamingThoughtDepth?: number;
+  /** Transient suffix that may be the start of a thought tag split across chunks. */
+  _streamingThoughtTagBuffer?: string;
   /** Stable React key retained across the run-finished DB reconciliation. */
   _renderKey?: string;
 }
@@ -139,6 +143,89 @@ export interface Message {
 export interface StreamingDeltaSegment {
   kind: "text" | "thought";
   content: string;
+}
+
+const THOUGHT_OPEN_TAG = "<thought>";
+const THOUGHT_CLOSE_TAG = "</thought>";
+
+function trailingThoughtTagPrefixLength(value: string): number {
+  const maxLength = Math.max(THOUGHT_OPEN_TAG.length, THOUGHT_CLOSE_TAG.length);
+  for (let length = Math.min(maxLength, value.length); length > 0; length -= 1) {
+    const suffix = value.slice(-length);
+    if (THOUGHT_OPEN_TAG.startsWith(suffix) || THOUGHT_CLOSE_TAG.startsWith(suffix)) {
+      return length;
+    }
+  }
+  return 0;
+}
+
+function nextThoughtTag(value: string): { index: number; open: boolean } | null {
+  const openIndex = value.indexOf(THOUGHT_OPEN_TAG);
+  const closeIndex = value.indexOf(THOUGHT_CLOSE_TAG);
+  if (openIndex < 0 && closeIndex < 0) return null;
+  if (openIndex >= 0 && (closeIndex < 0 || openIndex <= closeIndex)) {
+    return { index: openIndex, open: true };
+  }
+  return { index: closeIndex, open: false };
+}
+
+function parseCompleteThoughtTaggedContent(
+  content: string,
+  initialDepth: number,
+): StreamingDeltaSegment[] {
+  const segments: StreamingDeltaSegment[] = [];
+  const append = (kind: StreamingDeltaSegment["kind"], value: string) => {
+    if (!value) return;
+    const last = segments[segments.length - 1];
+    if (last?.kind === kind) {
+      last.content += value;
+    } else {
+      segments.push({ kind, content: value });
+    }
+  };
+  let thoughtDepth = initialDepth;
+  let remaining = content;
+  while (true) {
+    const kind = thoughtDepth > 0 ? "thought" : "text";
+    const tag = nextThoughtTag(remaining);
+    if (!tag) {
+      append(kind, remaining);
+      return segments;
+    }
+    append(kind, remaining.slice(0, tag.index));
+    if (tag.open) {
+      thoughtDepth += 1;
+      remaining = remaining.slice(tag.index + THOUGHT_OPEN_TAG.length);
+    } else {
+      thoughtDepth = Math.max(0, thoughtDepth - 1);
+      remaining = remaining.slice(tag.index + THOUGHT_CLOSE_TAG.length);
+    }
+  }
+}
+
+export function normalizePersistedAssistantThoughtTags(message: Message): Message {
+  if (message.role !== "assistant") return message;
+  let changed = false;
+  const parts = message.parts.flatMap((part) => {
+    if (
+      (part.kind !== "text" && part.kind !== "thought")
+      || (!part.content.includes(THOUGHT_OPEN_TAG) && !part.content.includes(THOUGHT_CLOSE_TAG))
+    ) {
+      return [part];
+    }
+    changed = true;
+    return parseCompleteThoughtTaggedContent(
+      part.content,
+      part.kind === "thought" ? 1 : 0,
+    ).map((segment, index) => ({
+      ...part,
+      id: index === 0 ? part.id : `${part.id}:normalized:${index}`,
+      kind: segment.kind,
+      content: segment.content,
+      ...(index === 0 ? {} : { _renderKey: undefined }),
+    }));
+  });
+  return changed ? { ...message, parts } : message;
 }
 
 function pendingAssistantVersion(source: Message, id: string, parentId: string): Message {
@@ -204,6 +291,8 @@ function mergeLiveAssistantState(previous: Message, next: Message): Message {
     status: previous.status === "streaming" ? "streaming" : next.status,
     parts,
     _streamingInThought: previous._streamingInThought,
+    _streamingThoughtDepth: previous._streamingThoughtDepth,
+    _streamingThoughtTagBuffer: previous._streamingThoughtTagBuffer,
     _renderKey: previous._renderKey ?? previous.id,
   };
 }
@@ -564,7 +653,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   loadMessages: async (sessionId: string, preserveRenderKeys = false) => {
     try {
-      const messages = await invoke<Message[]>("list_messages", { sessionId });
+      const messages = (await invoke<Message[]>("list_messages", { sessionId }))
+        .map(normalizePersistedAssistantThoughtTags);
       set({
         messages: preserveRenderKeys
           ? preserveLatestRunRenderKeys(get().messages, messages, sessionId)
@@ -1130,35 +1220,39 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     if (segments !== undefined) {
       for (const segment of segments) appendKind(segment.kind, segment.content);
       lastMsg._streamingInThought = inThought ?? lastMsg._streamingInThought;
+      lastMsg._streamingThoughtDepth = lastMsg._streamingInThought ? 1 : 0;
+      lastMsg._streamingThoughtTagBuffer = "";
     } else {
       // Legacy event fallback: route raw tags locally when the backend does
       // not provide typed segments.
-      let localInThought = lastMsg._streamingInThought === true;
-      let remaining = content;
-      while (remaining.length > 0) {
-        if (localInThought) {
-          const closeIdx = remaining.indexOf("</thought>");
-          if (closeIdx >= 0) {
-            appendKind("thought", remaining.slice(0, closeIdx));
-            localInThought = false;
-            remaining = remaining.slice(closeIdx + "</thought>".length);
+      let thoughtDepth = lastMsg._streamingThoughtDepth
+        ?? (lastMsg._streamingInThought ? 1 : 0);
+      let remaining = `${lastMsg._streamingThoughtTagBuffer ?? ""}${content}`;
+      let pendingTag = "";
+      while (true) {
+        const kind = thoughtDepth > 0 ? "thought" : "text";
+        const tag = nextThoughtTag(remaining);
+        if (tag) {
+          appendKind(kind, remaining.slice(0, tag.index));
+          if (tag.open) {
+            thoughtDepth += 1;
+            remaining = remaining.slice(tag.index + THOUGHT_OPEN_TAG.length);
           } else {
-            appendKind("thought", remaining);
-            remaining = "";
+            thoughtDepth = Math.max(0, thoughtDepth - 1);
+            remaining = remaining.slice(tag.index + THOUGHT_CLOSE_TAG.length);
           }
-        } else {
-          const openIdx = remaining.indexOf("<thought>");
-          if (openIdx >= 0) {
-            appendKind("text", remaining.slice(0, openIdx));
-            localInThought = true;
-            remaining = remaining.slice(openIdx + "<thought>".length);
-          } else {
-            appendKind("text", remaining);
-            remaining = "";
-          }
+          continue;
         }
+
+        const pendingLength = trailingThoughtTagPrefixLength(remaining);
+        const emitEnd = remaining.length - pendingLength;
+        appendKind(kind, remaining.slice(0, emitEnd));
+        pendingTag = remaining.slice(emitEnd);
+        break;
       }
-      lastMsg._streamingInThought = localInThought;
+      lastMsg._streamingThoughtDepth = thoughtDepth;
+      lastMsg._streamingThoughtTagBuffer = pendingTag;
+      lastMsg._streamingInThought = thoughtDepth > 0;
     }
     lastMsg.status = "streaming";
     updatedMessages[updatedMessages.length - 1] = lastMsg;
