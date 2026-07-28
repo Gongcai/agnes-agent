@@ -143,6 +143,8 @@ impl PolicySandbox {
             .collect::<Vec<_>>();
         deduplicate_paths(&mut configured_write_roots);
 
+        let temp_write_roots = temporary_write_paths();
+
         let mut read_roots = policy
             .file
             .allowed_roots
@@ -163,11 +165,13 @@ impl PolicySandbox {
             read_roots.push(workspace);
         }
         read_roots.extend(configured_write_roots.iter().cloned());
+        read_roots.extend(temp_write_roots.iter().cloned());
         deduplicate_paths(&mut read_roots);
 
         let mut write_roots = if policy.shell.deny_write_outside_workspace {
             let mut roots = primary_write_root.into_iter().collect::<Vec<_>>();
             roots.extend(configured_write_roots.iter().cloned());
+            roots.extend(temp_write_roots.iter().cloned());
             roots
         } else {
             let mut roots = read_roots.clone();
@@ -182,7 +186,6 @@ impl PolicySandbox {
         deduplicate_paths(&mut process_read_only);
 
         let mut process_read_write = write_roots.clone();
-        process_read_write.extend(temporary_write_paths());
         deduplicate_paths(&mut process_read_write);
 
         let process_isolation = match policy.sandbox.bwrap {
@@ -848,6 +851,28 @@ mod tests {
             let _ = std::fs::remove_file(link);
             let _ = std::fs::remove_dir_all(outside);
         }
+    }
+
+    #[test]
+    fn native_tools_can_use_system_temp_paths() {
+        let workspace = std::env::current_dir()
+            .unwrap()
+            .join("target/sandbox-temp-workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let mut policy = ToolPolicy::default();
+        policy.file.allowed_roots = vec![workspace.to_string_lossy().to_string()];
+        policy.shell.allowed_cwd = vec![workspace.to_string_lossy().to_string()];
+        let sandbox = PolicySandbox::new(&policy, Some(&workspace));
+
+        let temp_file = std::env::temp_dir().join(format!(
+            "agnes-sandbox-temp-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        assert!(sandbox.check_read(&temp_file).is_ok());
+        assert!(sandbox.check_write(&temp_file).is_ok());
+
+        let _ = std::fs::remove_dir_all(workspace);
     }
 
     #[test]

@@ -588,6 +588,7 @@ def assemble_prompt(
         permission_mode = str(agent.get("permissionMode") or "auto")
         shell_roots = (tool_policy.get("shell") or {}).get("allowed_cwd") or []
         file_roots = (tool_policy.get("file") or {}).get("allowed_roots") or []
+        writable_roots = (tool_policy.get("sandbox") or {}).get("writable_roots") or []
         has_workspace_boundary = "$WORKSPACE" in shell_roots or "$WORKSPACE" in file_roots
         if permission_mode == "full_access":
             boundary_summary = (
@@ -595,10 +596,17 @@ def assemble_prompt(
                 "write boundary are expanded within the enabled tool capabilities."
             )
         elif has_workspace_boundary:
+            writable_summary = (
+                f" Additional writable roots are: {json.dumps(writable_roots)}."
+                if writable_roots
+                else ""
+            )
             boundary_summary = (
                 "`$WORKSPACE` is the current effective workspace. Relative file paths and shell "
-                "commands use it by default. Normal writes are limited to `$WORKSPACE`; additional "
-                "allowed or readable roots in the policy do not automatically grant write access."
+                "commands use it by default. Normal writes are limited to `$WORKSPACE`, configured "
+                "sandbox writable roots, and system temporary directories such as `$TMPDIR` or `/tmp`; "
+                "additional readable roots in the policy do not automatically grant write access."
+                f"{writable_summary}"
             )
         else:
             boundary_summary = (
