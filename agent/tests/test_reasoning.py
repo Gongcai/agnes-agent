@@ -52,6 +52,42 @@ def test_sidecar_cli_treats_keyboard_interrupt_as_clean_exit(monkeypatch, capsys
     assert captured.err == ""
 
 
+def test_sidecar_accepts_protocol_messages_larger_than_websocket_default(monkeypatch):
+    async def scenario():
+        token = "large-message-token"
+
+        async def handler(websocket):
+            hello = json.loads(
+                await asyncio.wait_for(websocket.recv(), timeout=2)
+            )
+            assert hello["type"] == "hello"
+            assert hello["payload"]["token"] == token
+
+            await websocket.send(
+                main_module.make(main_module.MsgType.READY).model_dump_json()
+            )
+            large_ping = main_module.make(
+                main_module.MsgType.PING,
+                payload={"padding": "x" * (1024 * 1024)},
+            ).model_dump_json()
+            assert len(large_ping.encode("utf-8")) > 1024 * 1024
+            await websocket.send(large_ping)
+
+            pong = json.loads(
+                await asyncio.wait_for(websocket.recv(), timeout=2)
+            )
+            assert pong["type"] == "pong"
+            await websocket.close()
+
+        async with main_module.websockets.serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            monkeypatch.setenv("AGENT_WS_URL", f"ws://127.0.0.1:{port}/agent")
+            monkeypatch.setenv("AGENT_PROTOCOL_TOKEN", token)
+            await asyncio.wait_for(main_module.main(), timeout=5)
+
+    asyncio.run(scenario())
+
+
 def test_tool_future_is_registered_before_request_is_sent(monkeypatch):
     pending_futures = {}
 

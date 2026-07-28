@@ -332,7 +332,10 @@ async def main() -> None:
     background_tasks: set[asyncio.Task] = set()
 
     try:
-        async with websockets.connect(ws_url) as ws:
+        # Rust sends complete prompt snapshots over this authenticated loopback
+        # channel. Valid histories can exceed websockets' 1 MiB default before
+        # Python gets a chance to apply the model context budget.
+        async with websockets.connect(ws_url, max_size=None) as ws:
             # Send HELLO handshake
             await ws.send(
                 make(MsgType.HELLO, payload={"token": token}).model_dump_json()
@@ -404,7 +407,7 @@ async def main() -> None:
                     print(f"[sidecar] 未知消息类型: {mtype}", flush=True)
                     
     except websockets.exceptions.ConnectionClosed as exc:
-        print(f"[sidecar] 与 Rust 的连接已断开 (code={exc.code})，退出", flush=True)
+        print(f"[sidecar] 与 Rust 的连接异常断开：{exc}，退出", flush=True)
         sys.exit(0)
     except Exception as e:
         print(f"[sidecar] 发生未预期错误: {e}", file=sys.stderr)

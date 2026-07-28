@@ -13,7 +13,7 @@ import websockets
 
 async def smoke_test(binary: Path) -> None:
     token = "frozen-sidecar-smoke-token"
-    hello_received = asyncio.get_running_loop().create_future()
+    protocol_verified = asyncio.get_running_loop().create_future()
 
     async def handler(websocket: websockets.ServerConnection) -> None:
         message = json.loads(await asyncio.wait_for(websocket.recv(), timeout=20))
@@ -34,7 +34,24 @@ async def smoke_test(binary: Path) -> None:
                 }
             )
         )
-        hello_received.set_result(None)
+        large_ping = json.dumps(
+            {
+                "protocol_version": 1,
+                "id": "large-ping",
+                "run_id": "",
+                "session_id": "",
+                "type": "ping",
+                "created_at": "",
+                "payload": {"padding": "x" * (1024 * 1024)},
+            }
+        )
+        if len(large_ping.encode("utf-8")) <= 1024 * 1024:
+            raise RuntimeError("Oversized protocol probe did not exceed 1 MiB")
+        await websocket.send(large_ping)
+        pong = json.loads(await asyncio.wait_for(websocket.recv(), timeout=20))
+        if pong.get("type") != "pong":
+            raise RuntimeError(f"Unexpected oversized-message response: {pong}")
+        protocol_verified.set_result(None)
         await websocket.wait_closed()
 
     async with websockets.serve(handler, "127.0.0.1", 0) as server:
@@ -50,7 +67,7 @@ async def smoke_test(binary: Path) -> None:
         )
         terminated_by_test = False
         try:
-            await asyncio.wait_for(hello_received, timeout=30)
+            await asyncio.wait_for(protocol_verified, timeout=30)
             await asyncio.sleep(0.25)
             if process.returncode is not None:
                 raise RuntimeError(f"Frozen sidecar exited early with {process.returncode}")
