@@ -829,6 +829,11 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
         "role": "assistant",
         "content": full_text
     }
+    if full_reasoning:
+        # DeepSeek thinking mode requires the original reasoning chain on every
+        # subsequent request in the same tool loop. Keep it as protocol metadata;
+        # the UI receives the separately tagged stream above.
+        assistant_msg["reasoning_content"] = full_reasoning
     if pending_tool_calls:
         assistant_msg["tool_calls"] = pending_tool_calls
         

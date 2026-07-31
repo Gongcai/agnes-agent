@@ -4,6 +4,7 @@ import os
 import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 import litellm
 
 
@@ -184,6 +185,74 @@ def build_thinking_kwargs(
     }
 
 
+def _uses_deepseek_thinking_history(
+    call_model: str,
+    llm_config: Optional[LlmConfig],
+) -> bool:
+    """Return whether assistant reasoning must be replayed in DeepSeek's wire format."""
+    if not llm_config or llm_config.thinking_mode == "off":
+        return False
+
+    provider = llm_config.provider.lower()
+    model_names = (call_model, llm_config.model, llm_config.litellm_model)
+    if provider == "deepseek" or any(
+        str(model_name).lower().startswith("deepseek/")
+        for model_name in model_names
+    ):
+        return True
+
+    if llm_config.api_base:
+        hostname = (urlparse(llm_config.api_base).hostname or "").lower()
+        if hostname == "deepseek.com" or hostname.endswith(".deepseek.com"):
+            return True
+    return False
+
+
+def _prepare_completion_messages(
+    messages: List[Dict[str, Any]],
+    call_model: str,
+    llm_config: Optional[LlmConfig],
+) -> List[Dict[str, Any]]:
+    """Normalize provider-specific assistant reasoning without mutating graph state."""
+    replay_reasoning = _uses_deepseek_thinking_history(call_model, llm_config)
+    prepared: List[Dict[str, Any]] = []
+
+    for message in messages:
+        if message.get("role") != "assistant":
+            prepared.append(message)
+            continue
+
+        normalized = dict(message)
+        provider_fields = normalized.get("provider_specific_fields")
+        stored_reasoning = (
+            provider_fields.get("reasoning_content")
+            if isinstance(provider_fields, dict)
+            else None
+        )
+        if isinstance(provider_fields, dict) and "reasoning_content" in provider_fields:
+            cleaned_provider_fields = dict(provider_fields)
+            cleaned_provider_fields.pop("reasoning_content", None)
+            if cleaned_provider_fields:
+                normalized["provider_specific_fields"] = cleaned_provider_fields
+            else:
+                normalized.pop("provider_specific_fields", None)
+        if replay_reasoning:
+            # DeepSeek rejects thinking-mode history if any assistant turn omits
+            # this field. A blank is appropriate only when no original chain exists
+            # (for example a legacy turn created while thinking was disabled).
+            normalized["reasoning_content"] = (
+                normalized.get("reasoning_content") or stored_reasoning or " "
+            )
+        else:
+            # reasoning_content is not part of the standard OpenAI message schema.
+            # Do not leak a prior DeepSeek turn into an unrelated provider request.
+            normalized.pop("reasoning_content", None)
+            normalized.pop("provider_specific_fields", None)
+        prepared.append(normalized)
+
+    return prepared
+
+
 def completion(
     model: str,
     messages: List[Dict[str, Any]],
@@ -218,9 +287,10 @@ def completion(
         "max_tokens",
         llm_config.max_tokens if llm_config else DEFAULT_MAX_OUTPUT_TOKENS,
     )
+    prepared_messages = _prepare_completion_messages(messages, call_model, llm_config)
     return litellm.completion(
         model=call_model,
-        messages=messages,
+        messages=prepared_messages,
         tools=tools,
         stream=stream,
         timeout=request_timeout,

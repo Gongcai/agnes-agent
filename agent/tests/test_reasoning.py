@@ -189,6 +189,75 @@ def test_completion_accepts_a_shorter_task_timeout(monkeypatch):
     assert captured["timeout"] == 15
 
 
+def test_completion_replays_deepseek_reasoning_and_fills_only_missing_turns(monkeypatch):
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr("app.models.litellm.completion", fake_completion)
+    completion(
+        "deepseek/deepseek-reasoner",
+        [
+            {"role": "user", "content": "First question"},
+            {
+                "role": "assistant",
+                "content": "First answer",
+                "reasoning_content": "Original reasoning",
+            },
+            {"role": "user", "content": "Second question"},
+            {
+                "role": "assistant",
+                "content": "Second answer",
+                "provider_specific_fields": {
+                    "reasoning_content": "Stored provider reasoning",
+                },
+            },
+            {"role": "user", "content": "Third question"},
+            {"role": "assistant", "content": "Legacy answer"},
+        ],
+        llm_config=LlmConfig(
+            provider="openai_compatible",
+            api_base="https://api.deepseek.com/v1",
+            model="deepseek-v4-flash",
+            litellm_model="openai/deepseek-v4-flash",
+            thinking_mode="high",
+        ),
+    )
+
+    assert captured["messages"][1]["reasoning_content"] == "Original reasoning"
+    assert captured["messages"][3]["reasoning_content"] == "Stored provider reasoning"
+    assert "provider_specific_fields" not in captured["messages"][3]
+    assert captured["messages"][5]["reasoning_content"] == " "
+
+
+def test_completion_does_not_send_deepseek_reasoning_to_other_providers(monkeypatch):
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr("app.models.litellm.completion", fake_completion)
+    completion(
+        "gpt-4o",
+        [{
+            "role": "assistant",
+            "content": "Prior answer",
+            "reasoning_content": "Prior DeepSeek reasoning",
+        }],
+        llm_config=LlmConfig(
+            provider="openai",
+            model="gpt-4o",
+            litellm_model="gpt-4o",
+            thinking_mode="high",
+        ),
+    )
+
+    assert "reasoning_content" not in captured["messages"][0]
+
+
 def test_session_title_generation_uses_quick_model_and_cleans_output(monkeypatch):
     captured = {}
 
@@ -640,7 +709,8 @@ def test_translate_messages():
     assert "How's the weather?" in translated[0]["content"]
     
     assert translated[1]["role"] == "assistant"
-    assert "<thought>" in translated[1]["content"]
+    assert translated[1]["reasoning_content"] == "Checking weather API..."
+    assert "<thought>" not in translated[1]["content"]
     assert len(translated[1]["tool_calls"]) == 1
     assert translated[1]["tool_calls"][0]["function"]["name"] == "git"
     
@@ -687,8 +757,70 @@ def test_translate_interleaved_tool_history_from_one_assistant_message():
         "assistant",
     ]
     assert translated[1]["tool_calls"][0]["id"] == "tc-1"
+    assert translated[1]["reasoning_content"] == "I should list the files."
     assert translated[2]["tool_call_id"] == "tc-1"
     assert translated[3]["content"] == "The repository contains a README."
+
+
+def test_tool_loop_replays_streamed_reasoning_content(monkeypatch):
+    calls = []
+    reasoning_chunk = SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                content=None,
+                reasoning_content="I should inspect the repository.",
+                reasoning=None,
+                tool_calls=None,
+            )
+        )]
+    )
+    tool_delta = SimpleNamespace(
+        index=0,
+        id="tc-reasoning",
+        function=SimpleNamespace(name="list_files", arguments='{"path":"."}'),
+    )
+    tool_chunk = SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                content=None,
+                reasoning_content=None,
+                reasoning=None,
+                tool_calls=[tool_delta],
+            )
+        )]
+    )
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return iter([reasoning_chunk, tool_chunk])
+        return iter([_text_chunk("README.md exists")])
+
+    monkeypatch.setattr(graph_module, "completion", fake_completion)
+    state = {
+        **_fallback_test_state(),
+        "fallback_configs": [],
+        "dynamic_tools": [],
+        "pending_tool_calls": [],
+        "finished": False,
+    }
+
+    async def execute_tool(*_args):
+        return "README.md"
+
+    async def run():
+        graph = graph_module.build_graph()
+        return await graph.ainvoke(
+            state,
+            config={"configurable": {"execute_tool_fn": execute_tool}},
+        )
+
+    result = asyncio.run(run())
+
+    replayed_assistant = calls[1]["messages"][-2]
+    assert replayed_assistant["reasoning_content"] == "I should inspect the repository."
+    assert replayed_assistant["tool_calls"][0]["id"] == "tc-reasoning"
+    assert result["messages"][1]["reasoning_content"] == "I should inspect the repository."
 
 
 def test_tool_exchange_is_one_context_budget_group():

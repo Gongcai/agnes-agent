@@ -333,25 +333,36 @@ def translate_messages(
     def finish_incomplete_exchange() -> None:
         """Downgrade an incomplete tool exchange instead of emitting invalid protocol history."""
         nonlocal pending_exchange, pending_results, outstanding_tool_ids
-        if pending_exchange and pending_exchange.get("content"):
-            translated.append({
+        if pending_exchange and (
+            pending_exchange.get("content") or pending_exchange.get("reasoning_content")
+        ):
+            message = {
                 "role": "assistant",
                 "content": pending_exchange["content"],
-            })
+            }
+            if pending_exchange.get("reasoning_content"):
+                message["reasoning_content"] = pending_exchange["reasoning_content"]
+            translated.append(message)
         pending_exchange = None
         pending_results = []
         outstanding_tool_ids = set()
 
-    def emit_assistant(content_parts: List[str], tool_calls: List[Dict[str, Any]]) -> None:
+    def emit_assistant(
+        content_parts: List[str],
+        reasoning_parts: List[str],
+        tool_calls: List[Dict[str, Any]],
+    ) -> None:
         """Emit plain assistant content or start a buffered tool exchange."""
         nonlocal pending_exchange, pending_results, outstanding_tool_ids
-        if not content_parts and not tool_calls:
+        if not content_parts and not reasoning_parts and not tool_calls:
             return
 
         message: Dict[str, Any] = {
             "role": "assistant",
             "content": "\n".join(content_parts),
         }
+        if reasoning_parts:
+            message["reasoning_content"] = "\n".join(reasoning_parts)
         if not tool_calls:
             finish_incomplete_exchange()
             translated.append(message)
@@ -370,13 +381,15 @@ def translate_messages(
         parts = msg.get("parts", [])
 
         content_parts: List[str] = []
+        reasoning_parts: List[str] = []
         user_images: List[Dict[str, Any]] = []
         tool_calls: List[Dict[str, Any]] = []
 
         def flush_assistant() -> None:
-            nonlocal content_parts, tool_calls
-            emit_assistant(content_parts, tool_calls)
+            nonlocal content_parts, reasoning_parts, tool_calls
+            emit_assistant(content_parts, reasoning_parts, tool_calls)
             content_parts = []
+            reasoning_parts = []
             tool_calls = []
 
         for part in parts:
@@ -429,8 +442,9 @@ def translate_messages(
                 elif attachment_kind == "skill":
                     content_parts.append(f"本轮启用 Skill：`{metadata.get('name') or '未命名 Skill'}`。")
             elif kind in ("thought", "reasoning"):
-                # Encapsulate assistant's internal thinking process
-                content_parts.append(f"<thought>\n{content}\n</thought>")
+                # Keep provider reasoning separate from user-visible assistant text.
+                # DeepSeek requires this exact field when replaying thinking turns.
+                reasoning_parts.append(content)
             elif kind == "tool_call":
                 tc_info = part.get("toolCall")
                 if tc_info and tc_info.get("id") and tc_info.get("tool"):
@@ -514,8 +528,11 @@ def group_protocol_messages(messages: List[Dict[str, Any]]) -> List[List[Dict[st
 
         if not outstanding:
             groups.append(group)
-        elif message.get("content"):
-            groups.append([{"role": "assistant", "content": message["content"]}])
+        elif message.get("content") or message.get("reasoning_content"):
+            downgraded = {"role": "assistant", "content": message["content"]}
+            if message.get("reasoning_content"):
+                downgraded["reasoning_content"] = message["reasoning_content"]
+            groups.append([downgraded])
 
     return groups
 
@@ -769,6 +786,7 @@ def assemble_prompt(
         for msg in group:
             msg_content = msg.get("content", "")
             group_tokens += count_message_content_tokens(msg_content, model_name)
+            group_tokens += count_tokens(msg.get("reasoning_content", ""), model_name)
             msg_str = ""
             if "tool_calls" in msg:
                 msg_str += json.dumps(msg["tool_calls"])
