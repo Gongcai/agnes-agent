@@ -15,6 +15,8 @@ use super::service::{StorageFileStreamMetadata, StorageService};
 const PROXY_PATH_PREFIX: &str = "/storage/media/";
 const SESSION_TTL: Duration = Duration::from_secs(2 * 60 * 60);
 const REQUEST_LIMIT: usize = 16 * 1024;
+const UPSTREAM_PART_BYTES: u64 = 10 * 1024 * 1024;
+const UPSTREAM_RETRIES: usize = 3;
 
 #[derive(Clone)]
 struct PlaybackSession {
@@ -178,29 +180,6 @@ async fn handle_connection(
     };
     let (status, content_length, content_range) =
         response_range_headers(&range, session.metadata.size);
-    let provider_stream = if method == "GET" {
-        match storage
-            .stream_file_for_proxy(
-                DownloadFileRequest {
-                    file_id: session.file_id.clone(),
-                    range_start: range.start(),
-                    range_end_inclusive: range.end(),
-                    expected_revision: session.expected_revision.clone(),
-                },
-                &session.account_id,
-            )
-            .await
-        {
-            Ok(stream) => Some(stream),
-            Err(error) => {
-                eprintln!("[storage][media-proxy] upstream stream failed: {error}");
-                write_error(&mut stream, 502, "Storage stream unavailable").await?;
-                return Ok(());
-            }
-        }
-    } else {
-        None
-    };
     let mut response_headers = vec![
         ("Accept-Ranges".to_owned(), "bytes".to_owned()),
         ("Access-Control-Allow-Origin".to_owned(), "*".to_owned()),
@@ -221,11 +200,10 @@ async fn handle_connection(
     if method == "HEAD" {
         return Ok(());
     }
-    forward_stream(
-        &mut stream,
-        provider_stream.expect("GET request must have a stream"),
-    )
-    .await
+    if let Err(error) = forward_provider_ranges(&mut stream, &storage, &session, range).await {
+        eprintln!("[storage][media-proxy] {error}");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,18 +340,122 @@ fn parse_request(request: &[u8]) -> Option<(String, String, HashMap<String, Stri
     Some((method, target, headers))
 }
 
+async fn forward_provider_ranges(
+    stream: &mut TcpStream,
+    storage: &StorageService,
+    session: &PlaybackSession,
+    range: RequestRange,
+) -> Result<(), String> {
+    let Some((mut start, end)) = stream_bounds(range, session.metadata.size) else {
+        let source = storage
+            .stream_file_for_proxy(
+                DownloadFileRequest {
+                    file_id: session.file_id.clone(),
+                    range_start: range.start(),
+                    range_end_inclusive: range.end(),
+                    expected_revision: session.expected_revision.clone(),
+                },
+                &session.account_id,
+            )
+            .await
+            .map_err(|error| format!("上游流获取失败: {error}"))?;
+        match forward_stream(stream, source).await {
+            Ok(_) => {}
+            Err(ForwardError::Client(error)) => return Err(error),
+            Err(ForwardError::Upstream { error, .. }) => {
+                return Err(format!("上游流传输失败: {error}"));
+            }
+        }
+        return Ok(());
+    };
+
+    while start <= end {
+        let part_end = start.saturating_add(UPSTREAM_PART_BYTES - 1).min(end);
+        let expected = part_end - start + 1;
+        let mut delivered = 0_u64;
+        let mut attempts = 0_usize;
+        while delivered < expected {
+            let request_start = start + delivered;
+            let source = storage
+                .stream_file_for_proxy(
+                    DownloadFileRequest {
+                        file_id: session.file_id.clone(),
+                        range_start: Some(request_start),
+                        range_end_inclusive: Some(part_end),
+                        expected_revision: session.expected_revision.clone(),
+                    },
+                    &session.account_id,
+                )
+                .await
+                .map_err(|error| format!("上游流获取失败: {error}"))?;
+            match forward_stream(stream, source).await {
+                Ok(bytes) => {
+                    delivered = delivered.saturating_add(bytes);
+                    if bytes == 0 {
+                        if attempts >= UPSTREAM_RETRIES {
+                            return Err("上游流提前结束".into());
+                        }
+                        attempts += 1;
+                        retry_upstream(attempts).await;
+                    }
+                }
+                Err(ForwardError::Client(error)) => return Err(error),
+                Err(ForwardError::Upstream { bytes, error }) => {
+                    delivered = delivered.saturating_add(bytes);
+                    if attempts >= UPSTREAM_RETRIES {
+                        return Err(format!("上游流传输失败: {error}"));
+                    }
+                    attempts += 1;
+                    retry_upstream(attempts).await;
+                }
+            }
+            if delivered > expected {
+                return Err("上游流超过请求的 Range 大小".into());
+            }
+        }
+        start = part_end.saturating_add(1);
+    }
+    Ok(())
+}
+
+fn stream_bounds(range: RequestRange, size: Option<u64>) -> Option<(u64, u64)> {
+    match range {
+        RequestRange::Full => size.and_then(|size| size.checked_sub(1).map(|end| (0, end))),
+        RequestRange::Partial { start, end } => end.map(|end| (start, end)),
+    }
+}
+
+async fn retry_upstream(attempt: usize) {
+    tokio::time::sleep(Duration::from_millis(150 * attempt as u64)).await;
+}
+
+enum ForwardError {
+    Upstream { bytes: u64, error: String },
+    Client(String),
+}
+
 async fn forward_stream(
     stream: &mut TcpStream,
     mut source: ProviderByteStream,
-) -> Result<(), String> {
+) -> Result<u64, ForwardError> {
+    let mut bytes = 0_u64;
     while let Some(chunk) = source.next().await {
-        let chunk = chunk.map_err(|error| error.to_string())?;
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                return Err(ForwardError::Upstream {
+                    bytes,
+                    error: error.to_string(),
+                });
+            }
+        };
+        bytes = bytes.saturating_add(chunk.len() as u64);
         stream
             .write_all(&chunk)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| ForwardError::Client(error.to_string()))?;
     }
-    Ok(())
+    Ok(bytes)
 }
 
 async fn write_response(
@@ -471,5 +553,24 @@ mod tests {
         assert!(parse_range(Some("bytes=100-"), Some(100)).is_err());
         assert!(parse_range(Some("bytes=10-1"), Some(100)).is_err());
         assert!(parse_range(Some("bytes=0-1,4-5"), Some(100)).is_err());
+    }
+
+    #[test]
+    fn turns_known_size_requests_into_small_upstream_ranges() {
+        assert_eq!(
+            stream_bounds(RequestRange::Full, Some(25 * 1024 * 1024)),
+            Some((0, 25 * 1024 * 1024 - 1))
+        );
+        assert_eq!(
+            stream_bounds(
+                RequestRange::Partial {
+                    start: 10,
+                    end: Some(99)
+                },
+                Some(100)
+            ),
+            Some((10, 99))
+        );
+        assert_eq!(stream_bounds(RequestRange::Full, None), None);
     }
 }
