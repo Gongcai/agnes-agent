@@ -1299,7 +1299,7 @@ export function DriveWorkspace() {
             ? <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
             : <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
           <span className="min-w-0 flex-1">{error ?? authorizationMessage ?? accountIssue}</span>
-          {mediaPlaybackFallbackItem && !authorizationMessage && !accountIssue && (
+          {mediaPlaybackFallbackItem && !authorizationMessage && (
             <button
               onClick={() => void playOriginalMediaFile(mediaPlaybackFallbackItem)}
               disabled={mediaPlaybackLoading || !selectedProvider?.capabilities.range_download}
