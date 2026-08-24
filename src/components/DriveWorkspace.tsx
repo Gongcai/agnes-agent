@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { downloadDir, join } from "@tauri-apps/api/path";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import * as QRCode from "qrcode";
+import Hls from "hls.js";
 import {
   AlertCircle,
   ArrowDown,
@@ -276,6 +277,34 @@ export function DriveWorkspace() {
   const [moveSubmitting, setMoveSubmitting] = useState(false);
   const [mediaPlayback, setMediaPlayback] = useState<MediaPlaybackState | null>(null);
   const [mediaPlaybackLoading, setMediaPlaybackLoading] = useState(false);
+  const mediaElement = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    const video = mediaElement.current;
+    const link = mediaPlayback?.link;
+    if (!video || !link) return;
+
+    if (link.protocol !== "hls" || video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = link.url;
+      return () => {
+        video.removeAttribute("src");
+        video.load();
+      };
+    }
+
+    if (!Hls.isSupported()) {
+      setError("当前播放器不支持 HLS 转码视频，播放失败");
+      return;
+    }
+
+    const hls = new Hls();
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (data.fatal) setError("HLS 转码视频播放失败");
+    });
+    hls.loadSource(link.url);
+    hls.attachMedia(video);
+    return () => hls.destroy();
+  }, [mediaPlayback]);
   const fileRequestId = useRef(0);
   const searchRequestId = useRef(0);
   const moveRequestId = useRef(0);
@@ -1650,7 +1679,7 @@ export function DriveWorkspace() {
                 {selectedProvider?.capabilities.media_playback && isPlayableVideo(fileContextMenu.item) && (
                   <button
                     onClick={() => void playMediaFile(fileContextMenu.item)}
-                    disabled={loading || mediaPlaybackLoading || !fileContextMenu.item.downloadable}
+                    disabled={loading || mediaPlaybackLoading}
                     className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
                   >
                     <Play className="h-3.5 w-3.5 text-emerald-700" />
@@ -1728,11 +1757,12 @@ export function DriveWorkspace() {
               </button>
             </div>
             <video
+              ref={mediaElement}
               className="max-h-[75vh] w-full bg-black"
               controls
               autoPlay
               playsInline
-              src={mediaPlayback.link.url}
+              preload="metadata"
               onError={() => setError("播放地址不可用，请稍后重试")}
             />
           </div>

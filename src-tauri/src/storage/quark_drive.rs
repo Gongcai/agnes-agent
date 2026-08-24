@@ -818,6 +818,7 @@ impl QuarkDriveSession {
             query,
             body,
             false,
+            true,
             QUARK_DESKTOP_USER_AGENT,
         )
         .await?;
@@ -1197,7 +1198,7 @@ async fn request_json_with_headers(
     body: Option<Value>,
 ) -> ProviderResult<JsonResponse> {
     request_json_with_headers_options(
-        client, cookie, method, API_BASE, path, query, body, true, USER_AGENT,
+        client, cookie, method, API_BASE, path, query, body, true, false, USER_AGENT,
     )
     .await
 }
@@ -1211,6 +1212,7 @@ async fn request_json_with_headers_options(
     query: Vec<(String, String)>,
     body: Option<Value>,
     include_runtime_params: bool,
+    playback_headers: bool,
     user_agent: &str,
 ) -> ProviderResult<JsonResponse> {
     validate_cookie(cookie)?;
@@ -1227,7 +1229,11 @@ async fn request_json_with_headers_options(
         ]);
     }
     params.extend(query);
-    let headers = base_headers_with_user_agent(cookie, user_agent)?;
+    let headers = if playback_headers {
+        playback_headers_with_user_agent(cookie, user_agent)?
+    } else {
+        base_headers_with_user_agent(cookie, user_agent)?
+    };
     let mut request = client.request(method, url).headers(headers).query(&params);
     if let Some(body) = body {
         request = request.json(&body);
@@ -1276,6 +1282,18 @@ fn base_headers(cookie: &str) -> ProviderResult<HeaderMap> {
 
 fn base_headers_with_user_agent(cookie: &str, user_agent: &str) -> ProviderResult<HeaderMap> {
     let mut headers = public_headers_with_user_agent(user_agent)?;
+    headers.insert("cookie", header_value(cookie)?);
+    Ok(headers)
+}
+
+fn playback_headers_with_user_agent(cookie: &str, user_agent: &str) -> ProviderResult<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "accept",
+        HeaderValue::from_static("application/json, text/plain, */*"),
+    );
+    headers.insert("referer", HeaderValue::from_static("https://pan.quark.cn"));
+    headers.insert("user-agent", header_value(user_agent)?);
     headers.insert("cookie", header_value(cookie)?);
     Ok(headers)
 }
@@ -1609,6 +1627,12 @@ fn parse_media_playback_link(response: &Value) -> ProviderResult<MediaPlaybackLi
             let resolution = value_string(entry, &["resolution"])
                 .or_else(|| value_string(video_info, &["resolution", "resoultion"]));
             let format = value_string(video_info, &["format", "hls_type"]);
+            let inferred_format = format.clone().or_else(|| {
+                Url::parse(&url)
+                    .ok()
+                    .and_then(|url| url.path_segments()?.last().map(str::to_ascii_lowercase))
+                    .filter(|path| path.ends_with(".m3u8") || path.ends_with(".mp4"))
+            });
             let is_default = default_resolution
                 .as_deref()
                 .zip(resolution.as_deref())
@@ -1618,8 +1642,8 @@ fn parse_media_playback_link(response: &Value) -> ProviderResult<MediaPlaybackLi
                 playback_resolution_rank(resolution.as_deref()),
                 MediaPlaybackLink {
                     url,
-                    media_type: format.as_deref().and_then(playback_media_type),
-                    protocol: playback_protocol(format.as_deref()),
+                    media_type: inferred_format.as_deref().and_then(playback_media_type),
+                    protocol: playback_protocol(inferred_format.as_deref()),
                     resolution,
                 },
             ))
@@ -2189,6 +2213,23 @@ mod tests {
         assert_eq!(
             parse_media_playback_link(&response).unwrap_err().category,
             ProviderErrorCategory::RemoteUnavailable
+        );
+    }
+
+    #[test]
+    fn playback_parser_infers_protocol_when_format_is_missing() {
+        let link = parse_media_playback_link(&json!({
+            "data": {
+                "video_list": [
+                    {"resolution": "normal", "video_info": {"url": "https://cdn.example/video.m3u8?token=redacted"}}
+                ]
+            }
+        }))
+        .unwrap();
+        assert_eq!(link.protocol, "hls");
+        assert_eq!(
+            link.media_type.as_deref(),
+            Some("application/vnd.apple.mpegurl")
         );
     }
 
