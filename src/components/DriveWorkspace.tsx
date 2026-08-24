@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { downloadDir, join } from "@tauri-apps/api/path";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import * as QRCode from "qrcode";
+import Artplayer from "artplayer";
 import Hls from "hls.js";
 import {
   AlertCircle,
@@ -294,37 +295,81 @@ export function DriveWorkspace() {
   const [mediaPlayback, setMediaPlayback] = useState<MediaPlaybackState | null>(null);
   const [mediaPlaybackLoading, setMediaPlaybackLoading] = useState(false);
   const [mediaPlaybackFallbackItem, setMediaPlaybackFallbackItem] = useState<RemoteFileItem | null>(null);
-  const mediaElement = useRef<HTMLVideoElement | null>(null);
+  const mediaContainer = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const video = mediaElement.current;
+    const container = mediaContainer.current;
     const link = mediaPlayback?.link;
-    if (!video || !link) return;
+    if (!container || !link || !mediaPlayback) return;
 
-    if (link.protocol !== "hls" || video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = link.url;
-      return () => {
-        video.removeAttribute("src");
-        video.load();
-      };
-    }
+    let hls: Hls | null = null;
+    let player: Artplayer;
+    const reportPlaybackError = (error?: Error) => {
+      const video = player.video;
+      const mediaError = video.error;
+      const diagnostics = `code=${mediaError?.code ?? "none"}, message=${mediaError?.message || error?.message || "none"}, networkState=${video.networkState}, readyState=${video.readyState}, capabilities=[${mediaCapabilitySummary(video)}]`;
+      console.error("[storage][media-playback] media error", {
+        diagnostics,
+        protocol: link.protocol,
+        mediaType: link.media_type,
+        fileName: mediaPlayback.item.name,
+      });
+      const reason = mediaError
+        ? {
+            1: "播放请求已中止",
+            2: "媒体网络请求失败，代理连接可能已中断",
+            3: "媒体解码失败，当前 WebView 可能不支持此视频容器或编码",
+            4: "当前 WebView 不支持此媒体格式或播放地址",
+          }[mediaError.code] ?? `媒体播放失败（错误码 ${mediaError.code}）`
+        : "媒体播放失败，未返回具体错误信息";
+      setMediaPlaybackFallbackItem(link.protocol === "range" ? null : mediaPlayback.item);
+      setError(link.protocol === "range" ? `原文件播放失败：${reason}（${diagnostics}）` : reason);
+    };
 
-    if (!Hls.isSupported()) {
-      setMediaPlaybackFallbackItem(mediaPlayback.item);
-      setError("当前播放器不支持 HLS 转码视频，播放失败");
-      return;
-    }
-
-    const hls = new Hls();
-    hls.on(Hls.Events.ERROR, (_event, data) => {
-      if (data.fatal) {
-        setMediaPlaybackFallbackItem(mediaPlayback.item);
-        setError("HLS 转码视频播放失败");
-      }
+    player = new Artplayer({
+      container,
+      url: link.url,
+      type: link.protocol === "hls" ? "m3u8" : undefined,
+      autoplay: true,
+      playsInline: true,
+      fullscreen: true,
+      fullscreenWeb: true,
+      pip: true,
+      playbackRate: true,
+      setting: true,
+      mutex: true,
+      moreVideoAttr: {
+        preload: "metadata",
+      },
+      customType: link.protocol === "hls"
+        ? {
+            m3u8(video, url, art) {
+              if (video.canPlayType("application/vnd.apple.mpegurl")) {
+                video.src = url;
+                return;
+              }
+              if (!Hls.isSupported()) {
+                setMediaPlaybackFallbackItem(mediaPlayback.item);
+                setError("当前播放器不支持 HLS 转码视频，播放失败");
+                return;
+              }
+              hls = new Hls();
+              hls.on(Hls.Events.ERROR, (_event, data) => {
+                if (data.fatal) reportPlaybackError(data.error);
+              });
+              art.hls = hls;
+              hls.loadSource(url);
+              hls.attachMedia(video);
+            },
+          }
+        : undefined,
     });
-    hls.loadSource(link.url);
-    hls.attachMedia(video);
-    return () => hls.destroy();
+    player.on("video:error", reportPlaybackError);
+
+    return () => {
+      hls?.destroy();
+      player.destroy();
+    };
   }, [mediaPlayback]);
   const fileRequestId = useRef(0);
   const searchRequestId = useRef(0);
@@ -1807,42 +1852,9 @@ export function DriveWorkspace() {
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <video
-              ref={mediaElement}
-              className="max-h-[75vh] w-full bg-black"
-              controls
-              autoPlay
-              playsInline
-              preload="metadata"
-              onError={() => {
-                const video = mediaElement.current;
-                const mediaError = video?.error;
-                const diagnostics = video
-                  ? `code=${mediaError?.code ?? "none"}, message=${mediaError?.message || "none"}, networkState=${video.networkState}, readyState=${video.readyState}, capabilities=[${mediaCapabilitySummary(video)}]`
-                  : "video element unavailable";
-                console.error("[storage][media-playback] media error", {
-                  diagnostics,
-                  protocol: mediaPlayback.link.protocol,
-                  mediaType: mediaPlayback.link.media_type,
-                  fileName: mediaPlayback.item.name,
-                });
-                const reason = mediaError
-                  ? {
-                      1: "播放请求已中止",
-                      2: "媒体网络请求失败，代理连接可能已中断",
-                      3: "媒体解码失败，当前 WebView 可能不支持此视频容器或编码",
-                      4: "当前 WebView 不支持此媒体格式或播放地址",
-                    }[mediaError.code] ?? `媒体播放失败（错误码 ${mediaError.code}）`
-                  : "媒体播放失败，未返回具体错误信息";
-                setMediaPlaybackFallbackItem(
-                  mediaPlayback.link.protocol === "range" ? null : mediaPlayback.item,
-                );
-                setError(
-                  mediaPlayback.link.protocol === "range"
-                    ? `原文件播放失败：${reason}（${diagnostics}）`
-                    : reason,
-                );
-              }}
+            <div
+              ref={mediaContainer}
+              className="aspect-video max-h-[75vh] min-h-[260px] w-full bg-black"
             />
           </div>
         </div>
