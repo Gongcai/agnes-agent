@@ -191,7 +191,8 @@ async fn handle_connection(
         response_range_headers(&range, session.metadata.size);
     let response_content_type = content_type(&session.metadata).to_owned();
     eprintln!(
-        "[storage][media-proxy] response status={status} type={response_content_type} size={} length={}",
+        "[storage][media-proxy] response status={status} name={} type={response_content_type} size={} length={}",
+        session.metadata.name,
         session
             .metadata
             .size
@@ -341,12 +342,25 @@ fn content_type(metadata: &StorageFileStreamMetadata) -> &str {
     {
         return media_type;
     }
-    if metadata.name.ends_with(".mpv") {
-        return "video/mp4";
+    file_extension_media_type(&metadata.name).unwrap_or_else(|| {
+        mime_guess::from_path(&metadata.name)
+            .first_raw()
+            .unwrap_or("application/octet-stream")
+    })
+}
+
+fn file_extension_media_type(name: &str) -> Option<&'static str> {
+    let extension = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    match extension.as_str() {
+        "mp4" | "m4v" | "mov" | "mpv" => Some("video/mp4"),
+        "mkv" => Some("video/x-matroska"),
+        "webm" => Some("video/webm"),
+        "avi" => Some("video/x-msvideo"),
+        "mpeg" | "mpg" => Some("video/mpeg"),
+        "mp3" => Some("audio/mpeg"),
+        "m4a" => Some("audio/mp4"),
+        _ => None,
     }
-    mime_guess::from_path(&metadata.name)
-        .first_raw()
-        .unwrap_or("application/octet-stream")
 }
 
 fn is_video_or_audio_mime_type(value: &str) -> bool {

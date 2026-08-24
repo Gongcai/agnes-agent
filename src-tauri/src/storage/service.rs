@@ -640,8 +640,12 @@ impl StorageService {
         // the provider's download endpoint are authoritative for this user-triggered stream.
         Ok(StorageFileStreamMetadata {
             name: file.name,
-            media_type: file.media_type,
-            size: file.size,
+            media_type: file.media_type.filter(|value| {
+                !value.trim().is_empty() && !value.eq_ignore_ascii_case("application/octet-stream")
+            }),
+            // Quark sometimes reports a non-empty video detail as size=0. Treat that value as
+            // unknown so the media proxy can serve the browser's first Range request.
+            size: file.size.filter(|size| *size > 0),
             revision: file.revision,
         })
     }
