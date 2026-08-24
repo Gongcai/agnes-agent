@@ -549,13 +549,11 @@ export function DriveWorkspace() {
         );
         if (cancelled) return;
         if (result.status === "completed" && result.account_id) {
-          setQuarkAuthorizationStatus("登录成功，正在加载账户");
+          setQuarkAuthorizationStatus("登录成功");
           setQuarkAuthorizationChallengeId(null);
-          await loadShell();
-          if (!cancelled) {
-            setSelectedAccountId(result.account_id);
-            closeQuarkAuthorization();
-          }
+          setSelectedAccountId(result.account_id);
+          closeQuarkAuthorization();
+          void loadShell();
           return;
         }
         setQuarkAuthorizationStatus(
