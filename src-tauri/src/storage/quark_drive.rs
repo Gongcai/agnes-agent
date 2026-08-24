@@ -33,6 +33,7 @@ const API_BASE: &str = "https://drive-pc.quark.cn/1/clouddrive";
 const CAPACITY_PATH: &str = "capacity/growth/info";
 const OSS_BUCKET: &str = "ul-zb";
 const DEFAULT_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
+const PUUS_REFRESH_INTERVAL: Duration = Duration::from_secs(100 * 60);
 const USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36";
 
@@ -298,6 +299,8 @@ impl ProviderFactory for QuarkDriveFactory {
             client: self.client.clone(),
             credentials,
             uploads: Mutex::new(HashMap::new()),
+            cookie_update_lock: Mutex::new(()),
+            cookie_refresh_lock: Mutex::new(Instant::now() - PUUS_REFRESH_INTERVAL),
         });
         sessions.insert(account.id.clone(), Arc::downgrade(&session));
         Ok(session)
@@ -308,6 +311,8 @@ struct QuarkDriveSession {
     client: reqwest::Client,
     credentials: Arc<dyn ProviderCredentialAccess>,
     uploads: Mutex<HashMap<String, QuarkUploadState>>,
+    cookie_update_lock: Mutex<()>,
+    cookie_refresh_lock: Mutex<Instant>,
 }
 
 #[derive(Clone)]
@@ -766,6 +771,7 @@ impl QuarkDriveSession {
         query: Vec<(String, String)>,
         body: Option<Value>,
     ) -> ProviderResult<Value> {
+        self.refresh_cookie_if_due().await;
         let cookie = self.cookie().await?;
         self.api_with_cookie(&cookie, method, path, query, body)
             .await
@@ -779,7 +785,58 @@ impl QuarkDriveSession {
         query: Vec<(String, String)>,
         body: Option<Value>,
     ) -> ProviderResult<Value> {
-        request_json(&self.client, cookie, method, path, query, body).await
+        let response =
+            request_json_with_headers(&self.client, cookie, method, path, query, body).await?;
+        self.merge_response_cookies(&response.headers).await;
+        Ok(response.value)
+    }
+
+    async fn merge_response_cookies(&self, headers: &HeaderMap) {
+        let Some(updated) = cookie_string_from_headers(headers) else {
+            return;
+        };
+        let _guard = self.cookie_update_lock.lock().await;
+        let Ok(Some(current)) = self.credentials.load().await else {
+            return;
+        };
+        let Ok(merged) = merge_cookie_strings(current.as_str(), &updated) else {
+            return;
+        };
+        let _ = self.credentials.store(Zeroizing::new(merged)).await;
+    }
+
+    async fn refresh_cookie_if_due(&self) {
+        let should_refresh = {
+            let mut last_refresh = self.cookie_refresh_lock.lock().await;
+            if last_refresh.elapsed() < PUUS_REFRESH_INTERVAL {
+                false
+            } else {
+                *last_refresh = Instant::now();
+                true
+            }
+        };
+        if !should_refresh {
+            return;
+        }
+        let Ok(cookie) = self.cookie().await else {
+            return;
+        };
+        let stripped = cookie_without(cookie.as_str(), "__puus");
+        if stripped == cookie.as_str() {
+            return;
+        }
+        if let Ok(response) = request_json_with_headers(
+            &self.client,
+            &stripped,
+            Method::GET,
+            "config",
+            Vec::new(),
+            None,
+        )
+        .await
+        {
+            self.merge_response_cookies(&response.headers).await;
+        }
     }
 
     async fn upload_part(
@@ -1077,6 +1134,11 @@ fn sha1_block(state: &mut [u32; 5], block: &[u8]) {
     state[4] = state[4].wrapping_add(e);
 }
 
+struct JsonResponse {
+    value: Value,
+    headers: HeaderMap,
+}
+
 async fn request_json(
     client: &reqwest::Client,
     cookie: &str,
@@ -1085,6 +1147,21 @@ async fn request_json(
     query: Vec<(String, String)>,
     body: Option<Value>,
 ) -> ProviderResult<Value> {
+    Ok(
+        request_json_with_headers(client, cookie, method, path, query, body)
+            .await?
+            .value,
+    )
+}
+
+async fn request_json_with_headers(
+    client: &reqwest::Client,
+    cookie: &str,
+    method: Method,
+    path: &str,
+    query: Vec<(String, String)>,
+    body: Option<Value>,
+) -> ProviderResult<JsonResponse> {
     validate_cookie(cookie)?;
     let url = format!("{API_BASE}/{path}");
     let mut params = vec![
@@ -1102,6 +1179,7 @@ async fn request_json(
     }
     let response = request.send().await.map_err(network_error)?;
     let status = response.status();
+    let response_headers = response.headers().clone();
     let text = response.text().await.map_err(network_error)?;
     let value: Value = serde_json::from_str(&text).map_err(|_| {
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
@@ -1131,7 +1209,10 @@ async fn request_json(
     if !ok || !code_ok {
         return Err(api_value_error(&value));
     }
-    Ok(value)
+    Ok(JsonResponse {
+        value,
+        headers: response_headers,
+    })
 }
 
 fn base_headers(cookie: &str) -> ProviderResult<HeaderMap> {
@@ -1345,6 +1426,30 @@ fn cookie_string_from_headers(headers: &HeaderMap) -> Option<String> {
             .collect::<Vec<_>>()
             .join("; ")
     })
+}
+
+fn merge_cookie_strings(existing: &str, updated: &str) -> ProviderResult<String> {
+    let mut pairs = Vec::new();
+    collect_raw_cookie_pairs(existing, &mut pairs);
+    collect_raw_cookie_pairs(updated, &mut pairs);
+    if pairs.is_empty() {
+        return Err(invalid_response("夸克网盘响应没有有效 Cookie"));
+    }
+    Ok(pairs
+        .into_iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; "))
+}
+
+fn cookie_without(cookie: &str, excluded_name: &str) -> String {
+    cookie
+        .split(';')
+        .filter_map(|pair| pair.trim().split_once('='))
+        .filter(|(name, value)| name.trim() != excluded_name && !value.trim().is_empty())
+        .map(|(name, value)| format!("{}={}", name.trim(), value.trim()))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn remote_file_item(value: &Value, parent_id: Option<&str>) -> ProviderResult<RemoteFileItem> {
@@ -1840,6 +1945,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(quarkpan_export, "__uid=u; __kps=k");
+    }
+
+    #[test]
+    fn response_cookies_merge_without_dropping_existing_values() {
+        let merged = merge_cookie_strings(
+            "__uid=u; __kps=k; __puus=old; theme=dark",
+            "__puus=new; __pus=play",
+        )
+        .unwrap();
+        assert_eq!(
+            merged,
+            "__uid=u; __kps=k; __puus=new; theme=dark; __pus=play"
+        );
+        assert_eq!(
+            cookie_without(&merged, "__puus"),
+            "__uid=u; __kps=k; theme=dark; __pus=play"
+        );
     }
 
     #[test]

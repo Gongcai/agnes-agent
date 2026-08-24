@@ -59,22 +59,39 @@ struct QuarkCredentialBundle {
 }
 
 #[derive(Clone)]
-struct StaticCredentialAccess {
-    credential: Zeroizing<String>,
+struct BundledLegacyCredentialAccess {
+    parent: Arc<dyn ProviderCredentialAccess>,
 }
 
 #[async_trait]
-impl ProviderCredentialAccess for StaticCredentialAccess {
+impl ProviderCredentialAccess for BundledLegacyCredentialAccess {
     async fn load(&self) -> ProviderResult<Option<Zeroizing<String>>> {
-        Ok(Some(self.credential.clone()))
+        let stored = self.parent.load().await?;
+        let Some(stored) = stored else {
+            return Ok(None);
+        };
+        if let Some(bundle) = parse_credential_bundle(stored.as_str()) {
+            return Ok(bundle.legacy_cookie.map(Zeroizing::new));
+        }
+        Ok(Some(stored))
     }
 
-    async fn store(&self, _credential: Zeroizing<String>) -> ProviderResult<()> {
-        Err(ProviderError::unsupported("静态夸克凭证"))
+    async fn store(&self, credential: Zeroizing<String>) -> ProviderResult<()> {
+        let stored = self.parent.load().await?;
+        let Some(stored) = stored else {
+            return self.parent.store(credential).await;
+        };
+        if let Some(mut bundle) = parse_credential_bundle(stored.as_str()) {
+            bundle.legacy_cookie = Some(credential.to_string());
+            let encoded = serde_json::to_string(&bundle)
+                .map_err(|_| invalid_response("夸克多凭证编码失败"))?;
+            return self.parent.store(Zeroizing::new(encoded)).await;
+        }
+        self.parent.store(credential).await
     }
 
     async fn delete(&self) -> ProviderResult<()> {
-        Err(ProviderError::unsupported("静态夸克凭证"))
+        self.parent.delete().await
     }
 }
 
@@ -343,13 +360,13 @@ impl ProviderFactory for QuarkDriveFactory {
                 legacy_cookie,
             } = bundle;
             if let Some(official) = official {
-                let legacy_session = if let Some(cookie) = legacy_cookie {
+                let legacy_session = if legacy_cookie.is_some() {
                     Some(
                         self.legacy_factory
                             .connect(
                                 account,
-                                Arc::new(StaticCredentialAccess {
-                                    credential: Zeroizing::new(cookie),
+                                Arc::new(BundledLegacyCredentialAccess {
+                                    parent: credentials.clone(),
                                 }),
                             )
                             .await?,
@@ -361,13 +378,13 @@ impl ProviderFactory for QuarkDriveFactory {
                     .connect_official(account, credentials, official, legacy_session)
                     .await;
             }
-            if let Some(cookie) = legacy_cookie {
+            if legacy_cookie.is_some() {
                 return self
                     .legacy_factory
                     .connect(
                         account,
-                        Arc::new(StaticCredentialAccess {
-                            credential: Zeroizing::new(cookie),
+                        Arc::new(BundledLegacyCredentialAccess {
+                            parent: credentials.clone(),
                         }),
                     )
                     .await;
