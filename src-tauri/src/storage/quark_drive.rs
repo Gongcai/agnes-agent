@@ -495,8 +495,46 @@ impl MediaPlaybackProvider for QuarkDriveSession {
                     "supports": "fmp4_av,m3u8,dolby_vision"
                 })),
             )
+            .await;
+        match response {
+            Ok(response) => parse_media_playback_link(&response),
+            Err(error) if should_fallback_to_download(&error) => {
+                self.get_download_playback_link(&request.file_id).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl QuarkDriveSession {
+    async fn get_download_playback_link(&self, file_id: &str) -> ProviderResult<MediaPlaybackLink> {
+        let response = self
+            .api(
+                Method::POST,
+                "file/download",
+                vec![
+                    ("sys".into(), "win32".into()),
+                    ("ve".into(), "2.5.56".into()),
+                    ("ut".into(), String::new()),
+                    ("guid".into(), String::new()),
+                ],
+                Some(json!({"fids": [file_id]})),
+            )
             .await?;
-        parse_media_playback_link(&response)
+        let url = response
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("download_url"))
+            .and_then(Value::as_str)
+            .filter(|value| is_https_url(value))
+            .ok_or_else(|| invalid_response("夸克网盘未返回有效下载播放链接"))?;
+        Ok(MediaPlaybackLink {
+            url: url.into(),
+            media_type: Some("video/mp4".into()),
+            protocol: "progressive".into(),
+            resolution: None,
+        })
     }
 }
 
@@ -1571,6 +1609,10 @@ fn parse_media_playback_link(response: &Value) -> ProviderResult<MediaPlaybackLi
         })
 }
 
+fn should_fallback_to_download(error: &ProviderError) -> bool {
+    error.message.to_ascii_lowercase().contains("plf_invalid")
+}
+
 fn is_https_url(value: &str) -> bool {
     Url::parse(value).is_ok_and(|url| {
         url.scheme() == "https" && url.username().is_empty() && url.password().is_none()
@@ -2119,6 +2161,18 @@ mod tests {
             parse_media_playback_link(&response).unwrap_err().category,
             ProviderErrorCategory::RemoteUnavailable
         );
+    }
+
+    #[test]
+    fn transcoding_invalid_errors_fall_back_to_download_only() {
+        assert!(should_fallback_to_download(&ProviderError::new(
+            ProviderErrorCategory::RemoteUnavailable,
+            "data invalid: [plf_invalid]"
+        )));
+        assert!(!should_fallback_to_download(&ProviderError::new(
+            ProviderErrorCategory::Authentication,
+            "cookie expired"
+        )));
     }
 
     #[test]
