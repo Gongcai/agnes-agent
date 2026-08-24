@@ -305,9 +305,11 @@ fn response_range_headers(
 }
 
 fn content_type(metadata: &StorageFileStreamMetadata) -> &str {
-    if let Some(media_type) = metadata.media_type.as_deref().filter(|value| {
-        !value.is_empty() && !value.eq_ignore_ascii_case("application/octet-stream")
-    }) {
+    if let Some(media_type) = metadata
+        .media_type
+        .as_deref()
+        .filter(|value| is_video_or_audio_mime_type(value))
+    {
         return media_type;
     }
     if metadata.name.ends_with(".mpv") {
@@ -316,6 +318,12 @@ fn content_type(metadata: &StorageFileStreamMetadata) -> &str {
     mime_guess::from_path(&metadata.name)
         .first_raw()
         .unwrap_or("application/octet-stream")
+}
+
+fn is_video_or_audio_mime_type(value: &str) -> bool {
+    let media_type = value.split(';').next().map(str::trim).unwrap_or_default();
+    (media_type.starts_with("video/") || media_type.starts_with("audio/"))
+        && media_type.contains('/')
 }
 
 fn content_disposition(name: &str) -> String {
@@ -658,5 +666,32 @@ mod tests {
         assert!(is_client_disconnect("断开的管道 (os error 32)"));
         assert!(is_client_disconnect("connection reset by peer"));
         assert!(!is_client_disconnect("上游流提前结束"));
+    }
+
+    #[test]
+    fn derives_media_type_when_provider_returns_a_format_name() {
+        let mp4 = StorageFileStreamMetadata {
+            name: "movie.mp4".into(),
+            media_type: Some("mp4".into()),
+            size: Some(1),
+            revision: None,
+        };
+        assert_eq!(content_type(&mp4), "video/mp4");
+
+        let mpv = StorageFileStreamMetadata {
+            name: "movie.mpv".into(),
+            media_type: Some("mpv".into()),
+            size: Some(1),
+            revision: None,
+        };
+        assert_eq!(content_type(&mpv), "video/mp4");
+    }
+
+    #[test]
+    fn accepts_only_real_video_or_audio_mime_types() {
+        assert!(is_video_or_audio_mime_type("video/mp4"));
+        assert!(is_video_or_audio_mime_type("audio/mp4; codecs=mp4a.40.2"));
+        assert!(!is_video_or_audio_mime_type("mp4"));
+        assert!(!is_video_or_audio_mime_type("application/octet-stream"));
     }
 }
