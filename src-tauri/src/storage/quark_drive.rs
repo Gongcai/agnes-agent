@@ -857,16 +857,17 @@ impl QuarkDriveSession {
             return;
         };
         let stripped = cookie_without(cookie.as_str(), "__puus");
-        if stripped == cookie.as_str() {
-            return;
-        }
-        if let Ok(response) = request_json_with_headers(
+        if let Ok(response) = request_json_with_headers_options(
             &self.client,
             &stripped,
             Method::GET,
+            PLAYBACK_API_BASE,
             "config",
             Vec::new(),
             None,
+            false,
+            true,
+            QUARK_DESKTOP_USER_AGENT,
         )
         .await
         {
