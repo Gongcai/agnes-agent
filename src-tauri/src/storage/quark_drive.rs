@@ -30,12 +30,15 @@ use super::ports::{
 
 const PROVIDER_ID: &str = "quark_drive";
 const API_BASE: &str = "https://drive-pc.quark.cn/1/clouddrive";
+const PLAYBACK_API_BASE: &str = "https://drive.quark.cn/1/clouddrive";
 const CAPACITY_PATH: &str = "capacity/growth/info";
 const OSS_BUCKET: &str = "ul-zb";
 const DEFAULT_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 const PUUS_REFRESH_INTERVAL: Duration = Duration::from_secs(100 * 60);
 const USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36";
+const QUARK_DESKTOP_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch";
 
 pub struct QuarkDriveFactory {
     client: reqwest::Client,
@@ -485,7 +488,7 @@ impl MediaPlaybackProvider for QuarkDriveSession {
     ) -> ProviderResult<MediaPlaybackLink> {
         validate_id(&request.file_id, "文件 ID")?;
         let response = self
-            .api(
+            .api_with_playback_options(
                 Method::POST,
                 "file/v2/play/project",
                 Vec::new(),
@@ -495,46 +498,18 @@ impl MediaPlaybackProvider for QuarkDriveSession {
                     "supports": "fmp4_av,m3u8,dolby_vision"
                 })),
             )
-            .await;
-        match response {
-            Ok(response) => parse_media_playback_link(&response),
-            Err(error) if should_fallback_to_download(&error) => {
-                self.get_download_playback_link(&request.file_id).await
-            }
-            Err(error) => Err(error),
-        }
-    }
-}
-
-impl QuarkDriveSession {
-    async fn get_download_playback_link(&self, file_id: &str) -> ProviderResult<MediaPlaybackLink> {
-        let response = self
-            .api(
-                Method::POST,
-                "file/download",
-                vec![
-                    ("sys".into(), "win32".into()),
-                    ("ve".into(), "2.5.56".into()),
-                    ("ut".into(), String::new()),
-                    ("guid".into(), String::new()),
-                ],
-                Some(json!({"fids": [file_id]})),
-            )
-            .await?;
-        let url = response
-            .get("data")
-            .and_then(Value::as_array)
-            .and_then(|items| items.first())
-            .and_then(|item| item.get("download_url"))
-            .and_then(Value::as_str)
-            .filter(|value| is_https_url(value))
-            .ok_or_else(|| invalid_response("夸克网盘未返回有效下载播放链接"))?;
-        Ok(MediaPlaybackLink {
-            url: url.into(),
-            media_type: Some("video/mp4".into()),
-            protocol: "progressive".into(),
-            resolution: None,
-        })
+            .await
+            .map_err(|error| {
+                if is_transcoding_unavailable(&error) {
+                    ProviderError::new(
+                        ProviderErrorCategory::RemoteUnavailable,
+                        "夸克网盘没有可用的转码播放地址，播放失败",
+                    )
+                } else {
+                    error
+                }
+            })?;
+        parse_media_playback_link(&response)
     }
 }
 
@@ -821,6 +796,31 @@ impl QuarkDriveSession {
     ) -> ProviderResult<Value> {
         let response =
             request_json_with_headers(&self.client, cookie, method, path, query, body).await?;
+        self.merge_response_cookies(&response.headers).await;
+        Ok(response.value)
+    }
+
+    async fn api_with_playback_options(
+        &self,
+        method: Method,
+        path: &str,
+        query: Vec<(String, String)>,
+        body: Option<Value>,
+    ) -> ProviderResult<Value> {
+        self.refresh_cookie_if_due().await;
+        let cookie = self.cookie().await?;
+        let response = request_json_with_headers_options(
+            &self.client,
+            &cookie,
+            method,
+            PLAYBACK_API_BASE,
+            path,
+            query,
+            body,
+            false,
+            QUARK_DESKTOP_USER_AGENT,
+        )
+        .await?;
         self.merge_response_cookies(&response.headers).await;
         Ok(response.value)
     }
@@ -1196,17 +1196,38 @@ async fn request_json_with_headers(
     query: Vec<(String, String)>,
     body: Option<Value>,
 ) -> ProviderResult<JsonResponse> {
+    request_json_with_headers_options(
+        client, cookie, method, API_BASE, path, query, body, true, USER_AGENT,
+    )
+    .await
+}
+
+async fn request_json_with_headers_options(
+    client: &reqwest::Client,
+    cookie: &str,
+    method: Method,
+    base_url: &str,
+    path: &str,
+    query: Vec<(String, String)>,
+    body: Option<Value>,
+    include_runtime_params: bool,
+    user_agent: &str,
+) -> ProviderResult<JsonResponse> {
     validate_cookie(cookie)?;
-    let url = format!("{API_BASE}/{path}");
+    let url = format!("{base_url}/{path}");
     let mut params = vec![
         ("pr".to_string(), "ucpro".to_string()),
         ("fr".to_string(), "pc".to_string()),
-        ("uc_param_str".to_string(), String::new()),
-        ("__t".to_string(), now_millis().to_string()),
-        ("__dt".to_string(), "1000".to_string()),
     ];
+    if include_runtime_params {
+        params.extend([
+            ("uc_param_str".to_string(), String::new()),
+            ("__t".to_string(), now_millis().to_string()),
+            ("__dt".to_string(), "1000".to_string()),
+        ]);
+    }
     params.extend(query);
-    let headers = base_headers(cookie)?;
+    let headers = base_headers_with_user_agent(cookie, user_agent)?;
     let mut request = client.request(method, url).headers(headers).query(&params);
     if let Some(body) = body {
         request = request.json(&body);
@@ -1250,12 +1271,20 @@ async fn request_json_with_headers(
 }
 
 fn base_headers(cookie: &str) -> ProviderResult<HeaderMap> {
-    let mut headers = public_headers()?;
+    base_headers_with_user_agent(cookie, USER_AGENT)
+}
+
+fn base_headers_with_user_agent(cookie: &str, user_agent: &str) -> ProviderResult<HeaderMap> {
+    let mut headers = public_headers_with_user_agent(user_agent)?;
     headers.insert("cookie", header_value(cookie)?);
     Ok(headers)
 }
 
 fn public_headers() -> ProviderResult<HeaderMap> {
+    public_headers_with_user_agent(USER_AGENT)
+}
+
+fn public_headers_with_user_agent(user_agent: &str) -> ProviderResult<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert(
         "accept",
@@ -1267,7 +1296,7 @@ fn public_headers() -> ProviderResult<HeaderMap> {
     );
     headers.insert("origin", HeaderValue::from_static("https://pan.quark.cn"));
     headers.insert("referer", HeaderValue::from_static("https://pan.quark.cn/"));
-    headers.insert("user-agent", HeaderValue::from_static(USER_AGENT));
+    headers.insert("user-agent", header_value(user_agent)?);
     Ok(headers)
 }
 
@@ -1609,7 +1638,7 @@ fn parse_media_playback_link(response: &Value) -> ProviderResult<MediaPlaybackLi
         })
 }
 
-fn should_fallback_to_download(error: &ProviderError) -> bool {
+fn is_transcoding_unavailable(error: &ProviderError) -> bool {
     error.message.to_ascii_lowercase().contains("plf_invalid")
 }
 
@@ -2164,14 +2193,14 @@ mod tests {
     }
 
     #[test]
-    fn transcoding_invalid_errors_fall_back_to_download_only() {
-        assert!(should_fallback_to_download(&ProviderError::new(
+    fn transcoding_invalid_errors_are_reported_as_playback_failures() {
+        assert!(is_transcoding_unavailable(&ProviderError::new(
             ProviderErrorCategory::RemoteUnavailable,
             "data invalid: [plf_invalid]"
         )));
-        assert!(!should_fallback_to_download(&ProviderError::new(
-            ProviderErrorCategory::Authentication,
-            "cookie expired"
+        assert!(!is_transcoding_unavailable(&ProviderError::new(
+            ProviderErrorCategory::RateLimit,
+            "download file size limit"
         )));
     }
 
