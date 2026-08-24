@@ -8,6 +8,8 @@ pub mod domain;
 pub mod google_drive;
 pub mod ports;
 pub mod quark_drive;
+#[path = "quark_drive_official.rs"]
+pub mod quark_drive_official;
 pub mod r2;
 pub mod registry;
 pub mod service;
@@ -17,7 +19,7 @@ pub use credentials::{
 };
 pub use domain::*;
 pub use google_drive::GoogleDriveFactory;
-pub use quark_drive::QuarkDriveFactory;
+pub use quark_drive_official::QuarkDriveFactory;
 pub use r2::{R2Factory, MANAGED_R2_ACCOUNT_ID, R2_PROVIDER_ID, SYNC_CREDENTIAL_SOURCE};
 pub use registry::StorageProviderRegistry;
 pub use service::{StorageImportKind, StorageService};

@@ -115,6 +115,8 @@ pub struct StorageCapabilities {
     pub write_files: bool,
     pub delete_files: bool,
     pub move_files: bool,
+    pub share_files: bool,
+    pub import_shared_files: bool,
     pub object_storage: bool,
     pub range_download: bool,
     pub resumable_upload: bool,
@@ -317,6 +319,43 @@ impl SearchFilesRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateShareRequest {
+    pub file_ids: Vec<String>,
+    pub title: Option<String>,
+    pub password: Option<String>,
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedFileLink {
+    pub file_id: String,
+    pub url: String,
+    pub password: Option<String>,
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateShareResult {
+    pub links: Vec<SharedFileLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportSharedFilesRequest {
+    pub share_url: String,
+    pub password: Option<String>,
+    pub file_ids: Option<Vec<String>>,
+    pub target_folder_id: Option<String>,
+    pub save_all: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportSharedFilesResult {
+    pub task_id: Option<String>,
+    pub files: Vec<RemoteFileItem>,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteFilePage {
     pub items: Vec<RemoteFileItem>,
     pub next_page_token: Option<String>,
@@ -353,6 +392,7 @@ pub struct BeginFileUploadRequest {
 pub struct FileUploadSession {
     pub session_id: String,
     pub next_offset: u64,
+    pub chunk_size: u64,
     pub expires_at: Option<String>,
 }
 

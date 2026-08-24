@@ -479,6 +479,8 @@ fn main() {
             commands::upload_storage_file,
             commands::trash_storage_files,
             commands::move_storage_files,
+            commands::create_storage_share,
+            commands::import_storage_shared_files,
             commands::refresh_storage_quota,
             commands::list_storage_transfers,
             commands::remove_storage_account,

@@ -25,18 +25,19 @@ use tokio::time::{sleep, timeout};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::domain::{
-    BeginFileUploadRequest, BeginObjectUploadRequest, DownloadFileRequest, DownloadObjectRequest,
-    FileUploadSession, ListFilesRequest, ObjectUploadSession, ProviderAuthKind,
+    BeginFileUploadRequest, BeginObjectUploadRequest, CreateShareRequest, CreateShareResult,
+    DownloadFileRequest, DownloadObjectRequest, FileUploadSession, ImportSharedFilesRequest,
+    ImportSharedFilesResult, ListFilesRequest, ObjectUploadSession, ProviderAuthKind,
     ProviderAuthorizationRequest, ProviderByteStream, ProviderDescriptor, ProviderError,
     ProviderErrorCategory, ProviderQuota, ProviderResult, ProviderStability, RemoteFileItem,
     RemoteFileKind, RemoteFilePage, RemoteObjectLocator, RemoteObjectState, SearchFilesRequest,
-    StorageCapabilities, StorageProviderAccount, UploadFileChunkRequest, UploadObjectChunkRequest,
-    UploadedFileChunk, UploadedObjectChunk,
+    SharedFileLink, StorageCapabilities, StorageProviderAccount, UploadFileChunkRequest,
+    UploadObjectChunkRequest, UploadedFileChunk, UploadedObjectChunk,
 };
 use super::ports::{
-    FileManagementProvider, FileSourceProvider, FileUploadProvider, ObjectStorageProvider,
-    ProviderAuthorizationResult, ProviderCredentialAccess, ProviderFactory, ProviderSession,
-    QuotaProvider,
+    FileManagementProvider, FileShareProvider, FileSourceProvider, FileUploadProvider,
+    ObjectStorageProvider, ProviderAuthorizationResult, ProviderCredentialAccess, ProviderFactory,
+    ProviderSession, QuotaProvider, SharedFileImportProvider,
 };
 
 const PROVIDER_ID: &str = "google_drive";
@@ -92,6 +93,8 @@ impl ProviderFactory for GoogleDriveFactory {
                 object_storage: true,
                 range_download: true,
                 resumable_upload: true,
+                share_files: true,
+                import_shared_files: true,
                 stable_revisions: true,
                 stable_file_sizes: true,
                 quota: true,
@@ -384,6 +387,7 @@ impl FileUploadProvider for GoogleDriveSession {
         Ok(FileUploadSession {
             session_id,
             next_offset: 0,
+            chunk_size: request.chunk_size,
             expires_at: None,
         })
     }
@@ -439,6 +443,111 @@ impl FileManagementProvider for GoogleDriveSession {
             .await?;
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl FileShareProvider for GoogleDriveSession {
+    async fn create_share(&self, request: CreateShareRequest) -> ProviderResult<CreateShareResult> {
+        if request.file_ids.is_empty() || request.file_ids.len() > 100 {
+            return Err(invalid_request(
+                "Google Drive sharing accepts between 1 and 100 files",
+            ));
+        }
+        if request.password.is_some() || request.expires_at.is_some() {
+            return Err(ProviderError::unsupported(
+                "password-protected or expiring Google Drive links",
+            ));
+        }
+        self.require_scope(DRIVE_SCOPE).await?;
+        let mut links = Vec::with_capacity(request.file_ids.len());
+        for file_id in request.file_ids {
+            validate_opaque_id(&file_id, "file ID")?;
+            self.send_authorized(
+                Method::POST,
+                &format!("{DRIVE_API}/files/{}/permissions", path_segment(&file_id)),
+                &[
+                    ("supportsAllDrives".into(), "true".into()),
+                    ("sendNotificationEmail".into(), "false".into()),
+                ],
+                HeaderMap::new(),
+                RequestBody::Json(json!({
+                    "type": "anyone",
+                    "role": "reader",
+                    "allowFileDiscovery": false,
+                })),
+                true,
+                &[],
+            )
+            .await?;
+            let file = self.get_google_file(&file_id).await?;
+            let url = if file.mime_type == GOOGLE_FOLDER_MIME {
+                format!("https://drive.google.com/drive/folders/{file_id}")
+            } else {
+                format!("https://drive.google.com/open?id={file_id}")
+            };
+            links.push(SharedFileLink {
+                file_id,
+                url,
+                password: None,
+                expires_at: None,
+            });
+        }
+        Ok(CreateShareResult { links })
+    }
+}
+
+#[async_trait]
+impl SharedFileImportProvider for GoogleDriveSession {
+    async fn import_shared_files(
+        &self,
+        request: ImportSharedFilesRequest,
+    ) -> ProviderResult<ImportSharedFilesResult> {
+        if request.password.is_some() {
+            return Err(ProviderError::unsupported(
+                "password-protected Google Drive share links",
+            ));
+        }
+        if request.save_all {
+            return Err(ProviderError::unsupported(
+                "recursive Google Drive shared-folder import",
+            ));
+        }
+        let url_id = google_drive_file_id(&request.share_url)?;
+        if let Some(file_ids) = request.file_ids.as_ref() {
+            if file_ids.len() != 1 || file_ids.first().map(String::as_str) != Some(url_id.as_str())
+            {
+                return Err(invalid_request(
+                    "Google Drive import accepts only the file referenced by the share URL",
+                ));
+            }
+        }
+        self.require_scope(DRIVE_SCOPE).await?;
+        let mut body = serde_json::Map::new();
+        if let Some(folder_id) = request.target_folder_id {
+            validate_opaque_id(&folder_id, "target folder ID")?;
+            body.insert("parents".into(), json!([folder_id]));
+        }
+        let response = self
+            .send_authorized(
+                Method::POST,
+                &format!("{DRIVE_API}/files/{}/copy", path_segment(&url_id)),
+                &[
+                    ("fields".into(), FILE_FIELDS.into()),
+                    ("supportsAllDrives".into(), "true".into()),
+                ],
+                HeaderMap::new(),
+                RequestBody::Json(Value::Object(body)),
+                true,
+                &[],
+            )
+            .await?;
+        let file = remote_file_item(parse_json_response(response).await?)?;
+        Ok(ImportSharedFilesResult {
+            task_id: None,
+            files: vec![file],
+            completed: true,
+        })
     }
 }
 
@@ -589,6 +698,14 @@ impl ProviderSession for GoogleDriveSession {
     }
 
     fn file_management(&self) -> Option<&dyn FileManagementProvider> {
+        Some(self)
+    }
+
+    fn file_sharing(&self) -> Option<&dyn FileShareProvider> {
+        Some(self)
+    }
+
+    fn shared_file_import(&self) -> Option<&dyn SharedFileImportProvider> {
         Some(self)
     }
 
@@ -1384,6 +1501,32 @@ fn stable_account_id(subject: &str) -> String {
 
 fn path_segment(value: &str) -> String {
     utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
+}
+
+fn google_drive_file_id(value: &str) -> ProviderResult<String> {
+    let url = Url::parse(value).map_err(|_| invalid_request("Invalid Google Drive share URL"))?;
+    let host = url.host_str().unwrap_or_default();
+    if !(host == "drive.google.com" || host == "www.drive.google.com" || host == "docs.google.com")
+    {
+        return Err(invalid_request("Share URL is not a Google Drive URL"));
+    }
+    let segments = url
+        .path_segments()
+        .map(|segments| segments.collect::<Vec<_>>())
+        .unwrap_or_default();
+    let path_id = segments
+        .windows(2)
+        .find(|window| matches!(window[0], "d" | "folders"))
+        .map(|window| window[1].to_string());
+    let id = path_id.or_else(|| {
+        url.query_pairs()
+            .find(|(key, _)| key == "id")
+            .map(|(_, value)| value.into_owned())
+    });
+    let id =
+        id.ok_or_else(|| invalid_request("Google Drive share URL does not contain a file ID"))?;
+    validate_opaque_id(&id, "file ID")?;
+    Ok(id)
 }
 
 fn escape_drive_query(value: &str) -> String {

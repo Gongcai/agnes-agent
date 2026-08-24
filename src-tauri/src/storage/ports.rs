@@ -5,8 +5,9 @@ use serde::Serialize;
 use zeroize::Zeroizing;
 
 use super::domain::{
-    BeginFileUploadRequest, BeginObjectUploadRequest, DownloadFileRequest, DownloadObjectRequest,
-    FileUploadSession, ListFilesRequest, ObjectUploadSession, ProviderAuthorizationRequest,
+    BeginFileUploadRequest, BeginObjectUploadRequest, CreateShareRequest, CreateShareResult,
+    DownloadFileRequest, DownloadObjectRequest, FileUploadSession, ImportSharedFilesRequest,
+    ImportSharedFilesResult, ListFilesRequest, ObjectUploadSession, ProviderAuthorizationRequest,
     ProviderByteStream, ProviderDescriptor, ProviderError, ProviderQuota, ProviderResult,
     RemoteFileItem, RemoteFilePage, RemoteObjectLocator, RemoteObjectState, SearchFilesRequest,
     StorageProviderAccount, UploadFileChunkRequest, UploadObjectChunkRequest, UploadedFileChunk,
@@ -88,6 +89,19 @@ pub trait FileManagementProvider: Send + Sync {
 }
 
 #[async_trait]
+pub trait FileShareProvider: Send + Sync {
+    async fn create_share(&self, request: CreateShareRequest) -> ProviderResult<CreateShareResult>;
+}
+
+#[async_trait]
+pub trait SharedFileImportProvider: Send + Sync {
+    async fn import_shared_files(
+        &self,
+        request: ImportSharedFilesRequest,
+    ) -> ProviderResult<ImportSharedFilesResult>;
+}
+
+#[async_trait]
 pub trait QuotaProvider: Send + Sync {
     async fn quota(&self) -> ProviderResult<ProviderQuota>;
 }
@@ -126,6 +140,14 @@ pub trait ProviderSession: Send + Sync {
     }
 
     fn file_management(&self) -> Option<&dyn FileManagementProvider> {
+        None
+    }
+
+    fn file_sharing(&self) -> Option<&dyn FileShareProvider> {
+        None
+    }
+
+    fn shared_file_import(&self) -> Option<&dyn SharedFileImportProvider> {
         None
     }
 

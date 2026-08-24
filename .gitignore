@@ -8,6 +8,8 @@ src-tauri/target
 src-tauri/gen
 claude-extracted/
 stitch_claude_aesthetic_design_system/
+quarkapi/
+quarkclouddrive-*.zip
 
 # python
 agent/.venv

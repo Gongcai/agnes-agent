@@ -572,6 +572,7 @@ impl FileUploadProvider for QuarkDriveSession {
         Ok(FileUploadSession {
             session_id,
             next_offset: 0,
+            chunk_size: request.chunk_size,
             expires_at: None,
         })
     }

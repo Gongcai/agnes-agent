@@ -4483,6 +4483,24 @@ pub async fn move_storage_files(
 }
 
 #[tauri::command]
+pub async fn create_storage_share(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    request: crate::storage::CreateShareRequest,
+) -> AppResult<crate::storage::CreateShareResult> {
+    state.storage.create_share(account_id, request).await
+}
+
+#[tauri::command]
+pub async fn import_storage_shared_files(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    request: crate::storage::ImportSharedFilesRequest,
+) -> AppResult<crate::storage::ImportSharedFilesResult> {
+    state.storage.import_shared_files(account_id, request).await
+}
+
+#[tauri::command]
 pub async fn refresh_storage_quota(
     state: tauri::State<'_, AppState>,
     account_id: String,

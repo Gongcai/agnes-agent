@@ -22,9 +22,10 @@ use crate::sync::reading_artifact::{
 
 use super::artifact_transfer;
 use super::domain::{
-    BeginFileUploadRequest, ContentHashAlgorithm, ListFilesRequest, ProviderAuthorizationRequest,
-    ProviderDescriptor, ProviderError, ProviderQuota, RemoteFileItem, RemoteFileKind,
-    RemoteFilePage, RemoteObjectLocator, RemoteObjectState, SearchFilesRequest,
+    BeginFileUploadRequest, ContentHashAlgorithm, CreateShareRequest, CreateShareResult,
+    ImportSharedFilesRequest, ImportSharedFilesResult, ListFilesRequest,
+    ProviderAuthorizationRequest, ProviderDescriptor, ProviderError, ProviderQuota, RemoteFileItem,
+    RemoteFileKind, RemoteFilePage, RemoteObjectLocator, RemoteObjectState, SearchFilesRequest,
     StorageProviderAccount, UploadFileChunkRequest,
 };
 use super::ports::{
@@ -940,7 +941,7 @@ impl StorageService {
                     source: &source,
                     session_id: &session.session_id,
                     size,
-                    chunk_size: upload_chunk_bytes,
+                    chunk_size: session.chunk_size.max(1),
                     job_id: &job_id,
                     bytes_total,
                 },
@@ -1060,6 +1061,48 @@ impl StorageService {
             Ok(()) => {
                 self.update_provider_status(&row, None).await;
                 Ok(unique_ids.len())
+            }
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                Err(provider_error(error))
+            }
+        }
+    }
+
+    pub async fn create_share(
+        &self,
+        account_id: String,
+        request: CreateShareRequest,
+    ) -> AppResult<CreateShareResult> {
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let sharing = session
+            .file_sharing()
+            .ok_or_else(|| AppError::Other("当前网盘不支持创建分享链接".into()))?;
+        match sharing.create_share(request).await {
+            Ok(result) => {
+                self.update_provider_status(&row, None).await;
+                Ok(result)
+            }
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                Err(provider_error(error))
+            }
+        }
+    }
+
+    pub async fn import_shared_files(
+        &self,
+        account_id: String,
+        request: ImportSharedFilesRequest,
+    ) -> AppResult<ImportSharedFilesResult> {
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let importer = session
+            .shared_file_import()
+            .ok_or_else(|| AppError::Other("当前网盘不支持从分享链接转存文件".into()))?;
+        match importer.import_shared_files(request).await {
+            Ok(result) => {
+                self.update_provider_status(&row, None).await;
+                Ok(result)
             }
             Err(error) => {
                 self.update_provider_status(&row, Some(&error)).await;
@@ -2042,6 +2085,7 @@ mod tests {
             Ok(FileUploadSession {
                 session_id: "upload-session".into(),
                 next_offset: 0,
+                chunk_size: 8 * 1024 * 1024,
                 expires_at: None,
             })
         }
