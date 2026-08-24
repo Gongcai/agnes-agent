@@ -303,9 +303,13 @@ export function DriveWorkspace() {
     if (!container || !link || !mediaPlayback) return;
 
     let hls: Hls | null = null;
-    let player: Artplayer;
+    let player: Artplayer | null = null;
     const reportPlaybackError = (error?: Error) => {
-      const video = player.video;
+      const video = player?.video ?? container.querySelector("video");
+      if (!video) {
+        setError(`播放器初始化失败：${error?.message || "video element unavailable"}`);
+        return;
+      }
       const mediaError = video.error;
       const diagnostics = `code=${mediaError?.code ?? "none"}, message=${mediaError?.message || error?.message || "none"}, networkState=${video.networkState}, readyState=${video.readyState}, capabilities=[${mediaCapabilitySummary(video)}]`;
       console.error("[storage][media-playback] media error", {
@@ -326,49 +330,55 @@ export function DriveWorkspace() {
       setError(link.protocol === "range" ? `原文件播放失败：${reason}（${diagnostics}）` : reason);
     };
 
-    player = new Artplayer({
-      container,
-      url: link.url,
-      type: link.protocol === "hls" ? "m3u8" : undefined,
-      autoplay: true,
-      playsInline: true,
-      fullscreen: true,
-      fullscreenWeb: true,
-      pip: true,
-      playbackRate: true,
-      setting: true,
-      mutex: true,
-      moreVideoAttr: {
-        preload: "metadata",
-      },
-      customType: link.protocol === "hls"
-        ? {
-            m3u8(video, url, art) {
-              if (video.canPlayType("application/vnd.apple.mpegurl")) {
-                video.src = url;
-                return;
-              }
-              if (!Hls.isSupported()) {
-                setMediaPlaybackFallbackItem(mediaPlayback.item);
-                setError("当前播放器不支持 HLS 转码视频，播放失败");
-                return;
-              }
-              hls = new Hls();
-              hls.on(Hls.Events.ERROR, (_event, data) => {
-                if (data.fatal) reportPlaybackError(data.error);
-              });
-              art.hls = hls;
-              hls.loadSource(url);
-              hls.attachMedia(video);
-            },
-          }
-        : undefined,
-    });
+    try {
+      player = new Artplayer({
+        container,
+        url: link.url,
+        type: link.protocol === "hls" ? "m3u8" : undefined,
+        autoplay: true,
+        playsInline: true,
+        fullscreen: true,
+        pip: true,
+        playbackRate: true,
+        setting: true,
+        mutex: true,
+        moreVideoAttr: {
+          preload: "metadata",
+        },
+        customType: link.protocol === "hls"
+          ? {
+              m3u8(video, url, art) {
+                if (video.canPlayType("application/vnd.apple.mpegurl")) {
+                  video.src = url;
+                  return;
+                }
+                if (!Hls.isSupported()) {
+                  setMediaPlaybackFallbackItem(mediaPlayback.item);
+                  setError("当前播放器不支持 HLS 转码视频，播放失败");
+                  return;
+                }
+                hls = new Hls();
+                hls.on(Hls.Events.ERROR, (_event, data) => {
+                  if (data.fatal) reportPlaybackError(data.error);
+                });
+                art.hls = hls;
+                hls.loadSource(url);
+                hls.attachMedia(video);
+              },
+            }
+          : undefined,
+      });
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      console.error("[storage][media-playback] player initialization failed", message);
+      setError(`播放器初始化失败：${message}`);
+      return;
+    }
     player.on("video:error", reportPlaybackError);
 
     return () => {
       hls?.destroy();
-      player.destroy();
+      player?.destroy();
     };
   }, [mediaPlayback]);
   const fileRequestId = useRef(0);
@@ -1839,10 +1849,10 @@ export function DriveWorkspace() {
           onClick={() => setMediaPlayback(null)}
         >
           <div
-            className="w-full max-w-4xl overflow-hidden rounded-lg border border-stone-700 bg-stone-950 shadow-2xl"
+            className="flex max-h-[calc(100vh-32px)] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-stone-700 bg-stone-950 shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="flex items-center justify-between gap-3 border-b border-stone-800 px-4 py-3 text-sm text-stone-100">
+            <div className="relative z-10 flex h-12 shrink-0 items-center justify-between gap-3 border-b border-stone-800 px-4 py-3 text-sm text-stone-100">
               <span className="min-w-0 truncate">{mediaPlayback.item.name}</span>
               <button
                 onClick={() => setMediaPlayback(null)}
@@ -1854,7 +1864,7 @@ export function DriveWorkspace() {
             </div>
             <div
               ref={mediaContainer}
-              className="aspect-video max-h-[75vh] min-h-[260px] w-full bg-black"
+              className="relative min-h-[260px] w-full flex-1 overflow-hidden bg-black"
             />
           </div>
         </div>
