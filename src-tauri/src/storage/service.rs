@@ -636,7 +636,7 @@ impl StorageService {
                 return Err(provider_error(error));
             }
         };
-        if file.kind != RemoteFileKind::File {
+        if file.kind != RemoteFileKind::File && !looks_like_media_file(&file) {
             return Err(AppError::Other("只能播放文件，不能播放文件夹".into()));
         }
         Ok(StorageFileStreamMetadata {
@@ -1930,6 +1930,16 @@ impl StorageService {
     }
 }
 
+fn looks_like_media_file(file: &RemoteFileItem) -> bool {
+    file.media_type
+        .as_deref()
+        .is_some_and(|media_type| media_type.to_ascii_lowercase().starts_with("video/"))
+        || mime_guess::from_path(&file.name)
+            .first_raw()
+            .is_some_and(|media_type| media_type.starts_with("video/"))
+        || file.name.to_ascii_lowercase().ends_with(".mpv")
+}
+
 enum DownloadFailure {
     Provider {
         error: ProviderError,
@@ -2233,6 +2243,28 @@ mod tests {
     };
 
     struct FakeDrive;
+
+    #[test]
+    fn media_type_and_video_extension_override_inconsistent_directory_metadata() {
+        let file = RemoteFileItem {
+            id: "video-1".into(),
+            parent_id: None,
+            name: "召唤兽01.mkv".into(),
+            kind: RemoteFileKind::Folder,
+            media_type: Some("application/octet-stream".into()),
+            size: Some(254 * 1024 * 1024),
+            modified_at: None,
+            revision: None,
+            downloadable: false,
+        };
+        assert!(looks_like_media_file(&file));
+
+        let folder = RemoteFileItem {
+            name: "视频目录".into(),
+            ..file
+        };
+        assert!(!looks_like_media_file(&folder));
+    }
 
     #[async_trait]
     impl FileSourceProvider for FakeDrive {

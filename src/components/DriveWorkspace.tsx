@@ -295,13 +295,17 @@ export function DriveWorkspace() {
     }
 
     if (!Hls.isSupported()) {
+      setMediaPlaybackFallbackItem(mediaPlayback.item);
       setError("当前播放器不支持 HLS 转码视频，播放失败");
       return;
     }
 
     const hls = new Hls();
     hls.on(Hls.Events.ERROR, (_event, data) => {
-      if (data.fatal) setError("HLS 转码视频播放失败");
+      if (data.fatal) {
+        setMediaPlaybackFallbackItem(mediaPlayback.item);
+        setError("HLS 转码视频播放失败");
+      }
     });
     hls.loadSource(link.url);
     hls.attachMedia(video);
@@ -1057,6 +1061,7 @@ export function DriveWorkspace() {
       });
       setMediaPlayback({ item, link });
     } catch (reason) {
+      setMediaPlaybackFallbackItem(item);
       setError(`原文件播放失败：${String(reason)}`);
     } finally {
       setMediaPlaybackLoading(false);
@@ -1794,7 +1799,14 @@ export function DriveWorkspace() {
               autoPlay
               playsInline
               preload="metadata"
-              onError={() => setError("播放地址不可用，请稍后重试")}
+              onError={() => {
+                setMediaPlaybackFallbackItem(mediaPlayback.item);
+                setError(
+                  mediaPlayback.link.protocol === "range"
+                    ? "原文件播放失败，请检查文件格式或网络后重试"
+                    : "播放地址不可用，请稍后重试",
+                );
+              }}
             />
           </div>
         </div>
