@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use md5::Digest;
 use serde::Serialize;
+use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zeroize::Zeroizing;
 
@@ -1121,6 +1122,9 @@ impl StorageService {
         provider_id: String,
         request: ProviderAuthorizationRequest,
     ) -> AppResult<String> {
+        let request = self
+            .add_existing_quark_credentials(&provider_id, request)
+            .await?;
         let factory = self
             .registry
             .factory(&provider_id)
@@ -1151,6 +1155,9 @@ impl StorageService {
         provider_id: String,
         request: ProviderAuthorizationRequest,
     ) -> AppResult<ProviderAuthorizationChallenge> {
+        let request = self
+            .add_existing_quark_credentials(&provider_id, request)
+            .await?;
         let factory = self
             .registry
             .factory(&provider_id)
@@ -1174,6 +1181,37 @@ impl StorageService {
             ));
         }
         Ok(challenge)
+    }
+
+    async fn add_existing_quark_credentials(
+        &self,
+        provider_id: &str,
+        mut request: ProviderAuthorizationRequest,
+    ) -> AppResult<ProviderAuthorizationRequest> {
+        if provider_id != "quark_drive" {
+            return Ok(request);
+        }
+        let rows = self.db.list_storage_accounts().await?;
+        let mut credentials = Vec::new();
+        for row in rows
+            .into_iter()
+            .filter(|row| row.provider_id == provider_id)
+        {
+            if let Some(credential) = self
+                .credentials
+                .load(&row.id)
+                .await
+                .map_err(provider_error)?
+            {
+                credentials.push(Value::String(credential.as_str().to_owned()));
+            }
+        }
+        if !request.input.is_object() {
+            request.input = json!({"existing_credentials": credentials});
+        } else if let Some(input) = request.input.as_object_mut() {
+            input.insert("existing_credentials".into(), Value::Array(credentials));
+        }
+        Ok(request)
     }
 
     pub async fn poll_authorization(

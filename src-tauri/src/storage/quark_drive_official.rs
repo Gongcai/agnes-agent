@@ -57,6 +57,17 @@ fn default_token_type() -> String {
 struct AuthChallenge {
     page_code: String,
     client_device_id: String,
+    existing_credentials: Vec<QuarkCredential>,
+    expires_at: u64,
+}
+
+struct AgentAuthExchange {
+    status: Option<String>,
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    device_id: Option<String>,
+    user_id: Option<String>,
+    token_type: Option<String>,
     expires_at: u64,
 }
 
@@ -124,15 +135,18 @@ impl ProviderFactory for QuarkDriveFactory {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| invalid_request("请提供夸克官方授权码"))?;
-        let credential = exchange_agent_auth_code(&self.client, code).await?;
+        let existing_credentials = existing_credentials(&request.input);
+        let exchange = exchange_agent_auth_code(&self.client, code).await?;
+        let credential = credential_from_exchange(exchange, &existing_credentials)?;
         authorized_result(&self.client, credential).await
     }
 
     async fn begin_authorization(
         &self,
-        _request: ProviderAuthorizationRequest,
+        request: ProviderAuthorizationRequest,
     ) -> ProviderResult<ProviderAuthorizationChallenge> {
         let client_device_id = format!("agnes-{}", uuid::Uuid::new_v4());
+        let existing_credentials = existing_credentials(&request.input);
         let response = signed_request(
             &self.client,
             Method::POST,
@@ -163,6 +177,7 @@ impl ProviderFactory for QuarkDriveFactory {
                 AuthChallenge {
                     page_code: page_code.clone(),
                     client_device_id,
+                    existing_credentials,
                     expires_at: now_epoch() + 300,
                 },
             );
@@ -213,7 +228,8 @@ impl ProviderFactory for QuarkDriveFactory {
         }
         let code = string_value(data, &["agent_auth_code"])
             .ok_or_else(|| invalid_response("夸克授权完成但未返回授权码"))?;
-        let credential = exchange_agent_auth_code(&self.client, &code).await?;
+        let exchange = exchange_agent_auth_code(&self.client, &code).await?;
+        let credential = credential_from_exchange(exchange, &challenge.existing_credentials)?;
         self.challenges
             .lock()
             .map_err(|_| invalid_response("夸克授权会话不可用"))?
@@ -962,7 +978,7 @@ impl QuarkDriveSession {
 async fn exchange_agent_auth_code(
     client: &reqwest::Client,
     code: &str,
-) -> ProviderResult<QuarkCredential> {
+) -> ProviderResult<AgentAuthExchange> {
     let response = signed_request(
         client,
         Method::GET,
@@ -975,21 +991,78 @@ async fn exchange_agent_auth_code(
     )
     .await?;
     let data = response_data(&response)?;
-    let access_token = string_value(data, &["access_token"]).ok_or_else(|| {
+    Ok(AgentAuthExchange {
+        status: string_value(data, &["status"]),
+        access_token: string_value(data, &["access_token"]),
+        refresh_token: string_value(data, &["refresh_token"]),
+        device_id: string_value(data, &["device_id"]),
+        user_id: string_value(data, &["user_id"]),
+        token_type: string_value(data, &["token_type"]),
+        expires_at: credential_expiry(data),
+    })
+}
+
+fn existing_credentials(input: &Value) -> Vec<QuarkCredential> {
+    input
+        .get("existing_credentials")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|value| serde_json::from_str(value).ok())
+        .filter(|credential: &QuarkCredential| {
+            !credential.access_token.is_empty() && !credential.user_id.is_empty()
+        })
+        .collect()
+}
+
+fn credential_from_exchange(
+    exchange: AgentAuthExchange,
+    existing: &[QuarkCredential],
+) -> ProviderResult<QuarkCredential> {
+    if exchange.status.as_deref() == Some("second_confirmed") {
+        let user_id = exchange.user_id.ok_or_else(|| {
+            ProviderError::new(
+                ProviderErrorCategory::Authentication,
+                "夸克二次确认响应未返回 user_id",
+            )
+        })?;
+        return existing
+            .iter()
+            .find(|credential| credential.user_id == user_id)
+            .cloned()
+            .ok_or_else(|| {
+                ProviderError::new(
+                    ProviderErrorCategory::Authentication,
+                    "夸克授权已二次确认，但本机没有该账号的旧 access_token，请先在夸克网盘中解除此 Agent 授权后重新授权",
+                )
+            });
+    }
+    let access_token = exchange.access_token.ok_or_else(|| {
         ProviderError::new(
             ProviderErrorCategory::Authentication,
-            "夸克授权码未返回 access_token",
+            format!(
+                "夸克授权码未返回 access_token{}",
+                exchange
+                    .status
+                    .as_deref()
+                    .map(|status| format!("（状态：{status}）"))
+                    .unwrap_or_default()
+            ),
         )
     })?;
-    let user_id = string_value(data, &["user_id"])
+    let user_id = exchange
+        .user_id
         .ok_or_else(|| invalid_response("夸克授权未返回 user_id"))?;
     Ok(QuarkCredential {
         access_token,
-        refresh_token: string_value(data, &["refresh_token"]),
-        device_id: string_value(data, &["device_id"]).unwrap_or_else(|| DEFAULT_DEVICE_ID.into()),
+        refresh_token: exchange.refresh_token,
+        device_id: exchange
+            .device_id
+            .unwrap_or_else(|| DEFAULT_DEVICE_ID.into()),
         user_id,
-        token_type: string_value(data, &["token_type"]).unwrap_or_else(default_token_type),
-        expires_at: credential_expiry(data),
+        token_type: exchange.token_type.unwrap_or_else(default_token_type),
+        expires_at: exchange.expires_at,
     })
 }
 
@@ -1465,6 +1538,42 @@ mod tests {
         assert!(looks_like_authentication_error("access token expired"));
         assert!(looks_like_authentication_error("授权已失效"));
         assert!(!looks_like_authentication_error("file not found"));
+    }
+
+    #[test]
+    fn reuses_existing_token_for_second_confirmation() {
+        let credential = QuarkCredential {
+            access_token: "access".into(),
+            refresh_token: Some("refresh".into()),
+            device_id: "device".into(),
+            user_id: "user".into(),
+            token_type: "Bearer".into(),
+            expires_at: now_epoch() + 3600,
+        };
+        let exchange = AgentAuthExchange {
+            status: Some("second_confirmed".into()),
+            access_token: None,
+            refresh_token: None,
+            device_id: Some("new-device".into()),
+            user_id: Some("user".into()),
+            token_type: None,
+            expires_at: 0,
+        };
+        let reused = credential_from_exchange(exchange, std::slice::from_ref(&credential)).unwrap();
+        assert_eq!(reused.access_token, credential.access_token);
+        assert!(credential_from_exchange(
+            AgentAuthExchange {
+                status: Some("second_confirmed".into()),
+                access_token: None,
+                refresh_token: None,
+                device_id: None,
+                user_id: Some("other".into()),
+                token_type: None,
+                expires_at: 0,
+            },
+            &[]
+        )
+        .is_err());
     }
 
     #[tokio::test]
