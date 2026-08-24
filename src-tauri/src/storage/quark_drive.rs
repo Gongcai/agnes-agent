@@ -435,19 +435,26 @@ impl FileSourceProvider for QuarkDriveSession {
                 "夸克网盘文件在下载前发生了变化",
             ));
         }
-        let response = self
-            .api(
-                Method::POST,
-                "file/download",
-                vec![
-                    ("sys".into(), "win32".into()),
-                    ("ve".into(), "2.5.56".into()),
-                    ("ut".into(), String::new()),
-                    ("guid".into(), String::new()),
-                ],
-                Some(json!({"fids": [request.file_id]})),
-            )
-            .await?;
+        // Match Alist's working Quark request: the download URL is signed against this
+        // exact cookie, desktop UA, and the minimal `pr`/`fr` query. Extra runtime or
+        // mobile parameters can trigger Quark's file-size limit for large media files.
+        self.refresh_cookie_if_due().await;
+        let cookie = self.cookie().await?;
+        let response = request_json_with_headers_options(
+            &self.client,
+            &cookie,
+            Method::POST,
+            API_BASE,
+            "file/download",
+            Vec::new(),
+            Some(json!({"fids": [request.file_id]})),
+            false,
+            true,
+            QUARK_DESKTOP_USER_AGENT,
+        )
+        .await?;
+        self.merge_response_cookies(&response.headers).await;
+        let response = response.value;
         let download = response
             .get("data")
             .and_then(Value::as_array)
@@ -458,7 +465,7 @@ impl FileSourceProvider for QuarkDriveSession {
             .and_then(Value::as_str)
             .filter(|value| value.starts_with("https://"))
             .ok_or_else(|| invalid_response("夸克网盘下载链接无效"))?;
-        let mut headers = base_headers(self.cookie().await?.as_str())?;
+        let mut headers = playback_headers_with_user_agent(&cookie, QUARK_DESKTOP_USER_AGENT)?;
         headers.insert("accept", HeaderValue::from_static("*/*"));
         if let Some(range) = range_header(request.range_start, request.range_end_inclusive)? {
             headers.insert(RANGE, range);
