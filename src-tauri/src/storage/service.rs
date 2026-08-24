@@ -581,6 +581,30 @@ impl StorageService {
         }
     }
 
+    pub async fn get_media_playback_link(
+        &self,
+        account_id: String,
+        file_id: String,
+    ) -> AppResult<super::domain::MediaPlaybackLink> {
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let playback = session
+            .media_playback()
+            .ok_or_else(|| AppError::Other("当前网盘不支持视频播放".into()))?;
+        match playback
+            .get_media_playback_link(super::domain::MediaPlaybackRequest { file_id })
+            .await
+        {
+            Ok(link) => {
+                self.update_provider_status(&row, None).await;
+                Ok(link)
+            }
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                Err(provider_error(error))
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn stage_file_import(
         &self,

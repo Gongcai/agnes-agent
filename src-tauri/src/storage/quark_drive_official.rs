@@ -23,9 +23,9 @@ use super::domain::{
 };
 use super::ports::{
     FileManagementProvider, FileShareProvider, FileSourceProvider, FileUploadProvider,
-    ProviderAuthorizationChallenge, ProviderAuthorizationResult, ProviderAuthorizationStep,
-    ProviderCredentialAccess, ProviderFactory, ProviderSession, QuotaProvider,
-    SharedFileImportProvider,
+    MediaPlaybackProvider, ProviderAuthorizationChallenge, ProviderAuthorizationResult,
+    ProviderAuthorizationStep, ProviderCredentialAccess, ProviderFactory, ProviderSession,
+    QuotaProvider, SharedFileImportProvider,
 };
 use super::quark_drive::QuarkDriveFactory as LegacyQuarkDriveFactory;
 
@@ -157,6 +157,7 @@ impl ProviderFactory for QuarkDriveFactory {
                 share_files: true,
                 import_shared_files: true,
                 range_download: true,
+                media_playback: true,
                 resumable_upload: true,
                 quota: true,
                 user_authorization: true,
@@ -708,6 +709,12 @@ impl ProviderSession for QuarkDriveSession {
             .as_deref()
             .and_then(ProviderSession::file_source)
             .or(Some(self))
+    }
+
+    fn media_playback(&self) -> Option<&dyn MediaPlaybackProvider> {
+        self.legacy_session
+            .as_deref()
+            .and_then(ProviderSession::media_playback)
     }
     fn quota_source(&self) -> Option<&dyn QuotaProvider> {
         Some(self)

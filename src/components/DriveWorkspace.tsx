@@ -20,6 +20,7 @@ import {
   HardDrive,
   LoaderCircle,
   MoreHorizontal,
+  Play,
   Plus,
   RefreshCw,
   Search,
@@ -57,6 +58,7 @@ interface ProviderDescriptor {
     write_files: boolean;
     delete_files: boolean;
     move_files: boolean;
+    media_playback: boolean;
     object_storage: boolean;
     user_authorization: boolean;
   };
@@ -134,6 +136,18 @@ interface MoveDialogState {
   fileIds: string[];
   sourceFolderId: string | null;
   path: FolderLevel[];
+}
+
+interface MediaPlaybackLink {
+  url: string;
+  media_type: string | null;
+  protocol: string;
+  resolution: string | null;
+}
+
+interface MediaPlaybackState {
+  item: RemoteFileItem;
+  link: MediaPlaybackLink;
 }
 
 type DriveView = "files" | "transfers";
@@ -260,6 +274,8 @@ export function DriveWorkspace() {
   const [moveNextPageToken, setMoveNextPageToken] = useState<string | null>(null);
   const [moveLoading, setMoveLoading] = useState(false);
   const [moveSubmitting, setMoveSubmitting] = useState(false);
+  const [mediaPlayback, setMediaPlayback] = useState<MediaPlaybackState | null>(null);
+  const [mediaPlaybackLoading, setMediaPlaybackLoading] = useState(false);
   const fileRequestId = useRef(0);
   const searchRequestId = useRef(0);
   const moveRequestId = useRef(0);
@@ -978,6 +994,29 @@ export function DriveWorkspace() {
     }
   };
 
+  const playMediaFile = async (item: RemoteFileItem) => {
+    if (!selectedAccount || item.kind !== "file") return;
+    setFileContextMenu(null);
+    setMediaPlaybackLoading(true);
+    setError(null);
+    try {
+      const link = await invoke<MediaPlaybackLink>("get_storage_media_playback_link", {
+        accountId: selectedAccount.id,
+        fileId: item.id,
+      });
+      setMediaPlayback({ item, link });
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setMediaPlaybackLoading(false);
+    }
+  };
+
+  const isPlayableVideo = (item: RemoteFileItem) => {
+    const mediaType = item.media_type?.toLowerCase() ?? "";
+    return mediaType.startsWith("video/") || /\.(mp4|m4v|mov|mkv|webm|avi)$/i.test(item.name);
+  };
+
   const uploadFiles = async () => {
     if (!selectedAccount || !selectedProvider?.capabilities.write_files) return;
     try {
@@ -1608,6 +1647,16 @@ export function DriveWorkspace() {
                   <Download className="h-3.5 w-3.5" />
                   下载
                 </button>
+                {selectedProvider?.capabilities.media_playback && isPlayableVideo(fileContextMenu.item) && (
+                  <button
+                    onClick={() => void playMediaFile(fileContextMenu.item)}
+                    disabled={loading || mediaPlaybackLoading || !fileContextMenu.item.downloadable}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
+                  >
+                    <Play className="h-3.5 w-3.5 text-emerald-700" />
+                    播放
+                  </button>
+                )}
                 {isKnowledgeImportable(fileContextMenu.item) && (
                   <button
                     onClick={() => openKnowledgeImport(fileContextMenu.item)}
@@ -1657,6 +1706,37 @@ export function DriveWorkspace() {
             )}
           </div>
         </>
+      )}
+
+      {mediaPlayback && (
+        <div
+          className="fixed inset-0 z-[70] grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
+          onClick={() => setMediaPlayback(null)}
+        >
+          <div
+            className="w-full max-w-4xl overflow-hidden rounded-lg border border-stone-700 bg-stone-950 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-stone-800 px-4 py-3 text-sm text-stone-100">
+              <span className="min-w-0 truncate">{mediaPlayback.item.name}</span>
+              <button
+                onClick={() => setMediaPlayback(null)}
+                className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-stone-400 hover:bg-stone-800 hover:text-white"
+                title="关闭播放器"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <video
+              className="max-h-[75vh] w-full bg-black"
+              controls
+              autoPlay
+              playsInline
+              src={mediaPlayback.link.url}
+              onError={() => setError("播放地址不可用，请稍后重试")}
+            />
+          </div>
+        </div>
       )}
 
       {moveDialog && (

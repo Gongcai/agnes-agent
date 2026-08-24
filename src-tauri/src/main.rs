@@ -476,6 +476,7 @@ fn main() {
             commands::list_storage_files,
             commands::search_storage_files,
             commands::download_storage_file,
+            commands::get_storage_media_playback_link,
             commands::import_storage_reading_book,
             commands::download_storage_folder,
             commands::upload_storage_file,

@@ -16,15 +16,16 @@ use zeroize::Zeroizing;
 
 use super::domain::{
     BeginFileUploadRequest, ContentHashAlgorithm, DownloadFileRequest, FileUploadSession,
-    ListFilesRequest, ProviderAuthKind, ProviderAuthorizationRequest, ProviderByteStream,
-    ProviderDescriptor, ProviderError, ProviderErrorCategory, ProviderQuota, ProviderResult,
-    ProviderStability, RemoteFileItem, RemoteFileKind, RemoteFilePage, SearchFilesRequest,
-    StorageCapabilities, StorageProviderAccount, UploadFileChunkRequest, UploadedFileChunk,
+    ListFilesRequest, MediaPlaybackLink, MediaPlaybackRequest, ProviderAuthKind,
+    ProviderAuthorizationRequest, ProviderByteStream, ProviderDescriptor, ProviderError,
+    ProviderErrorCategory, ProviderQuota, ProviderResult, ProviderStability, RemoteFileItem,
+    RemoteFileKind, RemoteFilePage, SearchFilesRequest, StorageCapabilities,
+    StorageProviderAccount, UploadFileChunkRequest, UploadedFileChunk,
 };
 use super::ports::{
-    FileManagementProvider, FileSourceProvider, FileUploadProvider, ProviderAuthorizationChallenge,
-    ProviderAuthorizationResult, ProviderAuthorizationStep, ProviderCredentialAccess,
-    ProviderFactory, ProviderSession, QuotaProvider,
+    FileManagementProvider, FileSourceProvider, FileUploadProvider, MediaPlaybackProvider,
+    ProviderAuthorizationChallenge, ProviderAuthorizationResult, ProviderAuthorizationStep,
+    ProviderCredentialAccess, ProviderFactory, ProviderSession, QuotaProvider,
 };
 
 const PROVIDER_ID: &str = "quark_drive";
@@ -74,6 +75,7 @@ impl ProviderFactory for QuarkDriveFactory {
                 delete_files: true,
                 move_files: true,
                 range_download: true,
+                media_playback: true,
                 resumable_upload: true,
                 quota: true,
                 user_authorization: true,
@@ -471,6 +473,33 @@ impl FileSourceProvider for QuarkDriveSession {
 }
 
 #[async_trait]
+impl MediaPlaybackProvider for QuarkDriveSession {
+    async fn get_media_playback_link(
+        &self,
+        request: MediaPlaybackRequest,
+    ) -> ProviderResult<MediaPlaybackLink> {
+        validate_id(&request.file_id, "文件 ID")?;
+        let file = self.get_file(&request.file_id).await?;
+        if file.kind != RemoteFileKind::File {
+            return Err(invalid_request("夸克网盘文件夹不能播放"));
+        }
+        let response = self
+            .api(
+                Method::POST,
+                "file/v2/play/project",
+                Vec::new(),
+                Some(json!({
+                    "fid": request.file_id,
+                    "resolutions": "low,normal,high,super,2k,4k",
+                    "supports": "fmp4_av,m3u8,dolby_vision"
+                })),
+            )
+            .await?;
+        parse_media_playback_link(&response)
+    }
+}
+
+#[async_trait]
 impl QuotaProvider for QuarkDriveSession {
     async fn quota(&self) -> ProviderResult<ProviderQuota> {
         let response = self
@@ -681,6 +710,10 @@ impl FileManagementProvider for QuarkDriveSession {
 
 impl ProviderSession for QuarkDriveSession {
     fn file_source(&self) -> Option<&dyn FileSourceProvider> {
+        Some(self)
+    }
+
+    fn media_playback(&self) -> Option<&dyn MediaPlaybackProvider> {
         Some(self)
     }
 
@@ -1390,6 +1423,93 @@ fn parse_search_page(
     })
 }
 
+fn parse_media_playback_link(response: &Value) -> ProviderResult<MediaPlaybackLink> {
+    let data = response.get("data").unwrap_or(&Value::Null);
+    let default_resolution = value_string(data, &["default_resolution"]);
+    let video_list = data
+        .get("video_list")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_response("夸克转码播放响应格式无效"))?;
+    let mut candidates = video_list
+        .iter()
+        .filter_map(|entry| {
+            let video_info = entry.get("video_info")?;
+            let url = value_string(video_info, &["url"])?;
+            if !is_https_url(&url) {
+                return None;
+            }
+            let resolution = value_string(entry, &["resolution"])
+                .or_else(|| value_string(video_info, &["resolution", "resoultion"]));
+            let format = value_string(video_info, &["format", "hls_type"]);
+            let is_default = default_resolution
+                .as_deref()
+                .zip(resolution.as_deref())
+                .is_some_and(|(default, current)| default == current);
+            Some((
+                is_default,
+                playback_resolution_rank(resolution.as_deref()),
+                MediaPlaybackLink {
+                    url,
+                    media_type: format.as_deref().and_then(playback_media_type),
+                    protocol: playback_protocol(format.as_deref()),
+                    resolution,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(is_default, rank, _)| (!*is_default, *rank));
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_, _, link)| link)
+        .ok_or_else(|| {
+            ProviderError::new(
+                ProviderErrorCategory::RemoteUnavailable,
+                "夸克网盘没有可用的转码播放地址",
+            )
+        })
+}
+
+fn is_https_url(value: &str) -> bool {
+    Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https" && url.username().is_empty() && url.password().is_none()
+    })
+}
+
+fn playback_resolution_rank(value: Option<&str>) -> u8 {
+    match value.map(str::to_ascii_lowercase).as_deref() {
+        Some("low") => 0,
+        Some("normal") => 1,
+        Some("high") => 2,
+        Some("super") => 3,
+        Some("2k") => 4,
+        Some("4k") => 5,
+        _ => 6,
+    }
+}
+
+fn playback_media_type(value: &str) -> Option<String> {
+    let normalized = value.to_ascii_lowercase();
+    if normalized.contains("m3u8") || normalized == "hls" {
+        Some("application/vnd.apple.mpegurl".into())
+    } else if normalized.contains("mp4") || normalized.contains("fmp4") {
+        Some("video/mp4".into())
+    } else {
+        None
+    }
+}
+
+fn playback_protocol(value: Option<&str>) -> String {
+    if value
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|value| value.contains("m3u8") || value == "hls")
+    {
+        "hls".into()
+    } else {
+        "progressive".into()
+    }
+}
+
 fn parse_page_token(page_token: Option<&str>) -> ProviderResult<usize> {
     match page_token {
         None => Ok(1),
@@ -1845,6 +1965,42 @@ mod tests {
         assert_eq!(page.items.len(), 2);
         assert_eq!(page.items[0].parent_id.as_deref(), Some("42"));
         assert_eq!(page.next_page_token.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn playback_parser_prefers_default_resolution_and_identifies_hls() {
+        let link = parse_media_playback_link(&json!({
+            "data": {
+                "default_resolution": "high",
+                "video_list": [
+                    {"resolution": "normal", "video_info": {"url": "https://cdn.example/normal.mp4", "format": "mp4"}},
+                    {"resolution": "high", "video_info": {"url": "https://cdn.example/high.m3u8", "format": "m3u8"}}
+                ]
+            }
+        }))
+        .unwrap();
+        assert_eq!(link.resolution.as_deref(), Some("high"));
+        assert_eq!(link.protocol, "hls");
+        assert_eq!(
+            link.media_type.as_deref(),
+            Some("application/vnd.apple.mpegurl")
+        );
+    }
+
+    #[test]
+    fn playback_parser_rejects_untrusted_or_missing_urls() {
+        let response = json!({
+            "data": {
+                "video_list": [
+                    {"resolution": "high", "video_info": {"url": "http://cdn.example/high.mp4", "format": "mp4"}},
+                    {"resolution": "normal", "video_info": {"format": "mp4"}}
+                ]
+            }
+        });
+        assert_eq!(
+            parse_media_playback_link(&response).unwrap_err().category,
+            ProviderErrorCategory::RemoteUnavailable
+        );
     }
 
     #[test]

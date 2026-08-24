@@ -119,6 +119,7 @@ pub struct StorageCapabilities {
     pub import_shared_files: bool,
     pub object_storage: bool,
     pub range_download: bool,
+    pub media_playback: bool,
     pub resumable_upload: bool,
     pub conditional_write: bool,
     pub stable_revisions: bool,
@@ -375,6 +376,19 @@ pub struct DownloadFileRequest {
     pub range_start: Option<u64>,
     pub range_end_inclusive: Option<u64>,
     pub expected_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaPlaybackRequest {
+    pub file_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaPlaybackLink {
+    pub url: String,
+    pub media_type: Option<String>,
+    pub protocol: String,
+    pub resolution: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

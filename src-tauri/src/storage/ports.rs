@@ -7,11 +7,11 @@ use zeroize::Zeroizing;
 use super::domain::{
     BeginFileUploadRequest, BeginObjectUploadRequest, CreateShareRequest, CreateShareResult,
     DownloadFileRequest, DownloadObjectRequest, FileUploadSession, ImportSharedFilesRequest,
-    ImportSharedFilesResult, ListFilesRequest, ObjectUploadSession, ProviderAuthorizationRequest,
-    ProviderByteStream, ProviderDescriptor, ProviderError, ProviderQuota, ProviderResult,
-    RemoteFileItem, RemoteFilePage, RemoteObjectLocator, RemoteObjectState, SearchFilesRequest,
-    StorageProviderAccount, UploadFileChunkRequest, UploadObjectChunkRequest, UploadedFileChunk,
-    UploadedObjectChunk,
+    ImportSharedFilesResult, ListFilesRequest, MediaPlaybackLink, MediaPlaybackRequest,
+    ObjectUploadSession, ProviderAuthorizationRequest, ProviderByteStream, ProviderDescriptor,
+    ProviderError, ProviderQuota, ProviderResult, RemoteFileItem, RemoteFilePage,
+    RemoteObjectLocator, RemoteObjectState, SearchFilesRequest, StorageProviderAccount,
+    UploadFileChunkRequest, UploadObjectChunkRequest, UploadedFileChunk, UploadedObjectChunk,
 };
 
 pub struct ProviderAuthorizationResult {
@@ -60,6 +60,14 @@ pub trait FileSourceProvider: Send + Sync {
         &self,
         request: DownloadFileRequest,
     ) -> ProviderResult<ProviderByteStream>;
+}
+
+#[async_trait]
+pub trait MediaPlaybackProvider: Send + Sync {
+    async fn get_media_playback_link(
+        &self,
+        request: MediaPlaybackRequest,
+    ) -> ProviderResult<MediaPlaybackLink>;
 }
 
 #[async_trait]
@@ -128,6 +136,10 @@ pub trait ObjectStorageProvider: Send + Sync {
 
 pub trait ProviderSession: Send + Sync {
     fn file_source(&self) -> Option<&dyn FileSourceProvider> {
+        None
+    }
+
+    fn media_playback(&self) -> Option<&dyn MediaPlaybackProvider> {
         None
     }
 

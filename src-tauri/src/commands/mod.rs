@@ -4468,6 +4468,18 @@ pub async fn download_storage_file(
 }
 
 #[tauri::command]
+pub async fn get_storage_media_playback_link(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    file_id: String,
+) -> AppResult<crate::storage::MediaPlaybackLink> {
+    state
+        .storage
+        .get_media_playback_link(account_id, file_id)
+        .await
+}
+
+#[tauri::command]
 pub async fn download_storage_folder(
     state: tauri::State<'_, AppState>,
     account_id: String,
