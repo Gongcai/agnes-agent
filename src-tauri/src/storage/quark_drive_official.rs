@@ -50,6 +50,34 @@ struct QuarkCredential {
     expires_at: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct QuarkCredentialBundle {
+    #[serde(default)]
+    official: Option<QuarkCredential>,
+    #[serde(default)]
+    legacy_cookie: Option<String>,
+}
+
+#[derive(Clone)]
+struct StaticCredentialAccess {
+    credential: Zeroizing<String>,
+}
+
+#[async_trait]
+impl ProviderCredentialAccess for StaticCredentialAccess {
+    async fn load(&self) -> ProviderResult<Option<Zeroizing<String>>> {
+        Ok(Some(self.credential.clone()))
+    }
+
+    async fn store(&self, _credential: Zeroizing<String>) -> ProviderResult<()> {
+        Err(ProviderError::unsupported("静态夸克凭证"))
+    }
+
+    async fn delete(&self) -> ProviderResult<()> {
+        Err(ProviderError::unsupported("静态夸克凭证"))
+    }
+}
+
 fn default_token_type() -> String {
     "Bearer".into()
 }
@@ -139,10 +167,23 @@ impl ProviderFactory for QuarkDriveFactory {
         }
     }
 
+    fn invalidate_account(&self, account_id: &str) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.remove(account_id);
+        }
+        self.legacy_factory.invalidate_account(account_id);
+    }
+
     async fn authorize(
         &self,
         request: ProviderAuthorizationRequest,
     ) -> ProviderResult<ProviderAuthorizationResult> {
+        if request.input.get("cookie").is_some()
+            || request.input.get("cookie_json").is_some()
+            || request.input.get("cookie_json_path").is_some()
+        {
+            return self.legacy_factory.authorize(request).await;
+        }
         let code = request
             .input
             .get("agent_auth_code")
@@ -295,6 +336,42 @@ impl ProviderFactory for QuarkDriveFactory {
                 "夸克官方授权不存在，请重新连接",
             )
         })?;
+        if let Some(bundle) = parse_credential_bundle(stored.as_str()) {
+            let QuarkCredentialBundle {
+                official,
+                legacy_cookie,
+            } = bundle;
+            if let Some(official) = official {
+                let legacy_session = if let Some(cookie) = legacy_cookie {
+                    Some(
+                        self.legacy_factory
+                            .connect(
+                                account,
+                                Arc::new(StaticCredentialAccess {
+                                    credential: Zeroizing::new(cookie),
+                                }),
+                            )
+                            .await?,
+                    )
+                } else {
+                    None
+                };
+                return self
+                    .connect_official(account, credentials, official, legacy_session)
+                    .await;
+            }
+            if let Some(cookie) = legacy_cookie {
+                return self
+                    .legacy_factory
+                    .connect(
+                        account,
+                        Arc::new(StaticCredentialAccess {
+                            credential: Zeroizing::new(cookie),
+                        }),
+                    )
+                    .await;
+            }
+        }
         if parse_credential(stored.as_str()).is_err() {
             if let Ok(session) = self
                 .legacy_factory
@@ -304,7 +381,20 @@ impl ProviderFactory for QuarkDriveFactory {
                 return Ok(session);
             }
         }
-        parse_credential(stored.as_str())?;
+        let official = parse_credential(stored.as_str())?;
+        self.connect_official(account, credentials, official, None)
+            .await
+    }
+}
+
+impl QuarkDriveFactory {
+    async fn connect_official(
+        &self,
+        account: &StorageProviderAccount,
+        credentials: Arc<dyn ProviderCredentialAccess>,
+        _official: QuarkCredential,
+        legacy_session: Option<Arc<dyn ProviderSession>>,
+    ) -> ProviderResult<Arc<dyn ProviderSession>> {
         let mut sessions = self
             .sessions
             .lock()
@@ -315,6 +405,7 @@ impl ProviderFactory for QuarkDriveFactory {
         let session = Arc::new(QuarkDriveSession {
             client: self.client.clone(),
             credentials,
+            legacy_session,
             refresh_lock: Mutex::new(()),
             uploads: Mutex::new(HashMap::new()),
         });
@@ -326,6 +417,7 @@ impl ProviderFactory for QuarkDriveFactory {
 struct QuarkDriveSession {
     client: reqwest::Client,
     credentials: Arc<dyn ProviderCredentialAccess>,
+    legacy_session: Option<Arc<dyn ProviderSession>>,
     refresh_lock: Mutex<()>,
     uploads: Mutex<HashMap<String, QuarkUploadState>>,
 }
@@ -612,7 +704,10 @@ impl SharedFileImportProvider for QuarkDriveSession {
 
 impl ProviderSession for QuarkDriveSession {
     fn file_source(&self) -> Option<&dyn FileSourceProvider> {
-        Some(self)
+        self.legacy_session
+            .as_deref()
+            .and_then(ProviderSession::file_source)
+            .or(Some(self))
     }
     fn quota_source(&self) -> Option<&dyn QuotaProvider> {
         Some(self)
@@ -945,7 +1040,7 @@ impl QuarkDriveSession {
         let stored = self.credentials.load().await?.ok_or_else(|| {
             ProviderError::new(ProviderErrorCategory::Authentication, "夸克官方授权不存在")
         })?;
-        let mut credential = parse_credential(stored.as_str())?;
+        let mut credential = parse_official_credential(stored.as_str())?;
         if force_refresh || credential.expires_at <= now_epoch() + 60 {
             let refresh = credential.refresh_token.clone().ok_or_else(|| {
                 ProviderError::new(
@@ -969,12 +1064,16 @@ impl QuarkDriveSession {
             credential.token_type =
                 string_value(data, &["token_type"]).unwrap_or(credential.token_type);
             credential.expires_at = credential_expiry(data);
-            self.credentials
-                .store(Zeroizing::new(
-                    serde_json::to_string(&credential)
-                        .map_err(|_| invalid_response("夸克授权编码失败"))?,
-                ))
-                .await?;
+            let refreshed = serde_json::to_string(&credential)
+                .map_err(|_| invalid_response("夸克授权编码失败"))?;
+            let stored_value = if let Some(mut bundle) = parse_credential_bundle(stored.as_str()) {
+                bundle.official = Some(credential.clone());
+                serde_json::to_string(&bundle)
+                    .map_err(|_| invalid_response("夸克多凭证编码失败"))?
+            } else {
+                refreshed
+            };
+            self.credentials.store(Zeroizing::new(stored_value)).await?;
         }
         Ok(credential)
     }
@@ -1051,7 +1150,11 @@ fn existing_credentials(input: &Value) -> Vec<QuarkCredential> {
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        .filter_map(|value| serde_json::from_str(value).ok())
+        .filter_map(|value| {
+            parse_credential_bundle(value)
+                .and_then(|bundle| bundle.official)
+                .or_else(|| serde_json::from_str(value).ok())
+        })
         .filter(|credential: &QuarkCredential| {
             !credential.access_token.is_empty() && !credential.user_id.is_empty()
         })
@@ -1287,6 +1390,45 @@ fn parse_credential(value: &str) -> ProviderResult<QuarkCredential> {
         ));
     }
     Ok(credential)
+}
+
+fn parse_credential_bundle(value: &str) -> Option<QuarkCredentialBundle> {
+    let parsed: Value = serde_json::from_str(value).ok()?;
+    let object = parsed.as_object()?;
+    if !object.contains_key("official") && !object.contains_key("legacy_cookie") {
+        return None;
+    }
+    serde_json::from_value(parsed).ok()
+}
+
+pub(crate) fn merge_legacy_cookie(existing: &str, cookie: &str) -> ProviderResult<String> {
+    let mut bundle = if let Some(bundle) = parse_credential_bundle(existing) {
+        bundle
+    } else if let Ok(official) = parse_credential(existing) {
+        QuarkCredentialBundle {
+            official: Some(official),
+            legacy_cookie: None,
+        }
+    } else {
+        QuarkCredentialBundle {
+            official: None,
+            legacy_cookie: None,
+        }
+    };
+    bundle.legacy_cookie = Some(cookie.to_owned());
+    serde_json::to_string(&bundle).map_err(|_| invalid_response("夸克多凭证编码失败"))
+}
+
+fn parse_official_credential(value: &str) -> ProviderResult<QuarkCredential> {
+    if let Some(bundle) = parse_credential_bundle(value) {
+        return bundle.official.ok_or_else(|| {
+            ProviderError::new(
+                ProviderErrorCategory::Authentication,
+                "夸克官方授权凭证不存在",
+            )
+        });
+    }
+    parse_credential(value)
 }
 
 fn remote_file(value: &Value, parent_id: Option<&str>) -> ProviderResult<RemoteFileItem> {
@@ -1640,6 +1782,26 @@ mod tests {
             &[]
         )
         .is_err());
+    }
+
+    #[test]
+    fn merges_cookie_without_dropping_official_credential() {
+        let official = QuarkCredential {
+            access_token: "access".into(),
+            refresh_token: None,
+            device_id: "device".into(),
+            user_id: "user".into(),
+            token_type: "Bearer".into(),
+            expires_at: now_epoch() + 3600,
+        };
+        let stored = serde_json::to_string(&official).unwrap();
+        let merged = merge_legacy_cookie(&stored, "__uid=user; __kps=key").unwrap();
+        let bundle = parse_credential_bundle(&merged).unwrap();
+        assert_eq!(bundle.official.unwrap().access_token, "access");
+        assert_eq!(
+            bundle.legacy_cookie.as_deref(),
+            Some("__uid=user; __kps=key")
+        );
     }
 
     #[test]

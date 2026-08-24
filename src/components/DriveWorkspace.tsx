@@ -124,6 +124,12 @@ interface FileContextMenu {
   y: number;
 }
 
+interface AccountContextMenu {
+  account: StorageAccount;
+  x: number;
+  y: number;
+}
+
 interface MoveDialogState {
   fileIds: string[];
   sourceFolderId: string | null;
@@ -229,11 +235,13 @@ export function DriveWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [authorizationMessage, setAuthorizationMessage] = useState<string | null>(null);
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenu | null>(null);
+  const [accountContextMenu, setAccountContextMenu] = useState<AccountContextMenu | null>(null);
   const [showQuarkAuthorization, setShowQuarkAuthorization] = useState(false);
   const [quarkAuthorizationMode, setQuarkAuthorizationMode] = useState<QuarkAuthorizationMode>("official");
   const [quarkAgentAuthCode, setQuarkAgentAuthCode] = useState("");
   const [quarkCookie, setQuarkCookie] = useState("");
   const [quarkCookieJsonPath, setQuarkCookieJsonPath] = useState<string | null>(null);
+  const [quarkCredentialAccountId, setQuarkCredentialAccountId] = useState<string | null>(null);
   const [showQuarkCookie, setShowQuarkCookie] = useState(false);
   const [quarkAuthorizationChallengeId, setQuarkAuthorizationChallengeId] = useState<string | null>(null);
   const [quarkQrImage, setQuarkQrImage] = useState<string | null>(null);
@@ -341,7 +349,7 @@ export function DriveWorkspace() {
       || !selectedAccount?.provider_installed
       || !selectedAccount.enabled
       || selectedAccount.auth_state !== "connected"
-      || !selectedProvider?.capabilities.browse_files
+      || (!selectedProvider?.capabilities.browse_files && !selectedAccount.browse_files)
     ) {
       fileRequestId.current += 1;
       setFiles([]);
@@ -449,7 +457,7 @@ export function DriveWorkspace() {
 
   useEffect(() => {
     if (view === "files") void loadFiles(false);
-  }, [selectedAccountId, selectedAccount?.auth_state, selectedAccount?.enabled, selectedAccount?.provider_installed, currentFolder.id, view]);
+  }, [selectedAccountId, selectedAccount?.auth_state, selectedAccount?.enabled, selectedAccount?.provider_installed, selectedAccount?.browse_files, currentFolder.id, view]);
 
   useEffect(() => {
     searchRequestId.current += 1;
@@ -475,6 +483,15 @@ export function DriveWorkspace() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [fileContextMenu]);
+
+  useEffect(() => {
+    if (!accountContextMenu) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAccountContextMenu(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [accountContextMenu]);
 
   useEffect(() => {
     let cancelled = false;
@@ -629,20 +646,32 @@ export function DriveWorkspace() {
   const connectQuarkDrive = async () => {
     const cookie = quarkCookie.trim();
     if (!cookie && !quarkCookieJsonPath) return;
+    const supplementalAccountId = quarkCredentialAccountId;
     try {
       setLoading(true);
       setError(null);
-      setAuthorizationMessage("正在验证夸克网盘 Cookie");
-      const accountId = await invoke<string>("authorize_storage_provider", {
-        providerId: "quark_drive",
-        input: quarkCookieJsonPath ? { cookie_json_path: quarkCookieJsonPath } : { cookie },
-      });
+      setAuthorizationMessage(
+        supplementalAccountId ? "正在验证并保存夸克 Cookie" : "正在验证夸克网盘 Cookie",
+      );
+      if (supplementalAccountId) {
+        await invoke("add_storage_provider_credential", {
+          accountId: supplementalAccountId,
+          input: quarkCookieJsonPath ? { cookie_json_path: quarkCookieJsonPath } : { cookie },
+        });
+      } else {
+        const accountId = await invoke<string>("authorize_storage_provider", {
+          providerId: "quark_drive",
+          input: quarkCookieJsonPath ? { cookie_json_path: quarkCookieJsonPath } : { cookie },
+        });
+        setSelectedAccountId(accountId);
+      }
       setQuarkCookie("");
       setQuarkCookieJsonPath(null);
+      setQuarkCredentialAccountId(null);
       setShowQuarkCookie(false);
       setShowQuarkAuthorization(false);
       await loadShell();
-      setSelectedAccountId(accountId);
+      if (supplementalAccountId) setSelectedAccountId(supplementalAccountId);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -749,7 +778,32 @@ export function DriveWorkspace() {
     setQuarkQrImage(null);
     setQuarkAuthorizationStatus(null);
     setQuarkAuthorizationMode("official");
+    setQuarkCredentialAccountId(null);
     setShowQuarkAuthorization(false);
+  };
+
+  const openAccountContextMenu = (event: React.MouseEvent, account: StorageAccount) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (account.provider_id !== "quark_drive") return;
+    const menuWidth = 180;
+    const menuHeight = 42;
+    setAccountContextMenu({
+      account,
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+    });
+  };
+
+  const openQuarkCredentialDialog = (accountId: string) => {
+    setAccountContextMenu(null);
+    setError(null);
+    setQuarkCredentialAccountId(accountId);
+    setQuarkAuthorizationMode("cookie");
+    setQuarkCookie("");
+    setQuarkCookieJsonPath(null);
+    setQuarkAuthorizationStatus(null);
+    setShowQuarkAuthorization(true);
   };
 
   const connectProvider = (providerId: string) => {
@@ -759,6 +813,7 @@ export function DriveWorkspace() {
     }
     if (providerId === "quark_drive") {
       setError(null);
+      setQuarkCredentialAccountId(null);
       setQuarkAuthorizationMode("official");
       setQuarkAuthorizationChallengeId(null);
       setQuarkQrImage(null);
@@ -1162,6 +1217,7 @@ export function DriveWorkspace() {
               <button
                 key={account.id}
                 onClick={() => setSelectedAccountId(account.id)}
+                onContextMenu={(event) => openAccountContextMenu(event, account)}
                 className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left ${
                   account.id === selectedAccountId
                     ? "bg-white text-emerald-700 shadow-sm ring-1 ring-stone-200"
@@ -1709,6 +1765,32 @@ export function DriveWorkspace() {
         </div>
       )}
 
+      {accountContextMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setAccountContextMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setAccountContextMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-50 w-44 overflow-hidden rounded-lg border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl"
+            style={{ left: accountContextMenu.x, top: accountContextMenu.y }}
+          >
+            <button
+              onClick={() => openQuarkCredentialDialog(accountContextMenu.account.id)}
+              disabled={loading}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
+            >
+              <ShieldAlert className="h-3.5 w-3.5 text-emerald-700" />
+              添加鉴权信息
+            </button>
+          </div>
+        </>
+      )}
+
       {knowledgeImportItem && (
         <div
           className="fixed inset-0 z-[60] grid place-items-center bg-black/20 p-4 backdrop-blur-[1px]"
@@ -1754,9 +1836,13 @@ export function DriveWorkspace() {
           <div className="w-full max-w-lg rounded-lg border border-stone-200 bg-[#FAF9F5] shadow-2xl">
             <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3">
               <div>
-                <h2 className="text-sm font-semibold text-stone-900">连接夸克网盘</h2>
+                <h2 className="text-sm font-semibold text-stone-900">
+                  {quarkCredentialAccountId ? "补充夸克鉴权" : "连接夸克网盘"}
+                </h2>
                 <p className="mt-0.5 text-[11px] text-stone-500">
-                  {quarkAuthorizationMode === "official"
+                  {quarkCredentialAccountId
+                    ? "为已连接账户添加 Cookie，用于目录浏览和流式下载"
+                    : quarkAuthorizationMode === "official"
                     ? "使用夸克官方 Agent 授权登录"
                     : quarkAuthorizationMode === "qr"
                       ? "使用夸克 App 扫码登录"
@@ -1773,7 +1859,7 @@ export function DriveWorkspace() {
               </button>
             </div>
             <div className="space-y-4 p-4">
-              <div className="flex rounded-md border border-stone-200 bg-white p-0.5">
+              {!quarkCredentialAccountId ? <div className="flex rounded-md border border-stone-200 bg-white p-0.5">
                 <button
                   onClick={() => {
                     setQuarkAuthorizationMode("official");
@@ -1815,14 +1901,18 @@ export function DriveWorkspace() {
                 >
                   二维码登录
                 </button>
-              </div>
+              </div> : (
+                <div className="rounded-md border border-stone-200 bg-white px-3 py-2 text-center text-xs text-stone-600">
+                  Cookie / JSON 鉴权
+                </div>
+              )}
               {quarkAuthorizationMode !== "official" && (
                 <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
                   <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
                   <span>这是社区逆向 API 适配器，可能因夸克接口变更或风控失效。Cookie 仅保存在本机系统 Keyring。</span>
                 </div>
               )}
-              {quarkAuthorizationMode === "official" ? (
+              {quarkAuthorizationMode === "official" && !quarkCredentialAccountId ? (
                 <div className="flex min-h-72 flex-col items-center justify-center gap-3 px-5 text-center">
                   <ShieldAlert className="h-8 w-8 text-emerald-700" />
                   <p className="text-sm font-medium text-stone-700">
@@ -1943,14 +2033,14 @@ export function DriveWorkspace() {
               >
                 取消
               </button>
-              {quarkAuthorizationMode === "cookie" && (
+                  {quarkAuthorizationMode === "cookie" && (
                 <button
                   onClick={() => void connectQuarkDrive()}
                   disabled={loading || (!quarkCookie.trim() && !quarkCookieJsonPath)}
                   className="flex h-8 items-center gap-2 rounded-md bg-emerald-700 px-3 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-40"
                 >
                   {loading && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
-                  连接
+                    {quarkCredentialAccountId ? "保存鉴权" : "连接"}
                 </button>
               )}
             </div>

@@ -160,6 +160,8 @@ pub trait ProviderSession: Send + Sync {
 pub trait ProviderFactory: Send + Sync {
     fn descriptor(&self) -> ProviderDescriptor;
 
+    fn invalidate_account(&self, _account_id: &str) {}
+
     async fn authorize(
         &self,
         _request: ProviderAuthorizationRequest,

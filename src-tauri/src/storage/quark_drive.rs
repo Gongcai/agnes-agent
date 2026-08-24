@@ -84,6 +84,12 @@ impl ProviderFactory for QuarkDriveFactory {
         }
     }
 
+    fn invalidate_account(&self, account_id: &str) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.remove(account_id);
+        }
+    }
+
     async fn authorize(
         &self,
         request: ProviderAuthorizationRequest,

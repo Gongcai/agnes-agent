@@ -1150,6 +1150,93 @@ impl StorageService {
         Ok(account_id)
     }
 
+    pub async fn add_provider_credential(
+        &self,
+        account_id: String,
+        request: ProviderAuthorizationRequest,
+    ) -> AppResult<()> {
+        let mut row = self
+            .db
+            .get_storage_account(account_id.clone())
+            .await?
+            .ok_or_else(|| AppError::Other("Storage provider account was not found".into()))?;
+        if row.provider_id != "quark_drive" {
+            return Err(AppError::Other(
+                "当前仅支持为夸克网盘账户补充 Cookie 鉴权".into(),
+            ));
+        }
+        let factory = self
+            .registry
+            .factory(&row.provider_id)
+            .map_err(provider_error)?;
+        let authorized = factory.authorize(request).await.map_err(provider_error)?;
+        if row.account_subject.is_some()
+            && authorized.account.account_subject != row.account_subject
+        {
+            return Err(AppError::Other(
+                "补充的 Cookie 不属于当前夸克网盘账户".into(),
+            ));
+        }
+        let previous_credential = self
+            .credentials
+            .load(&account_id)
+            .await
+            .map_err(provider_error)?
+            .ok_or_else(|| AppError::Other("当前账户没有可合并的原有凭证".into()))?;
+        let merged = super::quark_drive_official::merge_legacy_cookie(
+            previous_credential.as_str(),
+            authorized.credential.as_str(),
+        )
+        .map_err(provider_error)?;
+        let expected = Zeroizing::new(merged.clone());
+        self.credentials
+            .store(&account_id, expected.clone())
+            .await
+            .map_err(provider_error)?;
+        let verified = self
+            .credentials
+            .load(&account_id)
+            .await
+            .map_err(provider_error)?;
+        if verified.as_ref().map(|value| value.as_str()) != Some(merged.as_str()) {
+            restore_credential(
+                self.credentials.as_ref(),
+                &account_id,
+                Some(previous_credential),
+            )
+            .await?;
+            return Err(AppError::Other("补充鉴权凭证写入校验失败".into()));
+        }
+
+        let mut capabilities: Value = serde_json::from_str(&row.capabilities_json)?;
+        capabilities["browse_files"] = Value::Bool(true);
+        let capabilities_json = serde_json::to_string(&capabilities)?;
+        let result = self
+            .db
+            .update_storage_binding(
+                account_id.clone(),
+                "connected".into(),
+                row.enabled,
+                capabilities_json,
+                row.quota_used_bytes,
+                row.quota_total_bytes,
+                None,
+            )
+            .await;
+        if let Err(error) = result {
+            restore_credential(
+                self.credentials.as_ref(),
+                &account_id,
+                Some(previous_credential),
+            )
+            .await?;
+            return Err(error);
+        }
+        factory.invalidate_account(&account_id);
+        row.auth_state = "connected".into();
+        Ok(())
+    }
+
     pub async fn begin_authorization(
         &self,
         provider_id: String,
@@ -1260,7 +1347,17 @@ impl StorageService {
             .descriptor(&account.provider_id)
             .map_err(provider_error)?;
         let config_json = serde_json::to_string(&account.config)?;
-        let capabilities_json = serde_json::to_string(&descriptor.capabilities)?;
+        let mut capabilities = descriptor.capabilities;
+        if account.provider_id == "quark_drive"
+            && account
+                .config
+                .get("community_adapter")
+                .and_then(Value::as_bool)
+                == Some(true)
+        {
+            capabilities.browse_files = true;
+        }
+        let capabilities_json = serde_json::to_string(&capabilities)?;
         let previous_credential = self
             .credentials
             .load(&account.id)

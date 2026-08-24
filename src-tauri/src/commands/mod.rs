@@ -4344,6 +4344,21 @@ pub async fn authorize_storage_provider(
 }
 
 #[tauri::command]
+pub async fn add_storage_provider_credential(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    input: serde_json::Value,
+) -> AppResult<()> {
+    state
+        .storage
+        .add_provider_credential(
+            account_id,
+            crate::storage::ProviderAuthorizationRequest { input },
+        )
+        .await
+}
+
+#[tauri::command]
 pub async fn begin_storage_provider_authorization(
     state: tauri::State<'_, AppState>,
     provider_id: String,
