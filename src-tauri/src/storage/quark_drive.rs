@@ -487,7 +487,7 @@ impl MediaPlaybackProvider for QuarkDriveSession {
         request: MediaPlaybackRequest,
     ) -> ProviderResult<MediaPlaybackLink> {
         validate_id(&request.file_id, "文件 ID")?;
-        let response = self
+        let response = match self
             .api_with_playback_options(
                 Method::POST,
                 "file/v2/play/project",
@@ -499,16 +499,17 @@ impl MediaPlaybackProvider for QuarkDriveSession {
                 })),
             )
             .await
-            .map_err(|error| {
-                if is_transcoding_unavailable(&error) {
-                    ProviderError::new(
-                        ProviderErrorCategory::RemoteUnavailable,
-                        "夸克网盘没有可用的转码播放地址，播放失败",
-                    )
-                } else {
-                    error
-                }
-            })?;
+        {
+            Ok(response) => response,
+            Err(error) if is_transcoding_unavailable(&error) => {
+                let cookie = self.cookie().await.ok();
+                return Err(ProviderError::new(
+                    ProviderErrorCategory::RemoteUnavailable,
+                    format_playback_error(&error, cookie.as_deref().map(|value| value.as_str())),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
         parse_media_playback_link(&response)
     }
 }
@@ -1667,6 +1668,21 @@ fn is_transcoding_unavailable(error: &ProviderError) -> bool {
     error.message.to_ascii_lowercase().contains("plf_invalid")
 }
 
+fn format_playback_error(error: &ProviderError, cookie: Option<&str>) -> String {
+    let has_pus = cookie
+        .map(|value| cookie_value(value, "__pus").is_some())
+        .unwrap_or(false);
+    let has_puus = cookie
+        .map(|value| cookie_value(value, "__puus").is_some())
+        .unwrap_or(false);
+    format!(
+        "夸克转码接口返回播放失败：{}；请求=file/v2/play/project，域名=drive.quark.cn，resolutions=low,normal,high,super,2k,4k，supports=fmp4_av,m3u8,dolby_vision；会话字段 __pus={}，__puus={}",
+        error.message,
+        if has_pus { "存在" } else { "缺失" },
+        if has_puus { "存在" } else { "缺失" },
+    )
+}
+
 fn is_https_url(value: &str) -> bool {
     Url::parse(value).is_ok_and(|url| {
         url.scheme() == "https" && url.username().is_empty() && url.password().is_none()
@@ -1912,7 +1928,7 @@ fn value_string(value: &Value, keys: &[&str]) -> Option<String> {
 }
 
 fn api_value_error(value: &Value) -> ProviderError {
-    let message = value_string(value, &["message", "msg", "error_msg"])
+    let message = error_value(value, &["message", "msg", "error_msg"])
         .unwrap_or_else(|| "夸克网盘 API 请求失败".into());
     let lower = message.to_ascii_lowercase();
     let category = if lower.contains("login")
@@ -1929,7 +1945,48 @@ fn api_value_error(value: &Value) -> ProviderError {
     } else {
         ProviderErrorCategory::RemoteUnavailable
     };
+    let mut details = Vec::new();
+    if let Some(code) = error_value(value, &["code", "error_code", "errno"]) {
+        details.push(format!("code={code}"));
+    }
+    if let Some(status) = error_value(value, &["status"]) {
+        details.push(format!("status={status}"));
+    }
+    let message = if details.is_empty() {
+        message
+    } else {
+        format!("{} ({})", message, details.join(", "))
+    };
     ProviderError::new(category, truncate(&message, 1000))
+}
+
+fn error_value(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(safe_scalar)
+            .or_else(|| {
+                value
+                    .get("data")
+                    .and_then(|data| data.get(*key))
+                    .and_then(safe_scalar)
+            })
+            .or_else(|| {
+                value
+                    .get("error")
+                    .and_then(|error| error.get(*key))
+                    .and_then(safe_scalar)
+            })
+    })
+}
+
+fn safe_scalar(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) if !value.trim().is_empty() => Some(truncate(value, 300)),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 fn status_error(status: StatusCode, message: &str) -> ProviderError {
@@ -2244,6 +2301,22 @@ mod tests {
             ProviderErrorCategory::RateLimit,
             "download file size limit"
         )));
+    }
+
+    #[test]
+    fn playback_failure_diagnostic_preserves_safe_api_details() {
+        let message = format_playback_error(
+            &ProviderError::new(
+                ProviderErrorCategory::RemoteUnavailable,
+                "data invalid: [plf_invalid] (code=400, status=failed)",
+            ),
+            Some("__uid=u; __kps=k; __pus=p"),
+        );
+        assert!(message.contains("plf_invalid"));
+        assert!(message.contains("code=400"));
+        assert!(message.contains("__pus=存在"));
+        assert!(message.contains("__puus=缺失"));
+        assert!(!message.contains("__kps=k"));
     }
 
     #[test]
