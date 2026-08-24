@@ -695,6 +695,7 @@ export function DriveWorkspace() {
     if (!code) return;
     try {
       setQuarkQrLoading(true);
+      setQuarkAuthorizationChallengeId(null);
       setError(null);
       setQuarkAuthorizationStatus("正在兑换官方授权码...");
       const accountId = await invoke<string>("authorize_storage_provider", {
@@ -1836,6 +1837,7 @@ export function DriveWorkspace() {
                     <input
                       value={quarkAgentAuthCode}
                       onChange={(event) => setQuarkAgentAuthCode(event.target.value)}
+                      onFocus={() => setQuarkAuthorizationChallengeId(null)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter") void connectQuarkOfficialCode();
                       }}

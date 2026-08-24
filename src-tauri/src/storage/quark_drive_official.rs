@@ -33,6 +33,7 @@ const PROVIDER_ID: &str = "quark_drive";
 const OPEN_API: &str = "https://open-api-drive.quark.cn";
 const CLIENT_ID: &str = "third_party_agent";
 const AGENT_ID: &str = "openclaw";
+const AUTH_SCOPE: &str = "clouddrive.base clouddrive.netdisk";
 const SIGN_KEY: &str = "cf134812e2de4032bd1cb7c3727e84b3";
 const DEFAULT_DEVICE_ID: &str = "agnes_agent";
 const DEFAULT_PLATFORM: &str = "linux";
@@ -164,10 +165,16 @@ impl ProviderFactory for QuarkDriveFactory {
         )
         .await?;
         let data = response_data(&response)?;
-        let authorize_url = string_value(data, &["authorize_page_url", "url"])
+        let raw_authorize_url = string_value(data, &["authorize_page_url", "url"])
             .ok_or_else(|| invalid_response("夸克官方授权接口未返回授权地址"))?;
         let page_code = string_value(data, &["page_code"])
             .ok_or_else(|| invalid_response("夸克官方授权接口未返回 page_code"))?;
+        let server_device_id = string_value(data, &["device_id"]);
+        let authorize_url = build_authorize_url(
+            &raw_authorize_url,
+            server_device_id.as_deref(),
+            &client_device_id,
+        )?;
         let challenge_id = uuid::Uuid::new_v4().to_string();
         self.challenges
             .lock()
@@ -1016,10 +1023,51 @@ fn existing_credentials(input: &Value) -> Vec<QuarkCredential> {
         .collect()
 }
 
+fn build_authorize_url(
+    raw_url: &str,
+    server_device_id: Option<&str>,
+    client_device_id: &str,
+) -> ProviderResult<String> {
+    let mut url = Url::parse(raw_url).map_err(|_| invalid_response("夸克官方授权地址无效"))?;
+    let mut params = url.query_pairs().into_owned().collect::<Vec<_>>();
+    let set_param = |params: &mut Vec<(String, String)>, key: &str, value: &str| {
+        params.retain(|(name, _)| name != key);
+        params.push((key.into(), value.into()));
+    };
+    let set_param_if_absent = |params: &mut Vec<(String, String)>, key: &str, value: &str| {
+        if !params.iter().any(|(name, _)| name == key) {
+            params.push((key.into(), value.into()));
+        }
+    };
+    set_param(&mut params, "client_id", CLIENT_ID);
+    set_param(&mut params, "scope", AUTH_SCOPE);
+    set_param(&mut params, "redirect_uri", "");
+    if let Some(device_id) = server_device_id.filter(|value| !value.is_empty()) {
+        set_param_if_absent(&mut params, "device_id", device_id);
+    }
+    set_param_if_absent(&mut params, "client_device_id", client_device_id);
+    set_param_if_absent(&mut params, "device_name", "Agnes Agent");
+    set_param_if_absent(&mut params, "agent_id", AGENT_ID);
+    url.set_query(None);
+    {
+        let mut query = url.query_pairs_mut();
+        for (key, value) in params {
+            query.append_pair(&key, &value);
+        }
+    }
+    Ok(url.to_string())
+}
+
 fn credential_from_exchange(
     exchange: AgentAuthExchange,
     existing: &[QuarkCredential],
 ) -> ProviderResult<QuarkCredential> {
+    if exchange.status.as_deref() == Some("expired") {
+        return Err(ProviderError::new(
+            ProviderErrorCategory::Authentication,
+            "夸克授权码已过期，请重新打开授权页并立即完成授权",
+        ));
+    }
     if exchange.status.as_deref() == Some("second_confirmed") {
         let user_id = exchange.user_id.ok_or_else(|| {
             ProviderError::new(
@@ -1574,6 +1622,35 @@ mod tests {
             &[]
         )
         .is_err());
+    }
+
+    #[test]
+    fn builds_authorize_url_with_skill_parameters() {
+        let url = build_authorize_url(
+            "https://pan.quark.cn/authorize?foo=bar&device_name=Server%20Name",
+            Some("server-device"),
+            "client-device",
+        )
+        .unwrap();
+        let parsed = Url::parse(&url).unwrap();
+        let params = parsed.query_pairs().into_owned().collect::<HashMap<_, _>>();
+        assert_eq!(params.get("client_id").map(String::as_str), Some(CLIENT_ID));
+        assert_eq!(params.get("scope").map(String::as_str), Some(AUTH_SCOPE));
+        assert_eq!(params.get("redirect_uri").map(String::as_str), Some(""));
+        assert_eq!(
+            params.get("device_id").map(String::as_str),
+            Some("server-device")
+        );
+        assert_eq!(
+            params.get("client_device_id").map(String::as_str),
+            Some("client-device")
+        );
+        assert_eq!(
+            params.get("device_name").map(String::as_str),
+            Some("Server Name")
+        );
+        assert_eq!(params.get("agent_id").map(String::as_str), Some(AGENT_ID));
+        assert_eq!(params.get("foo").map(String::as_str), Some("bar"));
     }
 
     #[tokio::test]
