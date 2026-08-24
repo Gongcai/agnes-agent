@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, OnceCell};
@@ -186,10 +187,17 @@ async fn handle_connection(
         ("Cache-Control".to_owned(), "no-store".to_owned()),
         ("Connection".to_owned(), "close".to_owned()),
         (
+            "Content-Disposition".to_owned(),
+            content_disposition(&session.metadata.name),
+        ),
+        (
             "Content-Type".to_owned(),
             content_type(&session.metadata).to_owned(),
         ),
     ];
+    if let Some(revision) = session.metadata.revision.as_deref() {
+        response_headers.push(("ETag".to_owned(), format!("\"{revision}\"")));
+    }
     if let Some(length) = content_length {
         response_headers.push(("Content-Length".to_owned(), length.to_string()));
     }
@@ -201,7 +209,15 @@ async fn handle_connection(
         return Ok(());
     }
     if let Err(error) = forward_provider_ranges(&mut stream, &storage, &session, range).await {
-        eprintln!("[storage][media-proxy] {error}");
+        match error {
+            ForwardError::Upstream { error, .. } => {
+                eprintln!("[storage][media-proxy] upstream stream failed: {error}");
+            }
+            ForwardError::Client(error) if !is_client_disconnect(&error) => {
+                eprintln!("[storage][media-proxy] client stream failed: {error}");
+            }
+            ForwardError::Client(_) => {}
+        }
     }
     Ok(())
 }
@@ -302,6 +318,38 @@ fn content_type(metadata: &StorageFileStreamMetadata) -> &str {
         .unwrap_or("application/octet-stream")
 }
 
+fn content_disposition(name: &str) -> String {
+    let fallback = name
+        .chars()
+        .map(|value| match value {
+            '"' | '\\' | '\r' | '\n' => '_',
+            value if value.is_ascii() && !value.is_ascii_control() => value,
+            _ => '_',
+        })
+        .collect::<String>();
+    let fallback = if fallback.is_empty() {
+        "media".to_owned()
+    } else {
+        fallback
+    };
+    let encoded = utf8_percent_encode(name, NON_ALPHANUMERIC);
+    format!("inline; filename=\"{fallback}\"; filename*=UTF-8''{encoded}")
+}
+
+fn is_client_disconnect(error: &str) -> bool {
+    [
+        "broken pipe",
+        "connection reset",
+        "connection aborted",
+        "os error 32",
+        "os error 104",
+        "断开的管道",
+        "连接被对方重置",
+    ]
+    .iter()
+    .any(|marker| error.to_ascii_lowercase().contains(marker))
+}
+
 async fn read_request(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
     let mut request = Vec::with_capacity(1024);
     let mut chunk = [0_u8; 1024];
@@ -345,7 +393,7 @@ async fn forward_provider_ranges(
     storage: &StorageService,
     session: &PlaybackSession,
     range: RequestRange,
-) -> Result<(), String> {
+) -> Result<(), ForwardError> {
     let Some((mut start, end)) = stream_bounds(range, session.metadata.size) else {
         let source = storage
             .stream_file_for_proxy(
@@ -358,13 +406,13 @@ async fn forward_provider_ranges(
                 &session.account_id,
             )
             .await
-            .map_err(|error| format!("上游流获取失败: {error}"))?;
-        match forward_stream(stream, source).await {
+            .map_err(|error| ForwardError::Upstream {
+                bytes: 0,
+                error: format!("上游流获取失败: {error}"),
+            })?;
+        match forward_stream(stream, source, None).await {
             Ok(_) => {}
-            Err(ForwardError::Client(error)) => return Err(error),
-            Err(ForwardError::Upstream { error, .. }) => {
-                return Err(format!("上游流传输失败: {error}"));
-            }
+            Err(error) => return Err(error),
         }
         return Ok(());
     };
@@ -387,30 +435,36 @@ async fn forward_provider_ranges(
                     &session.account_id,
                 )
                 .await
-                .map_err(|error| format!("上游流获取失败: {error}"))?;
-            match forward_stream(stream, source).await {
+                .map_err(|error| ForwardError::Upstream {
+                    bytes: 0,
+                    error: format!("上游流获取失败: {error}"),
+                })?;
+            match forward_stream(stream, source, Some(expected - delivered)).await {
                 Ok(bytes) => {
                     delivered = delivered.saturating_add(bytes);
                     if bytes == 0 {
                         if attempts >= UPSTREAM_RETRIES {
-                            return Err("上游流提前结束".into());
+                            return Err(ForwardError::Upstream {
+                                bytes: delivered,
+                                error: "上游流提前结束".into(),
+                            });
                         }
                         attempts += 1;
                         retry_upstream(attempts).await;
                     }
                 }
-                Err(ForwardError::Client(error)) => return Err(error),
+                Err(ForwardError::Client(error)) => return Err(ForwardError::Client(error)),
                 Err(ForwardError::Upstream { bytes, error }) => {
                     delivered = delivered.saturating_add(bytes);
                     if attempts >= UPSTREAM_RETRIES {
-                        return Err(format!("上游流传输失败: {error}"));
+                        return Err(ForwardError::Upstream {
+                            bytes: delivered,
+                            error: format!("上游流传输失败: {error}"),
+                        });
                     }
                     attempts += 1;
                     retry_upstream(attempts).await;
                 }
-            }
-            if delivered > expected {
-                return Err("上游流超过请求的 Range 大小".into());
             }
         }
         start = part_end.saturating_add(1);
@@ -429,6 +483,7 @@ async fn retry_upstream(attempt: usize) {
     tokio::time::sleep(Duration::from_millis(150 * attempt as u64)).await;
 }
 
+#[derive(Debug)]
 enum ForwardError {
     Upstream { bytes: u64, error: String },
     Client(String),
@@ -437,6 +492,7 @@ enum ForwardError {
 async fn forward_stream(
     stream: &mut TcpStream,
     mut source: ProviderByteStream,
+    max_bytes: Option<u64>,
 ) -> Result<u64, ForwardError> {
     let mut bytes = 0_u64;
     while let Some(chunk) = source.next().await {
@@ -449,11 +505,25 @@ async fn forward_stream(
                 });
             }
         };
+        let chunk = if let Some(max_bytes) = max_bytes {
+            let remaining = max_bytes.saturating_sub(bytes);
+            if remaining == 0 {
+                break;
+            }
+            &chunk[..chunk
+                .len()
+                .min(usize::try_from(remaining).unwrap_or(usize::MAX))]
+        } else {
+            &chunk[..]
+        };
         bytes = bytes.saturating_add(chunk.len() as u64);
         stream
-            .write_all(&chunk)
+            .write_all(chunk)
             .await
             .map_err(|error| ForwardError::Client(error.to_string()))?;
+        if max_bytes.is_some_and(|max_bytes| bytes >= max_bytes) {
+            break;
+        }
     }
     Ok(bytes)
 }
@@ -572,5 +642,21 @@ mod tests {
             Some((10, 99))
         );
         assert_eq!(stream_bounds(RequestRange::Full, None), None);
+    }
+
+    #[test]
+    fn creates_safe_inline_content_disposition() {
+        let header = content_disposition("视频 \"预览\".mpv");
+        assert!(header.starts_with("inline; filename=\""));
+        assert!(header.contains(".mpv\"; filename*=UTF-8''"));
+        assert!(header.contains("%E8%A7%86%E9%A2%91"));
+        assert!(!header.contains('\n'));
+    }
+
+    #[test]
+    fn identifies_expected_client_disconnects() {
+        assert!(is_client_disconnect("断开的管道 (os error 32)"));
+        assert!(is_client_disconnect("connection reset by peer"));
+        assert!(!is_client_disconnect("上游流提前结束"));
     }
 }

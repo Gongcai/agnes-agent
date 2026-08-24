@@ -1800,11 +1800,22 @@ export function DriveWorkspace() {
               playsInline
               preload="metadata"
               onError={() => {
-                setMediaPlaybackFallbackItem(mediaPlayback.item);
+                const mediaError = mediaElement.current?.error;
+                const reason = mediaError
+                  ? {
+                      1: "播放请求已中止",
+                      2: "媒体网络请求失败，代理连接可能已中断",
+                      3: "媒体解码失败，当前 WebView 可能不支持此视频容器或编码",
+                      4: "当前 WebView 不支持此媒体格式或播放地址",
+                    }[mediaError.code] ?? `媒体播放失败（错误码 ${mediaError.code}）`
+                  : "媒体播放失败，未返回具体错误信息";
+                setMediaPlaybackFallbackItem(
+                  mediaPlayback.link.protocol === "range" ? null : mediaPlayback.item,
+                );
                 setError(
                   mediaPlayback.link.protocol === "range"
-                    ? "原文件播放失败，请检查文件格式或网络后重试"
-                    : "播放地址不可用，请稍后重试",
+                    ? `原文件播放失败：${reason}`
+                    : reason,
                 );
               }}
             />
