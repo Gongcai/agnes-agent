@@ -470,6 +470,7 @@ fn main() {
             commands::list_storage_accounts,
             commands::authorize_storage_provider,
             commands::begin_storage_provider_authorization,
+            commands::open_storage_authorization_url,
             commands::poll_storage_provider_authorization,
             commands::list_storage_files,
             commands::search_storage_files,

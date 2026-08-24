@@ -4359,6 +4359,25 @@ pub async fn begin_storage_provider_authorization(
 }
 
 #[tauri::command]
+pub fn open_storage_authorization_url(provider_id: String, url: String) -> AppResult<()> {
+    if provider_id != "quark_drive" {
+        return Err(AppError::Other("当前仅允许打开夸克网盘授权地址".into()));
+    }
+    let parsed =
+        reqwest::Url::parse(&url).map_err(|_| AppError::Other("夸克授权地址无效".into()))?;
+    let host = parsed.host_str().unwrap_or_default();
+    if parsed.scheme() != "https"
+        || !matches!(host, "pan.quark.cn" | "www.pan.quark.cn")
+        || parsed.username() != ""
+        || parsed.port().is_some()
+    {
+        return Err(AppError::Other("夸克授权地址不受信任".into()));
+    }
+    open::that(parsed.as_str())
+        .map_err(|error| AppError::Other(format!("无法打开夸克授权页面：{error}")))
+}
+
+#[tauri::command]
 pub async fn poll_storage_provider_authorization(
     state: tauri::State<'_, AppState>,
     provider_id: String,

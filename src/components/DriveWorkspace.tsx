@@ -131,14 +131,14 @@ interface MoveDialogState {
 }
 
 type DriveView = "files" | "transfers";
-type QuarkAuthorizationMode = "cookie" | "qr";
+type QuarkAuthorizationMode = "official" | "cookie" | "qr";
 type TransferSpeedSample = { timestamp: number; bytes: number };
 
 interface StorageAuthorizationChallenge {
   challenge_id: string;
   provider_id: string;
   kind: string;
-  payload: { qr_url?: string };
+  payload: { authorize_url?: string; qr_url?: string };
   expires_at: string | null;
 }
 
@@ -230,13 +230,13 @@ export function DriveWorkspace() {
   const [authorizationMessage, setAuthorizationMessage] = useState<string | null>(null);
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenu | null>(null);
   const [showQuarkAuthorization, setShowQuarkAuthorization] = useState(false);
-  const [quarkAuthorizationMode, setQuarkAuthorizationMode] = useState<QuarkAuthorizationMode>("cookie");
+  const [quarkAuthorizationMode, setQuarkAuthorizationMode] = useState<QuarkAuthorizationMode>("official");
   const [quarkCookie, setQuarkCookie] = useState("");
   const [quarkCookieJsonPath, setQuarkCookieJsonPath] = useState<string | null>(null);
   const [showQuarkCookie, setShowQuarkCookie] = useState(false);
-  const [quarkQrChallengeId, setQuarkQrChallengeId] = useState<string | null>(null);
+  const [quarkAuthorizationChallengeId, setQuarkAuthorizationChallengeId] = useState<string | null>(null);
   const [quarkQrImage, setQuarkQrImage] = useState<string | null>(null);
-  const [quarkQrStatus, setQuarkQrStatus] = useState<string | null>(null);
+  const [quarkAuthorizationStatus, setQuarkAuthorizationStatus] = useState<string | null>(null);
   const [quarkQrLoading, setQuarkQrLoading] = useState(false);
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
   const [fileSort, setFileSort] = useState<DriveSort>({ key: "name", direction: "asc" });
@@ -521,7 +521,11 @@ export function DriveWorkspace() {
   }, []);
 
   useEffect(() => {
-    if (!showQuarkAuthorization || quarkAuthorizationMode !== "qr" || !quarkQrChallengeId) return;
+    if (
+      !showQuarkAuthorization
+      || !["official", "qr"].includes(quarkAuthorizationMode)
+      || !quarkAuthorizationChallengeId
+    ) return;
     let cancelled = false;
     let polling = false;
     const poll = async () => {
@@ -530,12 +534,12 @@ export function DriveWorkspace() {
       try {
         const result = await invoke<StorageAuthorizationProgress>(
           "poll_storage_provider_authorization",
-          { providerId: "quark_drive", challengeId: quarkQrChallengeId },
+          { providerId: "quark_drive", challengeId: quarkAuthorizationChallengeId },
         );
         if (cancelled) return;
         if (result.status === "completed" && result.account_id) {
-          setQuarkQrStatus("登录成功，正在加载账户");
-          setQuarkQrChallengeId(null);
+          setQuarkAuthorizationStatus("登录成功，正在加载账户");
+          setQuarkAuthorizationChallengeId(null);
           await loadShell();
           if (!cancelled) {
             setSelectedAccountId(result.account_id);
@@ -543,13 +547,21 @@ export function DriveWorkspace() {
           }
           return;
         }
-        setQuarkQrStatus("等待扫码，扫码后请在手机上确认登录");
+        setQuarkAuthorizationStatus(
+          quarkAuthorizationMode === "official"
+            ? "等待浏览器完成夸克授权"
+            : "等待扫码，扫码后请在手机上确认登录",
+        );
       } catch (reason) {
         if (!cancelled) {
           const message = String(reason);
-          setQuarkQrStatus(`二维码登录检查失败：${message}`);
+          setQuarkAuthorizationStatus(
+            quarkAuthorizationMode === "official"
+              ? `官方授权检查失败：${message}`
+              : `二维码登录检查失败：${message}`,
+          );
           if (message.includes("过期") || message.includes("不存在")) {
-            setQuarkQrChallengeId(null);
+            setQuarkAuthorizationChallengeId(null);
             setQuarkQrImage(null);
           }
         }
@@ -563,7 +575,7 @@ export function DriveWorkspace() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [showQuarkAuthorization, quarkAuthorizationMode, quarkQrChallengeId]);
+  }, [showQuarkAuthorization, quarkAuthorizationMode, quarkAuthorizationChallengeId]);
 
   const refreshQuota = async () => {
     if (!selectedAccountId) return;
@@ -640,12 +652,39 @@ export function DriveWorkspace() {
     if (typeof selected === "string") setQuarkCookieJsonPath(selected);
   };
 
+  const startQuarkOfficialAuthorization = async () => {
+    try {
+      setQuarkQrLoading(true);
+      setQuarkQrImage(null);
+      setQuarkAuthorizationChallengeId(null);
+      setQuarkAuthorizationStatus("正在获取官方授权页面...");
+      setError(null);
+      const challenge = await invoke<StorageAuthorizationChallenge>(
+        "begin_storage_provider_authorization",
+        { providerId: "quark_drive", input: {} },
+      );
+      const authorizeUrl = challenge.payload.authorize_url;
+      if (!authorizeUrl) throw new Error("夸克官方未返回授权地址");
+      await invoke("open_storage_authorization_url", {
+        providerId: "quark_drive",
+        url: authorizeUrl,
+      });
+      setQuarkAuthorizationChallengeId(challenge.challenge_id);
+      setQuarkAuthorizationStatus("已打开浏览器，请完成夸克授权");
+    } catch (reason) {
+      setQuarkAuthorizationStatus("官方授权页面打开失败，请重试");
+      setError(String(reason));
+    } finally {
+      setQuarkQrLoading(false);
+    }
+  };
+
   const startQuarkQrLogin = async () => {
     try {
       setQuarkQrLoading(true);
       setQuarkQrImage(null);
-      setQuarkQrChallengeId(null);
-      setQuarkQrStatus("正在获取二维码...");
+      setQuarkAuthorizationChallengeId(null);
+      setQuarkAuthorizationStatus("正在获取二维码...");
       setError(null);
       const challenge = await invoke<StorageAuthorizationChallenge>(
         "begin_storage_provider_authorization",
@@ -659,10 +698,10 @@ export function DriveWorkspace() {
         width: 240,
       });
       setQuarkQrImage(image);
-      setQuarkQrChallengeId(challenge.challenge_id);
-      setQuarkQrStatus("请使用夸克 App 扫描二维码");
+      setQuarkAuthorizationChallengeId(challenge.challenge_id);
+      setQuarkAuthorizationStatus("请使用夸克 App 扫描二维码");
     } catch (reason) {
-      setQuarkQrStatus("二维码获取失败，请重试");
+      setQuarkAuthorizationStatus("二维码获取失败，请重试");
       setError(String(reason));
     } finally {
       setQuarkQrLoading(false);
@@ -672,10 +711,10 @@ export function DriveWorkspace() {
   const closeQuarkAuthorization = () => {
     setQuarkCookie("");
     setQuarkCookieJsonPath(null);
-    setQuarkQrChallengeId(null);
+    setQuarkAuthorizationChallengeId(null);
     setQuarkQrImage(null);
-    setQuarkQrStatus(null);
-    setQuarkAuthorizationMode("cookie");
+    setQuarkAuthorizationStatus(null);
+    setQuarkAuthorizationMode("official");
     setShowQuarkAuthorization(false);
   };
 
@@ -686,10 +725,11 @@ export function DriveWorkspace() {
     }
     if (providerId === "quark_drive") {
       setError(null);
-      setQuarkAuthorizationMode("cookie");
-      setQuarkQrChallengeId(null);
+      setQuarkAuthorizationMode("official");
+      setQuarkAuthorizationChallengeId(null);
       setQuarkQrImage(null);
       setShowQuarkAuthorization(true);
+      void startQuarkOfficialAuthorization();
     }
   };
 
@@ -1682,7 +1722,11 @@ export function DriveWorkspace() {
               <div>
                 <h2 className="text-sm font-semibold text-stone-900">连接夸克网盘</h2>
                 <p className="mt-0.5 text-[11px] text-stone-500">
-                  {quarkAuthorizationMode === "qr" ? "使用夸克 App 扫码登录" : "粘贴或导入 pan.quark.cn 登录 Cookie"}
+                  {quarkAuthorizationMode === "official"
+                    ? "使用夸克官方 Agent 授权登录"
+                    : quarkAuthorizationMode === "qr"
+                      ? "使用夸克 App 扫码登录"
+                      : "粘贴或导入 pan.quark.cn 登录 Cookie"}
                 </p>
               </div>
               <button
@@ -1697,7 +1741,25 @@ export function DriveWorkspace() {
             <div className="space-y-4 p-4">
               <div className="flex rounded-md border border-stone-200 bg-white p-0.5">
                 <button
-                  onClick={() => setQuarkAuthorizationMode("cookie")}
+                  onClick={() => {
+                    setQuarkAuthorizationMode("official");
+                    setQuarkAuthorizationChallengeId(null);
+                    setQuarkQrImage(null);
+                    if (!quarkQrLoading) void startQuarkOfficialAuthorization();
+                  }}
+                  disabled={loading || quarkQrLoading}
+                  className={`flex-1 rounded px-3 py-1.5 text-xs font-medium ${
+                    quarkAuthorizationMode === "official" ? "bg-stone-100 text-stone-900" : "text-stone-500"
+                  }`}
+                >
+                  官方授权
+                </button>
+                <button
+                  onClick={() => {
+                    setQuarkAuthorizationMode("cookie");
+                    setQuarkAuthorizationChallengeId(null);
+                    setQuarkQrImage(null);
+                  }}
                   disabled={loading}
                   className={`flex-1 rounded px-3 py-1.5 text-xs font-medium ${
                     quarkAuthorizationMode === "cookie" ? "bg-stone-100 text-stone-900" : "text-stone-500"
@@ -1708,7 +1770,9 @@ export function DriveWorkspace() {
                 <button
                   onClick={() => {
                     setQuarkAuthorizationMode("qr");
-                    if (!quarkQrChallengeId && !quarkQrImage && !quarkQrLoading) void startQuarkQrLogin();
+                    setQuarkAuthorizationChallengeId(null);
+                    setQuarkQrImage(null);
+                    if (!quarkQrLoading) void startQuarkQrLogin();
                   }}
                   disabled={loading || quarkQrLoading}
                   className={`flex-1 rounded px-3 py-1.5 text-xs font-medium ${
@@ -1718,15 +1782,37 @@ export function DriveWorkspace() {
                   二维码登录
                 </button>
               </div>
-              <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
-                <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>这是社区逆向 API 适配器，可能因夸克接口变更或风控失效。Cookie 仅保存在本机系统 Keyring。</span>
-              </div>
-              {quarkAuthorizationMode === "qr" ? (
+              {quarkAuthorizationMode !== "official" && (
+                <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
+                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>这是社区逆向 API 适配器，可能因夸克接口变更或风控失效。Cookie 仅保存在本机系统 Keyring。</span>
+                </div>
+              )}
+              {quarkAuthorizationMode === "official" ? (
+                <div className="flex min-h-72 flex-col items-center justify-center gap-3 px-5 text-center">
+                  <ShieldAlert className="h-8 w-8 text-emerald-700" />
+                  <p className="text-sm font-medium text-stone-700">
+                    {quarkAuthorizationStatus ?? "正在准备官方授权"}
+                  </p>
+                  <p className="max-w-sm text-[11px] leading-5 text-stone-500">
+                    授权页面会在系统浏览器中打开。完成授权后，此应用会自动保存官方 access token，并使用官方 Skill API 下载文件。
+                  </p>
+                  {(!quarkAuthorizationChallengeId || quarkAuthorizationStatus?.includes("失败")) && (
+                    <button
+                      onClick={() => void startQuarkOfficialAuthorization()}
+                      disabled={quarkQrLoading}
+                      className="flex h-9 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-xs font-medium text-stone-600 hover:bg-stone-50 disabled:opacity-50"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      重新打开授权页
+                    </button>
+                  )}
+                </div>
+              ) : quarkAuthorizationMode === "qr" ? (
                 <div className="flex min-h-72 flex-col items-center justify-center gap-3">
                   {quarkQrImage ? (
                     <img src={quarkQrImage} alt="夸克网盘登录二维码" className="h-60 w-60 rounded-md bg-white p-2" />
-                  ) : quarkQrStatus?.includes("失败") || quarkQrStatus?.includes("过期") ? (
+                  ) : quarkAuthorizationStatus?.includes("失败") || quarkAuthorizationStatus?.includes("过期") ? (
                     <button
                       onClick={() => void startQuarkQrLogin()}
                       className="flex h-9 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-xs font-medium text-stone-600 hover:bg-stone-50"
@@ -1737,7 +1823,7 @@ export function DriveWorkspace() {
                   ) : (
                     <LoaderCircle className="h-7 w-7 animate-spin text-stone-400" />
                   )}
-                  <p className="text-center text-xs text-stone-500">{quarkQrStatus ?? "正在准备二维码"}</p>
+                  <p className="text-center text-xs text-stone-500">{quarkAuthorizationStatus ?? "正在准备二维码"}</p>
                   <p className="text-center text-[11px] text-stone-400">二维码有效期约 5 分钟，过期后重新切换此页获取</p>
                 </div>
               ) : (

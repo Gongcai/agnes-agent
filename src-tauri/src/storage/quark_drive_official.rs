@@ -32,6 +32,7 @@ use super::quark_drive::QuarkDriveFactory as LegacyQuarkDriveFactory;
 const PROVIDER_ID: &str = "quark_drive";
 const OPEN_API: &str = "https://open-api-drive.quark.cn";
 const CLIENT_ID: &str = "third_party_agent";
+const AGENT_ID: &str = "openclaw";
 const SIGN_KEY: &str = "cf134812e2de4032bd1cb7c3727e84b3";
 const DEFAULT_DEVICE_ID: &str = "agnes_agent";
 const DEFAULT_PLATFORM: &str = "linux";
@@ -88,7 +89,7 @@ impl ProviderFactory for QuarkDriveFactory {
         ProviderDescriptor {
             id: PROVIDER_ID.into(),
             display_name: "夸克网盘".into(),
-            auth_kind: ProviderAuthKind::OAuth2Pkce,
+            auth_kind: ProviderAuthKind::BrowserSession,
             stability: ProviderStability::Official,
             implementation_version: "quark-open-api-v1".into(),
             capabilities: StorageCapabilities {
@@ -140,11 +141,11 @@ impl ProviderFactory for QuarkDriveFactory {
             Some(json!({
                 "client_device_id": client_device_id,
                 "device_name": "Agnes Agent",
-                "agent_id": "agnes-agent",
+                "agent_id": AGENT_ID,
                 "client_id": CLIENT_ID,
                 "work_dir": "agnes-agent",
-                "is_cloud_agent": false,
-                "is_unsure_agent": false
+                "is_cloud_agent": "false",
+                "is_unsure_agent": "false"
             })),
         )
         .await?;
@@ -354,7 +355,7 @@ impl FileSourceProvider for QuarkDriveSession {
             ));
         }
         let response = self
-            .api(
+            .api_without_device_params(
                 Method::POST,
                 "/open/v1/file/get_download_url",
                 vec![],
@@ -834,14 +835,38 @@ impl QuarkDriveSession {
         query: Vec<(String, String)>,
         body: Option<Value>,
     ) -> ProviderResult<Value> {
+        self.api_with_options(method, path, query, body, true).await
+    }
+
+    async fn api_without_device_params(
+        &self,
+        method: Method,
+        path: &str,
+        query: Vec<(String, String)>,
+        body: Option<Value>,
+    ) -> ProviderResult<Value> {
+        self.api_with_options(method, path, query, body, false)
+            .await
+    }
+
+    async fn api_with_options(
+        &self,
+        method: Method,
+        path: &str,
+        query: Vec<(String, String)>,
+        body: Option<Value>,
+        include_device_params: bool,
+    ) -> ProviderResult<Value> {
         let mut retried = false;
         loop {
             let credential = self.credential(false).await?;
             let mut query = query.clone();
             query.push(("req_id".into(), request_id()));
             query.push(("access_token".into(), credential.access_token.clone()));
-            query.push(("device_id".into(), credential.device_id.clone()));
-            query.push(("platform".into(), DEFAULT_PLATFORM.into()));
+            if include_device_params {
+                query.push(("device_id".into(), credential.device_id.clone()));
+                query.push(("platform".into(), DEFAULT_PLATFORM.into()));
+            }
             let response =
                 signed_request(&self.client, method.clone(), path, query, body.clone()).await;
             match response {
@@ -881,9 +906,11 @@ impl QuarkDriveSession {
             let data = response_data(&response)?;
             credential.access_token = string_value(data, &["access_token"])
                 .ok_or_else(|| invalid_response("夸克刷新接口未返回 access_token"))?;
-            credential.refresh_token = string_value(data, &["refresh_token"]);
-            credential.expires_at =
-                now_epoch() + number_value(data, &["expires_in"]).unwrap_or(3600);
+            credential.refresh_token =
+                string_value(data, &["refresh_token"]).or(credential.refresh_token);
+            credential.token_type =
+                string_value(data, &["token_type"]).unwrap_or(credential.token_type);
+            credential.expires_at = credential_expiry(data);
             self.credentials
                 .store(Zeroizing::new(
                     serde_json::to_string(&credential)
@@ -961,9 +988,23 @@ async fn exchange_agent_auth_code(
         refresh_token: string_value(data, &["refresh_token"]),
         device_id: string_value(data, &["device_id"]).unwrap_or_else(|| DEFAULT_DEVICE_ID.into()),
         user_id,
-        token_type: default_token_type(),
-        expires_at: now_epoch() + number_value(data, &["expires_in"]).unwrap_or(3600),
+        token_type: string_value(data, &["token_type"]).unwrap_or_else(default_token_type),
+        expires_at: credential_expiry(data),
     })
+}
+
+fn credential_expiry(value: &Value) -> u64 {
+    let now = now_epoch();
+    if let Some(mut expires_at) = number_value(
+        value,
+        &["access_token_expires_at", "access_token_expired_at"],
+    ) {
+        if expires_at > 100_000_000_000 {
+            expires_at /= 1000;
+        }
+        return expires_at;
+    }
+    now + number_value(value, &["expires_in"]).unwrap_or(3600)
 }
 
 async fn authorized_result(
@@ -1027,15 +1068,16 @@ async fn signed_request(
         "x-pan-token",
         HeaderValue::from_str(&signature).map_err(|_| invalid_request("夸克请求签名无效"))?,
     );
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
     headers.insert("accept", HeaderValue::from_static("application/json"));
-    let response = client
+    let mut request = client
         .request(method, format!("{OPEN_API}{path}"))
         .headers(headers)
-        .query(&query)
-        .json(&body.unwrap_or(Value::Null))
-        .send()
-        .await
-        .map_err(network_error)?;
+        .query(&query);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await.map_err(network_error)?;
     let status = response.status();
     let value: Value = response
         .json()
@@ -1055,13 +1097,35 @@ async fn signed_request(
         .and_then(Value::as_i64)
         .is_some_and(|status| status != 0)
     {
+        let message = string_value(&value, &["error_info", "errorInfo", "agent_msg"])
+            .unwrap_or_else(|| "夸克官方接口请求失败".into());
         return Err(ProviderError::new(
-            ProviderErrorCategory::RemoteUnavailable,
-            string_value(&value, &["error_info", "agent_msg"])
-                .unwrap_or_else(|| "夸克官方接口请求失败".into()),
+            if looks_like_authentication_error(&message) {
+                ProviderErrorCategory::Authentication
+            } else {
+                ProviderErrorCategory::RemoteUnavailable
+            },
+            message,
         ));
     }
     Ok(value)
+}
+
+fn looks_like_authentication_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "access_token",
+        "access token",
+        "refresh_token",
+        "refresh token",
+        "token expired",
+        "token invalid",
+        "unauthorized",
+        "授权",
+        "登录",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 fn response_data(value: &Value) -> ProviderResult<&Value> {
@@ -1377,7 +1441,30 @@ mod tests {
         assert!(!descriptor.capabilities.browse_files);
         assert!(descriptor.capabilities.share_files);
         assert!(descriptor.capabilities.import_shared_files);
+        assert_eq!(descriptor.auth_kind, ProviderAuthKind::BrowserSession);
         assert_eq!(descriptor.stability, ProviderStability::Official);
+    }
+
+    #[test]
+    fn preserves_official_absolute_token_expiry() {
+        let expiry = now_epoch() + 900;
+        assert_eq!(
+            credential_expiry(&json!({"access_token_expires_at": expiry})),
+            expiry
+        );
+        assert_eq!(
+            credential_expiry(&json!({
+                "access_token_expires_at": expiry * 1000
+            })),
+            expiry
+        );
+    }
+
+    #[test]
+    fn recognizes_token_errors_for_refresh_retry() {
+        assert!(looks_like_authentication_error("access token expired"));
+        assert!(looks_like_authentication_error("授权已失效"));
+        assert!(!looks_like_authentication_error("file not found"));
     }
 
     #[tokio::test]
