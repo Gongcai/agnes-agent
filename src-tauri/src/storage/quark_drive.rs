@@ -8,7 +8,7 @@ use base64::Engine;
 use chrono::Utc;
 use futures_util::StreamExt;
 use md5::Digest;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, RANGE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use reqwest::{Method, Response, StatusCode, Url};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
@@ -477,8 +477,11 @@ impl FileSourceProvider for QuarkDriveSession {
             .send()
             .await
             .map_err(network_error)?;
-        if request.range_start.is_some() && response.status() != StatusCode::PARTIAL_CONTENT {
-            return Err(invalid_response("夸克网盘下载链接未响应 Range 请求"));
+        if request.range_start.is_some() {
+            if response.status() != StatusCode::PARTIAL_CONTENT {
+                return Err(upstream_range_error(&response, "未响应 Range 请求"));
+            }
+            validate_upstream_range(&response, &request)?;
         }
         if !response.status().is_success() {
             return Err(status_error(response.status(), "夸克网盘下载请求失败"));
@@ -1872,6 +1875,63 @@ fn validate_range(start: Option<u64>, end: Option<u64>) -> ProviderResult<()> {
     } else {
         Ok(())
     }
+}
+
+fn validate_upstream_range(
+    response: &Response,
+    request: &DownloadFileRequest,
+) -> ProviderResult<()> {
+    let Some(start) = request.range_start else {
+        return Ok(());
+    };
+    let expected_end = request.range_end_inclusive;
+    let content_range = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| invalid_response("夸克下载响应缺少 Content-Range"))?;
+    let prefix = format!("bytes {start}-");
+    if !content_range.starts_with(&prefix) {
+        return Err(invalid_response(format!(
+            "夸克下载响应 Range 起点不匹配：{content_range}"
+        )));
+    }
+    if let Some(end) = expected_end {
+        let actual_end = content_range
+            .strip_prefix(&prefix)
+            .and_then(|value| value.split('/').next())
+            .and_then(|value| value.parse::<u64>().ok());
+        if actual_end != Some(end) {
+            return Err(invalid_response(format!(
+                "夸克下载响应 Range 终点不匹配：{content_range}"
+            )));
+        }
+        if let Some(length) = response.content_length() {
+            if length != end.saturating_sub(start).saturating_add(1) {
+                return Err(invalid_response(format!(
+                    "夸克下载响应长度不匹配：expected={}, actual={length}",
+                    end.saturating_sub(start).saturating_add(1)
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn upstream_range_error(response: &Response, reason: &str) -> ProviderError {
+    let status = response.status();
+    let content_range = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("none");
+    let content_length = response
+        .content_length()
+        .map_or_else(|| "unknown".into(), |value| value.to_string());
+    invalid_response(format!(
+        "夸克下载链接 {reason}：status={}, content-range={content_range}, content-length={content_length}",
+        status.as_u16()
+    ))
 }
 
 fn range_header(start: Option<u64>, end: Option<u64>) -> ProviderResult<Option<HeaderValue>> {

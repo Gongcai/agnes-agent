@@ -198,6 +198,19 @@ async fn handle_connection(
             .map_or_else(|| "unknown".into(), |value| value.to_string()),
         content_length.map_or_else(|| "unknown".into(), |value| value.to_string())
     );
+    let initial_source = if method == "GET" && session.metadata.size != Some(0) {
+        match open_initial_provider_stream(&storage, &session, range).await {
+            Ok(source) => Some(source),
+            Err(ForwardError::Upstream { error, .. }) => {
+                eprintln!("[storage][media-proxy] upstream stream failed: {error}");
+                write_error(&mut stream, 502, "Storage stream unavailable").await?;
+                return Ok(());
+            }
+            Err(ForwardError::Client(error)) => return Err(error),
+        }
+    } else {
+        None
+    };
     let mut response_headers = vec![
         ("Accept-Ranges".to_owned(), "bytes".to_owned()),
         ("Access-Control-Allow-Origin".to_owned(), "*".to_owned()),
@@ -222,7 +235,9 @@ async fn handle_connection(
     if method == "HEAD" {
         return Ok(());
     }
-    if let Err(error) = forward_provider_ranges(&mut stream, &storage, &session, range).await {
+    if let Err(error) =
+        forward_provider_ranges(&mut stream, &storage, &session, range, initial_source).await
+    {
         match error {
             ForwardError::Upstream { error, .. } => {
                 eprintln!("[storage][media-proxy] upstream stream failed: {error}");
@@ -415,23 +430,13 @@ async fn forward_provider_ranges(
     storage: &StorageService,
     session: &PlaybackSession,
     range: RequestRange,
+    mut initial_source: Option<ProviderByteStream>,
 ) -> Result<(), ForwardError> {
     let Some((mut start, end)) = stream_bounds(range, session.metadata.size) else {
-        let source = storage
-            .stream_file_for_proxy(
-                DownloadFileRequest {
-                    file_id: session.file_id.clone(),
-                    range_start: range.start(),
-                    range_end_inclusive: range.end(),
-                    expected_revision: session.expected_revision.clone(),
-                },
-                &session.account_id,
-            )
-            .await
-            .map_err(|error| ForwardError::Upstream {
-                bytes: 0,
-                error: format!("上游流获取失败: {error}"),
-            })?;
+        let source = match initial_source {
+            Some(source) => source,
+            None => open_provider_stream(storage, session, range.start(), range.end()).await?,
+        };
         match forward_stream(stream, source, None).await {
             Ok(_) => {}
             Err(error) => return Err(error),
@@ -446,21 +451,16 @@ async fn forward_provider_ranges(
         let mut attempts = 0_usize;
         while delivered < expected {
             let request_start = start + delivered;
-            let source = storage
-                .stream_file_for_proxy(
-                    DownloadFileRequest {
-                        file_id: session.file_id.clone(),
-                        range_start: Some(request_start),
-                        range_end_inclusive: Some(part_end),
-                        expected_revision: session.expected_revision.clone(),
-                    },
-                    &session.account_id,
-                )
-                .await
-                .map_err(|error| ForwardError::Upstream {
-                    bytes: 0,
-                    error: format!("上游流获取失败: {error}"),
-                })?;
+            let source = if delivered == 0 && start == initial_range_start(range) {
+                if let Some(source) = initial_source.take() {
+                    source
+                } else {
+                    open_provider_stream(storage, session, Some(request_start), Some(part_end))
+                        .await?
+                }
+            } else {
+                open_provider_stream(storage, session, Some(request_start), Some(part_end)).await?
+            };
             match forward_stream(stream, source, Some(expected - delivered)).await {
                 Ok(bytes) => {
                     delivered = delivered.saturating_add(bytes);
@@ -492,6 +492,57 @@ async fn forward_provider_ranges(
         start = part_end.saturating_add(1);
     }
     Ok(())
+}
+
+async fn open_initial_provider_stream(
+    storage: &StorageService,
+    session: &PlaybackSession,
+    range: RequestRange,
+) -> Result<ProviderByteStream, ForwardError> {
+    match range {
+        RequestRange::Full => {
+            let end = session
+                .metadata
+                .size
+                .and_then(|size| size.checked_sub(1))
+                .map(|end| end.min(UPSTREAM_PART_BYTES - 1));
+            open_provider_stream(storage, session, Some(0), end).await
+        }
+        RequestRange::Partial { start, end } => {
+            let end = end.map(|end| end.min(start.saturating_add(UPSTREAM_PART_BYTES - 1)));
+            open_provider_stream(storage, session, Some(start), end).await
+        }
+    }
+}
+
+async fn open_provider_stream(
+    storage: &StorageService,
+    session: &PlaybackSession,
+    range_start: Option<u64>,
+    range_end: Option<u64>,
+) -> Result<ProviderByteStream, ForwardError> {
+    storage
+        .stream_file_for_proxy(
+            DownloadFileRequest {
+                file_id: session.file_id.clone(),
+                range_start,
+                range_end_inclusive: range_end,
+                expected_revision: session.expected_revision.clone(),
+            },
+            &session.account_id,
+        )
+        .await
+        .map_err(|error| ForwardError::Upstream {
+            bytes: 0,
+            error: format!("上游流获取失败: {error}"),
+        })
+}
+
+fn initial_range_start(range: RequestRange) -> u64 {
+    match range {
+        RequestRange::Full => 0,
+        RequestRange::Partial { start, .. } => start,
+    }
 }
 
 fn stream_bounds(range: RequestRange, size: Option<u64>) -> Option<(u64, u64)> {
