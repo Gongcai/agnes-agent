@@ -366,7 +366,7 @@ export function DriveWorkspace() {
                 hls.attachMedia(video);
               },
             }
-          : undefined,
+          : {},
       });
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
