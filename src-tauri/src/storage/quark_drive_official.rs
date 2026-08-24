@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -72,11 +72,25 @@ struct AgentAuthExchange {
     expires_at: u64,
 }
 
+struct PollLease<'a> {
+    active: &'a StdMutex<HashSet<String>>,
+    challenge_id: String,
+}
+
+impl Drop for PollLease<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active.lock() {
+            active.remove(&self.challenge_id);
+        }
+    }
+}
+
 pub struct QuarkDriveFactory {
     client: reqwest::Client,
     legacy_factory: LegacyQuarkDriveFactory,
     sessions: StdMutex<HashMap<String, Weak<QuarkDriveSession>>>,
     challenges: StdMutex<HashMap<String, AuthChallenge>>,
+    active_polls: StdMutex<HashSet<String>>,
 }
 
 impl QuarkDriveFactory {
@@ -91,6 +105,7 @@ impl QuarkDriveFactory {
             legacy_factory: LegacyQuarkDriveFactory::new()?,
             sessions: StdMutex::new(HashMap::new()),
             challenges: StdMutex::new(HashMap::new()),
+            active_polls: StdMutex::new(HashSet::new()),
         })
     }
 }
@@ -208,6 +223,19 @@ impl ProviderFactory for QuarkDriveFactory {
         &self,
         challenge_id: &str,
     ) -> ProviderResult<ProviderAuthorizationStep> {
+        let _poll_lease = {
+            let mut active = self
+                .active_polls
+                .lock()
+                .map_err(|_| invalid_response("夸克授权会话不可用"))?;
+            if !active.insert(challenge_id.to_owned()) {
+                return Ok(ProviderAuthorizationStep::Pending);
+            }
+            PollLease {
+                active: &self.active_polls,
+                challenge_id: challenge_id.to_owned(),
+            }
+        };
         let challenge = self
             .challenges
             .lock()
