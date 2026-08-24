@@ -139,7 +139,7 @@ impl ProviderFactory for QuarkDriveFactory {
         let existing_credentials = existing_credentials(&request.input);
         let exchange = exchange_agent_auth_code(&self.client, code).await?;
         let credential = credential_from_exchange(exchange, &existing_credentials)?;
-        authorized_result(&self.client, credential).await
+        authorized_result(credential)
     }
 
     async fn begin_authorization(
@@ -148,20 +148,27 @@ impl ProviderFactory for QuarkDriveFactory {
     ) -> ProviderResult<ProviderAuthorizationChallenge> {
         let client_device_id = format!("agnes-{}", uuid::Uuid::new_v4());
         let existing_credentials = existing_credentials(&request.input);
+        let current_user_id = existing_credentials
+            .first()
+            .map(|credential| credential.user_id.clone());
+        let mut request_body = json!({
+            "client_device_id": client_device_id.clone(),
+            "device_name": "Agnes Agent",
+            "agent_id": AGENT_ID,
+            "client_id": CLIENT_ID,
+            "work_dir": "agnes-agent",
+            "is_cloud_agent": "false",
+            "is_unsure_agent": "false"
+        });
+        if let Some(user_id) = current_user_id {
+            request_body["current_user_id"] = Value::String(user_id);
+        }
         let response = signed_request(
             &self.client,
             Method::POST,
             "/agent/v1/get_authorize_page_url",
             vec![("req_id".into(), request_id())],
-            Some(json!({
-                "client_device_id": client_device_id,
-                "device_name": "Agnes Agent",
-                "agent_id": AGENT_ID,
-                "client_id": CLIENT_ID,
-                "work_dir": "agnes-agent",
-                "is_cloud_agent": "false",
-                "is_unsure_agent": "false"
-            })),
+            Some(request_body),
         )
         .await?;
         let data = response_data(&response)?;
@@ -241,9 +248,9 @@ impl ProviderFactory for QuarkDriveFactory {
             .lock()
             .map_err(|_| invalid_response("夸克授权会话不可用"))?
             .remove(challenge_id);
-        Ok(ProviderAuthorizationStep::Authorized(
-            authorized_result(&self.client, credential).await?,
-        ))
+        Ok(ProviderAuthorizationStep::Authorized(authorized_result(
+            credential,
+        )?))
     }
 
     async fn connect(
@@ -1128,25 +1135,8 @@ fn credential_expiry(value: &Value) -> u64 {
     now + number_value(value, &["expires_in"]).unwrap_or(3600)
 }
 
-async fn authorized_result(
-    client: &reqwest::Client,
-    credential: QuarkCredential,
-) -> ProviderResult<ProviderAuthorizationResult> {
-    let response = signed_request(
-        client,
-        Method::GET,
-        "/open/v1/user/info",
-        vec![
-            ("req_id".into(), request_id()),
-            ("access_token".into(), credential.access_token.clone()),
-            ("device_id".into(), credential.device_id.clone()),
-            ("platform".into(), DEFAULT_PLATFORM.into()),
-        ],
-        None,
-    )
-    .await?;
-    let data = response_data(&response)?;
-    let nickname = string_value(data, &["nickname"]).unwrap_or_else(|| credential.user_id.clone());
+fn authorized_result(credential: QuarkCredential) -> ProviderResult<ProviderAuthorizationResult> {
+    let nickname = credential.user_id.clone();
     Ok(ProviderAuthorizationResult {
         account: StorageProviderAccount {
             id: format!("quark-{}", short_hash(credential.user_id.as_bytes())),
