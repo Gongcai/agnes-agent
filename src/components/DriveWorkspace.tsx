@@ -146,6 +146,14 @@ interface MediaPlaybackLink {
   media_type: string | null;
   protocol: string;
   resolution: string | null;
+  variants: MediaPlaybackVariant[];
+}
+
+interface MediaPlaybackVariant {
+  url: string;
+  media_type: string | null;
+  protocol: string;
+  resolution: string | null;
 }
 
 interface MediaPlaybackState {
@@ -166,6 +174,25 @@ function mediaCapabilitySummary(video: HTMLVideoElement) {
   ]
     .map(([type, result]) => `${type}=${result || "none"}`)
     .join(", ");
+}
+
+function resolutionLabel(resolution: string | null, index: number) {
+  switch (resolution?.toLowerCase()) {
+    case "low":
+      return "低清";
+    case "normal":
+      return "标清";
+    case "high":
+      return "高清";
+    case "super":
+      return "超清";
+    case "2k":
+      return "2K";
+    case "4k":
+      return "4K";
+    default:
+      return resolution || `清晰度 ${index + 1}`;
+  }
 }
 
 type DriveView = "files" | "transfers";
@@ -304,6 +331,14 @@ export function DriveWorkspace() {
 
     let hls: Hls | null = null;
     let player: Artplayer | null = null;
+    const hasQualityVariants = link.variants.length > 0;
+    const quality = link.variants.length > 1
+      ? link.variants.map((variant, index) => ({
+          html: resolutionLabel(variant.resolution, index),
+          url: variant.url,
+          default: variant.url === link.url,
+        }))
+      : [];
     const reportPlaybackError = (error?: Error) => {
       const video = player?.video ?? container.querySelector("video");
       if (!video) {
@@ -334,7 +369,7 @@ export function DriveWorkspace() {
       player = new Artplayer({
         container,
         url: link.url,
-        type: link.protocol === "hls" ? "m3u8" : "mp4",
+        type: hasQualityVariants || link.protocol === "hls" ? "m3u8" : "mp4",
         autoplay: true,
         playsInline: true,
         fullscreen: true,
@@ -342,12 +377,22 @@ export function DriveWorkspace() {
         playbackRate: true,
         setting: true,
         mutex: true,
+        quality,
         moreVideoAttr: {
           preload: "metadata",
         },
-        customType: link.protocol === "hls"
+        customType: hasQualityVariants || link.protocol === "hls"
           ? {
               m3u8(video, url, art) {
+                hls?.destroy();
+                hls = null;
+                const variant = link.variants.find((item) => item.url === url);
+                const isHls = variant?.protocol === "hls"
+                  || (link.variants.length === 0 && link.protocol === "hls");
+                if (!isHls) {
+                  video.src = url;
+                  return;
+                }
                 if (video.canPlayType("application/vnd.apple.mpegurl")) {
                   video.src = url;
                   return;

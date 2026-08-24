@@ -16,10 +16,10 @@ use zeroize::Zeroizing;
 
 use super::domain::{
     BeginFileUploadRequest, ContentHashAlgorithm, DownloadFileRequest, FileUploadSession,
-    ListFilesRequest, MediaPlaybackLink, MediaPlaybackRequest, ProviderAuthKind,
-    ProviderAuthorizationRequest, ProviderByteStream, ProviderDescriptor, ProviderError,
-    ProviderErrorCategory, ProviderQuota, ProviderResult, ProviderStability, RemoteFileItem,
-    RemoteFileKind, RemoteFilePage, SearchFilesRequest, StorageCapabilities,
+    ListFilesRequest, MediaPlaybackLink, MediaPlaybackRequest, MediaPlaybackVariant,
+    ProviderAuthKind, ProviderAuthorizationRequest, ProviderByteStream, ProviderDescriptor,
+    ProviderError, ProviderErrorCategory, ProviderQuota, ProviderResult, ProviderStability,
+    RemoteFileItem, RemoteFileKind, RemoteFilePage, SearchFilesRequest, StorageCapabilities,
     StorageProviderAccount, UploadFileChunkRequest, UploadedFileChunk,
 };
 use super::ports::{
@@ -1652,7 +1652,7 @@ fn parse_media_playback_link(response: &Value) -> ProviderResult<MediaPlaybackLi
             Some((
                 is_default,
                 playback_resolution_rank(resolution.as_deref()),
-                MediaPlaybackLink {
+                MediaPlaybackVariant {
                     url,
                     media_type: inferred_format.as_deref().and_then(playback_media_type),
                     protocol: playback_protocol(inferred_format.as_deref()),
@@ -1662,16 +1662,23 @@ fn parse_media_playback_link(response: &Value) -> ProviderResult<MediaPlaybackLi
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|(is_default, rank, _)| (!*is_default, *rank));
-    candidates
+    let variants = candidates
         .into_iter()
-        .next()
-        .map(|(_, _, link)| link)
-        .ok_or_else(|| {
-            ProviderError::new(
-                ProviderErrorCategory::RemoteUnavailable,
-                "夸克网盘没有可用的转码播放地址",
-            )
-        })
+        .map(|(_, _, variant)| variant)
+        .collect::<Vec<_>>();
+    let selected = variants.first().cloned().ok_or_else(|| {
+        ProviderError::new(
+            ProviderErrorCategory::RemoteUnavailable,
+            "夸克网盘没有可用的转码播放地址",
+        )
+    })?;
+    Ok(MediaPlaybackLink {
+        url: selected.url.clone(),
+        media_type: selected.media_type.clone(),
+        protocol: selected.protocol.clone(),
+        resolution: selected.resolution.clone(),
+        variants,
+    })
 }
 
 fn is_transcoding_unavailable(error: &ProviderError) -> bool {
@@ -2323,6 +2330,10 @@ mod tests {
             link.media_type.as_deref(),
             Some("application/vnd.apple.mpegurl")
         );
+        assert_eq!(link.variants.len(), 2);
+        assert_eq!(link.variants[0].resolution.as_deref(), Some("high"));
+        assert_eq!(link.variants[1].resolution.as_deref(), Some("normal"));
+        assert_eq!(link.variants[0].url, link.url);
     }
 
     #[test]

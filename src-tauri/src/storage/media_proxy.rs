@@ -84,6 +84,7 @@ impl StorageMediaProxy {
             media_type: metadata.media_type,
             protocol: "range".into(),
             resolution: None,
+            variants: Vec::new(),
         })
     }
 

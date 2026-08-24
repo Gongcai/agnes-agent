@@ -384,11 +384,20 @@ pub struct MediaPlaybackRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaPlaybackVariant {
+    pub url: String,
+    pub media_type: Option<String>,
+    pub protocol: String,
+    pub resolution: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaPlaybackLink {
     pub url: String,
     pub media_type: Option<String>,
     pub protocol: String,
     pub resolution: Option<String>,
+    pub variants: Vec<MediaPlaybackVariant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
