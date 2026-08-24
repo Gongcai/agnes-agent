@@ -4484,10 +4484,13 @@ pub async fn get_storage_file_stream_link(
     state: tauri::State<'_, AppState>,
     account_id: String,
     file_id: String,
+    file_name: Option<String>,
+    file_media_type: Option<String>,
+    file_size: Option<u64>,
 ) -> AppResult<crate::storage::MediaPlaybackLink> {
     state
         .storage_media_proxy
-        .create_link(account_id, file_id)
+        .create_link(account_id, file_id, file_name, file_media_type, file_size)
         .await
 }
 

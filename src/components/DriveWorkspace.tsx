@@ -1128,6 +1128,9 @@ export function DriveWorkspace() {
       const link = await invoke<MediaPlaybackLink>("get_storage_file_stream_link", {
         accountId: selectedAccount.id,
         fileId: item.id,
+        fileName: item.name,
+        fileMediaType: item.media_type,
+        fileSize: item.size,
       });
       setMediaPlayback({ item, link });
     } catch (reason) {
@@ -1864,7 +1867,7 @@ export function DriveWorkspace() {
             </div>
             <div
               ref={mediaContainer}
-              className="relative min-h-[260px] w-full flex-1 overflow-hidden bg-black"
+              className="relative h-[min(75vh,calc((100vw-32px)*0.5625))] min-h-[260px] w-full shrink-0 overflow-hidden bg-black"
             />
           </div>
         </div>

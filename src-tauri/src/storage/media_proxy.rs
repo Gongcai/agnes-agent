@@ -47,11 +47,23 @@ impl StorageMediaProxy {
         &self,
         account_id: String,
         file_id: String,
+        file_name: Option<String>,
+        file_media_type: Option<String>,
+        file_size: Option<u64>,
     ) -> AppResult<MediaPlaybackLink> {
-        let metadata = self
+        let mut metadata = self
             .storage
             .get_file_stream_metadata(&account_id, &file_id)
             .await?;
+        if let Some(file_name) = file_name.filter(|value| !value.trim().is_empty()) {
+            metadata.name = file_name;
+        }
+        if let Some(file_media_type) = file_media_type.filter(|value| !value.trim().is_empty()) {
+            metadata.media_type = Some(file_media_type);
+        }
+        if let Some(file_size) = file_size.filter(|value| *value > 0) {
+            metadata.size = Some(file_size);
+        }
         let token = uuid::Uuid::new_v4().simple().to_string();
         self.sessions.lock().await.insert(
             token.clone(),
