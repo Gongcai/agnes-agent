@@ -27,6 +27,7 @@ use super::ports::{
     ProviderCredentialAccess, ProviderFactory, ProviderSession, QuotaProvider,
     SharedFileImportProvider,
 };
+use super::quark_drive::QuarkDriveFactory as LegacyQuarkDriveFactory;
 
 const PROVIDER_ID: &str = "quark_drive";
 const OPEN_API: &str = "https://open-api-drive.quark.cn";
@@ -60,6 +61,7 @@ struct AuthChallenge {
 
 pub struct QuarkDriveFactory {
     client: reqwest::Client,
+    legacy_factory: LegacyQuarkDriveFactory,
     sessions: StdMutex<HashMap<String, Weak<QuarkDriveSession>>>,
     challenges: StdMutex<HashMap<String, AuthChallenge>>,
 }
@@ -73,6 +75,7 @@ impl QuarkDriveFactory {
                 .user_agent("Agnes-Agent/0.1 QuarkDriveProvider")
                 .build()
                 .map_err(network_error)?,
+            legacy_factory: LegacyQuarkDriveFactory::new()?,
             sessions: StdMutex::new(HashMap::new()),
             challenges: StdMutex::new(HashMap::new()),
         })
@@ -233,6 +236,15 @@ impl ProviderFactory for QuarkDriveFactory {
                 "夸克官方授权不存在，请重新连接",
             )
         })?;
+        if parse_credential(stored.as_str()).is_err() {
+            if let Ok(session) = self
+                .legacy_factory
+                .connect(account, credentials.clone())
+                .await
+            {
+                return Ok(session);
+            }
+        }
         parse_credential(stored.as_str())?;
         let mut sessions = self
             .sessions
@@ -909,7 +921,7 @@ impl QuarkDriveSession {
                 .await?;
             let data = response_data(&response)?;
             let status = number_value(data, &["status"]);
-            if matches!(status, Some(2 | 3 | 4)) {
+            if matches!(status, Some(2..=4)) {
                 return Ok(data.clone());
             }
         }
@@ -1057,6 +1069,7 @@ fn response_data(value: &Value) -> ProviderResult<&Value> {
         .get("data")
         .ok_or_else(|| invalid_response("夸克官方响应缺少 data"))
 }
+
 fn parse_credential(value: &str) -> ProviderResult<QuarkCredential> {
     let credential: QuarkCredential = serde_json::from_str(value).map_err(|_| {
         ProviderError::new(
@@ -1072,6 +1085,7 @@ fn parse_credential(value: &str) -> ProviderResult<QuarkCredential> {
     }
     Ok(credential)
 }
+
 fn remote_file(value: &Value, parent_id: Option<&str>) -> ProviderResult<RemoteFileItem> {
     let id = string_value(value, &["fid", "file_id", "id"])
         .ok_or_else(|| invalid_response("夸克文件缺少 fid"))?;
@@ -1101,6 +1115,7 @@ fn remote_file(value: &Value, parent_id: Option<&str>) -> ProviderResult<RemoteF
         downloadable: !folder,
     })
 }
+
 fn parse_upload_urls(value: &Value) -> ProviderResult<HashMap<u32, UploadUrl>> {
     let urls = value
         .get("upload_urls")
@@ -1122,6 +1137,7 @@ fn parse_upload_urls(value: &Value) -> ProviderResult<HashMap<u32, UploadUrl>> {
     }
     Ok(result)
 }
+
 fn parse_headers(value: Option<&Value>) -> HeaderMap {
     let mut headers = HeaderMap::new();
     if let Some(Value::Object(values)) = value {
@@ -1137,6 +1153,7 @@ fn parse_headers(value: Option<&Value>) -> HeaderMap {
     }
     headers
 }
+
 fn parse_quark_share_url(value: &str) -> ProviderResult<(String, Option<String>)> {
     let url = Url::parse(value).map_err(|_| invalid_request("夸克分享链接无效"))?;
     if !matches!(
@@ -1162,6 +1179,7 @@ fn parse_quark_share_url(value: &str) -> ProviderResult<(String, Option<String>)
         .map(|(_, v)| v.into_owned());
     Ok((id, password))
 }
+
 fn string_value(value: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
         value.get(*key).and_then(|v| {
@@ -1171,6 +1189,7 @@ fn string_value(value: &Value, keys: &[&str]) -> Option<String> {
         })
     })
 }
+
 fn number_value(value: &Value, keys: &[&str]) -> Option<u64> {
     keys.iter().find_map(|key| {
         value.get(*key).and_then(|v| {
@@ -1179,6 +1198,7 @@ fn number_value(value: &Value, keys: &[&str]) -> Option<u64> {
         })
     })
 }
+
 fn bool_value(value: &Value, keys: &[&str]) -> Option<bool> {
     keys.iter().find_map(|key| {
         value.get(*key).and_then(|v| {
@@ -1188,6 +1208,7 @@ fn bool_value(value: &Value, keys: &[&str]) -> Option<bool> {
         })
     })
 }
+
 fn validate_id(value: &str) -> ProviderResult<()> {
     if value.is_empty() || value.len() > 1024 || value.chars().any(char::is_control) {
         Err(invalid_request("夸克文件 ID 无效"))
@@ -1195,6 +1216,7 @@ fn validate_id(value: &str) -> ProviderResult<()> {
         Ok(())
     }
 }
+
 fn validate_range(start: Option<u64>, end: Option<u64>) -> ProviderResult<()> {
     if end.is_some() && start.is_none() || start.zip(end).is_some_and(|(a, b)| b < a) {
         Err(invalid_request("下载范围无效"))
@@ -1202,11 +1224,13 @@ fn validate_range(start: Option<u64>, end: Option<u64>) -> ProviderResult<()> {
         Ok(())
     }
 }
+
 fn response_stream(response: Response) -> ProviderResult<ProviderByteStream> {
     Ok(Box::pin(response.bytes_stream().map(|chunk| {
         chunk.map(|bytes| bytes.to_vec()).map_err(network_error)
     })))
 }
+
 fn status_error(status: StatusCode, message: &str) -> ProviderError {
     ProviderError::new(
         if status == StatusCode::TOO_MANY_REQUESTS {
@@ -1219,39 +1243,48 @@ fn status_error(status: StatusCode, message: &str) -> ProviderError {
         format!("{message} ({})", status.as_u16()),
     )
 }
+
 fn network_error(error: reqwest::Error) -> ProviderError {
     ProviderError::new(
         ProviderErrorCategory::Network,
         format!("夸克网络请求失败: {error}"),
     )
 }
+
 fn invalid_request(message: impl Into<String>) -> ProviderError {
     ProviderError::new(ProviderErrorCategory::InvalidRequest, message)
 }
+
 fn invalid_response(message: impl Into<String>) -> ProviderError {
     ProviderError::new(ProviderErrorCategory::InvalidResponse, message)
 }
+
 fn request_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
 }
+
 fn now_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
 }
+
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+
 fn short_hash(value: &[u8]) -> String {
     hex_encode(&Sha256::digest(value)[..10])
 }
+
 fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
@@ -1259,6 +1292,35 @@ fn truncate(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestCredentialAccess {
+        value: Zeroizing<String>,
+    }
+
+    #[async_trait]
+    impl ProviderCredentialAccess for TestCredentialAccess {
+        async fn load(&self) -> ProviderResult<Option<Zeroizing<String>>> {
+            Ok(Some(self.value.clone()))
+        }
+
+        async fn store(&self, _credential: Zeroizing<String>) -> ProviderResult<()> {
+            Ok(())
+        }
+
+        async fn delete(&self) -> ProviderResult<()> {
+            Ok(())
+        }
+    }
+
+    fn test_account() -> StorageProviderAccount {
+        StorageProviderAccount {
+            id: "quark-test".into(),
+            provider_id: PROVIDER_ID.into(),
+            display_name: "Quark test".into(),
+            account_subject: None,
+            config: Value::Null,
+        }
+    }
 
     #[test]
     fn parses_quark_share_urls_and_embedded_passwords() {
@@ -1316,5 +1378,40 @@ mod tests {
         assert!(descriptor.capabilities.share_files);
         assert!(descriptor.capabilities.import_shared_files);
         assert_eq!(descriptor.stability, ProviderStability::Official);
+    }
+
+    #[tokio::test]
+    async fn legacy_cookie_credentials_fall_back_to_browsable_session() {
+        let factory = QuarkDriveFactory::new().unwrap();
+        let credentials = Arc::new(TestCredentialAccess {
+            value: Zeroizing::new("__uid=u; __kps=k".into()),
+        });
+        let session = factory.connect(&test_account(), credentials).await.unwrap();
+
+        assert!(session.file_source().is_some());
+        assert!(session.file_sharing().is_none());
+    }
+
+    #[tokio::test]
+    async fn official_credentials_use_official_session() {
+        let factory = QuarkDriveFactory::new().unwrap();
+        let credentials = Arc::new(TestCredentialAccess {
+            value: Zeroizing::new(
+                serde_json::to_string(&QuarkCredential {
+                    access_token: "access".into(),
+                    refresh_token: Some("refresh".into()),
+                    device_id: "device".into(),
+                    user_id: "user".into(),
+                    token_type: "Bearer".into(),
+                    expires_at: 0,
+                })
+                .unwrap(),
+            ),
+        });
+        let session = factory.connect(&test_account(), credentials).await.unwrap();
+
+        assert!(session.file_source().is_some());
+        assert!(session.file_sharing().is_some());
+        assert!(session.shared_file_import().is_some());
     }
 }

@@ -75,6 +75,7 @@ interface StorageAccount {
   last_error_message: string | null;
   provider_installed: boolean;
   has_credential: boolean;
+  browse_files: boolean;
 }
 
 interface RemoteFileItem {
@@ -307,7 +308,7 @@ export function DriveWorkspace() {
           .map((provider) => provider.id),
       );
       const fileAccounts = nextAccounts.filter((account) =>
-        fileProviderIds.has(account.provider_id),
+        account.browse_files || fileProviderIds.has(account.provider_id),
       );
       setCatalog(nextCatalog);
       setAccounts(fileAccounts);

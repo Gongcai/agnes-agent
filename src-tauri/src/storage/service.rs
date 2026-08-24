@@ -43,6 +43,7 @@ pub struct StorageAccountView {
     pub account: StorageAccountRow,
     pub provider_installed: bool,
     pub has_credential: bool,
+    pub browse_files: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -385,6 +386,10 @@ impl StorageService {
                 .map_err(provider_error)?
                 .is_some();
             accounts.push(StorageAccountView {
+                browse_files: serde_json::from_str::<serde_json::Value>(&account.capabilities_json)
+                    .ok()
+                    .and_then(|value| value.get("browse_files").and_then(|value| value.as_bool()))
+                    .unwrap_or(false),
                 account,
                 provider_installed,
                 has_credential,
