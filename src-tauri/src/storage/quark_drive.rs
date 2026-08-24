@@ -484,10 +484,6 @@ impl MediaPlaybackProvider for QuarkDriveSession {
         request: MediaPlaybackRequest,
     ) -> ProviderResult<MediaPlaybackLink> {
         validate_id(&request.file_id, "文件 ID")?;
-        let file = self.get_file(&request.file_id).await?;
-        if file.kind != RemoteFileKind::File {
-            return Err(invalid_request("夸克网盘文件夹不能播放"));
-        }
         let response = self
             .api(
                 Method::POST,
