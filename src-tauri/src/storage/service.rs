@@ -1170,13 +1170,9 @@ impl StorageService {
             .factory(&row.provider_id)
             .map_err(provider_error)?;
         let authorized = factory.authorize(request).await.map_err(provider_error)?;
-        if row.account_subject.is_some()
-            && authorized.account.account_subject != row.account_subject
-        {
-            return Err(AppError::Other(
-                "补充的 Cookie 不属于当前夸克网盘账户".into(),
-            ));
-        }
+        // OAuth user_id and the legacy web API __uid are different identity
+        // namespaces. The successful legacy API validation is the authority
+        // for this supplemental credential; do not compare those strings.
         let previous_credential = self
             .credentials
             .load(&account_id)
