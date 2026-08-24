@@ -123,6 +123,14 @@ async fn handle_connection(
         write_error(&mut stream, 400, "Bad Request").await?;
         return Ok(());
     };
+    let request_path = target.split('?').next().unwrap_or("");
+    let log_path = request_path
+        .strip_prefix(PROXY_PATH_PREFIX)
+        .map_or(request_path, |_| "<media-session>");
+    eprintln!(
+        "[storage][media-proxy] request method={method} path={log_path} range={}",
+        headers.get("range").map(String::as_str).unwrap_or("none")
+    );
     if method == "OPTIONS" {
         write_response(
             &mut stream,
@@ -181,6 +189,15 @@ async fn handle_connection(
     };
     let (status, content_length, content_range) =
         response_range_headers(&range, session.metadata.size);
+    let response_content_type = content_type(&session.metadata).to_owned();
+    eprintln!(
+        "[storage][media-proxy] response status={status} type={response_content_type} size={} length={}",
+        session
+            .metadata
+            .size
+            .map_or_else(|| "unknown".into(), |value| value.to_string()),
+        content_length.map_or_else(|| "unknown".into(), |value| value.to_string())
+    );
     let mut response_headers = vec![
         ("Accept-Ranges".to_owned(), "bytes".to_owned()),
         ("Access-Control-Allow-Origin".to_owned(), "*".to_owned()),
@@ -190,10 +207,7 @@ async fn handle_connection(
             "Content-Disposition".to_owned(),
             content_disposition(&session.metadata.name),
         ),
-        (
-            "Content-Type".to_owned(),
-            content_type(&session.metadata).to_owned(),
-        ),
+        ("Content-Type".to_owned(), response_content_type),
     ];
     if let Some(revision) = session.metadata.revision.as_deref() {
         response_headers.push(("ETag".to_owned(), format!("\"{revision}\"")));

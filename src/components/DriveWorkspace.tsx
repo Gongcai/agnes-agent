@@ -152,6 +152,21 @@ interface MediaPlaybackState {
   link: MediaPlaybackLink;
 }
 
+function mediaCapabilitySummary(video: HTMLVideoElement) {
+  return [
+    ["video/mp4", video.canPlayType("video/mp4")],
+    [
+      'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
+      video.canPlayType('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
+    ],
+    ["video/x-matroska", video.canPlayType("video/x-matroska")],
+    ["video/webm", video.canPlayType("video/webm")],
+    ["video/mpeg", video.canPlayType("video/mpeg")],
+  ]
+    .map(([type, result]) => `${type}=${result || "none"}`)
+    .join(", ");
+}
+
 type DriveView = "files" | "transfers";
 type QuarkAuthorizationMode = "official" | "cookie" | "qr";
 type TransferSpeedSample = { timestamp: number; bytes: number };
@@ -1800,7 +1815,17 @@ export function DriveWorkspace() {
               playsInline
               preload="metadata"
               onError={() => {
-                const mediaError = mediaElement.current?.error;
+                const video = mediaElement.current;
+                const mediaError = video?.error;
+                const diagnostics = video
+                  ? `code=${mediaError?.code ?? "none"}, message=${mediaError?.message || "none"}, networkState=${video.networkState}, readyState=${video.readyState}, capabilities=[${mediaCapabilitySummary(video)}]`
+                  : "video element unavailable";
+                console.error("[storage][media-playback] media error", {
+                  diagnostics,
+                  protocol: mediaPlayback.link.protocol,
+                  mediaType: mediaPlayback.link.media_type,
+                  fileName: mediaPlayback.item.name,
+                });
                 const reason = mediaError
                   ? {
                       1: "播放请求已中止",
@@ -1814,7 +1839,7 @@ export function DriveWorkspace() {
                 );
                 setError(
                   mediaPlayback.link.protocol === "range"
-                    ? `原文件播放失败：${reason}`
+                    ? `原文件播放失败：${reason}（${diagnostics}）`
                     : reason,
                 );
               }}
