@@ -24,10 +24,10 @@ use crate::sync::reading_artifact::{
 use super::artifact_transfer;
 use super::domain::{
     BeginFileUploadRequest, ContentHashAlgorithm, CreateShareRequest, CreateShareResult,
-    ImportSharedFilesRequest, ImportSharedFilesResult, ListFilesRequest,
-    ProviderAuthorizationRequest, ProviderDescriptor, ProviderError, ProviderQuota, RemoteFileItem,
-    RemoteFileKind, RemoteFilePage, RemoteObjectLocator, RemoteObjectState, SearchFilesRequest,
-    StorageProviderAccount, UploadFileChunkRequest,
+    DownloadFileRequest, ImportSharedFilesRequest, ImportSharedFilesResult, ListFilesRequest,
+    ProviderAuthorizationRequest, ProviderByteStream, ProviderDescriptor, ProviderError,
+    ProviderQuota, RemoteFileItem, RemoteFileKind, RemoteFilePage, RemoteObjectLocator,
+    RemoteObjectState, SearchFilesRequest, StorageProviderAccount, UploadFileChunkRequest,
 };
 use super::ports::{
     ProviderAuthorizationChallenge, ProviderAuthorizationStep, ProviderCredentialAccess,
@@ -82,6 +82,14 @@ pub struct StagedStorageImport {
     pub remote_file: RemoteFileItem,
     pub bytes_transferred: i64,
     pub bytes_total: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageFileStreamMetadata {
+    pub name: String,
+    pub media_type: Option<String>,
+    pub size: Option<u64>,
+    pub revision: Option<String>,
 }
 
 pub struct StorageService {
@@ -597,6 +605,61 @@ impl StorageService {
             Ok(link) => {
                 self.update_provider_status(&row, None).await;
                 Ok(link)
+            }
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                Err(provider_error(error))
+            }
+        }
+    }
+
+    pub(crate) async fn get_file_stream_metadata(
+        &self,
+        account_id: &str,
+        file_id: &str,
+    ) -> AppResult<StorageFileStreamMetadata> {
+        let (row, session) = self.connect_account_with_row(account_id).await?;
+        let file_source = session.file_source().ok_or_else(|| {
+            AppError::Other("Storage provider does not support file streaming".into())
+        })?;
+        let descriptor = self
+            .registry
+            .descriptor(&row.provider_id)
+            .map_err(provider_error)?;
+        if !descriptor.capabilities.range_download {
+            return Err(AppError::Other("当前网盘不支持带 Range 的在线播放".into()));
+        }
+        let file = match file_source.get_file(file_id).await {
+            Ok(file) => file,
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                return Err(provider_error(error));
+            }
+        };
+        if file.kind != RemoteFileKind::File {
+            return Err(AppError::Other("只能播放文件，不能播放文件夹".into()));
+        }
+        Ok(StorageFileStreamMetadata {
+            name: file.name,
+            media_type: file.media_type,
+            size: file.size,
+            revision: file.revision,
+        })
+    }
+
+    pub(crate) async fn stream_file_for_proxy(
+        &self,
+        request: DownloadFileRequest,
+        account_id: &str,
+    ) -> AppResult<ProviderByteStream> {
+        let (row, session) = self.connect_account_with_row(account_id).await?;
+        let file_source = session.file_source().ok_or_else(|| {
+            AppError::Other("Storage provider does not support file streaming".into())
+        })?;
+        match file_source.download_file(request).await {
+            Ok(stream) => {
+                self.update_provider_status(&row, None).await;
+                Ok(stream)
             }
             Err(error) => {
                 self.update_provider_status(&row, Some(&error)).await;

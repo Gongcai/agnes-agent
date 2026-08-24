@@ -8,7 +8,7 @@ use crate::mcp::McpManager;
 use crate::notifications::NotificationService;
 use crate::pdf_models::PdfModelPackageManager;
 use crate::secrets::SecretStore;
-use crate::storage::StorageService;
+use crate::storage::{StorageMediaProxy, StorageService};
 use crate::sync::engine::SyncService;
 
 /// 应用托管的全局状态（经 Tauri `State` 注入命令）。
@@ -21,6 +21,7 @@ pub struct AppState {
     pub mcp: Arc<McpManager>,
     pub secrets: Arc<dyn SecretStore>,
     pub storage: Arc<StorageService>,
+    pub storage_media_proxy: Arc<StorageMediaProxy>,
     pub sync: Arc<SyncService>,
     pub notifications: Arc<NotificationService>,
     pub document_parser: Arc<DocumentParserManager>,

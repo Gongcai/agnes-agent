@@ -60,6 +60,7 @@ interface ProviderDescriptor {
     delete_files: boolean;
     move_files: boolean;
     media_playback: boolean;
+    range_download: boolean;
     object_storage: boolean;
     user_authorization: boolean;
   };
@@ -277,6 +278,7 @@ export function DriveWorkspace() {
   const [moveSubmitting, setMoveSubmitting] = useState(false);
   const [mediaPlayback, setMediaPlayback] = useState<MediaPlaybackState | null>(null);
   const [mediaPlaybackLoading, setMediaPlaybackLoading] = useState(false);
+  const [mediaPlaybackFallbackItem, setMediaPlaybackFallbackItem] = useState<RemoteFileItem | null>(null);
   const mediaElement = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
@@ -1027,6 +1029,7 @@ export function DriveWorkspace() {
     if (!selectedAccount || item.kind !== "file") return;
     setFileContextMenu(null);
     setMediaPlaybackLoading(true);
+    setMediaPlaybackFallbackItem(null);
     setError(null);
     try {
       const link = await invoke<MediaPlaybackLink>("get_storage_media_playback_link", {
@@ -1035,7 +1038,26 @@ export function DriveWorkspace() {
       });
       setMediaPlayback({ item, link });
     } catch (reason) {
+      setMediaPlaybackFallbackItem(item);
       setError(String(reason));
+    } finally {
+      setMediaPlaybackLoading(false);
+    }
+  };
+
+  const playOriginalMediaFile = async (item: RemoteFileItem) => {
+    if (!selectedAccount || item.kind !== "file") return;
+    setMediaPlaybackFallbackItem(null);
+    setMediaPlaybackLoading(true);
+    setError(null);
+    try {
+      const link = await invoke<MediaPlaybackLink>("get_storage_file_stream_link", {
+        accountId: selectedAccount.id,
+        fileId: item.id,
+      });
+      setMediaPlayback({ item, link });
+    } catch (reason) {
+      setError(`原文件播放失败：${String(reason)}`);
     } finally {
       setMediaPlaybackLoading(false);
     }
@@ -1271,7 +1293,16 @@ export function DriveWorkspace() {
           {authorizationMessage && !error && !accountIssue
             ? <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
             : <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
-          <span>{error ?? authorizationMessage ?? accountIssue}</span>
+          <span className="min-w-0 flex-1">{error ?? authorizationMessage ?? accountIssue}</span>
+          {mediaPlaybackFallbackItem && !authorizationMessage && !accountIssue && (
+            <button
+              onClick={() => void playOriginalMediaFile(mediaPlaybackFallbackItem)}
+              disabled={mediaPlaybackLoading || !selectedProvider?.capabilities.range_download}
+              className="shrink-0 rounded border border-rose-300 bg-white px-2 py-1 font-medium text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              播放原文件
+            </button>
+          )}
         </div>
       )}
 

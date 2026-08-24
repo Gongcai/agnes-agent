@@ -6,6 +6,7 @@ pub mod artifact_transfer;
 pub mod credentials;
 pub mod domain;
 pub mod google_drive;
+pub mod media_proxy;
 pub mod ports;
 pub mod quark_drive;
 #[path = "quark_drive_official.rs"]
@@ -19,6 +20,7 @@ pub use credentials::{
 };
 pub use domain::*;
 pub use google_drive::GoogleDriveFactory;
+pub use media_proxy::StorageMediaProxy;
 pub use quark_drive_official::QuarkDriveFactory;
 pub use r2::{R2Factory, MANAGED_R2_ACCOUNT_ID, R2_PROVIDER_ID, SYNC_CREDENTIAL_SOURCE};
 pub use registry::StorageProviderRegistry;

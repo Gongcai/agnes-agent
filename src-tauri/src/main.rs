@@ -344,6 +344,7 @@ fn main() {
                 storage_credentials,
                 sync_credentials,
             ));
+            let storage_media_proxy = Arc::new(storage::StorageMediaProxy::new(storage.clone()));
             if let Err(error) = tauri::async_runtime::block_on(
                 storage.ensure_managed_r2_account(sync::engine::SYNC_GATEWAY_URL),
             ) {
@@ -383,6 +384,7 @@ fn main() {
                 mcp,
                 secrets,
                 storage,
+                storage_media_proxy,
                 sync,
                 notifications,
                 document_parser: Arc::new(document_parser::DocumentParserManager::default()),
@@ -477,6 +479,7 @@ fn main() {
             commands::search_storage_files,
             commands::download_storage_file,
             commands::get_storage_media_playback_link,
+            commands::get_storage_file_stream_link,
             commands::import_storage_reading_book,
             commands::download_storage_folder,
             commands::upload_storage_file,
