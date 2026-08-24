@@ -334,7 +334,7 @@ export function DriveWorkspace() {
       player = new Artplayer({
         container,
         url: link.url,
-        type: link.protocol === "hls" ? "m3u8" : undefined,
+        type: link.protocol === "hls" ? "m3u8" : "mp4",
         autoplay: true,
         playsInline: true,
         fullscreen: true,
