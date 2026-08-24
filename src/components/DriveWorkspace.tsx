@@ -231,6 +231,7 @@ export function DriveWorkspace() {
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenu | null>(null);
   const [showQuarkAuthorization, setShowQuarkAuthorization] = useState(false);
   const [quarkAuthorizationMode, setQuarkAuthorizationMode] = useState<QuarkAuthorizationMode>("official");
+  const [quarkAgentAuthCode, setQuarkAgentAuthCode] = useState("");
   const [quarkCookie, setQuarkCookie] = useState("");
   const [quarkCookieJsonPath, setQuarkCookieJsonPath] = useState<string | null>(null);
   const [showQuarkCookie, setShowQuarkCookie] = useState(false);
@@ -304,7 +305,16 @@ export function DriveWorkspace() {
       ]);
       const fileProviderIds = new Set(
         nextCatalog
-          .filter((provider) => provider.capabilities.browse_files)
+          .filter((provider) => {
+            const capabilities = provider.capabilities;
+            return capabilities.browse_files
+              || capabilities.search_files
+              || capabilities.read_files
+              || capabilities.write_files
+              || capabilities.delete_files
+              || capabilities.move_files
+              || capabilities.object_storage;
+          })
           .map((provider) => provider.id),
       );
       const fileAccounts = nextAccounts.filter((account) =>
@@ -331,6 +341,7 @@ export function DriveWorkspace() {
       || !selectedAccount?.provider_installed
       || !selectedAccount.enabled
       || selectedAccount.auth_state !== "connected"
+      || !selectedProvider?.capabilities.browse_files
     ) {
       fileRequestId.current += 1;
       setFiles([]);
@@ -679,6 +690,29 @@ export function DriveWorkspace() {
     }
   };
 
+  const connectQuarkOfficialCode = async () => {
+    const code = quarkAgentAuthCode.trim();
+    if (!code) return;
+    try {
+      setQuarkQrLoading(true);
+      setError(null);
+      setQuarkAuthorizationStatus("正在兑换官方授权码...");
+      const accountId = await invoke<string>("authorize_storage_provider", {
+        providerId: "quark_drive",
+        input: { agent_auth_code: code },
+      });
+      setQuarkAgentAuthCode("");
+      await loadShell();
+      setSelectedAccountId(accountId);
+      closeQuarkAuthorization();
+    } catch (reason) {
+      setQuarkAuthorizationStatus("官方授权码兑换失败，请检查 AAC 是否完整");
+      setError(String(reason));
+    } finally {
+      setQuarkQrLoading(false);
+    }
+  };
+
   const startQuarkQrLogin = async () => {
     try {
       setQuarkQrLoading(true);
@@ -710,6 +744,7 @@ export function DriveWorkspace() {
 
   const closeQuarkAuthorization = () => {
     setQuarkCookie("");
+    setQuarkAgentAuthCode("");
     setQuarkCookieJsonPath(null);
     setQuarkAuthorizationChallengeId(null);
     setQuarkQrImage(null);
@@ -1797,6 +1832,28 @@ export function DriveWorkspace() {
                   <p className="max-w-sm text-[11px] leading-5 text-stone-500">
                     授权页面会在系统浏览器中打开。完成授权后，此应用会自动保存官方 access token，并使用官方 Skill API 下载文件。
                   </p>
+                  <div className="flex w-full max-w-sm items-center gap-2">
+                    <input
+                      value={quarkAgentAuthCode}
+                      onChange={(event) => setQuarkAgentAuthCode(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void connectQuarkOfficialCode();
+                      }}
+                      disabled={quarkQrLoading}
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="粘贴 AAC-... 授权码"
+                      aria-label="夸克官方 AAC 授权码"
+                      className="h-9 min-w-0 flex-1 rounded-md border border-stone-200 bg-white px-3 text-xs text-stone-700 outline-none placeholder:text-stone-400 focus:border-emerald-400"
+                    />
+                    <button
+                      onClick={() => void connectQuarkOfficialCode()}
+                      disabled={quarkQrLoading || !quarkAgentAuthCode.trim()}
+                      className="h-9 shrink-0 rounded-md bg-emerald-700 px-3 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+                    >
+                      兑换
+                    </button>
+                  </div>
                   {(!quarkAuthorizationChallengeId || quarkAuthorizationStatus?.includes("失败")) && (
                     <button
                       onClick={() => void startQuarkOfficialAuthorization()}
