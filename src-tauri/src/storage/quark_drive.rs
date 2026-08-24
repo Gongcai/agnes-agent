@@ -29,8 +29,8 @@ use super::ports::{
 };
 
 const PROVIDER_ID: &str = "quark_drive";
-const API_BASE: &str = "https://drive-pc.quark.cn/1/clouddrive";
-const PLAYBACK_API_BASE: &str = "https://drive.quark.cn/1/clouddrive";
+const API_BASE: &str = "https://drive.quark.cn/1/clouddrive";
+const PLAYBACK_API_BASE: &str = API_BASE;
 const CAPACITY_PATH: &str = "capacity/growth/info";
 const OSS_BUCKET: &str = "ul-zb";
 const DEFAULT_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
