@@ -773,6 +773,7 @@ impl FileUploadProvider for QuarkDriveSession {
         if md5.len() != 32 || sha1.len() != 40 {
             return Err(invalid_request("夸克官方上传需要 MD5 和 SHA1"));
         }
+        let parent_id = quark_parent_id(request.parent_id.as_deref());
         let response = self
             .api(
                 Method::POST,
@@ -780,7 +781,7 @@ impl FileUploadProvider for QuarkDriveSession {
                 vec![],
                 Some(json!({
                     "file_name": request.name, "size": request.size, "sha1": sha1, "md5": md5,
-                    "pdir_fid": request.parent_id, "format_type": request.media_type,
+                    "pdir_fid": parent_id, "format_type": request.media_type,
                     "parallel_upload": true, "hash_update": false
                 })),
             )
@@ -1365,9 +1366,13 @@ async fn signed_request(
         ));
     }
     if !status.is_success() {
+        let detail = string_value(&value, &["error_info", "errorInfo", "message", "msg"]);
+        let message = detail
+            .map(|detail| format!("夸克官方接口请求失败: {detail}"))
+            .unwrap_or_else(|| "夸克官方接口请求失败".into());
         return Err(status_error_with_retry_after(
             status,
-            "夸克官方接口请求失败",
+            &message,
             retry_after.as_ref(),
         ));
     }
@@ -1602,6 +1607,12 @@ fn bool_value(value: &Value, keys: &[&str]) -> Option<bool> {
     })
 }
 
+fn quark_parent_id(value: Option<&str>) -> &str {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("0")
+}
+
 fn validate_id(value: &str) -> ProviderResult<()> {
     if value.is_empty() || value.len() > 1024 || value.chars().any(char::is_control) {
         Err(invalid_request("夸克文件 ID 无效"))
@@ -1765,6 +1776,13 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("value")
         );
+    }
+
+    #[test]
+    fn upload_root_uses_quark_root_folder_id() {
+        assert_eq!(quark_parent_id(None), "0");
+        assert_eq!(quark_parent_id(Some("")), "0");
+        assert_eq!(quark_parent_id(Some("folder-1")), "folder-1");
     }
 
     #[test]
