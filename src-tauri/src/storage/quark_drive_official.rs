@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RANGE, RETRY_AFTER};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, RANGE, RETRY_AFTER};
 use reqwest::{Method, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -932,10 +932,13 @@ impl FileUploadProvider for QuarkDriveSession {
             });
         }
         let url = url.ok_or_else(|| invalid_response("夸克上传会话缺少分片地址"))?;
+        let content_length = HeaderValue::from_str(&request.bytes.len().to_string())
+            .map_err(|_| invalid_request("夸克上传分片长度无效"))?;
         let mut upload = self
             .client
             .put(url.url)
             .headers(state.common_headers.clone())
+            .header(CONTENT_LENGTH, content_length)
             .body(request.bytes.clone());
         if let Some(signature) = url.authorization {
             upload = upload.header("authorization", signature);
