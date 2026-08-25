@@ -600,17 +600,20 @@ impl FileManagementProvider for QuarkDriveSession {
         let response = self
             .api(
                 Method::POST,
-                "/open/v1/file/mkdir",
+                "/open/v1/dir",
                 vec![],
                 Some(json!({
                     "pdir_fid": parent_id,
-                    "file_name": name,
+                    "dir_path": name,
                 })),
             )
             .await?;
         let data = response_data(&response)?;
-        let folder = data.get("file").unwrap_or(data);
-        remote_file(folder, Some(&parent_id))
+        let mut folder = remote_file(data, Some(&parent_id))?;
+        folder.name = string_value(data, &["file_name", "name"]).unwrap_or_else(|| name.clone());
+        folder.kind = RemoteFileKind::Folder;
+        folder.downloadable = false;
+        Ok(folder)
     }
 
     async fn trash_files(&self, _file_ids: Vec<String>) -> ProviderResult<()> {
