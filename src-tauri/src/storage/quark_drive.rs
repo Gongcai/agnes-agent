@@ -513,10 +513,18 @@ impl MediaPlaybackProvider for QuarkDriveSession {
             Ok(response) => response,
             Err(error) if is_transcoding_unavailable(&error) => {
                 let cookie = self.cookie().await.ok();
-                return Err(ProviderError::new(
-                    ProviderErrorCategory::RemoteUnavailable,
-                    format_playback_error(&error, cookie.as_deref().map(|value| value.as_str())),
-                ));
+                let diagnostic =
+                    format_playback_error(&error, cookie.as_deref().map(|value| value.as_str()));
+                return match self.get_download_playback_link(&request.file_id).await {
+                    Ok(link) => Ok(link),
+                    Err(download_error) => Err(ProviderError::new(
+                        ProviderErrorCategory::RemoteUnavailable,
+                        format!(
+                            "{diagnostic}；同时获取夸克直链失败：{}",
+                            download_error.message
+                        ),
+                    )),
+                };
             }
             Err(error) => return Err(error),
         };
@@ -773,6 +781,26 @@ struct QuarkUploadState {
 }
 
 impl QuarkDriveSession {
+    async fn get_download_playback_link(&self, file_id: &str) -> ProviderResult<MediaPlaybackLink> {
+        self.refresh_cookie_if_due().await;
+        let cookie = self.cookie().await?;
+        let response = request_json_with_headers_options(
+            &self.client,
+            &cookie,
+            Method::POST,
+            API_BASE,
+            "file/download",
+            Vec::new(),
+            Some(json!({"fids": [file_id]})),
+            false,
+            true,
+            QUARK_DESKTOP_USER_AGENT,
+        )
+        .await?;
+        self.merge_response_cookies(&response.headers).await;
+        parse_download_playback_link(&response.value)
+    }
+
     async fn cookie(&self) -> ProviderResult<Zeroizing<String>> {
         let cookie = self.credentials.load().await?.ok_or_else(|| {
             ProviderError::new(
@@ -1621,6 +1649,26 @@ fn parse_search_page(
     })
 }
 
+fn parse_download_playback_link(response: &Value) -> ProviderResult<MediaPlaybackLink> {
+    let download = response
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .ok_or_else(|| invalid_response("夸克网盘未返回下载播放链接"))?;
+    let url = download
+        .get("download_url")
+        .and_then(Value::as_str)
+        .filter(|value| is_https_url(value))
+        .ok_or_else(|| invalid_response("夸克网盘下载播放链接无效"))?;
+    Ok(MediaPlaybackLink {
+        url: url.into(),
+        media_type: Some("video/mp4".into()),
+        protocol: "progressive".into(),
+        resolution: None,
+        variants: Vec::new(),
+    })
+}
+
 fn parse_media_playback_link(response: &Value) -> ProviderResult<MediaPlaybackLink> {
     let data = response.get("data").unwrap_or(&Value::Null);
     let default_resolution = value_string(data, &["default_resolution"]);
@@ -2334,6 +2382,19 @@ mod tests {
         assert_eq!(link.variants[0].resolution.as_deref(), Some("high"));
         assert_eq!(link.variants[1].resolution.as_deref(), Some("normal"));
         assert_eq!(link.variants[0].url, link.url);
+    }
+
+    #[test]
+    fn download_playback_parser_accepts_quark_direct_url() {
+        let link = parse_download_playback_link(&json!({
+            "data": [{
+                "download_url": "https://video-play-c-zb.drive.quark.cn/path?auth_key=redacted"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(link.protocol, "progressive");
+        assert_eq!(link.media_type.as_deref(), Some("video/mp4"));
+        assert!(link.variants.is_empty());
     }
 
     #[test]
