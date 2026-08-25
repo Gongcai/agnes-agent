@@ -8,7 +8,9 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
-use crate::db::repo::backup::{BackupEntryRow, BackupSourceRow, NewBackupSource};
+use crate::db::repo::backup::{
+    BackupDirectoryRow, BackupEntryRow, BackupSourceRow, NewBackupSource,
+};
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 
@@ -421,12 +423,16 @@ impl LocalBackupService {
         {
             return Ok(());
         }
-        let remote_name = remote_name(&source.id, relative);
+        let remote_parent_id = self.ensure_remote_directory(source, relative).await?;
+        let remote_name = path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .ok_or_else(|| AppError::Other("Backup file has no file name".into()))?;
         let file = self
             .storage
             .upload_file_as(
                 source.account_id.clone(),
-                source.remote_root_id.clone(),
+                Some(remote_parent_id),
                 path.to_string_lossy().to_string(),
                 remote_name,
             )
@@ -477,6 +483,53 @@ impl LocalBackupService {
                 Err(error)
             }
         }
+    }
+
+    async fn ensure_remote_directory(
+        &self,
+        source: &BackupSourceRow,
+        relative: &str,
+    ) -> AppResult<String> {
+        let mut parent_id = source
+            .remote_root_id
+            .clone()
+            .filter(|value| !value.trim().is_empty());
+        let parent_key = parent_id.clone().unwrap_or_default();
+        let mut logical_path = String::new();
+        for component in remote_directory_components(source, relative) {
+            logical_path = if logical_path.is_empty() {
+                component.clone()
+            } else {
+                format!("{logical_path}/{component}")
+            };
+            if let Some(directory) = self
+                .db
+                .get_backup_directory(
+                    source.account_id.clone(),
+                    parent_key.clone(),
+                    logical_path.clone(),
+                )
+                .await?
+            {
+                parent_id = Some(directory.remote_item_id);
+                continue;
+            }
+            let folder = self
+                .storage
+                .create_folder(source.account_id.clone(), parent_id.clone(), component)
+                .await?;
+            self.db
+                .upsert_backup_directory(BackupDirectoryRow {
+                    account_id: source.account_id.clone(),
+                    parent_remote_id: parent_key.clone(),
+                    relative_path: logical_path.clone(),
+                    remote_item_id: folder.id.clone(),
+                    updated_at: now(),
+                })
+                .await?;
+            parent_id = Some(folder.id);
+        }
+        parent_id.ok_or_else(|| AppError::Other("Backup destination folder is unavailable".into()))
     }
 }
 
@@ -555,11 +608,20 @@ fn relative_path(root: &Path, path: &Path) -> AppResult<String> {
         .map(|value| value.to_string_lossy().replace('\\', "/"))
 }
 
-fn remote_name(source_id: &str, relative: &str) -> String {
-    let source = source_id.chars().take(8).collect::<String>();
-    let encoded = relative.replace('/', "__");
-    let name = format!("agnes-{source}--{encoded}");
-    name.chars().take(240).collect()
+fn remote_directory_components(source: &BackupSourceRow, relative: &str) -> Vec<String> {
+    let root_name = Path::new(&source.local_root)
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Root".into());
+    let mut components = vec!["Agnes-Backup".into(), root_name];
+    if let Some(parent) = Path::new(relative).parent() {
+        components.extend(parent.components().filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy().to_string()),
+            _ => None,
+        }));
+    }
+    components
 }
 
 fn should_ignore(path: &Path) -> bool {
@@ -595,13 +657,27 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::{remote_name, should_ignore};
+    use super::{remote_directory_components, should_ignore};
+    use crate::db::repo::backup::BackupSourceRow;
 
     #[test]
-    fn remote_names_are_stable_and_flatten_relative_paths() {
+    fn remote_directory_components_preserve_the_local_tree() {
+        let source = BackupSourceRow {
+            id: "source-1".into(),
+            local_root: "/home/user/Downloads".into(),
+            account_id: "account-1".into(),
+            remote_root_id: None,
+            mode: "fast".into(),
+            lazy_interval_seconds: 1800,
+            max_delay_seconds: 86400,
+            enabled: true,
+            last_reconciled_at: None,
+            created_at: "1".into(),
+            updated_at: "1".into(),
+        };
         assert_eq!(
-            remote_name("12345678-rest", "docs/readme.md"),
-            "agnes-12345678--docs__readme.md"
+            remote_directory_components(&source, "docs/readme.md"),
+            ["Agnes-Backup", "Downloads", "docs"]
         );
     }
 

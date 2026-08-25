@@ -586,6 +586,33 @@ impl QuotaProvider for QuarkDriveSession {
 
 #[async_trait]
 impl FileManagementProvider for QuarkDriveSession {
+    async fn create_folder(
+        &self,
+        parent_id: Option<String>,
+        name: String,
+    ) -> ProviderResult<RemoteFileItem> {
+        let name = name.trim().to_string();
+        if name.is_empty() || name.chars().count() > 255 || name.chars().any(char::is_control) {
+            return Err(invalid_request("夸克文件夹名称无效"));
+        }
+        let parent_id = quark_parent_id(parent_id.as_deref()).to_string();
+        validate_id(&parent_id)?;
+        let response = self
+            .api(
+                Method::POST,
+                "/open/v1/file/mkdir",
+                vec![],
+                Some(json!({
+                    "pdir_fid": parent_id,
+                    "file_name": name,
+                })),
+            )
+            .await?;
+        let data = response_data(&response)?;
+        let folder = data.get("file").unwrap_or(data);
+        remote_file(folder, Some(&parent_id))
+    }
+
     async fn trash_files(&self, _file_ids: Vec<String>) -> ProviderResult<()> {
         Err(ProviderError::unsupported(
             "official Quark Drive permanent or trash deletion",
@@ -815,6 +842,11 @@ impl FileUploadProvider for QuarkDriveSession {
         let task_id = string_value(data, &["task_id"])
             .ok_or_else(|| invalid_response("夸克预上传未返回 task_id"))?;
         let part_size = number_value(data, &["part_size"])
+            .or_else(|| {
+                response
+                    .get("metadata")
+                    .and_then(|metadata| number_value(metadata, &["part_size"]))
+            })
             .unwrap_or(request.chunk_size)
             .max(1);
         let upload_urls = match data.get("upload_urls") {
@@ -860,12 +892,8 @@ impl FileUploadProvider for QuarkDriveSession {
             None
         } else {
             Some(
-                self.ensure_upload_url(
-                    &request.session_id,
-                    part_number,
-                    request.bytes.len() as u64,
-                )
-                .await?,
+                self.ensure_upload_url(&request.session_id, part_number)
+                    .await?,
             )
         };
         let mut uploads = self.uploads.lock().await;
@@ -972,7 +1000,6 @@ impl QuarkDriveSession {
         &self,
         session_id: &str,
         part_number: u32,
-        requested_size: u64,
     ) -> ProviderResult<UploadUrl> {
         if let Some(url) = self
             .uploads
@@ -983,19 +1010,36 @@ impl QuarkDriveSession {
         {
             return Ok(url);
         }
-        let task_id = {
+        let (task_id, part_size, total_size) = {
             let uploads = self.uploads.lock().await;
             let state = uploads
                 .get(session_id)
                 .ok_or_else(|| invalid_request("夸克上传会话不存在或已过期"))?;
-            state.task_id.clone()
+            (state.task_id.clone(), state.part_size, state.total_size)
         };
-        let response = self.api(
-            Method::POST,
-            "/open/v1/file/get_upload_urls",
-            vec![],
-            Some(json!({"task_id": task_id, "part_info_list": [{"part_number": part_number, "part_size": requested_size}]})),
-        ).await?;
+        let total_parts = total_size
+            .saturating_add(part_size.saturating_sub(1))
+            .checked_div(part_size)
+            .unwrap_or(0)
+            .max(u64::from(part_number));
+        let part_info_list = (u64::from(part_number)
+            ..=total_parts.min(u64::from(part_number) + 99))
+            .map(|part| {
+                let remaining = total_size.saturating_sub((part - 1) * part_size);
+                json!({
+                    "part_number": part,
+                    "part_size": remaining.min(part_size),
+                })
+            })
+            .collect::<Vec<_>>();
+        let response = self
+            .api(
+                Method::POST,
+                "/open/v1/file/get_upload_urls",
+                vec![],
+                Some(json!({"task_id": task_id, "part_info_list": part_info_list})),
+            )
+            .await?;
         let data = response_data(&response)?;
         let urls = parse_upload_urls(data)?;
         let url = urls
@@ -1372,7 +1416,7 @@ async fn signed_request(
             .unwrap_or_else(|| "夸克官方接口请求失败".into());
         return Err(status_error_with_retry_after(
             status,
-            &message,
+            &format!("{path}: {message}"),
             retry_after.as_ref(),
         ));
     }
@@ -1390,7 +1434,7 @@ async fn signed_request(
         } else {
             ProviderErrorCategory::RemoteUnavailable
         };
-        let mut error = ProviderError::new(category, message);
+        let mut error = ProviderError::new(category, format!("{path}: {message}"));
         if let Some(seconds) = number_value(&value, &["retry_after", "retry_after_seconds"]) {
             error = error.with_retry_after(seconds);
         }

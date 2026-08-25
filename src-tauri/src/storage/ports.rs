@@ -87,6 +87,14 @@ pub trait FileUploadProvider: Send + Sync {
 pub trait FileManagementProvider: Send + Sync {
     async fn trash_files(&self, file_ids: Vec<String>) -> ProviderResult<()>;
 
+    async fn create_folder(
+        &self,
+        _parent_id: Option<String>,
+        _name: String,
+    ) -> ProviderResult<RemoteFileItem> {
+        Err(ProviderError::unsupported("creating folders"))
+    }
+
     async fn move_files(
         &self,
         _file_ids: Vec<String>,

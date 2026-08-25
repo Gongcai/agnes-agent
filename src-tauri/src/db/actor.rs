@@ -222,6 +222,16 @@ pub enum DbCommand {
         input: repo::backup::BackupEntryRow,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    GetBackupDirectory {
+        account_id: String,
+        parent_remote_id: String,
+        relative_path: String,
+        resp: oneshot::Sender<AppResult<Option<repo::backup::BackupDirectoryRow>>>,
+    },
+    UpsertBackupDirectory {
+        input: repo::backup::BackupDirectoryRow,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     FindReadingBookBySourceHash {
         source_hash: String,
         resp: oneshot::Sender<AppResult<Option<repo::reading::ReadingBookRow>>>,
@@ -1253,6 +1263,33 @@ impl DbActorHandle {
     pub async fn upsert_backup_entry(&self, input: repo::backup::BackupEntryRow) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::UpsertBackupEntry { input, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn get_backup_directory(
+        &self,
+        account_id: String,
+        parent_remote_id: String,
+        relative_path: String,
+    ) -> AppResult<Option<repo::backup::BackupDirectoryRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::GetBackupDirectory {
+            account_id,
+            parent_remote_id,
+            relative_path,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn upsert_backup_directory(
+        &self,
+        input: repo::backup::BackupDirectoryRow,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpsertBackupDirectory { input, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -2732,6 +2769,22 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::UpsertBackupEntry { input, resp } => {
                     let _ = resp.send(repo::backup::upsert_entry(&conn, &input));
+                }
+                DbCommand::GetBackupDirectory {
+                    account_id,
+                    parent_remote_id,
+                    relative_path,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::backup::get_directory(
+                        &conn,
+                        &account_id,
+                        &parent_remote_id,
+                        &relative_path,
+                    ));
+                }
+                DbCommand::UpsertBackupDirectory { input, resp } => {
+                    let _ = resp.send(repo::backup::upsert_directory(&conn, &input));
                 }
                 DbCommand::FindReadingBookBySourceHash { source_hash, resp } => {
                     let _ = resp.send(repo::reading::find_by_source_hash(&conn, &source_hash));

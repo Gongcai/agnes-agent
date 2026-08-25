@@ -814,7 +814,7 @@ export function DriveWorkspace() {
       await invoke("add_backup_source", {
         localRoot: selected,
         accountId: selectedAccountId,
-        remoteRootId: currentFolder.id,
+        remoteRootId: null,
         mode: backupMode,
         lazyIntervalSeconds: backupMode === "lazy" ? 1800 : null,
         maxDelaySeconds: backupMode === "lazy" ? 86400 : null,

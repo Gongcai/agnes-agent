@@ -719,6 +719,18 @@ CREATE TABLE IF NOT EXISTS backup_entries (
 
 CREATE INDEX IF NOT EXISTS idx_backup_sources_enabled ON backup_sources(enabled,updated_at);
 CREATE INDEX IF NOT EXISTS idx_backup_entries_dirty ON backup_entries(status,dirty_at);
+
+CREATE TABLE IF NOT EXISTS backup_directories (
+  account_id TEXT NOT NULL REFERENCES storage_provider_accounts(id),
+  parent_remote_id TEXT NOT NULL DEFAULT '',
+  relative_path TEXT NOT NULL,
+  remote_item_id TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(account_id,parent_remote_id,relative_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_backup_directories_account
+  ON backup_directories(account_id,updated_at);
 "#;
 
 /// Artifact payloads live in the app data directory or a remote object

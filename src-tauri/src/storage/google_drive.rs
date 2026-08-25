@@ -419,6 +419,39 @@ impl FileUploadProvider for GoogleDriveSession {
 
 #[async_trait]
 impl FileManagementProvider for GoogleDriveSession {
+    async fn create_folder(
+        &self,
+        parent_id: Option<String>,
+        name: String,
+    ) -> ProviderResult<RemoteFileItem> {
+        let name = name.trim().to_string();
+        if name.is_empty() || name.chars().count() > 255 || name.chars().any(char::is_control) {
+            return Err(invalid_request("Google Drive folder name is invalid"));
+        }
+        self.require_scope(DRIVE_SCOPE).await?;
+        let parent_id = parent_id.unwrap_or_else(|| "root".into());
+        validate_opaque_id(&parent_id, "parent folder ID")?;
+        let response = self
+            .send_authorized(
+                Method::POST,
+                &format!("{DRIVE_API}/files"),
+                &[
+                    ("fields".into(), FILE_FIELDS.into()),
+                    ("supportsAllDrives".into(), "true".into()),
+                ],
+                HeaderMap::new(),
+                RequestBody::Json(json!({
+                    "name": name,
+                    "mimeType": GOOGLE_FOLDER_MIME,
+                    "parents": [parent_id],
+                })),
+                true,
+                &[],
+            )
+            .await?;
+        remote_file_item(parse_json_response(response).await?)
+    }
+
     async fn trash_files(&self, file_ids: Vec<String>) -> ProviderResult<()> {
         if file_ids.is_empty() || file_ids.len() > 100 {
             return Err(invalid_request(

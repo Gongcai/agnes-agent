@@ -29,6 +29,15 @@ pub struct NewBackupSource {
     pub max_delay_seconds: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct BackupDirectoryRow {
+    pub account_id: String,
+    pub parent_remote_id: String,
+    pub relative_path: String,
+    pub remote_item_id: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupEntryRow {
     pub source_id: String,
@@ -160,6 +169,50 @@ pub fn upsert_entry(conn: &Connection, entry: &BackupEntryRow) -> AppResult<()> 
     Ok(())
 }
 
+pub fn get_directory(
+    conn: &Connection,
+    account_id: &str,
+    parent_remote_id: &str,
+    relative_path: &str,
+) -> AppResult<Option<BackupDirectoryRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT account_id,parent_remote_id,relative_path,remote_item_id,updated_at
+         FROM backup_directories
+         WHERE account_id=?1 AND parent_remote_id=?2 AND relative_path=?3",
+    )?;
+    let mut rows = stmt.query(params![account_id, parent_remote_id, relative_path])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    Ok(Some(directory_from_row(row)?))
+}
+
+pub fn upsert_directory(conn: &Connection, directory: &BackupDirectoryRow) -> AppResult<()> {
+    if directory.account_id.trim().is_empty()
+        || directory.remote_item_id.trim().is_empty()
+        || directory.relative_path.trim().is_empty()
+    {
+        return Err(AppError::Other(
+            "Backup directory identity is required".into(),
+        ));
+    }
+    conn.execute(
+        "INSERT INTO backup_directories
+         (account_id,parent_remote_id,relative_path,remote_item_id,updated_at)
+         VALUES (?1,?2,?3,?4,?5)
+         ON CONFLICT(account_id,parent_remote_id,relative_path) DO UPDATE SET
+         remote_item_id=excluded.remote_item_id,updated_at=excluded.updated_at",
+        params![
+            directory.account_id,
+            directory.parent_remote_id,
+            directory.relative_path,
+            directory.remote_item_id,
+            directory.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
 fn source_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BackupSourceRow> {
     Ok(BackupSourceRow {
         id: row.get(0)?,
@@ -189,6 +242,16 @@ fn entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BackupEntryRow> {
         dirty_at: row.get(8)?,
         uploaded_at: row.get(9)?,
         updated_at: row.get(10)?,
+    })
+}
+
+fn directory_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BackupDirectoryRow> {
+    Ok(BackupDirectoryRow {
+        account_id: row.get(0)?,
+        parent_remote_id: row.get(1)?,
+        relative_path: row.get(2)?,
+        remote_item_id: row.get(3)?,
+        updated_at: row.get(4)?,
     })
 }
 

@@ -953,6 +953,32 @@ impl StorageService {
             .await
     }
 
+    pub async fn create_folder(
+        &self,
+        account_id: String,
+        parent_id: Option<String>,
+        name: String,
+    ) -> AppResult<RemoteFileItem> {
+        let name = name.trim().to_string();
+        if name.is_empty() || name.chars().count() > 255 || name.chars().any(char::is_control) {
+            return Err(AppError::Other("Storage folder name is invalid".into()));
+        }
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let manager = session.file_management().ok_or_else(|| {
+            AppError::Other("Storage provider does not support folder creation".into())
+        })?;
+        match manager.create_folder(parent_id, name).await {
+            Ok(folder) => {
+                self.update_provider_status(&row, None).await;
+                Ok(folder)
+            }
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                Err(provider_error(error))
+            }
+        }
+    }
+
     pub async fn upload_file_as(
         &self,
         account_id: String,
