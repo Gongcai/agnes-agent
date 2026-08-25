@@ -1,23 +1,31 @@
 use std::collections::HashMap;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures_util::StreamExt;
+use futures_util::{stream, StreamExt};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::process::Command;
 use tokio::sync::{Mutex, OnceCell};
 
 use crate::error::AppResult;
 
-use super::domain::{DownloadFileRequest, MediaPlaybackLink, ProviderByteStream};
+use super::domain::{
+    DownloadFileRequest, MediaPlaybackLink, ProviderByteStream, ProviderError,
+    ProviderErrorCategory,
+};
 use super::service::{StorageFileStreamMetadata, StorageService};
 
 const PROXY_PATH_PREFIX: &str = "/storage/media/";
+const TRANSCODE_PATH_PREFIX: &str = "/storage/transcode/";
 const SESSION_TTL: Duration = Duration::from_secs(2 * 60 * 60);
 const REQUEST_LIMIT: usize = 16 * 1024;
 const UPSTREAM_PART_BYTES: u64 = 10 * 1024 * 1024;
 const UPSTREAM_RETRIES: usize = 3;
+const FFMPEG_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 struct PlaybackSession {
@@ -25,7 +33,14 @@ struct PlaybackSession {
     file_id: String,
     expected_revision: Option<String>,
     metadata: StorageFileStreamMetadata,
+    mode: PlaybackMode,
     expires_at: Instant,
+}
+
+#[derive(Clone)]
+enum PlaybackMode {
+    Direct,
+    Transcode { source_token: String },
 }
 
 pub struct StorageMediaProxy {
@@ -65,13 +80,15 @@ impl StorageMediaProxy {
             metadata.size = Some(file_size);
         }
         let token = uuid::Uuid::new_v4().simple().to_string();
+        let source_token = uuid::Uuid::new_v4().simple().to_string();
         self.sessions.lock().await.insert(
-            token.clone(),
+            source_token.clone(),
             PlaybackSession {
                 account_id,
                 file_id,
                 expected_revision: metadata.revision.clone(),
                 metadata: metadata.clone(),
+                mode: PlaybackMode::Direct,
                 expires_at: Instant::now() + SESSION_TTL,
             },
         );
@@ -79,8 +96,28 @@ impl StorageMediaProxy {
             .ensure_server()
             .await
             .map_err(crate::error::AppError::Other)?;
+        if should_transcode(&metadata) {
+            self.sessions.lock().await.insert(
+                token.clone(),
+                PlaybackSession {
+                    account_id: String::new(),
+                    file_id: String::new(),
+                    expected_revision: None,
+                    metadata: metadata.clone(),
+                    mode: PlaybackMode::Transcode { source_token },
+                    expires_at: Instant::now() + SESSION_TTL,
+                },
+            );
+            return Ok(MediaPlaybackLink {
+                url: format!("http://{address}{TRANSCODE_PATH_PREFIX}{token}"),
+                media_type: Some("video/mp4".into()),
+                protocol: "transcode".into(),
+                resolution: None,
+                variants: Vec::new(),
+            });
+        }
         Ok(MediaPlaybackLink {
-            url: format!("http://{address}{PROXY_PATH_PREFIX}{token}"),
+            url: format!("http://{address}{PROXY_PATH_PREFIX}{source_token}"),
             media_type: metadata.media_type,
             protocol: "range".into(),
             resolution: None,
@@ -111,7 +148,9 @@ impl StorageMediaProxy {
                         let storage = storage.clone();
                         let sessions = sessions.clone();
                         tauri::async_runtime::spawn(async move {
-                            if let Err(error) = handle_connection(stream, storage, sessions).await {
+                            if let Err(error) =
+                                handle_connection(stream, storage, sessions, address).await
+                            {
                                 if !error.is_empty() {
                                     eprintln!("[storage][media-proxy] {error}");
                                 }
@@ -130,6 +169,7 @@ async fn handle_connection(
     mut stream: TcpStream,
     storage: Arc<StorageService>,
     sessions: Arc<Mutex<HashMap<String, PlaybackSession>>>,
+    address: std::net::SocketAddr,
 ) -> Result<(), String> {
     let request = read_request(&mut stream).await?;
     let Some((method, target, headers)) = parse_request(&request) else {
@@ -163,10 +203,18 @@ async fn handle_connection(
         return Ok(());
     }
     let path = target.split('?').next().unwrap_or_default();
-    let Some(token) = path.strip_prefix(PROXY_PATH_PREFIX) else {
+    let (is_transcode, token) = if let Some(token) = path.strip_prefix(TRANSCODE_PATH_PREFIX) {
+        (true, token)
+    } else if let Some(token) = path.strip_prefix(PROXY_PATH_PREFIX) {
+        (false, token)
+    } else {
         write_error(&mut stream, 404, "Not Found").await?;
         return Ok(());
     };
+    if token.is_empty() {
+        write_error(&mut stream, 404, "Not Found").await?;
+        return Ok(());
+    }
     let session = {
         let mut values = sessions.lock().await;
         let now = Instant::now();
@@ -177,6 +225,14 @@ async fn handle_connection(
         write_error(&mut stream, 404, "Playback session expired").await?;
         return Ok(());
     };
+    if is_transcode {
+        return handle_transcoded_connection(&mut stream, &session, address, method == "HEAD")
+            .await;
+    }
+    if !matches!(&session.mode, PlaybackMode::Direct) {
+        write_error(&mut stream, 404, "Invalid playback session").await?;
+        return Ok(());
+    }
     let range = match parse_range(
         headers.get("range").map(String::as_str),
         session.metadata.size,
@@ -264,6 +320,250 @@ async fn handle_connection(
         }
     }
     Ok(())
+}
+
+async fn handle_transcoded_connection(
+    stream: &mut TcpStream,
+    session: &PlaybackSession,
+    address: std::net::SocketAddr,
+    head_only: bool,
+) -> Result<(), String> {
+    let PlaybackMode::Transcode { source_token } = &session.mode else {
+        write_error(stream, 404, "Invalid transcoding session").await?;
+        return Ok(());
+    };
+    let input_url = format!("http://{address}{PROXY_PATH_PREFIX}{source_token}");
+    let headers = vec![
+        ("Accept-Ranges".to_owned(), "none".to_owned()),
+        ("Access-Control-Allow-Origin".to_owned(), "*".to_owned()),
+        ("Cache-Control".to_owned(), "no-store".to_owned()),
+        ("Connection".to_owned(), "close".to_owned()),
+        (
+            "Content-Disposition".to_owned(),
+            content_disposition(&session.metadata.name),
+        ),
+        ("Content-Type".to_owned(), "video/mp4".to_owned()),
+    ];
+    if head_only {
+        write_response_owned(stream, 200, &headers).await?;
+        return Ok(());
+    }
+    let mode = select_ffmpeg_mode(&input_url).await;
+    eprintln!(
+        "[storage][media-proxy] ffmpeg mode={} name={}",
+        mode.label(),
+        session.metadata.name
+    );
+    let source = match spawn_ffmpeg_stream(&input_url, mode).await {
+        Ok(source) => source,
+        Err(error) => {
+            eprintln!("[storage][media-proxy] ffmpeg startup failed: {error}");
+            write_error(stream, 502, "FFmpeg transcoding unavailable").await?;
+            return Ok(());
+        }
+    };
+    write_response_owned(stream, 200, &headers).await?;
+    if let Err(error) = forward_stream(stream, source, None).await {
+        match error {
+            ForwardError::Upstream { error, .. } => {
+                eprintln!("[storage][media-proxy] ffmpeg stream failed: {error}");
+            }
+            ForwardError::Client(error) if !is_client_disconnect(&error) => {
+                eprintln!("[storage][media-proxy] transcoded client stream failed: {error}");
+            }
+            ForwardError::Client(_) => {}
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum FfmpegMode {
+    Remux,
+    Transcode,
+}
+
+impl FfmpegMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Remux => "remux",
+            Self::Transcode => "transcode",
+        }
+    }
+}
+
+async fn select_ffmpeg_mode(input_url: &str) -> FfmpegMode {
+    let mut probe = Command::new(ffprobe_program());
+    probe
+        .args(["-v", "error", "-show_streams", "-of", "json", input_url])
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(FFMPEG_PROBE_TIMEOUT, probe.output())
+        .await
+        .ok()
+        .and_then(Result::ok);
+    let Some(output) = output.filter(|output| output.status.success()) else {
+        return FfmpegMode::Transcode;
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) else {
+        return FfmpegMode::Transcode;
+    };
+    if probe_supports_fragmented_mp4(&value) {
+        FfmpegMode::Remux
+    } else {
+        FfmpegMode::Transcode
+    }
+}
+
+fn probe_supports_fragmented_mp4(value: &Value) -> bool {
+    let Some(streams) = value.get("streams").and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(video) = streams
+        .iter()
+        .find(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("video"))
+    else {
+        return false;
+    };
+    let video_codec_ok = video.get("codec_name").and_then(Value::as_str) == Some("h264")
+        && matches!(
+            video.get("pix_fmt").and_then(Value::as_str),
+            Some("yuv420p" | "yuvj420p")
+        );
+    let audio_codec_ok = streams
+        .iter()
+        .find(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("audio"))
+        .map_or(true, |stream| {
+            stream.get("codec_name").and_then(Value::as_str) == Some("aac")
+        });
+    video_codec_ok && audio_codec_ok
+}
+
+async fn spawn_ffmpeg_stream(
+    input_url: &str,
+    mode: FfmpegMode,
+) -> Result<ProviderByteStream, String> {
+    let mut command = Command::new(ffmpeg_program());
+    command
+        .arg("-nostdin")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-i")
+        .arg(input_url)
+        .args(["-map", "0:v:0", "-map", "0:a:0?"])
+        .args(["-sn", "-dn"])
+        .args(match mode {
+            FfmpegMode::Remux => &["-c", "copy"][..],
+            FfmpegMode::Transcode => &["-c:v", "libx264"][..],
+        })
+        .args(match mode {
+            FfmpegMode::Remux => &[][..],
+            FfmpegMode::Transcode => &["-preset", "veryfast"][..],
+        })
+        .args(match mode {
+            FfmpegMode::Remux => &[][..],
+            FfmpegMode::Transcode => &["-tune", "zerolatency"][..],
+        })
+        .args(match mode {
+            FfmpegMode::Remux => &[][..],
+            FfmpegMode::Transcode => &["-crf", "23", "-pix_fmt", "yuv420p"][..],
+        })
+        .args(match mode {
+            FfmpegMode::Remux => &[][..],
+            FfmpegMode::Transcode => &["-c:a", "aac", "-b:a", "160k"][..],
+        })
+        .args([
+            "-movflags",
+            "+frag_keyframe+empty_moov+default_base_moof",
+            "-flush_packets",
+            "1",
+            "-f",
+            "mp4",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("{}: {error}", ffmpeg_program()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "FFmpeg stdout was not piped".to_owned())?;
+    if let Some(mut stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let mut output = Vec::new();
+            let _ = stderr.read_to_end(&mut output).await;
+            if !output.is_empty() {
+                eprintln!(
+                    "[storage][media-proxy][ffmpeg] {}",
+                    String::from_utf8_lossy(&output).trim()
+                );
+            }
+        });
+    }
+    Ok(Box::pin(stream::unfold(
+        (child, stdout),
+        |(mut child, mut stdout)| async move {
+            let mut buffer = vec![0_u8; 64 * 1024];
+            match stdout.read(&mut buffer).await {
+                Ok(0) => {
+                    let status = child.wait().await;
+                    if status.as_ref().is_ok_and(|status| !status.success()) {
+                        return Some((
+                            Err(ProviderError::new(
+                                ProviderErrorCategory::RemoteUnavailable,
+                                "FFmpeg exited before producing the complete video stream",
+                            )),
+                            (child, stdout),
+                        ));
+                    }
+                    None
+                }
+                Ok(length) => {
+                    buffer.truncate(length);
+                    Some((Ok(buffer), (child, stdout)))
+                }
+                Err(error) => Some((
+                    Err(ProviderError::new(
+                        ProviderErrorCategory::Network,
+                        format!("读取 FFmpeg 输出失败: {error}"),
+                    )),
+                    (child, stdout),
+                )),
+            }
+        },
+    )))
+}
+
+fn ffmpeg_program() -> String {
+    std::env::var("AGNES_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".into())
+}
+
+fn ffprobe_program() -> String {
+    std::env::var("AGNES_FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".into())
+}
+
+fn should_transcode(metadata: &StorageFileStreamMetadata) -> bool {
+    let media_type = metadata
+        .media_type
+        .as_deref()
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let extension = metadata
+        .name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase());
+    media_type == "video/x-matroska"
+        || matches!(
+            extension.as_deref(),
+            Some("mkv" | "avi" | "flv" | "ts" | "m2ts" | "mts" | "wmv" | "rm" | "rmvb")
+        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -838,5 +1138,54 @@ mod tests {
         assert!(is_video_or_audio_mime_type("audio/mp4; codecs=mp4a.40.2"));
         assert!(!is_video_or_audio_mime_type("mp4"));
         assert!(!is_video_or_audio_mime_type("application/octet-stream"));
+    }
+
+    #[test]
+    fn routes_container_formats_through_ffmpeg() {
+        assert!(should_transcode(&StorageFileStreamMetadata {
+            name: "movie.mkv".into(),
+            media_type: Some("video/x-matroska".into()),
+            size: Some(1),
+            revision: None,
+        }));
+        assert!(should_transcode(&StorageFileStreamMetadata {
+            name: "movie.avi".into(),
+            media_type: None,
+            size: Some(1),
+            revision: None,
+        }));
+        assert!(!should_transcode(&StorageFileStreamMetadata {
+            name: "movie.mp4".into(),
+            media_type: Some("video/mp4".into()),
+            size: Some(1),
+            revision: None,
+        }));
+    }
+
+    #[test]
+    fn only_browser_safe_h264_aac_streams_are_remuxed() {
+        let safe = serde_json::json!({
+            "streams": [
+                {"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p"},
+                {"codec_type": "audio", "codec_name": "aac"}
+            ]
+        });
+        assert!(probe_supports_fragmented_mp4(&safe));
+
+        let unsupported_video = serde_json::json!({
+            "streams": [
+                {"codec_type": "video", "codec_name": "hevc", "pix_fmt": "yuv420p"},
+                {"codec_type": "audio", "codec_name": "aac"}
+            ]
+        });
+        assert!(!probe_supports_fragmented_mp4(&unsupported_video));
+
+        let unsupported_audio = serde_json::json!({
+            "streams": [
+                {"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p"},
+                {"codec_type": "audio", "codec_name": "dts"}
+            ]
+        });
+        assert!(!probe_supports_fragmented_mp4(&unsupported_audio));
     }
 }

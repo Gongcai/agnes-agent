@@ -347,6 +347,7 @@ export function DriveWorkspace() {
       }
       const mediaError = video.error;
       const diagnostics = `code=${mediaError?.code ?? "none"}, message=${mediaError?.message || error?.message || "none"}, networkState=${video.networkState}, readyState=${video.readyState}, capabilities=[${mediaCapabilitySummary(video)}]`;
+      const isTranscoded = link.protocol === "transcode";
       console.error("[storage][media-playback] media error", {
         diagnostics,
         protocol: link.protocol,
@@ -361,8 +362,8 @@ export function DriveWorkspace() {
             4: "当前 WebView 不支持此媒体格式或播放地址",
           }[mediaError.code] ?? `媒体播放失败（错误码 ${mediaError.code}）`
         : "媒体播放失败，未返回具体错误信息";
-      setMediaPlaybackFallbackItem(link.protocol === "range" ? null : mediaPlayback.item);
-      setError(link.protocol === "range" ? `原文件播放失败：${reason}（${diagnostics}）` : reason);
+      setMediaPlaybackFallbackItem(link.protocol === "range" || isTranscoded ? null : mediaPlayback.item);
+      setError(isTranscoded ? `FFmpeg 转码播放失败：${reason}（${diagnostics}）` : link.protocol === "range" ? `原文件播放失败：${reason}（${diagnostics}）` : reason);
     };
 
     try {
