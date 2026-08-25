@@ -27,7 +27,7 @@ use super::ports::{
     ProviderAuthorizationStep, ProviderCredentialAccess, ProviderFactory, ProviderSession,
     QuotaProvider, SharedFileImportProvider,
 };
-use super::quark_drive::QuarkDriveFactory as LegacyQuarkDriveFactory;
+use super::quark_drive::{QuarkDriveFactory as LegacyQuarkDriveFactory, Sha1Context};
 
 const PROVIDER_ID: &str = "quark_drive";
 const OPEN_API: &str = "https://open-api-drive.quark.cn";
@@ -448,6 +448,7 @@ struct QuarkUploadState {
     next_offset: u64,
     total_size: u64,
     part_etags: HashMap<u32, String>,
+    sha1_context: Sha1Context,
     instant_file: Option<RemoteFileItem>,
 }
 
@@ -812,7 +813,12 @@ impl FileUploadProvider for QuarkDriveSession {
                 Some(json!({
                     "file_name": request.name, "size": request.size, "sha1": sha1, "md5": md5,
                     "pdir_fid": parent_id, "format_type": request.media_type,
-                    "parallel_upload": true, "hash_update": false
+                    "parallel_upload": true, "hash_update": false,
+                    "part_info_list": [{
+                        "part_number": 1,
+                        "part_size": request.size,
+                        "parallel_sha1_ctx": Sha1Context::default().parallel_context(0)
+                    }]
                 })),
             )
             .await?;
@@ -832,6 +838,7 @@ impl FileUploadProvider for QuarkDriveSession {
                     next_offset: 0,
                     total_size: request.size,
                     part_etags: HashMap::new(),
+                    sha1_context: Sha1Context::default(),
                     instant_file: Some(file),
                 },
             );
@@ -868,6 +875,7 @@ impl FileUploadProvider for QuarkDriveSession {
                 next_offset: 0,
                 total_size: request.size,
                 part_etags: HashMap::new(),
+                sha1_context: Sha1Context::default(),
                 instant_file: None,
             },
         );
@@ -947,6 +955,7 @@ impl FileUploadProvider for QuarkDriveSession {
             .map(str::to_owned)
             .ok_or_else(|| invalid_response("夸克分片上传响应缺少 ETag"))?;
         state.part_etags.insert(part_number, etag);
+        state.sha1_context.update(&request.bytes);
         state.next_offset = state.next_offset.saturating_add(request.bytes.len() as u64);
         if state.next_offset < state.total_size {
             return Ok(UploadedFileChunk {
@@ -1013,34 +1022,33 @@ impl QuarkDriveSession {
         {
             return Ok(url);
         }
-        let (task_id, part_size, total_size) = {
+        let (task_id, part_size, total_size, part_offset, sha1_context) = {
             let uploads = self.uploads.lock().await;
             let state = uploads
                 .get(session_id)
                 .ok_or_else(|| invalid_request("夸克上传会话不存在或已过期"))?;
-            (state.task_id.clone(), state.part_size, state.total_size)
+            (
+                state.task_id.clone(),
+                state.part_size,
+                state.total_size,
+                state.next_offset,
+                state.sha1_context.clone(),
+            )
         };
-        let total_parts = total_size
-            .saturating_add(part_size.saturating_sub(1))
-            .checked_div(part_size)
-            .unwrap_or(0)
-            .max(u64::from(part_number));
-        let part_info_list = (u64::from(part_number)
-            ..=total_parts.min(u64::from(part_number) + 99))
-            .map(|part| {
-                let remaining = total_size.saturating_sub((part - 1) * part_size);
-                json!({
-                    "part_number": part,
-                    "part_size": remaining.min(part_size),
-                })
-            })
-            .collect::<Vec<_>>();
+        let remaining = total_size.saturating_sub((u64::from(part_number) - 1) * part_size);
+        let mut part_info = json!({
+            "part_number": part_number,
+            "part_size": remaining.min(part_size),
+        });
+        if part_number > 1 {
+            part_info["parallel_sha1_ctx"] = sha1_context.parallel_context(part_offset);
+        }
         let response = self
             .api(
                 Method::POST,
                 "/open/v1/file/get_upload_urls",
                 vec![],
-                Some(json!({"task_id": task_id, "part_info_list": part_info_list})),
+                Some(json!({"task_id": task_id, "part_info_list": [part_info]})),
             )
             .await?;
         let data = response_data(&response)?;

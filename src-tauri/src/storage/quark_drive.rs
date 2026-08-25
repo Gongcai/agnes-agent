@@ -1126,7 +1126,7 @@ impl QuarkDriveSession {
 }
 
 #[derive(Clone)]
-struct Sha1Context {
+pub(crate) struct Sha1Context {
     state: [u32; 5],
     processed_bits: u64,
     buffer: Vec<u8>,
@@ -1143,7 +1143,7 @@ impl Default for Sha1Context {
 }
 
 impl Sha1Context {
-    fn update(&mut self, data: &[u8]) {
+    pub(crate) fn update(&mut self, data: &[u8]) {
         self.buffer.extend_from_slice(data);
         let complete = self.buffer.len() / 64 * 64;
         for block in self.buffer[..complete].chunks_exact(64) {
@@ -1167,6 +1167,13 @@ impl Sha1Context {
             "num": self.buffer.len().to_string()
         });
         BASE64.encode(serde_json::to_vec(&value).unwrap_or_default())
+    }
+
+    pub(crate) fn parallel_context(&self, part_offset: u64) -> Value {
+        json!({
+            "part_offset": part_offset,
+            "h": self.state,
+        })
     }
 }
 
@@ -2242,6 +2249,17 @@ mod tests {
         assert_eq!(context.processed_bits, 512);
         assert!(context.buffer.is_empty());
         assert!(!context.context_header().is_empty());
+    }
+
+    #[test]
+    fn sha1_parallel_context_exposes_offset_and_state() {
+        let mut context = Sha1Context::default();
+        context.update(&[b'a'; 64]);
+        let parallel = context.parallel_context(64);
+
+        assert_eq!(parallel["part_offset"], json!(64));
+        assert_eq!(parallel["h"].as_array().map(Vec::len), Some(5));
+        assert_ne!(parallel["h"][0], json!(0x67452301_u32));
     }
 
     #[test]
