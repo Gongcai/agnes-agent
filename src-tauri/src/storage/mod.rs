@@ -3,6 +3,7 @@
 
 pub mod artifact_cache;
 pub mod artifact_transfer;
+pub mod backup;
 pub mod credentials;
 pub mod domain;
 pub mod google_drive;
@@ -15,6 +16,7 @@ pub mod r2;
 pub mod registry;
 pub mod service;
 
+pub use backup::{BackupSourceView, LocalBackupService};
 pub use credentials::{
     KeyringProviderCredentialStore, ScopedProviderCredentialAccess, SyncProviderCredentialAccess,
 };

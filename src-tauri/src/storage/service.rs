@@ -944,6 +944,22 @@ impl StorageService {
         parent_id: Option<String>,
         source: String,
     ) -> AppResult<RemoteFileItem> {
+        let name = std::path::Path::new(&source)
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| AppError::Other("Upload source has no file name".into()))?;
+        self.upload_file_as(account_id, parent_id, source, name)
+            .await
+    }
+
+    pub async fn upload_file_as(
+        &self,
+        account_id: String,
+        parent_id: Option<String>,
+        source: String,
+        remote_name: String,
+    ) -> AppResult<RemoteFileItem> {
         const DEFAULT_UPLOAD_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 
         let source = std::path::PathBuf::from(source);
@@ -958,11 +974,10 @@ impl StorageService {
                 "Upload source must be a regular file".into(),
             ));
         }
-        let name = source
-            .file_name()
-            .map(|value| value.to_string_lossy().to_string())
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| AppError::Other("Upload source has no file name".into()))?;
+        let name = remote_name.trim().to_string();
+        if name.is_empty() || name.chars().count() > 255 || name.chars().any(char::is_control) {
+            return Err(AppError::Other("Upload destination name is invalid".into()));
+        }
         let size = metadata.len();
         let bytes_total = i64::try_from(size)
             .map_err(|_| AppError::Other("Upload file exceeds the local transfer range".into()))?;

@@ -194,6 +194,34 @@ pub enum DbCommand {
         progress: repo::storage::StorageTransferProgress,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    ListBackupSources {
+        resp: oneshot::Sender<AppResult<Vec<repo::backup::BackupSourceRow>>>,
+    },
+    UpsertBackupSource {
+        input: repo::backup::NewBackupSource,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    DeleteBackupSource {
+        source_id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    UpdateBackupSourceEnabled {
+        source_id: String,
+        enabled: bool,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    MarkBackupSourceReconciled {
+        source_id: String,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    ListBackupEntries {
+        source_id: String,
+        resp: oneshot::Sender<AppResult<Vec<repo::backup::BackupEntryRow>>>,
+    },
+    UpsertBackupEntry {
+        input: repo::backup::BackupEntryRow,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     FindReadingBookBySourceHash {
         source_hash: String,
         resp: oneshot::Sender<AppResult<Option<repo::reading::ReadingBookRow>>>,
@@ -1162,6 +1190,69 @@ impl DbActorHandle {
             progress,
             resp,
         })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_backup_sources(&self) -> AppResult<Vec<repo::backup::BackupSourceRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListBackupSources { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn upsert_backup_source(
+        &self,
+        input: repo::backup::NewBackupSource,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpsertBackupSource { input, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn delete_backup_source(&self, source_id: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::DeleteBackupSource { source_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn update_backup_source_enabled(
+        &self,
+        source_id: String,
+        enabled: bool,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpdateBackupSourceEnabled {
+            source_id,
+            enabled,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn mark_backup_source_reconciled(&self, source_id: String) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::MarkBackupSourceReconciled { source_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn list_backup_entries(
+        &self,
+        source_id: String,
+    ) -> AppResult<Vec<repo::backup::BackupEntryRow>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ListBackupEntries { source_id, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn upsert_backup_entry(&self, input: repo::backup::BackupEntryRow) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::UpsertBackupEntry { input, resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -2614,6 +2705,33 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     let _ = resp.send(repo::storage::update_transfer_job(
                         &conn, &job_id, &progress,
                     ));
+                }
+                DbCommand::ListBackupSources { resp } => {
+                    let _ = resp.send(repo::backup::list_sources(&conn));
+                }
+                DbCommand::UpsertBackupSource { input, resp } => {
+                    let _ = resp.send(repo::backup::upsert_source(&conn, &input));
+                }
+                DbCommand::DeleteBackupSource { source_id, resp } => {
+                    let _ = resp.send(repo::backup::delete_source(&conn, &source_id));
+                }
+                DbCommand::UpdateBackupSourceEnabled {
+                    source_id,
+                    enabled,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::backup::update_source_enabled(
+                        &conn, &source_id, enabled,
+                    ));
+                }
+                DbCommand::MarkBackupSourceReconciled { source_id, resp } => {
+                    let _ = resp.send(repo::backup::mark_reconciled(&conn, &source_id));
+                }
+                DbCommand::ListBackupEntries { source_id, resp } => {
+                    let _ = resp.send(repo::backup::list_entries(&conn, &source_id));
+                }
+                DbCommand::UpsertBackupEntry { input, resp } => {
+                    let _ = resp.send(repo::backup::upsert_entry(&conn, &input));
                 }
                 DbCommand::FindReadingBookBySourceHash { source_hash, resp } => {
                     let _ = resp.send(repo::reading::find_by_source_hash(&conn, &source_hash));

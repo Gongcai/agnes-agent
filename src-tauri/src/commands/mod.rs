@@ -4522,6 +4522,61 @@ pub async fn upload_storage_file(
 }
 
 #[tauri::command]
+pub async fn list_backup_sources(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<crate::storage::BackupSourceView>> {
+    state.backup.list_sources().await
+}
+
+#[tauri::command]
+pub async fn add_backup_source(
+    state: tauri::State<'_, AppState>,
+    local_root: String,
+    account_id: String,
+    remote_root_id: Option<String>,
+    mode: String,
+    lazy_interval_seconds: Option<i64>,
+    max_delay_seconds: Option<i64>,
+) -> AppResult<String> {
+    state
+        .backup
+        .add_source(
+            local_root,
+            account_id,
+            remote_root_id,
+            mode,
+            lazy_interval_seconds,
+            max_delay_seconds,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn remove_backup_source(
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+) -> AppResult<()> {
+    state.backup.remove_source(source_id).await
+}
+
+#[tauri::command]
+pub async fn set_backup_source_enabled(
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+    enabled: bool,
+) -> AppResult<()> {
+    state.backup.set_enabled(source_id, enabled).await
+}
+
+#[tauri::command]
+pub async fn sync_backup_source(
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+) -> AppResult<()> {
+    state.backup.sync_now(source_id).await
+}
+
+#[tauri::command]
 pub async fn trash_storage_files(
     state: tauri::State<'_, AppState>,
     account_id: String,

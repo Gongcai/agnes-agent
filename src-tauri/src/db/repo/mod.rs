@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod artifacts;
+pub mod backup;
 pub mod knowledge;
 pub mod memory_files;
 pub mod messages;

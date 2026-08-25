@@ -345,6 +345,7 @@ fn main() {
                 sync_credentials,
             ));
             let storage_media_proxy = Arc::new(storage::StorageMediaProxy::new(storage.clone()));
+            let backup = storage::LocalBackupService::new(db.clone(), storage.clone());
             if let Err(error) = tauri::async_runtime::block_on(
                 storage.ensure_managed_r2_account(sync::engine::SYNC_GATEWAY_URL),
             ) {
@@ -353,6 +354,7 @@ fn main() {
             sync.clone()
                 .start_artifact_replication_background(storage.clone(), data_dir.join("artifacts"));
             storage::artifact_cache::start_background(db.clone(), data_dir.join("artifacts"));
+            backup.clone().start_background();
 
             // 2) 启动 AgentManager：Rust 起 WS Server + 拉起 Python sidecar。
             //    非致命：失败仅日志，不阻断 UI 启动。
@@ -384,6 +386,7 @@ fn main() {
                 mcp,
                 secrets,
                 storage,
+                backup,
                 storage_media_proxy,
                 sync,
                 notifications,
@@ -493,6 +496,11 @@ fn main() {
             commands::get_artifact_storage_status,
             commands::set_artifact_storage_quota,
             commands::cleanup_artifact_storage,
+            commands::list_backup_sources,
+            commands::add_backup_source,
+            commands::remove_backup_source,
+            commands::set_backup_source_enabled,
+            commands::sync_backup_source,
             commands::list_calendars,
             commands::create_calendar,
             commands::list_calendar_events,

@@ -118,6 +118,20 @@ interface TransferJob {
   updated_at: string;
 }
 
+interface BackupSource {
+  id: string;
+  local_root: string;
+  account_id: string;
+  remote_root_id: string | null;
+  mode: "fast" | "lazy";
+  lazy_interval_seconds: number;
+  max_delay_seconds: number;
+  enabled: boolean;
+  last_reconciled_at: string | null;
+  entry_count: number;
+  pending_count: number;
+}
+
 interface FolderLevel {
   id: string | null;
   name: string;
@@ -288,6 +302,8 @@ export function DriveWorkspace() {
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [folderPath, setFolderPath] = useState<FolderLevel[]>([{ id: null, name: "根目录" }]);
   const [transfers, setTransfers] = useState<TransferJob[]>([]);
+  const [backupSources, setBackupSources] = useState<BackupSource[]>([]);
+  const [backupMode, setBackupMode] = useState<"fast" | "lazy">("fast");
   const [transferSpeeds, setTransferSpeeds] = useState<Record<string, number>>({});
   const [view, setView] = useState<DriveView>("files");
   const [loading, setLoading] = useState(false);
@@ -473,10 +489,11 @@ export function DriveWorkspace() {
     setLoading(true);
     setError(null);
     try {
-      const [nextCatalog, nextAccounts, nextTransfers] = await Promise.all([
+      const [nextCatalog, nextAccounts, nextTransfers, nextBackupSources] = await Promise.all([
         invoke<ProviderDescriptor[]>("list_storage_provider_catalog"),
         invoke<StorageAccount[]>("list_storage_accounts"),
         invoke<TransferJob[]>("list_storage_transfers", { accountId: null, limit: 100 }),
+        invoke<BackupSource[]>("list_backup_sources"),
       ]);
       const fileProviderIds = new Set(
         nextCatalog
@@ -498,6 +515,7 @@ export function DriveWorkspace() {
       setCatalog(nextCatalog);
       setAccounts(fileAccounts);
       setTransfers(nextTransfers);
+      setBackupSources(nextBackupSources);
       setSelectedAccountId((current) =>
         current && fileAccounts.some((account) => account.id === current)
           ? current
@@ -776,6 +794,49 @@ export function DriveWorkspace() {
     setError(null);
     try {
       await invoke("refresh_storage_quota", { accountId: selectedAccountId });
+      await loadShell();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const addBackupSource = async () => {
+    if (!selectedAccountId) {
+      setError("请先选择备份目标账户");
+      return;
+    }
+    try {
+      const selected = await open({ title: "选择要备份的本地文件夹", directory: true, multiple: false });
+      if (typeof selected !== "string") return;
+      setLoading(true);
+      await invoke("add_backup_source", {
+        localRoot: selected,
+        accountId: selectedAccountId,
+        remoteRootId: currentFolder.id,
+        mode: backupMode,
+        lazyIntervalSeconds: backupMode === "lazy" ? 1800 : null,
+        maxDelaySeconds: backupMode === "lazy" ? 86400 : null,
+      });
+      await loadShell();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const updateBackupSource = async (source: BackupSource, action: "toggle" | "sync" | "remove") => {
+    try {
+      setLoading(true);
+      if (action === "toggle") {
+        await invoke("set_backup_source_enabled", { sourceId: source.id, enabled: !source.enabled });
+      } else if (action === "sync") {
+        await invoke("sync_backup_source", { sourceId: source.id });
+      } else {
+        await invoke("remove_backup_source", { sourceId: source.id });
+      }
       await loadShell();
     } catch (reason) {
       setError(String(reason));
@@ -1460,6 +1521,60 @@ export function DriveWorkspace() {
             {accounts.length === 0 && (
               <div className="px-3 py-8 text-center text-xs text-stone-400">暂无已连接账户</div>
             )}
+          </div>
+          <div className="mt-4 border-t border-stone-200 pt-3">
+            <div className="mb-2 flex items-center gap-2 px-2">
+              <FolderDown className="h-3.5 w-3.5 text-[#8CA38A]" />
+              <span className="text-[10px] font-bold uppercase tracking-wider text-stone-400">自动备份</span>
+            </div>
+            <div className="mb-2 flex items-center gap-1.5 px-2">
+              <select
+                value={backupMode}
+                onChange={(event) => setBackupMode(event.target.value as "fast" | "lazy")}
+                className="h-7 min-w-0 flex-1 rounded-md border border-stone-200 bg-white px-1.5 text-[10px] text-stone-600 outline-none"
+                aria-label="备份模式"
+              >
+                <option value="fast">快速同步</option>
+                <option value="lazy">延迟同步</option>
+              </select>
+              <button
+                onClick={() => void addBackupSource()}
+                disabled={loading || !selectedAccountId}
+                className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-stone-200 bg-white text-stone-500 hover:bg-stone-50 disabled:opacity-40"
+                title="添加本地备份文件夹"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="max-h-48 space-y-1 overflow-y-auto">
+              {backupSources.map((source) => {
+                const account = accounts.find((item) => item.id === source.account_id);
+                return (
+                  <div key={source.id} className={`group rounded-md px-2 py-1.5 ${source.enabled ? "bg-stone-50" : "bg-stone-100/60 opacity-60"}`}>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => void updateBackupSource(source, "toggle")}
+                        className={`grid h-5 w-5 shrink-0 place-items-center rounded ${source.enabled ? "text-emerald-700" : "text-stone-400"}`}
+                        title={source.enabled ? "暂停备份" : "启用备份"}
+                      >
+                        {source.enabled ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                      </button>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[10px] font-medium text-stone-700">{source.local_root}</span>
+                        <span className="block truncate text-[9px] text-stone-400">{source.mode === "fast" ? "快速" : "延迟"} · {account?.display_name ?? source.account_id} · 待处理 {source.pending_count}</span>
+                      </span>
+                      <button onClick={() => void updateBackupSource(source, "sync")} disabled={loading || !source.enabled} className="grid h-5 w-5 place-items-center rounded text-stone-400 hover:bg-white hover:text-stone-800 disabled:opacity-30" title="立即同步">
+                        <RefreshCw className="h-3 w-3" />
+                      </button>
+                      <button onClick={() => void updateBackupSource(source, "remove")} disabled={loading} className="grid h-5 w-5 place-items-center rounded text-stone-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-30" title="移除备份文件夹">
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              {backupSources.length === 0 && <div className="px-2 py-2 text-[10px] text-stone-400">选择目标账户后添加本地文件夹</div>}
+            </div>
           </div>
           <div className="mt-auto space-y-2">
             {catalog.filter((provider) => provider.capabilities.user_authorization).map((provider) => (

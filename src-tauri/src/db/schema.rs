@@ -686,6 +686,39 @@ CREATE INDEX IF NOT EXISTS idx_storage_transfers_account
   ON storage_transfer_jobs(account_id,status,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_storage_transfers_active
   ON storage_transfer_jobs(status,updated_at) WHERE status IN ('queued','running','paused');
+
+CREATE TABLE IF NOT EXISTS backup_sources (
+  id TEXT PRIMARY KEY,
+  local_root TEXT NOT NULL UNIQUE,
+  account_id TEXT NOT NULL REFERENCES storage_provider_accounts(id),
+  remote_root_id TEXT,
+  mode TEXT NOT NULL DEFAULT 'fast' CHECK(mode IN ('fast','lazy')),
+  lazy_interval_seconds INTEGER NOT NULL DEFAULT 1800 CHECK(lazy_interval_seconds >= 60),
+  max_delay_seconds INTEGER NOT NULL DEFAULT 86400 CHECK(max_delay_seconds >= 60),
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+  last_reconciled_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS backup_entries (
+  source_id TEXT NOT NULL REFERENCES backup_sources(id) ON DELETE CASCADE,
+  relative_path TEXT NOT NULL,
+  local_size INTEGER,
+  local_mtime_ns INTEGER,
+  content_hash TEXT,
+  remote_item_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK(status IN ('pending','stabilizing','queued','uploading','verified','failed','deleted_local','ignored')),
+  last_error TEXT,
+  dirty_at TEXT,
+  uploaded_at TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(source_id,relative_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_backup_sources_enabled ON backup_sources(enabled,updated_at);
+CREATE INDEX IF NOT EXISTS idx_backup_entries_dirty ON backup_entries(status,dirty_at);
 "#;
 
 /// Artifact payloads live in the app data directory or a remote object
