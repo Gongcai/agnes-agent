@@ -4468,6 +4468,37 @@ pub async fn download_storage_file(
 }
 
 #[tauri::command]
+pub async fn download_storage_image_preview(
+    state: tauri::State<'_, AppState>,
+    account_id: String,
+    file_id: String,
+    file_name: String,
+    file_media_type: Option<String>,
+    expected_revision: Option<String>,
+    expected_size: Option<u64>,
+) -> AppResult<crate::storage::ImagePreviewResult> {
+    state
+        .storage
+        .download_image_preview(
+            account_id,
+            file_id,
+            file_name,
+            file_media_type,
+            expected_revision,
+            expected_size,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn remove_storage_image_preview(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> AppResult<()> {
+    state.storage.remove_image_preview(path).await
+}
+
+#[tauri::command]
 pub async fn get_storage_media_playback_link(
     state: tauri::State<'_, AppState>,
     account_id: String,

@@ -48,7 +48,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/reading-books/**"]
+        "scope": ["$APPDATA/reading-books/**", "$TEMP/agnes-image-previews/**"]
       }
     }
   },

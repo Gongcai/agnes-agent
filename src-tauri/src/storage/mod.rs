@@ -26,4 +26,4 @@ pub use media_proxy::StorageMediaProxy;
 pub use quark_drive_official::QuarkDriveFactory;
 pub use r2::{R2Factory, MANAGED_R2_ACCOUNT_ID, R2_PROVIDER_ID, SYNC_CREDENTIAL_SOURCE};
 pub use registry::StorageProviderRegistry;
-pub use service::{StorageImportKind, StorageService};
+pub use service::{ImagePreviewResult, StorageImportKind, StorageService};

@@ -481,6 +481,8 @@ fn main() {
             commands::list_storage_files,
             commands::search_storage_files,
             commands::download_storage_file,
+            commands::download_storage_image_preview,
+            commands::remove_storage_image_preview,
             commands::get_storage_media_playback_link,
             commands::get_storage_file_stream_link,
             commands::import_storage_reading_book,

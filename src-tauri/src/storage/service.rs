@@ -92,6 +92,12 @@ pub struct StorageFileStreamMetadata {
     pub revision: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ImagePreviewResult {
+    pub path: String,
+    pub media_type: Option<String>,
+}
+
 pub struct StorageService {
     db: DbActorHandle,
     registry: Arc<StorageProviderRegistry>,
@@ -586,6 +592,50 @@ impl StorageService {
                     .await;
                 Err(error)
             }
+        }
+    }
+
+    pub async fn download_image_preview(
+        &self,
+        account_id: String,
+        file_id: String,
+        file_name: String,
+        file_media_type: Option<String>,
+        expected_revision: Option<String>,
+        expected_size: Option<u64>,
+    ) -> AppResult<ImagePreviewResult> {
+        let directory = image_preview_directory();
+        tokio::fs::create_dir_all(&directory).await?;
+        let destination = directory.join(format!(
+            "{}-{}",
+            uuid::Uuid::new_v4().simple(),
+            safe_local_name(&file_name)
+        ));
+        let path = destination.to_string_lossy().to_string();
+        self.download_file(
+            account_id,
+            file_id,
+            expected_revision,
+            expected_size,
+            path.clone(),
+        )
+        .await?;
+        Ok(ImagePreviewResult {
+            path,
+            media_type: file_media_type,
+        })
+    }
+
+    pub async fn remove_image_preview(&self, path: String) -> AppResult<()> {
+        let directory = image_preview_directory();
+        let path = std::path::PathBuf::from(path);
+        if path.parent() != Some(directory.as_path()) || path.file_name().is_none() {
+            return Err(AppError::Other("Invalid image preview path".into()));
+        }
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -2101,6 +2151,10 @@ fn validate_download_destination(path: &std::path::Path) -> AppResult<()> {
         ));
     }
     Ok(())
+}
+
+fn image_preview_directory() -> std::path::PathBuf {
+    std::env::temp_dir().join("agnes-image-previews")
 }
 
 async fn install_download(

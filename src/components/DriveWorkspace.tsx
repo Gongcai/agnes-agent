@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { downloadDir, join } from "@tauri-apps/api/path";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import * as QRCode from "qrcode";
@@ -177,6 +177,18 @@ interface MediaPlaybackState {
   link: MediaPlaybackLink;
 }
 
+interface ImagePreviewResult {
+  path: string;
+  media_type: string | null;
+}
+
+interface ImagePreviewState {
+  item: RemoteFileItem;
+  src: string;
+  localPath: string | null;
+  fallbackAttempted: boolean;
+}
+
 function mediaCapabilitySummary(video: HTMLVideoElement) {
   return [
     ["video/mp4", video.canPlayType("video/mp4")],
@@ -348,7 +360,25 @@ export function DriveWorkspace() {
   const [mediaPlayback, setMediaPlayback] = useState<MediaPlaybackState | null>(null);
   const [mediaPlaybackLoading, setMediaPlaybackLoading] = useState(false);
   const [mediaPlaybackFallbackItem, setMediaPlaybackFallbackItem] = useState<RemoteFileItem | null>(null);
+  const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null);
+  const [imagePreviewLoading, setImagePreviewLoading] = useState(false);
   const mediaContainer = useRef<HTMLDivElement | null>(null);
+  const imagePreviewRequestId = useRef(0);
+  const imagePreviewFallbackRequestId = useRef<number | null>(null);
+  const imagePreviewLocalPath = useRef<string | null>(null);
+
+  useEffect(() => {
+    imagePreviewLocalPath.current = imagePreview?.localPath ?? null;
+  }, [imagePreview?.localPath]);
+
+  useEffect(() => {
+    return () => {
+      const localPath = imagePreviewLocalPath.current;
+      if (localPath) {
+        void invoke("remove_storage_image_preview", { path: localPath }).catch(() => undefined);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const container = mediaContainer.current;
@@ -1260,9 +1290,99 @@ export function DriveWorkspace() {
     }
   };
 
+  const closeImagePreview = () => {
+    imagePreviewRequestId.current += 1;
+    imagePreviewFallbackRequestId.current = null;
+    const localPath = imagePreview?.localPath;
+    setImagePreview(null);
+    setImagePreviewLoading(false);
+    if (localPath) {
+      void invoke("remove_storage_image_preview", { path: localPath }).catch((reason) => {
+        console.warn("[storage][image-preview] temporary file cleanup failed", reason);
+      });
+    }
+  };
+
+  const downloadImagePreviewFallback = async (item: RemoteFileItem, requestId: number) => {
+    if (!selectedAccount || requestId !== imagePreviewRequestId.current) return;
+    setImagePreviewLoading(true);
+    try {
+      const result = await invoke<ImagePreviewResult>("download_storage_image_preview", {
+        accountId: selectedAccount.id,
+        fileId: item.id,
+        fileName: item.name,
+        fileMediaType: item.media_type,
+        expectedRevision: item.revision,
+        expectedSize: item.size,
+      });
+      if (requestId !== imagePreviewRequestId.current) {
+        await invoke("remove_storage_image_preview", { path: result.path }).catch(() => undefined);
+        return;
+      }
+      setImagePreview({
+        item,
+        src: convertFileSrc(result.path),
+        localPath: result.path,
+        fallbackAttempted: true,
+      });
+    } catch (reason) {
+      if (requestId === imagePreviewRequestId.current) {
+        setImagePreview(null);
+        setError(`图片预览失败：${String(reason)}`);
+      }
+    } finally {
+      if (requestId === imagePreviewRequestId.current) setImagePreviewLoading(false);
+    }
+  };
+
+  const handleImagePreviewError = () => {
+    if (!imagePreview || imagePreview.localPath || imagePreview.fallbackAttempted) return;
+    const requestId = imagePreviewRequestId.current;
+    if (imagePreviewFallbackRequestId.current === requestId) return;
+    imagePreviewFallbackRequestId.current = requestId;
+    setImagePreview((current) => current ? { ...current, src: "", fallbackAttempted: true } : current);
+    void downloadImagePreviewFallback(imagePreview.item, requestId);
+  };
+
+  const previewImage = async (item: RemoteFileItem) => {
+    if (!selectedAccount || item.kind !== "file") return;
+    const oldLocalPath = imagePreview?.localPath;
+    if (oldLocalPath) {
+      void invoke("remove_storage_image_preview", { path: oldLocalPath }).catch(() => undefined);
+    }
+    const requestId = ++imagePreviewRequestId.current;
+    imagePreviewFallbackRequestId.current = null;
+    setFileContextMenu(null);
+    setImagePreviewLoading(true);
+    setImagePreview({ item, src: "", localPath: null, fallbackAttempted: false });
+    setError(null);
+    try {
+      const link = await invoke<MediaPlaybackLink>("get_storage_file_stream_link", {
+        accountId: selectedAccount.id,
+        fileId: item.id,
+        fileName: item.name,
+        fileMediaType: item.media_type,
+        fileSize: item.size,
+      });
+      if (requestId !== imagePreviewRequestId.current) return;
+      setImagePreview({ item, src: link.url, localPath: null, fallbackAttempted: false });
+      setImagePreviewLoading(false);
+    } catch {
+      if (requestId !== imagePreviewRequestId.current) return;
+      imagePreviewFallbackRequestId.current = requestId;
+      setImagePreview((current) => current ? { ...current, fallbackAttempted: true } : current);
+      await downloadImagePreviewFallback(item, requestId);
+    }
+  };
+
   const isPlayableVideo = (item: RemoteFileItem) => {
     const mediaType = item.media_type?.toLowerCase() ?? "";
     return mediaType.startsWith("video/") || /\.(mp4|m4v|mov|mkv|webm|avi)$/i.test(item.name);
+  };
+
+  const isPreviewableImage = (item: RemoteFileItem) => {
+    const mediaType = item.media_type?.toLowerCase() ?? "";
+    return mediaType.startsWith("image/") || /\.(avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i.test(item.name);
   };
 
   const uploadFiles = async () => {
@@ -1440,7 +1560,7 @@ export function DriveWorkspace() {
     event.stopPropagation();
     if (!selectedFileIds.has(item.id)) setSelectedFileIds(new Set([item.id]));
     const menuWidth = 196;
-    const menuHeight = item.kind === "folder" ? 180 : 300;
+    const menuHeight = item.kind === "folder" ? 180 : 340;
     setFileContextMenu({
       item,
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
@@ -1801,6 +1921,16 @@ export function DriveWorkspace() {
                               <Download className="h-3.5 w-3.5" />
                             </button>
                           )}
+                          {isPreviewableImage(item) && (
+                            <button
+                              onClick={() => void previewImage(item)}
+                              disabled={loading || imagePreviewLoading}
+                              className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-800 disabled:opacity-40"
+                              title="预览图片"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                           <button
                             onClick={(event) => openFileContextMenu(event, item)}
                             disabled={loading}
@@ -1954,6 +2084,16 @@ export function DriveWorkspace() {
               </>
             ) : (
               <>
+                {isPreviewableImage(fileContextMenu.item) && (
+                  <button
+                    onClick={() => void previewImage(fileContextMenu.item)}
+                    disabled={loading || imagePreviewLoading}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
+                  >
+                    <Eye className="h-3.5 w-3.5 text-emerald-700" />
+                    预览图片
+                  </button>
+                )}
                 <button
                   onClick={() => {
                     const item = fileContextMenu.item;
@@ -2050,6 +2190,46 @@ export function DriveWorkspace() {
               ref={mediaContainer}
               className="relative h-[min(75vh,calc((100vw-32px)*0.5625))] min-h-[260px] w-full shrink-0 overflow-hidden bg-black"
             />
+          </div>
+        </div>
+      )}
+
+      {imagePreview && (
+        <div
+          className="fixed inset-0 z-[70] grid place-items-center bg-black/70 p-4 backdrop-blur-sm"
+          onClick={closeImagePreview}
+        >
+          <div
+            className="flex max-h-[calc(100vh-32px)] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-stone-700 bg-stone-950 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="relative z-10 flex h-12 shrink-0 items-center justify-between gap-3 border-b border-stone-800 px-4 py-3 text-sm text-stone-100">
+              <span className="min-w-0 truncate">{imagePreview.item.name}</span>
+              <button
+                onClick={closeImagePreview}
+                className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-stone-400 hover:bg-stone-800 hover:text-white"
+                title="关闭图片预览"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="relative grid min-h-[min(70vh,520px)] place-items-center overflow-auto bg-stone-900 p-4">
+              {imagePreview.src ? (
+                <img
+                  src={imagePreview.src}
+                  alt={imagePreview.item.name}
+                  onError={handleImagePreviewError}
+                  className="max-h-[calc(100vh-112px)] max-w-full object-contain"
+                />
+              ) : (
+                <LoaderCircle className="h-8 w-8 animate-spin text-stone-400" />
+              )}
+              {imagePreviewLoading && imagePreview.src && (
+                <div className="absolute inset-0 grid place-items-center bg-black/35">
+                  <LoaderCircle className="h-8 w-8 animate-spin text-white" />
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
