@@ -34,6 +34,7 @@ const PLAYBACK_API_BASE: &str = API_BASE;
 const CAPACITY_PATH: &str = "capacity/growth/info";
 const OSS_BUCKET: &str = "ul-zb";
 const DEFAULT_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
+const DIRECT_UPLOAD_RETRIES: usize = 3;
 const PUUS_REFRESH_INTERVAL: Duration = Duration::from_secs(100 * 60);
 const USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36";
@@ -987,14 +988,8 @@ impl QuarkDriveSession {
                 header_value(&hash_ctx)?,
             );
         }
-        let response = self
-            .client
-            .put(url)
-            .headers(headers)
-            .body(bytes.to_vec())
-            .send()
-            .await
-            .map_err(network_error)?;
+        let upload = self.client.put(url).headers(headers);
+        let response = send_direct_upload_with_retry(upload, bytes).await?;
         if !response.status().is_success() {
             return Err(status_error(response.status(), "夸克网盘分片上传失败"));
         }
@@ -2159,6 +2154,25 @@ fn network_error(error: reqwest::Error) -> ProviderError {
         ProviderErrorCategory::Network,
         format!("夸克网盘网络请求失败: {error}"),
     )
+}
+
+async fn send_direct_upload_with_retry(
+    upload: reqwest::RequestBuilder,
+    bytes: &[u8],
+) -> ProviderResult<Response> {
+    for attempt in 0..DIRECT_UPLOAD_RETRIES {
+        let request = upload
+            .try_clone()
+            .ok_or_else(|| invalid_request("夸克上传请求无法重试"))?;
+        match request.body(bytes.to_vec()).send().await {
+            Ok(response) => return Ok(response),
+            Err(_) if attempt + 1 < DIRECT_UPLOAD_RETRIES => {
+                tokio::time::sleep(Duration::from_millis(250 * (attempt as u64 + 1))).await;
+            }
+            Err(error) => return Err(network_error(error)),
+        }
+    }
+    Err(invalid_response("夸克上传重试未返回结果"))
 }
 
 fn invalid_request(message: impl Into<String>) -> ProviderError {

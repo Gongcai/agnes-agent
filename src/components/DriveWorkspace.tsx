@@ -130,6 +130,8 @@ interface BackupSource {
   last_reconciled_at: string | null;
   entry_count: number;
   pending_count: number;
+  status: "idle" | "pending" | "uploading" | "verified" | "failed";
+  last_error: string | null;
 }
 
 interface FolderLevel {
@@ -250,6 +252,14 @@ const TRANSFER_STATUS_LABELS: Record<string, string> = {
   completed: "已完成",
   failed: "失败",
   cancelled: "已取消",
+};
+
+const BACKUP_STATUS_LABELS: Record<string, string> = {
+  idle: "暂无文件",
+  pending: "待备份",
+  uploading: "备份中",
+  verified: "已备份",
+  failed: "备份失败",
 };
 
 function formatTimestamp(value: string | null): string {
@@ -685,11 +695,12 @@ export function DriveWorkspace() {
       if (polling) return;
       polling = true;
       try {
-        const next = await invoke<TransferJob[]>("list_storage_transfers", {
-          accountId: null,
-          limit: 100,
-        });
-        if (!cancelled) {
+          const next = await invoke<TransferJob[]>("list_storage_transfers", {
+            accountId: null,
+            limit: 100,
+          });
+          const nextBackupSources = await invoke<BackupSource[]>("list_backup_sources");
+          if (!cancelled) {
           const timestamp = Date.now();
           setTransferSpeeds((current) => {
             const speeds = { ...current };
@@ -716,7 +727,8 @@ export function DriveWorkspace() {
             }
             return speeds;
           });
-          setTransfers(next);
+            setTransfers(next);
+            setBackupSources(nextBackupSources);
         }
       } catch (reason) {
         if (!cancelled) setError(String(reason));
@@ -1561,7 +1573,15 @@ export function DriveWorkspace() {
                       </button>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[10px] font-medium text-stone-700">{source.local_root}</span>
-                        <span className="block truncate text-[9px] text-stone-400">{source.mode === "fast" ? "快速" : "延迟"} · {account?.display_name ?? source.account_id} · 待处理 {source.pending_count}</span>
+                        <span className="flex min-w-0 items-center gap-1.5 truncate text-[9px] text-stone-400">
+                          <span>{source.mode === "fast" ? "快速" : "延迟"} · {account?.display_name ?? source.account_id}</span>
+                          <span
+                            className={`shrink-0 rounded px-1 py-0.5 font-medium ${source.status === "failed" ? "bg-rose-50 text-rose-600" : source.status === "verified" ? "bg-emerald-50 text-emerald-700" : source.status === "uploading" ? "bg-amber-50 text-amber-700" : "bg-stone-100 text-stone-500"}`}
+                            title={source.last_error ?? undefined}
+                          >
+                            {BACKUP_STATUS_LABELS[source.status] ?? source.status}
+                          </span>
+                        </span>
                       </span>
                       <button onClick={() => void updateBackupSource(source, "sync")} disabled={loading || !source.enabled} className="grid h-5 w-5 place-items-center rounded text-stone-400 hover:bg-white hover:text-stone-800 disabled:opacity-30" title="立即同步">
                         <RefreshCw className="h-3 w-3" />

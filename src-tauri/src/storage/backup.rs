@@ -27,6 +27,8 @@ pub struct BackupSourceView {
     pub source: BackupSourceRow,
     pub entry_count: usize,
     pub pending_count: usize,
+    pub status: String,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,10 +73,31 @@ impl LocalBackupService {
                     )
                 })
                 .count();
+            let status = if entries.iter().any(|entry| entry.status == "failed") {
+                "failed"
+            } else if entries
+                .iter()
+                .any(|entry| matches!(entry.status.as_str(), "uploading" | "queued"))
+            {
+                "uploading"
+            } else if entries.iter().any(|entry| entry.status == "pending") {
+                "pending"
+            } else if !entries.is_empty() && entries.iter().all(|entry| entry.status == "verified")
+            {
+                "verified"
+            } else {
+                "idle"
+            };
+            let last_error = entries
+                .iter()
+                .rev()
+                .find_map(|entry| entry.last_error.clone());
             result.push(BackupSourceView {
                 source,
                 entry_count: entries.len(),
                 pending_count,
+                status: status.into(),
+                last_error,
             });
         }
         Ok(result)
@@ -422,6 +445,16 @@ impl LocalBackupService {
                 .is_some_and(|entry| entry.status == "verified")
         {
             return Ok(());
+        }
+        if let Some(entry) = existing.as_ref() {
+            self.db
+                .upsert_backup_entry(BackupEntryRow {
+                    status: "uploading".into(),
+                    last_error: None,
+                    updated_at: now(),
+                    ..entry.clone()
+                })
+                .await?;
         }
         let remote_parent_id = self.ensure_remote_directory(source, relative).await?;
         let remote_name = path
