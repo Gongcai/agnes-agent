@@ -1558,7 +1558,9 @@ export function DriveWorkspace() {
                           className="h-8 w-full rounded-md border border-stone-200 bg-white pl-8 pr-8 text-xs text-stone-700 outline-none placeholder:text-stone-400 focus:border-stone-400 disabled:cursor-not-allowed disabled:opacity-50"
                         />
                         {searchLoading ? (
-                          <LoaderCircle className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-stone-400" />
+                          <span className="pointer-events-none absolute right-2.5 top-1/2 grid h-3.5 w-3.5 -translate-y-1/2 place-items-center">
+                            <LoaderCircle className="h-3.5 w-3.5 animate-spin text-stone-400" />
+                          </span>
                         ) : fileSearchQuery ? (
                           <button
                             type="button"
