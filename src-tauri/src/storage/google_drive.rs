@@ -1641,7 +1641,10 @@ fn retry_delay(response: &Response, attempt: usize) -> Duration {
         .get(RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
-        .map(|seconds| Duration::from_secs(seconds.min(5)))
+        // A quota response may ask the client to wait longer than the short
+        // interactive retry window. The background transfer scheduler owns
+        // longer pauses, but do not turn a provider hint into a busy retry.
+        .map(|seconds| Duration::from_secs(seconds.min(60)))
         .unwrap_or_else(|| Duration::from_millis(250 * (1_u64 << attempt)))
 }
 

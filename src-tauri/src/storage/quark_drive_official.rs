@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RANGE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RANGE, RETRY_AFTER};
 use reqwest::{Method, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -558,7 +558,11 @@ impl FileSourceProvider for QuarkDriveSession {
             return Err(invalid_response("夸克下载地址未响应 Range 请求"));
         }
         if !response.status().is_success() {
-            return Err(status_error(response.status(), "夸克下载请求失败"));
+            return Err(status_error_with_retry_after(
+                response.status(),
+                "夸克下载请求失败",
+                response.headers().get(RETRY_AFTER),
+            ));
         }
         response_stream(response)
     }
@@ -898,7 +902,11 @@ impl FileUploadProvider for QuarkDriveSession {
         }
         let response = upload.send().await.map_err(network_error)?;
         if !response.status().is_success() {
-            return Err(status_error(response.status(), "夸克分片上传失败"));
+            return Err(status_error_with_retry_after(
+                response.status(),
+                "夸克分片上传失败",
+                response.headers().get(RETRY_AFTER),
+            ));
         }
         let etag = response
             .headers()
@@ -1345,6 +1353,7 @@ async fn signed_request(
     }
     let response = request.send().await.map_err(network_error)?;
     let status = response.status();
+    let retry_after = response.headers().get(RETRY_AFTER).cloned();
     let value: Value = response
         .json()
         .await
@@ -1356,7 +1365,11 @@ async fn signed_request(
         ));
     }
     if !status.is_success() {
-        return Err(status_error(status, "夸克官方接口请求失败"));
+        return Err(status_error_with_retry_after(
+            status,
+            "夸克官方接口请求失败",
+            retry_after.as_ref(),
+        ));
     }
     if value
         .get("status")
@@ -1365,14 +1378,18 @@ async fn signed_request(
     {
         let message = string_value(&value, &["error_info", "errorInfo", "agent_msg"])
             .unwrap_or_else(|| "夸克官方接口请求失败".into());
-        return Err(ProviderError::new(
-            if looks_like_authentication_error(&message) {
-                ProviderErrorCategory::Authentication
-            } else {
-                ProviderErrorCategory::RemoteUnavailable
-            },
-            message,
-        ));
+        let category = if looks_like_authentication_error(&message) {
+            ProviderErrorCategory::Authentication
+        } else if looks_like_rate_limit_error(&message) {
+            ProviderErrorCategory::RateLimit
+        } else {
+            ProviderErrorCategory::RemoteUnavailable
+        };
+        let mut error = ProviderError::new(category, message);
+        if let Some(seconds) = number_value(&value, &["retry_after", "retry_after_seconds"]) {
+            error = error.with_retry_after(seconds);
+        }
+        return Err(error);
     }
     Ok(value)
 }
@@ -1392,6 +1409,13 @@ fn looks_like_authentication_error(message: &str) -> bool {
     ]
     .iter()
     .any(|needle| message.contains(needle))
+}
+
+fn looks_like_rate_limit_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    ["rate", "limit", "too many", "频繁", "限流", "请求过快"]
+        .iter()
+        .any(|needle| message.contains(needle))
 }
 
 fn response_data(value: &Value) -> ProviderResult<&Value> {
@@ -1601,7 +1625,15 @@ fn response_stream(response: Response) -> ProviderResult<ProviderByteStream> {
 }
 
 fn status_error(status: StatusCode, message: &str) -> ProviderError {
-    ProviderError::new(
+    status_error_with_retry_after(status, message, None)
+}
+
+fn status_error_with_retry_after(
+    status: StatusCode,
+    message: &str,
+    retry_after: Option<&HeaderValue>,
+) -> ProviderError {
+    let mut error = ProviderError::new(
         if status == StatusCode::TOO_MANY_REQUESTS {
             ProviderErrorCategory::RateLimit
         } else if status.is_server_error() {
@@ -1610,7 +1642,14 @@ fn status_error(status: StatusCode, message: &str) -> ProviderError {
             ProviderErrorCategory::Network
         },
         format!("{message} ({})", status.as_u16()),
-    )
+    );
+    if let Some(seconds) = retry_after
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        error = error.with_retry_after(seconds);
+    }
+    error
 }
 
 fn network_error(error: reqwest::Error) -> ProviderError {
