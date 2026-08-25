@@ -1558,11 +1558,11 @@ export function DriveWorkspace() {
                 <Plus className="h-3.5 w-3.5" />
               </button>
             </div>
-            <div className="max-h-48 space-y-1 overflow-y-auto">
+            <div className="max-h-64 space-y-1.5 overflow-y-auto pr-0.5">
               {backupSources.map((source) => {
                 const account = accounts.find((item) => item.id === source.account_id);
                 return (
-                  <div key={source.id} className={`group rounded-md px-2 py-1.5 ${source.enabled ? "bg-stone-50" : "bg-stone-100/60 opacity-60"}`}>
+                  <div key={source.id} className={`group rounded-md px-2 py-2 ${source.enabled ? "bg-stone-50" : "bg-stone-100/60 opacity-60"}`}>
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => void updateBackupSource(source, "toggle")}
@@ -1573,14 +1573,12 @@ export function DriveWorkspace() {
                       </button>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[10px] font-medium text-stone-700">{source.local_root}</span>
-                        <span className="flex min-w-0 items-center gap-1.5 truncate text-[9px] text-stone-400">
-                          <span>{source.mode === "fast" ? "快速" : "延迟"} · {account?.display_name ?? source.account_id}</span>
-                          <span
-                            className={`shrink-0 rounded px-1 py-0.5 font-medium ${source.status === "failed" ? "bg-rose-50 text-rose-600" : source.status === "verified" ? "bg-emerald-50 text-emerald-700" : source.status === "uploading" ? "bg-amber-50 text-amber-700" : "bg-stone-100 text-stone-500"}`}
-                            title={source.last_error ?? undefined}
-                          >
-                            {BACKUP_STATUS_LABELS[source.status] ?? source.status}
-                          </span>
+                        <span className="block truncate text-[9px] text-stone-400">{source.mode === "fast" ? "快速" : "延迟"} · {account?.display_name ?? source.account_id}</span>
+                        <span
+                          className={`mt-1 inline-flex rounded px-1 py-0.5 text-[9px] font-medium ${source.status === "failed" ? "bg-rose-50 text-rose-600" : source.status === "verified" ? "bg-emerald-50 text-emerald-700" : source.status === "uploading" ? "bg-amber-50 text-amber-700" : "bg-stone-100 text-stone-500"}`}
+                          title={source.last_error ?? undefined}
+                        >
+                          {BACKUP_STATUS_LABELS[source.status] ?? source.status}
                         </span>
                       </span>
                       <button onClick={() => void updateBackupSource(source, "sync")} disabled={loading || !source.enabled} className="grid h-5 w-5 place-items-center rounded text-stone-400 hover:bg-white hover:text-stone-800 disabled:opacity-30" title="立即同步">
