@@ -2363,6 +2363,13 @@ pre,
   background-color: var(--claude-clay-soft) !important;
 }
 
+/* CloudDrive still uses light Tailwind hover utilities for its account and
+   breadcrumb controls. Keep those interactive surfaces in the dark palette. */
+:root[data-agnes-theme="dark"] .agnes-drive-workspace [class*="hover:bg-stone-"]:hover,
+:root[data-agnes-theme="dark"] .agnes-drive-workspace [class*="hover:bg-white"]:hover {
+  background-color: var(--claude-surface-soft) !important;
+}
+
 :root[data-agnes-theme="dark"] .agnes-app [class~="bg-amber-50"],
 :root[data-agnes-theme="dark"] .agnes-app [class~="bg-amber-50/60"],
 :root[data-agnes-theme="dark"] .agnes-app [class~="bg-amber-100"] {
