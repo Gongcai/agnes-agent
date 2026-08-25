@@ -45,10 +45,10 @@ pub struct BackupEntryRow {
 }
 
 const SOURCE_SELECT: &str = "SELECT id,local_root,account_id,remote_root_id,mode,\
-  lazy_interval_seconds,max_delay_seconds,enabled,last_reconciled_at,created_at,updated_at\
+  lazy_interval_seconds,max_delay_seconds,enabled,last_reconciled_at,created_at,updated_at \
   FROM backup_sources";
 const ENTRY_SELECT: &str = "SELECT source_id,relative_path,local_size,local_mtime_ns,\
-  content_hash,remote_item_id,status,last_error,dirty_at,uploaded_at,updated_at\
+  content_hash,remote_item_id,status,last_error,dirty_at,uploaded_at,updated_at \
   FROM backup_entries";
 
 pub fn list_sources(conn: &Connection) -> AppResult<Vec<BackupSourceRow>> {
@@ -197,4 +197,51 @@ fn now() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_secs().to_string())
         .unwrap_or_else(|_| "0".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{list_entries, list_sources};
+    use rusqlite::Connection;
+
+    #[test]
+    fn list_queries_keep_the_from_keyword_separated() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE backup_sources (
+               id TEXT PRIMARY KEY,
+               local_root TEXT NOT NULL,
+               account_id TEXT NOT NULL,
+               remote_root_id TEXT,
+               mode TEXT NOT NULL,
+               lazy_interval_seconds INTEGER NOT NULL,
+               max_delay_seconds INTEGER NOT NULL,
+               enabled INTEGER NOT NULL,
+               last_reconciled_at TEXT,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL
+             );
+             CREATE TABLE backup_entries (
+               source_id TEXT NOT NULL,
+               relative_path TEXT NOT NULL,
+               local_size INTEGER,
+               local_mtime_ns INTEGER,
+               content_hash TEXT,
+               remote_item_id TEXT,
+               status TEXT NOT NULL,
+               last_error TEXT,
+               dirty_at TEXT,
+               uploaded_at TEXT,
+               updated_at TEXT NOT NULL
+             );
+             INSERT INTO backup_sources VALUES
+               ('source-1','/tmp/backup','account-1',NULL,'fast',1800,86400,1,NULL,'1','2');
+             INSERT INTO backup_entries VALUES
+               ('source-1','notes.txt',10,20,'hash','remote-1','verified',NULL,NULL,'2','2');",
+        )
+        .unwrap();
+
+        assert_eq!(list_sources(&conn).unwrap().len(), 1);
+        assert_eq!(list_entries(&conn, "source-1").unwrap().len(), 1);
+    }
 }
