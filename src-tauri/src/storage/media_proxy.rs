@@ -200,6 +200,7 @@ async fn handle_connection(
             return Ok(());
         }
     };
+    let range = cap_open_ended_range(range, session.metadata.size);
     let (status, content_length, content_range) =
         response_range_headers(&range, session.metadata.size);
     let response_content_type = content_type(&session.metadata).to_owned();
@@ -317,12 +318,27 @@ fn parse_range(value: Option<&str>, size: Option<u64>) -> Result<RequestRange, (
         return Err(());
     }
     let end = match (end, size) {
-        (Some(end), Some(size)) => Some(end.min(size - 1)),
+        (Some(end), Some(size)) => Some(end.min(size.saturating_sub(1))),
         (Some(end), None) => Some(end),
-        (None, Some(size)) => Some(size - 1),
-        (None, None) => None,
+        (None, _) => None,
     };
     Ok(RequestRange::Partial { start, end })
+}
+
+fn cap_open_ended_range(range: RequestRange, size: Option<u64>) -> RequestRange {
+    match range {
+        RequestRange::Partial { start, end: None } => {
+            let chunk_end = start.saturating_add(UPSTREAM_PART_BYTES - 1);
+            let end = size
+                .map(|size| chunk_end.min(size.saturating_sub(1)))
+                .unwrap_or(chunk_end);
+            RequestRange::Partial {
+                start,
+                end: Some(end),
+            }
+        }
+        range => range,
+    }
 }
 
 fn response_range_headers(
@@ -706,7 +722,7 @@ mod tests {
             parse_range(Some("bytes=50-"), Some(100)),
             Ok(RequestRange::Partial {
                 start: 50,
-                end: Some(99)
+                end: None
             })
         );
         assert_eq!(
@@ -723,6 +739,43 @@ mod tests {
         assert!(parse_range(Some("bytes=100-"), Some(100)).is_err());
         assert!(parse_range(Some("bytes=10-1"), Some(100)).is_err());
         assert!(parse_range(Some("bytes=0-1,4-5"), Some(100)).is_err());
+    }
+
+    #[test]
+    fn caps_open_ended_ranges_to_one_proxy_chunk() {
+        let size = 17 * 1024 * 1024 * 1024;
+        let range = cap_open_ended_range(
+            parse_range(Some("bytes=0-"), Some(size)).unwrap(),
+            Some(size),
+        );
+        assert_eq!(
+            range,
+            RequestRange::Partial {
+                start: 0,
+                end: Some(UPSTREAM_PART_BYTES - 1),
+            }
+        );
+        assert_eq!(
+            response_range_headers(&range, Some(size)),
+            (
+                206,
+                Some(UPSTREAM_PART_BYTES),
+                Some(format!("bytes 0-{}/{}", UPSTREAM_PART_BYTES - 1, size))
+            )
+        );
+        assert_eq!(
+            cap_open_ended_range(
+                RequestRange::Partial {
+                    start: 17 * 1024 * 1024 - 1,
+                    end: None,
+                },
+                Some(17 * 1024 * 1024),
+            ),
+            RequestRange::Partial {
+                start: 17 * 1024 * 1024 - 1,
+                end: Some(17 * 1024 * 1024 - 1),
+            }
+        );
     }
 
     #[test]
