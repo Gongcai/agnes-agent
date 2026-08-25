@@ -490,11 +490,8 @@ impl LocalBackupService {
         source: &BackupSourceRow,
         relative: &str,
     ) -> AppResult<String> {
-        let mut parent_id = source
-            .remote_root_id
-            .clone()
-            .filter(|value| !value.trim().is_empty());
-        let parent_key = parent_id.clone().unwrap_or_default();
+        let mut parent_id = None;
+        let parent_key = String::new();
         let mut logical_path = String::new();
         for component in remote_directory_components(source, relative) {
             logical_path = if logical_path.is_empty() {
