@@ -8,7 +8,7 @@ This file provides guidance to Codex when working with code in this repository.
 
 # LANGUAGE
 
-- 自然语言使用：代码内的注释使用英文标准注释，与用户交谈、汇报或者文档使用中文
+- 自然语言使用：代码内的注释使用英文标准注释，与用户交谈、汇报或者文档也使用英文
 
 # Git 提交
 
