@@ -1251,6 +1251,12 @@ export function DriveWorkspace() {
   const playMediaFile = async (item: RemoteFileItem) => {
     if (!selectedAccount || item.kind !== "file") return;
     setFileContextMenu(null);
+    if (!selectedProvider?.capabilities.media_playback) {
+      if (selectedProvider?.capabilities.range_download) {
+        await playOriginalMediaFile(item);
+      }
+      return;
+    }
     setMediaPlaybackLoading(true);
     setMediaPlaybackFallbackItem(null);
     setError(null);
@@ -2106,7 +2112,7 @@ export function DriveWorkspace() {
                   <Download className="h-3.5 w-3.5" />
                   下载
                 </button>
-                {selectedProvider?.capabilities.media_playback && isPlayableVideo(fileContextMenu.item) && (
+                {(selectedProvider?.capabilities.media_playback || selectedProvider?.capabilities.range_download) && isPlayableVideo(fileContextMenu.item) && (
                   <button
                     onClick={() => void playMediaFile(fileContextMenu.item)}
                     disabled={loading || mediaPlaybackLoading}
