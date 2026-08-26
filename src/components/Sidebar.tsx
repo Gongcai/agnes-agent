@@ -4,28 +4,28 @@ import {
   Brain,
   BookOpen,
   Code,
-  CalendarDots as CalendarDays,
-  CheckSquare as CheckSquare2,
+  CalendarDays,
+  CheckSquare2,
   Check,
-  CaretDown as ChevronDown,
-  CaretRight as ChevronRight,
-  CaretUp as ChevronUp,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
   Database,
   Folder,
   FolderPlus,
   HardDrive,
-  House,
-  MagnifyingGlass as Search,
-  ChatsTeardrop as MessageSquare,
-  PencilSimple as Pencil,
-  PushPinSimple as Pin,
-  PushPinSimpleSlash as PinOff,
+  Home as House,
+  Search,
+  MessageSquare,
+  Pencil,
+  Pin,
+  PinOff,
   Plus,
-  GearSix as Settings,
-  Trash as Trash2,
+  Settings,
+  Trash2,
   X,
-  type Icon as PhosphorIcon,
-} from "@phosphor-icons/react";
+  type LucideIcon,
+} from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { ENABLED_APP_FEATURES, type AppFeatureId, type ChatMode } from "../lib/features";
@@ -60,7 +60,7 @@ interface SidebarProps {
   onNotificationNavigate: (notification: AppNotification) => void | Promise<void>;
 }
 
-const FEATURE_ICONS: Record<AppFeatureId, PhosphorIcon> = {
+const FEATURE_ICONS: Record<AppFeatureId, LucideIcon> = {
   chat: MessageSquare,
   reading: BookOpen,
   memory: Brain,
@@ -514,7 +514,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           title={isOpen ? undefined : "新建对话"}
         >
           <span className="agnes-sidebar-primary-icon grid h-6 w-6 shrink-0 place-items-center rounded-full">
-            <Plus className="h-4 w-4" weight="regular" />
+            <Plus className="h-4 w-4" />
           </span>
           <span className="agnes-sidebar-label">新建对话</span>
         </button>
@@ -541,7 +541,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           title={isOpen ? undefined : "搜索会话"}
         >
           <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
-            <Search className="h-4 w-4" weight="regular" />
+            <Search className="h-4 w-4" />
           </span>
           <span className="agnes-sidebar-label truncate text-xs">搜索</span>
         </button>
@@ -558,7 +558,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               aria-current={selected ? "page" : undefined}
             >
               <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
-                <Icon className="h-4 w-4" weight="regular" />
+                <Icon className="h-4 w-4" />
               </span>
               <span className="agnes-sidebar-label truncate text-xs">{feature.label}</span>
             </button>

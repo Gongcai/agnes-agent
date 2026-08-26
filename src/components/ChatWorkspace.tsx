@@ -3,29 +3,29 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { readImage, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  Warning as AlertTriangle,
+  AlertTriangle,
   Brain,
   Check,
-  CaretDown as ChevronDown,
+  ChevronDown,
   Copy,
   Cpu,
-  Books,
+  Library as Books,
   FileText,
-  ImageSquare,
+  Image as ImageSquare,
   GitBranch,
-  PencilSimple as Pencil,
+  Pencil,
   Plus,
-  PuzzlePiece,
-  ArrowsClockwise as RefreshCw,
+  Puzzle as PuzzlePiece,
+  RefreshCw,
   ArrowUp as Send,
-  HardDrives as Server,
+  Server,
   ShieldCheck,
-  Sparkle as Sparkles,
+  Sparkles,
   Square,
-  TerminalWindow as Terminal,
-  Trash as Trash2,
+  Terminal,
+  Trash2,
   X,
-} from "@phosphor-icons/react";
+} from "lucide-react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -280,6 +280,7 @@ const ToolCallCard: React.FC<{
   const isPending = tc.status === "pending_approval";
   const shouldAutoExpand = isPending || tc.status === "failed" || tc.status === "denied";
   const [expanded, setExpanded] = useState(shouldAutoExpand);
+  const [copied, setCopied] = useState(false);
   const preview = toolCallPreview(tc);
   const memoryPath = savedMemoryPath(tc);
   const statusLabel = TOOL_STATUS_LABEL[tc.status] || tc.status;
@@ -288,107 +289,140 @@ const ToolCallCard: React.FC<{
     if (shouldAutoExpand) setExpanded(true);
   }, [shouldAutoExpand]);
 
+  const copyOutput = (text: string) => {
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
   return (
     <AnimatedDisclosure
       open={expanded}
       onOpenChange={setExpanded}
-      className="agnes-tool-details group/tool"
+      className="agnes-tool-details group/tool my-2"
       data-status={tc.status}
       summaryClassName="agnes-tool-summary"
       summary={(
         <>
-          <span className="agnes-tool-title">{memoryPath ? "已保存记忆" : "工具调用"}</span>
-          <code className="agnes-tool-name">{tc.tool}</code>
-          <code className="agnes-tool-preview" title={memoryPath ?? preview}>
+          <span className="agnes-tool-title font-medium">{memoryPath ? "已保存记忆" : "工具调用"}</span>
+          <code className="agnes-tool-name font-mono px-1.5 py-0.5 rounded bg-canvas-surface-card border border-hairline text-ink text-[11px]">{tc.tool}</code>
+          <code className="agnes-tool-preview text-ink-muted" title={memoryPath ?? preview}>
             {memoryPath ?? preview}
           </code>
           <span className={`agnes-tool-status ${tc.status === "running" ? "animate-pulse" : ""}`}>
             <span className="agnes-tool-status-dot" aria-hidden="true" />
             {statusLabel}
           </span>
-          {isHighRisk && <span className="agnes-tool-risk">高风险</span>}
-          <ChevronDown className="agnes-collapse-chevron h-3 w-3 shrink-0" />
+          {isHighRisk && (
+            <span className="agnes-tool-risk px-1.5 py-0.2 rounded text-[10px] font-medium bg-rose-500/10 text-rose-600 border border-rose-500/20">
+              高风险
+            </span>
+          )}
+          <ChevronDown className="agnes-collapse-chevron h-3 w-3 shrink-0 text-ink-muted" />
         </>
       )}
     >
-      <div className="agnes-tool-content space-y-3">
-          <span className="agnes-tool-rail-icon" aria-hidden="true">
-            <Terminal className="h-3 w-3" />
-          </span>
+      <div className="agnes-tool-content space-y-3 pt-1">
+        <span className="agnes-tool-rail-icon" aria-hidden="true">
+          <Terminal className="h-3 w-3" />
+        </span>
+
+        {tc.args && Object.keys(tc.args).length > 0 && (
           <div>
-            <div className="mb-1 text-[10px] font-medium text-stone-400">参数</div>
-            <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-md bg-stone-100 px-3 py-2 font-mono text-[10px] leading-relaxed text-stone-700">
+            <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-ink-muted">调用参数</div>
+            <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-canvas-surface-subtle/80 border border-hairline/80 px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-body shadow-subtle">
               {formattedToolArgs(tc.args)}
             </pre>
           </div>
+        )}
 
-          {(tc.cwd || tc.networkAllowed !== undefined || tc.permissionMode) && (
-            <div className="flex flex-wrap gap-1.5 text-[9px] text-stone-500">
-              {tc.cwd && (
-                <span className="max-w-full truncate rounded bg-stone-100 px-2 py-1 font-mono" title={tc.cwd}>
-                  cwd: {tc.cwd}
-                </span>
-              )}
-              {tc.networkAllowed !== undefined && (
-                <span className="rounded bg-stone-100 px-2 py-1">
-                  网络: {tc.networkAllowed ? "允许" : "关闭"} · {tc.landlock ? "Landlock" : "路径策略"}
-                </span>
-              )}
-              {tc.permissionMode && (
-                <span className="rounded bg-stone-100 px-2 py-1">
-                  {PERMISSION_LABEL[tc.permissionMode]}
-                </span>
-              )}
-            </div>
-          )}
+        {(tc.cwd || tc.networkAllowed !== undefined || tc.permissionMode) && (
+          <div className="flex flex-wrap gap-1.5 text-[10px] text-ink-muted">
+            {tc.cwd && (
+              <span className="max-w-full truncate rounded-md bg-canvas-surface-card border border-hairline px-2 py-0.5 font-mono" title={tc.cwd}>
+                cwd: {tc.cwd}
+              </span>
+            )}
+            {tc.networkAllowed !== undefined && (
+              <span className="rounded-md bg-canvas-surface-card border border-hairline px-2 py-0.5">
+                网络: {tc.networkAllowed ? "允许" : "关闭"} · {tc.landlock ? "Landlock" : "路径策略"}
+              </span>
+            )}
+            {tc.permissionMode && (
+              <span className="rounded-md bg-canvas-surface-card border border-hairline px-2 py-0.5">
+                {PERMISSION_LABEL[tc.permissionMode]}
+              </span>
+            )}
+          </div>
+        )}
 
-          {tc.diff && (
-            <div>
-              <div className="mb-1 text-[10px] font-medium text-stone-400">变更预览</div>
-              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-stone-950 px-3 py-2 font-mono text-[10px] leading-relaxed text-stone-200">
-                {tc.diff}
-              </pre>
-            </div>
-          )}
+        {tc.diff && (
+          <div>
+            <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-ink-muted">变更对比 (Diff)</div>
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#181715] border border-hairline/40 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-[#e6dfd8] shadow-elevated">
+              {tc.diff}
+            </pre>
+          </div>
+        )}
 
-          {isPending && (
-            <div className={`flex items-start gap-2 rounded-md border bg-white p-2.5 ${
-              tc.isSecondaryConfirmation ? "border-rose-200" : "border-amber-200"
-            }`}>
-              <AlertTriangle className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
-                tc.isSecondaryConfirmation ? "text-rose-500" : "text-amber-500"
-              }`} />
-              <p className="text-[10px] leading-relaxed text-stone-600">
-                {tc.approvalReason || "根据当前权限规则，此工具调用需要人工审核批准。"}
+        {isPending && (
+          <div className={`flex items-start gap-2.5 rounded-lg border p-3 shadow-subtle ${
+            tc.isSecondaryConfirmation
+              ? "border-rose-300/80 bg-rose-50/50 dark:bg-rose-950/20"
+              : "border-amber-300/80 bg-amber-50/50 dark:bg-amber-950/20"
+          }`}>
+            <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${
+              tc.isSecondaryConfirmation ? "text-rose-600" : "text-amber-600"
+            }`} />
+            <div className="flex-1">
+              <div className="text-xs font-semibold text-ink">
+                {tc.isSecondaryConfirmation ? "需要高风险二次确认" : "需要审批权限"}
+              </div>
+              <p className="mt-0.5 text-[11px] leading-relaxed text-ink-secondary">
+                {tc.approvalReason || "根据当前安全规则，该操作将直接访问本机系统，请确认是否授权运行。"}
               </p>
             </div>
-          )}
+          </div>
+        )}
 
-          {tc.output && (
-            <div>
-              <div className="mb-1 text-[10px] font-medium text-stone-400">输出</div>
-              <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-md bg-zinc-900 px-3 py-2 font-mono text-[10px] leading-relaxed text-zinc-300">
-                {tc.output}
-              </pre>
-            </div>
-          )}
-
-          {isPending && (
-            <div className="flex justify-end gap-2 border-t border-stone-200/70 pt-2">
+        {tc.output && (
+          <div>
+            <div className="mb-1 flex items-center justify-between text-[10px] font-medium uppercase tracking-wider text-ink-muted">
+              <span>终端输出</span>
               <button
-                onClick={() => onApprove(tc.id, false).catch(console.error)}
-                className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1 text-[10px] font-medium text-rose-600 hover:bg-rose-100"
+                type="button"
+                onClick={() => copyOutput(tc.output || "")}
+                className="flex items-center gap-1 text-ink-muted hover:text-ink transition-colors"
               >
-                拒绝
-              </button>
-              <button
-                onClick={() => onApprove(tc.id, true).catch(console.error)}
-                className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-100"
-              >
-                {tc.isSecondaryConfirmation ? "确认高危操作" : "授权运行"}
+                {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+                <span>{copied ? "已复制" : "复制输出"}</span>
               </button>
             </div>
-          )}
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#181715] border border-hairline/40 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-[#e6dfd8] shadow-elevated">
+              {tc.output}
+            </pre>
+          </div>
+        )}
+
+        {isPending && (
+          <div className="flex justify-end items-center gap-2 border-t border-hairline/80 pt-2.5">
+            <Button
+              variant="dangerGhost"
+              size="sm"
+              onClick={() => onApprove(tc.id, false).catch(console.error)}
+            >
+              拒绝
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => onApprove(tc.id, true).catch(console.error)}
+            >
+              {tc.isSecondaryConfirmation ? "确认高危放行" : "授权运行"}
+            </Button>
+          </div>
+        )}
       </div>
     </AnimatedDisclosure>
   );
@@ -892,7 +926,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <div className="agnes-user-bubble space-y-2 rounded-2xl rounded-tr-sm border border-[#DFE7DD] bg-[#F1F5F0]/70 px-4 py-2.5 text-sm text-stone-900 shadow-sm">
+                    <div className="agnes-user-bubble space-y-2 rounded-2xl rounded-tr-sm border border-hairline bg-canvas-surface-card/90 px-4 py-2.5 text-[13.5px] text-ink shadow-subtle">
                       {messageAttachments.length > 0 && (
                         <div className="flex flex-wrap gap-1.5">
                           {messageAttachments.map((part) => (
@@ -930,22 +964,19 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           <AnimatedDisclosure
                             key={part._renderKey ?? part.id}
                             defaultOpen={autoExpandThoughts}
-                            className="agnes-thought-details group"
+                            className="agnes-thought-details group my-1.5"
                             summaryClassName="agnes-thought-summary"
                             summary={(
-                              <>
-                                <span>Agent思维过程</span>
-                                <ChevronDown className="agnes-collapse-chevron h-3 w-3" />
-                              </>
+                              <div className="flex items-center gap-1.5 py-0.5 text-xs text-ink-muted hover:text-ink transition-colors">
+                                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-canvas-surface-card border border-hairline ${isLiveThought ? "text-coral border-coral/30" : "text-ink-secondary"}`}>
+                                  <Sparkles className={`h-3 w-3 ${isLiveThought ? "text-coral animate-spin" : "text-coral"}`} />
+                                  <span>{isLiveThought ? "正在深度思考..." : "思维链分析"}</span>
+                                </span>
+                                <ChevronDown className="agnes-collapse-chevron h-3 w-3 text-ink-muted transition-transform group-open:rotate-180" />
+                              </div>
                             )}
                           >
-                            <div className="agnes-thought-content">
-                              <span
-                                className={`agnes-thought-status-icon ${isLiveThought ? "animate-pulse" : ""}`}
-                                aria-hidden="true"
-                              >
-                                <Cpu className="h-3 w-3" />
-                              </span>
+                            <div className="mt-1.5 pl-3 border-l-2 border-coral/40 text-[12px] leading-relaxed text-ink-secondary font-mono whitespace-pre-wrap bg-canvas-surface-subtle/50 p-3 rounded-r-lg border border-hairline/60 shadow-subtle">
                               <p className="whitespace-pre-wrap">{part.content}</p>
                             </div>
                           </AnimatedDisclosure>
@@ -1118,8 +1149,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           aria-hidden={!isEmptyConversation}
         >
           <div className="flex items-center justify-center gap-3">
-            <Sparkles className="h-7 w-7 text-[var(--claude-clay)]" weight="regular" />
-            <h1 className="text-3xl font-normal text-[var(--claude-ink)]">
+            <Sparkles className="h-7 w-7 text-coral" />
+            <h1 className="text-3xl font-serif font-normal text-ink">
               {welcomeGreeting}
             </h1>
           </div>

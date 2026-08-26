@@ -380,9 +380,9 @@ body.quick-window-body #root {
   --claude-header-soft: rgba(245, 240, 232, 0.96);
   --claude-overlay: rgba(31, 30, 27, 0.34);
   --claude-shadow: rgba(31, 30, 27, 0.16);
-  --claude-ui-font: "Noto Serif", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
-  --claude-display-font: "Noto Serif", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
-  --claude-mono-font: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --claude-ui-font: "Outfit", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --claude-display-font: "Copernicus", "Tiempos Headline", "Noto Serif", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
+  --claude-mono-font: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 }
 
 :root[data-agnes-theme="dark"] {

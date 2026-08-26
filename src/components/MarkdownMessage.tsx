@@ -20,23 +20,27 @@ const CodeBlock: React.FC<{ lang: string; text: string; children: React.ReactNod
         setTimeout(() => setCopied(false), 1500);
       },
       () => {
-        /* 剪贴板不可用时静默 */
+        /* 静默 */
       }
     );
   };
   return (
-    <div className="my-3 rounded-lg overflow-hidden border border-stone-200 shadow-sm">
-      <div className="bg-stone-100 px-3 py-1.5 flex justify-between items-center text-[10px] text-stone-500 border-b border-stone-200">
-        <span className="font-mono">{lang || "text"}</span>
+    <div className="my-3 overflow-hidden rounded-lg border border-hairline/80 bg-[#181715] shadow-card">
+      <div className="flex items-center justify-between border-b border-hairline/30 bg-[#1f1e1b] px-3.5 py-1.5 text-[11px] text-ink-muted">
+        <div className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-stone-600/60" />
+          <span className="font-mono text-[10px] text-stone-400">{lang || "text"}</span>
+        </div>
         <button
           onClick={copy}
-          className="flex items-center gap-1 hover:text-stone-900 transition-colors"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-stone-400 hover:bg-stone-800 hover:text-stone-200 transition-colors"
+          title="复制代码"
         >
-          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-          {copied ? "已复制" : "复制"}
+          {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+          <span className="text-[10px]">{copied ? "已复制" : "复制"}</span>
         </button>
       </div>
-      <pre className="bg-zinc-900 p-3 overflow-x-auto text-zinc-100 text-[11px] font-mono leading-relaxed">
+      <pre className="overflow-x-auto p-3.5 text-[12px] font-mono leading-relaxed text-[#e6dfd8]">
         <code className="font-mono">{children}</code>
       </pre>
     </div>
@@ -254,7 +258,7 @@ const MarkdownBlock = React.memo<{ content: string }>(({ content }) => (
         }
         return (
           <code
-            className="px-1.5 py-0.5 rounded bg-stone-100 text-[0.85em] font-mono text-rose-600 border border-stone-200"
+            className="px-1.5 py-0.5 rounded-md bg-canvas-surface-card border border-hairline text-[0.88em] font-mono text-coral font-medium"
             {...props}
           >
             {children}

@@ -6,6 +6,10 @@ import { KnowledgeWorkspace } from "./components/KnowledgeWorkspace";
 import { PlannerWorkspace } from "./components/PlannerWorkspace";
 import { SettingsModal } from "./components/SettingsModal";
 import { AppContextMenu } from "./components/AppContextMenu";
+import { CommandPalette } from "./components/CommandPalette";
+import { EmptyState } from "./components/ui/empty-state";
+import { Button } from "./components/ui/button";
+import { Plus, Code2 } from "lucide-react";
 import { type AppNotification } from "./components/NotificationCenter";
 import { APP_FEATURES, type AppFeatureId, type ChatMode } from "./lib/features";
 import { useAgentStore, setupTauriEventListeners } from "./store/useAgentStore";
@@ -51,7 +55,20 @@ export default function App() {
   const [requestedPlannerTaskId, setRequestedPlannerTaskId] = useState<string | null>(null);
   const [requestedPlannerEventId, setRequestedPlannerEventId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
   const [settingsTab, setSettingsTab] = useState<"profile" | "general" | "agents" | "memory" | "storage" | "models" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug">("agents");
+
+  // 全局 Cmd+K / Ctrl+K 快捷指令调起
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setIsCommandPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // 启动时初始化：恢复上次 agent/session 或按设置新建，并绑定 Tauri 事件桥
   useEffect(() => {
@@ -167,11 +184,12 @@ export default function App() {
   const hasVisibleChatSession = activeSessionMatchesMode || draftSessionMatchesMode;
 
   return (
-    <div className="agnes-app flex h-screen w-screen flex-col overflow-hidden bg-[#FAF9F5] text-[#2e2e38] antialiased selection:bg-orange-100 selection:text-stone-900">
+    <div className="agnes-app flex h-screen w-screen flex-col overflow-hidden bg-canvas text-ink antialiased selection:bg-coral/20 selection:text-ink">
       <AppTitleBar
         title={title}
         isSidebarOpen={isSidebarOpen}
         onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
+        onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -191,30 +209,35 @@ export default function App() {
           <ChatWorkspace onOpenSettings={handleOpenSettings} />
         )}
         {activeFeature === "chat" && !hasVisibleChatSession && (
-          <main className="agnes-chat-workspace grid min-w-0 flex-1 place-items-center bg-white px-8 text-center">
-            <div className="max-w-sm">
-              <div className="mx-auto mb-4 grid h-11 w-11 place-items-center rounded-lg bg-stone-100 font-mono text-sm text-stone-500">
-                {chatMode === "code" ? "</>" : "+"}
-              </div>
-              <h1 className="text-2xl font-normal text-stone-800">
-                {chatMode === "code" ? "选择一个代码工作区" : "开始一段新对话"}
-              </h1>
-              <p className="mt-2 text-sm leading-6 text-stone-500">
-                {chatMode === "code"
-                  ? "从左侧添加项目文件夹，或在已有工作区中新建会话。"
-                  : "使用左侧的新对话按钮创建日常会话。"}
-              </p>
-            </div>
+          <main className="agnes-chat-workspace grid min-w-0 flex-1 place-items-center bg-canvas px-8 text-center">
+            <EmptyState
+              icon={chatMode === "code" ? <Code2 className="h-6 w-6 text-coral" /> : <Plus className="h-6 w-6 text-coral" />}
+              title={chatMode === "code" ? "选择或新建代码工作区" : "开启一段新的探索"}
+              description={
+                chatMode === "code"
+                  ? "从左侧选择关联的项目文件夹，或直接在工作区中创建会话。"
+                  : "点击下方按钮或左侧导航开启一段日常会话。"
+              }
+              action={
+                <Button
+                  variant="primary"
+                  onClick={() => handleStartConversation(null)}
+                >
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />
+                  新建对话
+                </Button>
+              }
+            />
           </main>
         )}
         {activeFeature === "knowledge" && <KnowledgeWorkspace />}
         {activeFeature === "reading" && (
-          <Suspense fallback={<main className="grid min-w-0 flex-1 place-items-center text-sm text-stone-400">加载阅读器...</main>}>
+          <Suspense fallback={<main className="grid min-w-0 flex-1 place-items-center text-sm text-ink-muted">加载阅读器...</main>}>
             <ReadingWorkspace />
           </Suspense>
         )}
         {activeFeature === "drive" && (
-          <Suspense fallback={<main className="grid min-w-0 flex-1 place-items-center text-sm text-stone-400">加载网盘...</main>}>
+          <Suspense fallback={<main className="grid min-w-0 flex-1 place-items-center text-sm text-ink-muted">加载网盘...</main>}>
             <DriveWorkspace />
           </Suspense>
         )}
@@ -239,6 +262,17 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         initialTab={settingsTab}
       />
+
+      {/* Global Command Palette */}
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        onSelectFeature={setActiveFeature}
+        onSelectChatMode={handleSelectChatMode}
+        onStartConversation={handleStartConversation}
+        onOpenSettings={handleOpenSettings}
+      />
+
       <AppContextMenu />
     </div>
   );
