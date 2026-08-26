@@ -43,15 +43,17 @@ export default {
       },
       fontFamily: {
         sans: [
-          "Outfit",
-          "Inter",
           "-apple-system",
           "BlinkMacSystemFont",
           '"Segoe UI"',
           "Roboto",
+          '"Helvetica Neue"',
+          "Arial",
+          '"Noto Sans"',
           '"PingFang SC"',
           '"Hiragino Sans GB"',
           '"Microsoft YaHei"',
+          '"WenQuanYi Micro Hei"',
           "sans-serif",
         ],
         serif: [

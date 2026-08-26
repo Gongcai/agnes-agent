@@ -964,19 +964,22 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           <AnimatedDisclosure
                             key={part._renderKey ?? part.id}
                             defaultOpen={autoExpandThoughts}
-                            className="agnes-thought-details group my-1.5"
+                            className="agnes-thought-details group"
                             summaryClassName="agnes-thought-summary"
                             summary={(
-                              <div className="flex items-center gap-1.5 py-0.5 text-xs text-ink-muted hover:text-ink transition-colors">
-                                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-canvas-surface-card border border-hairline ${isLiveThought ? "text-coral border-coral/30" : "text-ink-secondary"}`}>
-                                  <Sparkles className={`h-3 w-3 ${isLiveThought ? "text-coral animate-spin" : "text-coral"}`} />
-                                  <span>{isLiveThought ? "正在深度思考..." : "思维链分析"}</span>
-                                </span>
-                                <ChevronDown className="agnes-collapse-chevron h-3 w-3 text-ink-muted transition-transform group-open:rotate-180" />
-                              </div>
+                              <>
+                                <span>Agent思维过程</span>
+                                <ChevronDown className="agnes-collapse-chevron h-3 w-3" />
+                              </>
                             )}
                           >
-                            <div className="mt-1.5 pl-3 border-l-2 border-coral/40 text-[12px] leading-relaxed text-ink-secondary font-mono whitespace-pre-wrap bg-canvas-surface-subtle/50 p-3 rounded-r-lg border border-hairline/60 shadow-subtle">
+                            <div className="agnes-thought-content">
+                              <span
+                                className={`agnes-thought-status-icon ${isLiveThought ? "animate-pulse" : ""}`}
+                                aria-hidden="true"
+                              >
+                                <Cpu className="h-3 w-3" />
+                              </span>
                               <p className="whitespace-pre-wrap">{part.content}</p>
                             </div>
                           </AnimatedDisclosure>
