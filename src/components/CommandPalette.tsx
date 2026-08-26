@@ -374,7 +374,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-4 py-2 border-t border-hairline bg-canvas-surface-subtle/50 text-[11px] text-ink-muted">
+        <div className="flex items-center justify-between px-4 py-2 border-t border-hairline bg-canvas-surface-subtle text-[11px] text-ink-muted">
           <div className="flex items-center gap-3">
             <span>
               <kbd className="font-mono">↑↓</kbd> 导航

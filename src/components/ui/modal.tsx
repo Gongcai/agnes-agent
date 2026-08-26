@@ -72,7 +72,7 @@ export const Modal: React.FC<ModalProps> = ({
         onMouseDown={(e) => e.stopPropagation()}
       >
         {(title || showCloseButton) && (
-          <div className="flex items-center justify-between border-b border-hairline px-6 py-4 bg-canvas-surface-subtle/50">
+          <div className="flex items-center justify-between border-b border-hairline px-6 py-4 bg-canvas-surface-subtle">
             <div>
               {title && (
                 <h3 className="text-sm font-semibold text-ink tracking-tight">

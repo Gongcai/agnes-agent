@@ -331,7 +331,7 @@ const ToolCallCard: React.FC<{
         {tc.args && Object.keys(tc.args).length > 0 && (
           <div>
             <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-ink-muted">调用参数</div>
-            <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-canvas-surface-subtle/80 border border-hairline/80 px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-body shadow-subtle">
+            <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-canvas-surface-card border border-hairline px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-body shadow-subtle">
               {formattedToolArgs(tc.args)}
             </pre>
           </div>
@@ -360,7 +360,7 @@ const ToolCallCard: React.FC<{
         {tc.diff && (
           <div>
             <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-ink-muted">变更对比 (Diff)</div>
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#181715] border border-hairline/40 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-[#e6dfd8] shadow-elevated">
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#181715] border border-white/10 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-[#e6dfd8] shadow-elevated">
               {tc.diff}
             </pre>
           </div>
@@ -399,14 +399,14 @@ const ToolCallCard: React.FC<{
                 <span>{copied ? "已复制" : "复制输出"}</span>
               </button>
             </div>
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#181715] border border-hairline/40 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-[#e6dfd8] shadow-elevated">
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#181715] border border-white/10 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-[#e6dfd8] shadow-elevated">
               {tc.output}
             </pre>
           </div>
         )}
 
         {isPending && (
-          <div className="flex justify-end items-center gap-2 border-t border-hairline/80 pt-2.5">
+          <div className="flex justify-end items-center gap-2 border-t border-hairline pt-2.5">
             <Button
               variant="dangerGhost"
               size="sm"
@@ -926,7 +926,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <div className="agnes-user-bubble space-y-2 rounded-2xl rounded-tr-sm border border-hairline bg-canvas-surface-card/90 px-4 py-2.5 text-[13.5px] text-ink shadow-subtle">
+                    <div className="agnes-user-bubble space-y-2 rounded-2xl rounded-tr-sm border border-hairline bg-canvas-surface-card px-4 py-2.5 text-[13.5px] text-ink shadow-subtle">
                       {messageAttachments.length > 0 && (
                         <div className="flex flex-wrap gap-1.5">
                           {messageAttachments.map((part) => (

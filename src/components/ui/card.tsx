@@ -22,7 +22,7 @@ export const CardHeader = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("flex flex-col space-y-1.5 p-4 border-b border-hairline/60", className)}
+    className={cn("flex flex-col space-y-1.5 p-4 border-b border-hairline", className)}
     {...props}
   />
 ));
@@ -66,7 +66,7 @@ export const CardFooter = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("flex items-center p-4 pt-0 border-t border-hairline/60 mt-4", className)}
+    className={cn("flex items-center p-4 pt-0 border-t border-hairline mt-4", className)}
     {...props}
   />
 ));

@@ -25,8 +25,8 @@ const CodeBlock: React.FC<{ lang: string; text: string; children: React.ReactNod
     );
   };
   return (
-    <div className="my-3 overflow-hidden rounded-lg border border-hairline/80 bg-[#181715] shadow-card">
-      <div className="flex items-center justify-between border-b border-hairline/30 bg-[#1f1e1b] px-3.5 py-1.5 text-[11px] text-ink-muted">
+    <div className="my-3 overflow-hidden rounded-lg border border-hairline bg-[#181715] shadow-card">
+      <div className="flex items-center justify-between border-b border-white/10 bg-[#1f1e1b] px-3.5 py-1.5 text-[11px] text-ink-muted">
         <div className="flex items-center gap-1.5">
           <span className="h-2 w-2 rounded-full bg-stone-600/60" />
           <span className="font-mono text-[10px] text-stone-400">{lang || "text"}</span>

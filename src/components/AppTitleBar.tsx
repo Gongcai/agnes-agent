@@ -51,7 +51,7 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
 
   return (
     <header
-      className="agnes-titlebar flex h-10 shrink-0 items-center justify-between border-b border-hairline bg-canvas-sidebar/90 backdrop-blur-md px-2.5 text-ink-secondary select-none transition-colors"
+      className="agnes-titlebar flex h-10 shrink-0 items-center justify-between border-b border-hairline bg-canvas-sidebar px-2.5 text-ink-secondary select-none transition-colors"
       data-tauri-drag-region
     >
       <div className="flex min-w-0 flex-1 items-center gap-1.5" data-tauri-drag-region>
@@ -67,7 +67,7 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
         <span className="ml-1 truncate text-xs font-semibold text-ink" data-tauri-drag-region>
           Agnes
         </span>
-        <span className="text-ink-muted/40" aria-hidden="true">/</span>
+        <span className="opacity-40" aria-hidden="true">/</span>
         <span className="truncate text-xs text-ink-muted" data-tauri-drag-region>
           {title}
         </span>
@@ -77,12 +77,12 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
         <button
           type="button"
           onClick={onOpenCommandPalette}
-          className="hidden sm:flex items-center gap-2 px-2.5 py-1 text-[11px] text-ink-muted bg-canvas-surface-card/60 hover:bg-canvas-surface-card hover:text-ink border border-hairline/60 rounded-md transition-all shadow-subtle mx-2"
+          className="hidden sm:flex items-center gap-2 px-2.5 py-1 text-[11px] text-ink-muted bg-canvas-surface-card hover:bg-canvas-surface-strong hover:text-ink border border-hairline rounded-md transition-all shadow-subtle mx-2"
           title="打开全局指令搜索 (Cmd+K)"
         >
           <Search className="h-3 w-3" />
           <span>快速指令</span>
-          <kbd className="font-mono text-[9px] px-1 py-0.2 bg-canvas-surface border border-hairline rounded text-ink-muted">
+          <kbd className="font-mono text-[9px] px-1 py-0.5 bg-canvas-surface border border-hairline rounded text-ink-muted">
             ⌘K
           </kbd>
         </button>
