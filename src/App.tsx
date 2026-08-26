@@ -184,7 +184,7 @@ export default function App() {
   const hasVisibleChatSession = activeSessionMatchesMode || draftSessionMatchesMode;
 
   return (
-    <div className="agnes-app flex h-screen w-screen flex-col overflow-hidden bg-canvas text-ink antialiased selection:bg-coral/20 selection:text-ink">
+    <div className="agnes-app flex h-screen w-screen flex-col overflow-hidden bg-canvas text-ink subpixel-antialiased selection:bg-coral/20 selection:text-ink">
       <AppTitleBar
         title={title}
         isSidebarOpen={isSidebarOpen}

@@ -34,8 +34,7 @@ body {
   color: var(--claude-ink);
   font-family: var(--claude-ui-font);
   overflow: hidden;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 body.quick-window-body {
@@ -379,8 +378,8 @@ body.quick-window-body #root {
   --claude-header: rgba(250, 249, 245, 0.96);
   --claude-header-soft: rgba(245, 240, 232, 0.96);
   --claude-overlay: rgba(31, 30, 27, 0.34);
-  --claude-ui-font: "Noto Serif", "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", Georgia, "Times New Roman", serif;
-  --claude-display-font: "Noto Serif", "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", Georgia, "Times New Roman", serif;
+  --claude-ui-font: "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "PingFang SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
+  --claude-display-font: "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "PingFang SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
   --claude-mono-font: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 }
 
