@@ -5362,7 +5362,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       {/* Model Selection Modal */}
       {isModelSelectOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-[2px]">
-          <div className="w-[480px] max-h-[500px] bg-white border border-stone-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+          <div className="agnes-model-select-modal w-[480px] max-h-[500px] bg-white border border-stone-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             <div className="px-5 py-3.5 border-b border-stone-200 bg-stone-50 flex justify-between items-center shrink-0">
               <h4 className="text-sm font-semibold text-stone-800">选择要导入的模型</h4>
               <button
@@ -5378,7 +5378,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 {availableModels.map(model => (
                   <label
                     key={model.id}
-                    className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-white border border-transparent hover:border-stone-200 hover:shadow-sm cursor-pointer transition-all group"
+                    className="agnes-model-select-item flex items-center gap-3 p-2.5 rounded-lg hover:bg-white border border-transparent hover:border-stone-200 hover:shadow-sm cursor-pointer transition-all group"
                   >
                     <input
                       type="checkbox"
