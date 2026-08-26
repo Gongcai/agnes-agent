@@ -2130,6 +2130,11 @@ pre,
   border-color: var(--claude-border-strong) !important;
 }
 
+:root[data-agnes-theme="dark"] .agnes-reading-model-selected {
+  background: var(--claude-clay-soft) !important;
+  color: var(--claude-clay) !important;
+}
+
 @media (max-width: 640px) {
   .agnes-settings-modal {
     width: calc(100vw - 16px) !important;
