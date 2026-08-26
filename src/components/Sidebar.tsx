@@ -30,7 +30,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { ENABLED_APP_FEATURES, type AppFeatureId, type ChatMode } from "../lib/features";
 import { searchSessionsByTitle } from "../lib/sessionSearch";
-import { viewportRectToLocalRect } from "../lib/zoomGeometry";
+import { calculateMenuPosition, viewportRectToLocalRect } from "../lib/zoomGeometry";
 import { useAgentStore } from "../store/useAgentStore";
 import { NotificationCenter, type AppNotification } from "./NotificationCenter";
 import { useConfirmDialog } from "./ConfirmDialog";
@@ -776,52 +776,58 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       {/* 会话右键菜单 */}
-      {ctxMenu && createPortal(
-        <>
-          <div className="fixed inset-0 z-40" onClick={closeCtxMenu} onContextMenu={(e) => { e.preventDefault(); closeCtxMenu(); }} />
-          <div
-            className="claude-popover fixed z-50 w-40 rounded-xl border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl"
-            style={{
-              top: Math.min(Math.max(ctxMenu.y, 8), Math.max(8, window.innerHeight - 104)),
-              left: Math.min(Math.max(ctxMenu.x, 8), Math.max(8, window.innerWidth - 168)),
-            }}
-          >
-            <button onClick={handleCtxPin} className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors">
-              {ctxMenu.isPinned ? <PinOff className="h-3.5 w-3.5 text-amber-500" /> : <Pin className="h-3.5 w-3.5 text-stone-500" />}
-              {ctxMenu.isPinned ? "取消置顶" : "置顶"}
-            </button>
-            <button onClick={handleCtxRename} className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors">
-              <Pencil className="h-3.5 w-3.5 text-stone-500" />重命名
-            </button>
-            <button onClick={handleCtxDelete} className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-rose-600 hover:bg-rose-50 transition-colors">
-              <Trash2 className="h-3.5 w-3.5" />删除
-            </button>
-          </div>
-        </>,
-        document.body,
-      )}
+      {ctxMenu && (() => {
+        const pos = calculateMenuPosition(ctxMenu.x, ctxMenu.y, 160, 104);
+        return createPortal(
+          <>
+            <div className="fixed inset-0 z-40" onClick={closeCtxMenu} onContextMenu={(e) => { e.preventDefault(); closeCtxMenu(); }} />
+            <div
+              className="claude-popover fixed z-50 w-40 rounded-xl border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl"
+              style={{
+                top: pos.top,
+                left: pos.left,
+              }}
+            >
+              <button onClick={handleCtxPin} className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors">
+                {ctxMenu.isPinned ? <PinOff className="h-3.5 w-3.5 text-amber-500" /> : <Pin className="h-3.5 w-3.5 text-stone-500" />}
+                {ctxMenu.isPinned ? "取消置顶" : "置顶"}
+              </button>
+              <button onClick={handleCtxRename} className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors">
+                <Pencil className="h-3.5 w-3.5 text-stone-500" />重命名
+              </button>
+              <button onClick={handleCtxDelete} className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-rose-600 hover:bg-rose-50 transition-colors">
+                <Trash2 className="h-3.5 w-3.5" />删除
+              </button>
+            </div>
+          </>,
+          document.body,
+        );
+      })()}
 
       {/* 工作区右键菜单 */}
-      {wsCtxMenu && createPortal(
-        <>
-          <div className="fixed inset-0 z-40" onClick={closeWsCtxMenu} onContextMenu={(e) => { e.preventDefault(); closeWsCtxMenu(); }} />
-          <div
-            className="claude-popover fixed z-50 w-40 rounded-xl border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl"
-            style={{
-              top: Math.min(Math.max(wsCtxMenu.y, 8), Math.max(8, window.innerHeight - 76)),
-              left: Math.min(Math.max(wsCtxMenu.x, 8), Math.max(8, window.innerWidth - 168)),
-            }}
-          >
-            <button onClick={handleWsCtxRename} className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors">
-              <Pencil className="h-3.5 w-3.5 text-stone-500" />重命名
-            </button>
-            <button onClick={handleWsCtxDelete} className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-rose-600 hover:bg-rose-50 transition-colors">
-              <Trash2 className="h-3.5 w-3.5" />删除工作区
-            </button>
-          </div>
-        </>,
-        document.body,
-      )}
+      {wsCtxMenu && (() => {
+        const pos = calculateMenuPosition(wsCtxMenu.x, wsCtxMenu.y, 160, 76);
+        return createPortal(
+          <>
+            <div className="fixed inset-0 z-40" onClick={closeWsCtxMenu} onContextMenu={(e) => { e.preventDefault(); closeWsCtxMenu(); }} />
+            <div
+              className="claude-popover fixed z-50 w-40 rounded-xl border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl"
+              style={{
+                top: pos.top,
+                left: pos.left,
+              }}
+            >
+              <button onClick={handleWsCtxRename} className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors">
+                <Pencil className="h-3.5 w-3.5 text-stone-500" />重命名
+              </button>
+              <button onClick={handleWsCtxDelete} className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-rose-600 hover:bg-rose-50 transition-colors">
+                <Trash2 className="h-3.5 w-3.5" />删除工作区
+              </button>
+            </div>
+          </>,
+          document.body,
+        );
+      })()}
 
       {renameDialog && createPortal(
         <div

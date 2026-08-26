@@ -14,6 +14,7 @@ import {
   SelectionAll,
   Stop,
 } from "@phosphor-icons/react";
+import { calculateMenuPosition, getRootZoomScale } from "../lib/zoomGeometry";
 
 type EditableTarget = HTMLInputElement | HTMLTextAreaElement | HTMLElement;
 
@@ -190,11 +191,11 @@ export const AppContextMenu: React.FC = () => {
 
   useLayoutEffect(() => {
     if (!menu || !menuRef.current) return;
+    const zoom = getRootZoomScale();
     const rect = menuRef.current.getBoundingClientRect();
-    setPosition({
-      left: Math.max(8, Math.min(menu.x, window.innerWidth - rect.width - 8)),
-      top: Math.max(8, Math.min(menu.y, window.innerHeight - rect.height - 8)),
-    });
+    const menuWidth = rect.width / zoom;
+    const menuHeight = rect.height / zoom;
+    setPosition(calculateMenuPosition(menu.x, menu.y, menuWidth, menuHeight, 8, zoom));
   }, [menu]);
 
   if (!menu) return null;

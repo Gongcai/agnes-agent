@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { viewportRectToLocalRect } from "./zoomGeometry";
+import { calculateMenuPosition, viewportPointToLocalPoint, viewportRectToLocalRect } from "./zoomGeometry";
 
 describe("viewportRectToLocalRect", () => {
   it("keeps viewport measurements unchanged at the standard scale", () => {
@@ -38,5 +38,19 @@ describe("viewportRectToLocalRect", () => {
       { left: 20, top: 138, width: 236, height: 36 },
       0,
     )).toEqual({ x: 12, y: 106, width: 236, height: 36 });
+  });
+});
+
+describe("viewportPointToLocalPoint and calculateMenuPosition", () => {
+  it.each([1, 0.9, 1.15, 1.3])("correctly scales viewport points to local points for zoom factor %s", (scale) => {
+    const { x, y } = viewportPointToLocalPoint(130, 260, scale);
+    expect(x).toBeCloseTo(130 / scale);
+    expect(y).toBeCloseTo(260 / scale);
+  });
+
+  it("calculates clamped menu position properly", () => {
+    const pos = calculateMenuPosition(100, 200, 160, 100, 8, 1);
+    expect(pos.left).toBe(100);
+    expect(pos.top).toBe(200);
   });
 });
