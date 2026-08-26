@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, CircleUserRound, Camera, Database, Sliders, ShieldCheck, ShieldOff, Key, Plus, Trash2, Pencil, Check, Zap, Server, Download, Eye, EyeOff, Terminal, Settings, Search, RefreshCw, GitCompareArrows, Laptop, Cloud, LockKeyhole, Copy, FileKey2, ArrowUp, ArrowDown, Globe2, BarChart3, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, Puzzle } from "lucide-react";
+import { X, User, UserCircle, Camera, Database, Sliders, ShieldCheck, ShieldSlash, Key, Plus, Trash, PencilSimple, Check, Lightning, HardDrives, DownloadSimple, Eye, EyeSlash, Terminal, Gear, MagnifyingGlass, ArrowsClockwise, GitDiff, Laptop, Cloud, LockKey, Copy, FileLock, ArrowUp, ArrowDown, GlobeHemisphereWest, ChartBar, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, PuzzlePiece } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAgentStore } from "../store/useAgentStore";
@@ -414,7 +414,7 @@ const SEARCH_PROVIDER_LABELS: Record<SearchProviderId, string> = {
   duckduckgo: "DuckDuckGo HTML",
   bing: "Bing HTML",
   searxng: "SearXNG",
-  brave: "Brave Search API",
+  brave: "Brave MagnifyingGlass API",
 };
 
 const SEARCH_PROVIDER_IDS: SearchProviderId[] = ["duckduckgo", "bing", "searxng", "brave"];
@@ -1370,7 +1370,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setEditingMcpId(null);
       setMcpForm(EMPTY_MCP_FORM);
       await loadMcpServers();
-      setMcpMessage({ success: true, text: "MCP Server 已保存" });
+      setMcpMessage({ success: true, text: "MCP HardDrives 已保存" });
     } catch (error) {
       setMcpMessage({ success: false, text: String(error) });
     } finally {
@@ -1381,14 +1381,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const deleteMcpServer = async (server: McpServer) => {
     if (!await confirmDelete({
       title: `删除 MCP Server「${server.name}」？`,
-      description: "该 Server 的本机凭证也会一并删除。",
+      description: "该 HardDrives 的本机凭证也会一并删除。",
       confirmLabel: "删除 Server",
     })) return;
     try {
       await invoke("delete_mcp_server", { serverId: server.id });
       if (editingMcpId === server.id) setEditingMcpId(null);
       await loadMcpServers();
-      setMcpMessage({ success: true, text: "MCP Server 已删除" });
+      setMcpMessage({ success: true, text: "MCP HardDrives 已删除" });
     } catch (error) {
       setMcpMessage({ success: false, text: String(error) });
     }
@@ -2245,7 +2245,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 activeTab === "profile" ? "text-zinc-900" : "text-stone-500"
               }`}
             >
-              <CircleUserRound className="h-4 w-4 text-stone-500" />
+              <UserCircle className="h-4 w-4 text-stone-500" />
               <span>用户信息</span>
             </button>
             <button
@@ -2257,7 +2257,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   : "text-stone-500"
               }`}
             >
-              <Settings className="h-4 w-4 text-stone-500" />
+              <Gear className="h-4 w-4 text-stone-500" />
               <span>通用设置</span>
             </button>
             <button
@@ -2329,7 +2329,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   : "text-stone-500"
               }`}
             >
-              <BarChart3 className="h-4 w-4 text-stone-500" />
+              <ChartBar className="h-4 w-4 text-stone-500" />
               <span>Token 统计</span>
             </button>
             <button
@@ -2341,7 +2341,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   : "text-stone-500"
               }`}
             >
-              <Globe2 className="h-4 w-4 text-stone-500" />
+              <GlobeHemisphereWest className="h-4 w-4 text-stone-500" />
               <span>联网搜索</span>
             </button>
             <button
@@ -2353,7 +2353,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   : "text-stone-500"
               }`}
             >
-              <Server className="h-4 w-4 text-stone-500" />
+              <HardDrives className="h-4 w-4 text-stone-500" />
               <span>MCP 外部工具</span>
             </button>
             <button
@@ -2365,7 +2365,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   : "text-stone-500"
               }`}
             >
-              <Puzzle className="h-4 w-4 text-stone-500" />
+              <PuzzlePiece className="h-4 w-4 text-stone-500" />
               <span>Skills</span>
             </button>
             <button
@@ -2592,14 +2592,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             title="编辑"
                             className="p-1 rounded-md hover:bg-stone-200 text-stone-500"
                           >
-                            <Pencil className="h-3.5 w-3.5" />
+                            <PencilSimple className="h-3.5 w-3.5" />
                           </button>
                           <button
                             onClick={() => handleDeleteAgent(agent.id, agent.name)}
                             title="删除"
                             className="p-1 rounded-md hover:bg-red-100 text-red-500"
                           >
-                            <Trash2 className="h-3.5 w-3.5" />
+                            <Trash className="h-3.5 w-3.5" />
                           </button>
                         </div>
                       </div>
@@ -3124,7 +3124,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
 
                   <div className="relative max-w-sm">
-                    <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-stone-400" />
+                    <MagnifyingGlass className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-stone-400" />
                     <input
                       value={memorySearch}
                       onChange={(event) => setMemorySearch(event.target.value)}
@@ -3186,7 +3186,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                   title="删除文件"
                                   className="rounded p-1.5 text-stone-400 hover:bg-red-50 hover:text-red-600"
                                 >
-                                  <Trash2 className="h-3.5 w-3.5" />
+                                  <Trash className="h-3.5 w-3.5" />
                                 </button>
                               )}
                               <button
@@ -3266,7 +3266,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           onClick={() => void handleRemovePdfModelPackage()}
                           className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Trash className="h-3.5 w-3.5" />
                           移除
                         </button>
                       )}
@@ -3276,7 +3276,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         onClick={() => void handleInstallPdfModelPackage()}
                         className="flex items-center gap-1.5 rounded-lg bg-[#8CA38A] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#7A917A] disabled:opacity-50"
                       >
-                        <Download className="h-3.5 w-3.5" />
+                        <DownloadSimple className="h-3.5 w-3.5" />
                         {pdfModelBusy ? "处理中..." : pdfModelStatus?.installed ? "重新导入" : "导入模型包"}
                       </button>
                     </div>
@@ -3436,7 +3436,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 }))}
                                 className="flex h-7 w-7 items-center justify-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-600"
                               >
-                                <Trash2 className="h-3.5 w-3.5" />
+                                <Trash className="h-3.5 w-3.5" />
                               </button>
                             </div>
                           );
@@ -3501,7 +3501,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         {/* Left: Provider info */}
                         <div className="flex items-center gap-3 min-w-0 flex-1">
                           <div className="h-8 w-8 rounded-lg bg-stone-100 border border-stone-200/60 flex items-center justify-center shrink-0">
-                            <Server className="h-3.5 w-3.5 text-stone-500" />
+                            <HardDrives className="h-3.5 w-3.5 text-stone-500" />
                           </div>
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
@@ -3540,7 +3540,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
                             title="编辑"
                           >
-                            <Pencil className="h-3.5 w-3.5" />
+                            <PencilSimple className="h-3.5 w-3.5" />
                           </button>
                           <button
                             onClick={() => handleTestConnection(provider.id)}
@@ -3548,14 +3548,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             title="测试连接"
                             disabled={isTesting}
                           >
-                            <Zap className="h-3.5 w-3.5" />
+                            <Lightning className="h-3.5 w-3.5" />
                           </button>
                           <button
                             onClick={() => handleDeleteProvider(provider.id)}
                             className="p-1.5 rounded-lg text-stone-400 hover:text-red-600 hover:bg-red-50 transition-colors"
                             title="删除"
                           >
-                            <Trash2 className="h-3.5 w-3.5" />
+                            <Trash className="h-3.5 w-3.5" />
                           </button>
                         </div>
                       </div>
@@ -3595,7 +3595,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                   {providers.length === 0 && !editingProviderId && (
                     <div style={{ order: 0 }} className="border border-dashed border-stone-200 rounded-xl p-8 text-center">
-                      <Server className="h-8 w-8 text-stone-300 mx-auto mb-2" />
+                      <HardDrives className="h-8 w-8 text-stone-300 mx-auto mb-2" />
                       <p className="text-xs text-stone-400">尚未配置任何模型服务商</p>
                       <p className="text-[10px] text-stone-350 mt-0.5">点击下方按钮添加您的第一个服务商</p>
                     </div>
@@ -3706,7 +3706,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           className="absolute right-2 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700 transition-colors"
                           title={showApiKey ? "隐藏 API Key" : "显示 API Key"}
                         >
-                          {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          {showApiKey ? <EyeSlash className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                         </button>
                       </div>
                       {editingProviderId !== "new" && editingProvider?.has_api_key && (
@@ -3727,7 +3727,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           className="text-[10px] flex items-center gap-1 text-[#8CA38A] hover:text-[#6C806A] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           title="尝试从接口自动获取模型列表"
                         >
-                          <Download className="h-3 w-3" />
+                          <DownloadSimple className="h-3 w-3" />
                           {isFetchingModels ? "获取中..." : "获取模型"}
                         </button>
                       </div>
@@ -3770,7 +3770,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 className="shrink-0 rounded p-1 text-stone-400 hover:bg-rose-50 hover:text-rose-600"
                                 title="移除模型"
                               >
-                                <Trash2 className="h-3 w-3" />
+                                <Trash className="h-3 w-3" />
                               </button>
                             </div>
                             <div className="flex flex-wrap items-center gap-1.5 text-[9px]">
@@ -3884,7 +3884,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             disabled={isTesting}
                             className="flex items-center gap-1.5 text-xs text-stone-500 hover:text-amber-600 font-medium transition-colors disabled:opacity-50"
                           >
-                            <Zap className="h-3.5 w-3.5" />
+                            <Lightning className="h-3.5 w-3.5" />
                             {isTesting ? "测试中..." : "测试连接"}
                           </button>
                         )}
@@ -3930,7 +3930,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="space-y-3">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
-                        <Server className="h-4 w-4 text-stone-500" />
+                        <HardDrives className="h-4 w-4 text-stone-500" />
                         <span className="text-xs font-semibold text-stone-600">云端同步</span>
                         <span
                           className={`h-2 w-2 rounded-full ${
@@ -3959,7 +3959,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         }
                         className="h-8 w-8 inline-flex items-center justify-center rounded-md border border-stone-200 text-stone-500 hover:text-stone-800 hover:bg-stone-50 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
-                        <RefreshCw className={`h-4 w-4 ${isSyncingNow || syncStatus?.syncing ? "animate-spin" : ""}`} />
+                        <ArrowsClockwise className={`h-4 w-4 ${isSyncingNow || syncStatus?.syncing ? "animate-spin" : ""}`} />
                       </button>
                     </div>
 
@@ -3994,7 +3994,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <section className="border-y border-stone-200 bg-white">
                         <div className="flex min-h-10 items-center justify-between gap-3 border-b border-stone-200 px-3 py-2">
                           <span className="flex min-w-0 items-center gap-2 text-xs font-semibold text-stone-700">
-                            <LockKeyhole className="h-3.5 w-3.5 shrink-0" />
+                            <LockKey className="h-3.5 w-3.5 shrink-0" />
                             端到端加密
                           </span>
                           <span className={`text-[10px] font-semibold tabular-nums ${
@@ -4031,7 +4031,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                   disabled={isConfiguringSyncE2ee}
                                   className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-40"
                                 >
-                                  <FileKey2 className="h-3.5 w-3.5" />
+                                  <FileLock className="h-3.5 w-3.5" />
                                   恢复
                                 </button>
                               )}
@@ -4043,7 +4043,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                   title="丢弃未确认密钥"
                                   className="flex h-8 w-8 items-center justify-center rounded-md border border-stone-300 bg-white text-stone-500 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-40"
                                 >
-                                  <Trash2 className="h-3.5 w-3.5" />
+                                  <Trash className="h-3.5 w-3.5" />
                                 </button>
                               )}
                               <button
@@ -4063,7 +4063,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     disabled={isConfiguringSyncE2ee}
                                     className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-40"
                                   >
-                                    <FileKey2 className="h-3.5 w-3.5" />
+                                    <FileLock className="h-3.5 w-3.5" />
                                     导入升级
                                   </button>
                                   <button
@@ -4072,7 +4072,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     disabled={isConfiguringSyncE2ee}
                                     className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 text-[11px] font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-40"
                                   >
-                                    <RefreshCw className="h-3.5 w-3.5" />
+                                    <ArrowsClockwise className="h-3.5 w-3.5" />
                                     轮换
                                   </button>
                                 </>
@@ -4123,7 +4123,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 disabled={isConfiguringSyncE2ee || !syncRecoveryKeyInput.trim() || !syncRecoveryBundleInput.trim()}
                                 className="inline-flex h-8 items-center gap-1.5 rounded-md bg-stone-800 px-2.5 text-[11px] font-medium text-white hover:bg-stone-700 disabled:opacity-40"
                               >
-                                <FileKey2 className="h-3.5 w-3.5" />
+                                <FileLock className="h-3.5 w-3.5" />
                                 恢复
                               </button>
                             </div>
@@ -4301,7 +4301,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <section className="border-y border-rose-200 bg-rose-50/40">
                         <div className="flex h-9 items-center justify-between border-b border-rose-200 px-3">
                           <span className="flex items-center gap-2 text-xs font-semibold text-rose-800">
-                            <GitCompareArrows className="h-3.5 w-3.5" />
+                            <GitDiff className="h-3.5 w-3.5" />
                             同步冲突
                           </span>
                           <span className="text-[11px] tabular-nums text-rose-600">{syncConflicts.length}</span>
@@ -4450,7 +4450,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             title={showSyncToken ? "隐藏令牌" : "显示令牌"}
                             className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center text-stone-400 hover:text-stone-700"
                           >
-                            {showSyncToken ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                            {showSyncToken ? <EyeSlash className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                           </button>
                         </div>
                         <button
@@ -4476,7 +4476,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           title="清除同步凭证"
                           className="flex h-7 w-7 items-center justify-center text-emerald-700 hover:text-rose-600 disabled:opacity-40"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Trash className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     )}
@@ -4507,7 +4507,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                       ? "border-emerald-200 bg-emerald-50 text-emerald-700"
                                       : "border-stone-200 bg-stone-50 text-stone-600"
                                 }`}>
-                                  {revoked ? <ShieldOff className="h-4 w-4" /> : <Laptop className="h-4 w-4" />}
+                                  {revoked ? <ShieldSlash className="h-4 w-4" /> : <Laptop className="h-4 w-4" />}
                                 </div>
                                 <div className="min-w-0 flex-1">
                                   <div className="flex flex-wrap items-center gap-1.5">
@@ -4534,7 +4534,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     title="撤销设备"
                                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-40"
                                   >
-                                    <ShieldOff className={`h-4 w-4 ${revoking ? "animate-pulse" : ""}`} />
+                                    <ShieldSlash className={`h-4 w-4 ${revoking ? "animate-pulse" : ""}`} />
                                   </button>
                                 )}
                               </div>
@@ -4632,7 +4632,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             onClick={() => testSearchProvider(provider)}
                             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-700 disabled:opacity-30"
                           >
-                            <RefreshCw className={`h-3.5 w-3.5 ${testing ? "animate-spin" : ""}`} />
+                            <ArrowsClockwise className={`h-3.5 w-3.5 ${testing ? "animate-spin" : ""}`} />
                           </button>
                         </div>
                       );
@@ -4657,7 +4657,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                 <section className="space-y-3 border-t border-stone-200 pt-4">
                   <div>
-                    <h4 className="text-xs font-semibold text-stone-700">Brave Search API</h4>
+                    <h4 className="text-xs font-semibold text-stone-700">Brave MagnifyingGlass API</h4>
                   </div>
                   <label className="block space-y-1">
                     <span className="text-[10px] font-semibold text-stone-600">API Key</span>
@@ -4673,7 +4673,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             braveApiKey: event.target.value,
                             clearBraveApiKey: false,
                           }))}
-                          placeholder={searchProviderForm.hasBraveApiKey ? "已保存在系统密钥环；留空保持不变" : "输入 Brave Search API Key"}
+                          placeholder={searchProviderForm.hasBraveApiKey ? "已保存在系统密钥环；留空保持不变" : "输入 Brave MagnifyingGlass API Key"}
                           className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 pr-9 text-[11px] font-mono text-stone-700 outline-none focus:ring-1 focus:ring-indigo-200 disabled:bg-stone-50"
                         />
                         <button
@@ -4682,7 +4682,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           onClick={() => setShowBraveSearchKey((visible) => !visible)}
                           className="absolute right-2 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700"
                         >
-                          {showBraveSearchKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          {showBraveSearchKey ? <EyeSlash className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                         </button>
                       </div>
                       {searchProviderForm.hasBraveApiKey && (
@@ -4786,7 +4786,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           }))}
                           className="flex h-7 w-7 items-center justify-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-25"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Trash className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     ))}
@@ -4812,7 +4812,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       className="flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
                     >
                       <Plus className="h-3.5 w-3.5" />
-                      新建 Server
+                      新建 HardDrives
                     </button>
                   )}
                 </div>
@@ -4966,7 +4966,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     }))}
                                     className="flex h-8 w-8 items-center justify-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-600"
                                   >
-                                    <Trash2 className="h-3.5 w-3.5" />
+                                    <Trash className="h-3.5 w-3.5" />
                                   </button>
                                 </div>
                               ))}
@@ -5052,7 +5052,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             ? "border-indigo-200 bg-indigo-50 text-indigo-700"
                             : "border-stone-200 bg-stone-100 text-stone-400"
                         }`}>
-                          <Server className="h-4 w-4" />
+                          <HardDrives className="h-4 w-4" />
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
@@ -5086,7 +5086,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           title="测试连接并读取工具列表"
                           className="flex h-8 w-8 items-center justify-center rounded-md text-stone-400 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-40"
                         >
-                          <Zap className={`h-3.5 w-3.5 ${testingMcpId === server.id ? "animate-pulse" : ""}`} />
+                          <Lightning className={`h-3.5 w-3.5 ${testingMcpId === server.id ? "animate-pulse" : ""}`} />
                         </button>
                         <button
                           type="button"
@@ -5094,7 +5094,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           title="编辑 Server"
                           className="flex h-8 w-8 items-center justify-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-800"
                         >
-                          <Pencil className="h-3.5 w-3.5" />
+                          <PencilSimple className="h-3.5 w-3.5" />
                         </button>
                         <button
                           type="button"
@@ -5102,7 +5102,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           title="删除 Server"
                           className="flex h-8 w-8 items-center justify-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-700"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Trash className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     ))}
@@ -5142,7 +5142,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       title="刷新统计"
                       className="flex h-8 w-8 items-center justify-center rounded-md border border-stone-200 text-stone-500 hover:bg-stone-50 disabled:opacity-40"
                     >
-                      <RefreshCw className={`h-3.5 w-3.5 ${tokenUsageLoading ? "animate-spin" : ""}`} />
+                      <ArrowsClockwise className={`h-3.5 w-3.5 ${tokenUsageLoading ? "animate-spin" : ""}`} />
                     </button>
                   </div>
                 </div>
@@ -5912,7 +5912,7 @@ const ArtifactStorageTab: React.FC = () => {
           title="刷新容量统计"
           className="flex h-8 w-8 items-center justify-center rounded-md border border-stone-200 text-stone-500 hover:bg-stone-50 disabled:opacity-40"
         >
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+          <ArrowsClockwise className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
         </button>
       </div>
 

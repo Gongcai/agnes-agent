@@ -1,4 +1,4 @@
-import { CalendarDays, CheckSquare2, Clock3, Repeat2 } from "lucide-react";
+import { CalendarBlank, CheckSquare, Clock, Repeat } from "@phosphor-icons/react";
 import type { CalendarEvent, PlannerCalendar, Task } from "../shared/types";
 import {
   eventOccursOnDate,
@@ -67,11 +67,11 @@ export function DayAgenda({
               <span className="flex items-center gap-1 text-xs tabular-nums text-stone-500">
                 {event.all_day ? (
                   <>
-                    <CalendarDays className="h-3.5 w-3.5" /> 全天
+                    <CalendarBlank className="h-3.5 w-3.5" /> 全天
                   </>
                 ) : (
                   <>
-                    <Clock3 className="h-3.5 w-3.5" />
+                    <Clock className="h-3.5 w-3.5" />
                     {new Date(event.starts_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                   </>
                 )}
@@ -83,7 +83,7 @@ export function DayAgenda({
               <span className="min-w-0">
                 <span className="flex items-center gap-2">
                   <span className="truncate text-sm font-medium text-stone-800">{event.title}</span>
-                  {event.recurrence_rule && <Repeat2 className="h-3.5 w-3.5 shrink-0 text-stone-400" />}
+                  {event.recurrence_rule && <Repeat className="h-3.5 w-3.5 shrink-0 text-stone-400" />}
                 </span>
                 <span className="mt-0.5 block text-[11px] text-stone-400">{calendar?.name ?? "日历"}</span>
               </span>
@@ -105,7 +105,7 @@ export function DayAgenda({
                 "全天"
               )}
             </span>
-            <CheckSquare2 className="h-3.5 w-3.5 text-stone-400" />
+            <CheckSquare className="h-3.5 w-3.5 text-stone-400" />
             <span
               className={`truncate text-sm font-medium ${
                 task.status === "completed" ? "text-stone-400 line-through" : "text-stone-800"
@@ -113,7 +113,7 @@ export function DayAgenda({
             >
               {task.title}
             </span>
-            {task.recurrence_rule && <Repeat2 className="h-3.5 w-3.5 text-stone-400" />}
+            {task.recurrence_rule && <Repeat className="h-3.5 w-3.5 text-stone-400" />}
           </button>
         ))}
         {dayEvents.length === 0 && dayTasks.length === 0 && (

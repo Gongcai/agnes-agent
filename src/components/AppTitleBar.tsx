@@ -1,13 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  Maximize2,
-  Minimize2,
-  Minus,
-  PanelLeft,
-  Search,
-  X,
-} from "lucide-react";
+import { ArrowsOut, ArrowsIn, Minus, SidebarSimple, MagnifyingGlass, X } from "@phosphor-icons/react";
 
 interface AppTitleBarProps {
   title: string;
@@ -62,7 +55,7 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
           title={isSidebarOpen ? "收起侧边栏" : "展开侧边栏"}
           aria-label={isSidebarOpen ? "收起侧边栏" : "展开侧边栏"}
         >
-          <PanelLeft className="h-4 w-4" />
+          <SidebarSimple className="h-4 w-4" />
         </button>
         <span className="ml-1 truncate text-xs font-semibold text-ink" data-tauri-drag-region>
           Agnes
@@ -80,7 +73,7 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
           className="hidden sm:flex items-center gap-2 px-2.5 py-1 text-[11px] text-ink-muted bg-canvas-surface-card hover:bg-canvas-surface-strong hover:text-ink border border-hairline rounded-md transition-all shadow-subtle mx-2"
           title="打开全局指令搜索 (Cmd+K)"
         >
-          <Search className="h-3 w-3" />
+          <MagnifyingGlass className="h-3 w-3" />
           <span>快速指令</span>
           <kbd className="font-mono text-[9px] px-1 py-0.5 bg-canvas-surface border border-hairline rounded text-ink-muted">
             ⌘K
@@ -105,7 +98,7 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
           title={isMaximized ? "还原窗口" : "最大化"}
           aria-label={isMaximized ? "还原窗口" : "最大化"}
         >
-          {isMaximized ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          {isMaximized ? <ArrowsIn className="h-3.5 w-3.5" /> : <ArrowsOut className="h-3.5 w-3.5" />}
         </button>
         <button
           type="button"

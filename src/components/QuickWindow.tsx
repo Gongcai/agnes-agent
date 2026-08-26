@@ -1,22 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  ChevronDown,
-  ChevronRight,
-  CircleStop,
-  Cpu,
-  FileText,
-  Languages,
-  Lightbulb,
-  MessageSquareText,
-  Pin,
-  PinOff,
-  Plus,
-  Send,
-  ShieldAlert,
-  Sparkles,
-} from "lucide-react";
+import { CaretDown, CaretRight, StopCircle, Cpu, FileText, Translate, Lightbulb, ChatText, PushPin, PushPinSlash, Plus, PaperPlaneRight, ShieldWarning, Sparkle } from "@phosphor-icons/react";
 import { AgentAvatar } from "./AgentAvatar";
 import { AnimatedDisclosure } from "./AnimatedDisclosure";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -49,14 +34,14 @@ const QUICK_ACTIONS: QuickAction[] = [
     id: "answer",
     label: "回答此问题",
     placeholder: "输入你想问的问题...",
-    icon: MessageSquareText,
+    icon: ChatText,
     prompt: (input) => input,
   },
   {
     id: "translate",
     label: "文本翻译",
     placeholder: "输入或粘贴需要翻译的文本...",
-    icon: Languages,
+    icon: Translate,
     prompt: (input) => `请将下面的文本翻译成简体中文；如果原文已是中文，则翻译成英文。保留原意和格式，只输出译文。\n\n${input}`,
   },
   {
@@ -259,7 +244,7 @@ export const QuickWindow: React.FC = () => {
           <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={30} />
         ) : (
           <div className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-full bg-[#d97757]/10 text-[#b95f43]">
-            <Sparkles className="h-4 w-4" />
+            <Sparkle className="h-4 w-4" />
           </div>
         )}
         <div data-tauri-drag-region className="min-w-0 flex-1">
@@ -291,7 +276,7 @@ export const QuickWindow: React.FC = () => {
           title={isPinned ? "取消固定窗口" : "固定窗口"}
           aria-label={isPinned ? "取消固定窗口" : "固定窗口"}
         >
-          {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+          {isPinned ? <PushPinSlash className="h-3.5 w-3.5" /> : <PushPin className="h-3.5 w-3.5" />}
         </button>
       </header>
 
@@ -317,7 +302,7 @@ export const QuickWindow: React.FC = () => {
                 >
                   <Icon className="h-4 w-4 shrink-0 text-stone-500" />
                   <span className="min-w-0 flex-1 truncate">{action.label}</span>
-                  <ChevronRight className="h-4 w-4 shrink-0 text-stone-300" />
+                  <CaretRight className="h-4 w-4 shrink-0 text-stone-300" />
                 </button>
               );
             })}
@@ -354,7 +339,7 @@ export const QuickWindow: React.FC = () => {
                       summary={(
                         <>
                           <span>Agent思维过程</span>
-                          <ChevronDown className="agnes-collapse-chevron h-3 w-3" />
+                          <CaretDown className="agnes-collapse-chevron h-3 w-3" />
                         </>
                       )}
                     >
@@ -379,7 +364,7 @@ export const QuickWindow: React.FC = () => {
                     return (
                       <div key={toolCall.id} className="border-l border-stone-300 py-1 pl-3 text-[11px] text-stone-600">
                         <div className="flex items-center gap-2">
-                          <ShieldAlert className="h-3.5 w-3.5 text-stone-400" />
+                          <ShieldWarning className="h-3.5 w-3.5 text-stone-400" />
                           <span className="min-w-0 flex-1 truncate font-mono">{toolCall.tool}</span>
                           <span className="text-[10px] text-stone-400">{toolCall.status}</span>
                         </div>
@@ -449,7 +434,7 @@ export const QuickWindow: React.FC = () => {
               title="停止生成"
               aria-label="停止生成"
             >
-              <CircleStop className="h-3.5 w-3.5" />
+              <StopCircle className="h-3.5 w-3.5" />
             </button>
           ) : (
             <button
@@ -460,7 +445,7 @@ export const QuickWindow: React.FC = () => {
               title="发送"
               aria-label="发送"
             >
-              <Send className="h-3.5 w-3.5" />
+              <PaperPlaneRight className="h-3.5 w-3.5" />
             </button>
           )}
         </div>

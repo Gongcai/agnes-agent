@@ -1,31 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import {
-  Brain,
-  BookOpen,
-  Code,
-  CalendarDays,
-  CheckSquare2,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  ChevronUp,
-  Database,
-  Folder,
-  FolderPlus,
-  HardDrive,
-  Home as House,
-  Search,
-  MessageSquare,
-  Pencil,
-  Pin,
-  PinOff,
-  Plus,
-  Settings,
-  Trash2,
-  X,
-  type LucideIcon,
-} from "lucide-react";
+import { Brain, BookOpen, Code, CalendarBlank, CheckSquare, Check, CaretDown, CaretRight, CaretUp, Database, Folder, FolderPlus, HardDrive, House, MagnifyingGlass, Chat, PencilSimple, PushPin, PushPinSlash, Plus, Gear, Trash, X, type Icon } from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { ENABLED_APP_FEATURES, type AppFeatureId, type ChatMode } from "../lib/features";
@@ -60,14 +35,14 @@ interface SidebarProps {
   onNotificationNavigate: (notification: AppNotification) => void | Promise<void>;
 }
 
-const FEATURE_ICONS: Record<AppFeatureId, LucideIcon> = {
-  chat: MessageSquare,
+const FEATURE_ICONS: Record<AppFeatureId, Icon> = {
+  chat: Chat,
   reading: BookOpen,
   memory: Brain,
   knowledge: Database,
   drive: HardDrive,
-  calendar: CalendarDays,
-  tasks: CheckSquare2,
+  calendar: CalendarBlank,
+  tasks: CheckSquare,
 };
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -450,9 +425,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             : "text-stone-600 hover:bg-stone-200/40 hover:text-stone-900"
         }`}
       >
-        <MessageSquare className="h-3.5 w-3.5 shrink-0 text-stone-400" />
+        <Chat className="h-3.5 w-3.5 shrink-0 text-stone-400" />
         <span className="flex-1 truncate">{sess.title}</span>
-        {sess.pinned && <Pin className="h-3 w-3 shrink-0 text-amber-500" />}
+        {sess.pinned && <PushPin className="h-3 w-3 shrink-0 text-amber-500" />}
       </button>
     );
   };
@@ -541,7 +516,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           title={isOpen ? undefined : "搜索会话"}
         >
           <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
-            <Search className="h-4 w-4" />
+            <MagnifyingGlass className="h-4 w-4" />
           </span>
           <span className="agnes-sidebar-label truncate text-xs">搜索</span>
         </button>
@@ -617,7 +592,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       }}
                       title={ws.folder_path}
                     >
-                      {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-stone-400" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-stone-400" />}
+                      {expanded ? <CaretDown className="h-3.5 w-3.5 shrink-0 text-stone-400" /> : <CaretRight className="h-3.5 w-3.5 shrink-0 text-stone-400" />}
                       <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
                       <span className="flex-1 truncate font-medium">{ws.name}</span>
                       <button
@@ -662,7 +637,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               className="agnes-account-action flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-xs text-stone-600 transition-colors"
             >
               <span className="agnes-account-action-icon grid h-7 w-7 shrink-0 place-items-center">
-                <Settings className="h-4 w-4" />
+                <Gear className="h-4 w-4" />
               </span>
               <span className="agnes-sidebar-label">设置</span>
             </button>
@@ -684,8 +659,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {userProfile.name.trim() || "AGENS"}
           </span>
           {accountMenuOpen
-            ? <ChevronUp className="agnes-account-chevron h-3.5 w-3.5 shrink-0 text-stone-400" />
-            : <ChevronDown className="agnes-account-chevron h-3.5 w-3.5 shrink-0 text-stone-400" />}
+            ? <CaretUp className="agnes-account-chevron h-3.5 w-3.5 shrink-0 text-stone-400" />
+            : <CaretDown className="agnes-account-chevron h-3.5 w-3.5 shrink-0 text-stone-400" />}
         </button>
       </div>
 
@@ -703,7 +678,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="agnes-session-search-header flex h-12 shrink-0 items-center gap-3 border-b px-4">
-              <Search className="agnes-session-search-muted h-4 w-4 shrink-0" />
+              <MagnifyingGlass className="agnes-session-search-muted h-4 w-4 shrink-0" />
               <input
                 ref={sessionSearchInputRef}
                 type="search"
@@ -757,7 +732,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       </span>
                       <span className="agnes-session-search-result-meta mt-0.5 block truncate text-[11px]">{workspaceName}</span>
                     </span>
-                    {session.pinned && <Pin className="h-3.5 w-3.5 shrink-0 text-amber-500" />}
+                    {session.pinned && <PushPin className="h-3.5 w-3.5 shrink-0 text-amber-500" />}
                     {session.id === activeSessionId && (
                       <span className="agnes-session-search-result-meta shrink-0 text-[10px] font-medium">当前</span>
                     )}
@@ -789,14 +764,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
               }}
             >
               <button onClick={handleCtxPin} className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors">
-                {ctxMenu.isPinned ? <PinOff className="h-3.5 w-3.5 text-amber-500" /> : <Pin className="h-3.5 w-3.5 text-stone-500" />}
+                {ctxMenu.isPinned ? <PushPinSlash className="h-3.5 w-3.5 text-amber-500" /> : <PushPin className="h-3.5 w-3.5 text-stone-500" />}
                 {ctxMenu.isPinned ? "取消置顶" : "置顶"}
               </button>
               <button onClick={handleCtxRename} className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors">
-                <Pencil className="h-3.5 w-3.5 text-stone-500" />重命名
+                <PencilSimple className="h-3.5 w-3.5 text-stone-500" />重命名
               </button>
               <button onClick={handleCtxDelete} className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-rose-600 hover:bg-rose-50 transition-colors">
-                <Trash2 className="h-3.5 w-3.5" />删除
+                <Trash className="h-3.5 w-3.5" />删除
               </button>
             </div>
           </>,
@@ -818,10 +793,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
               }}
             >
               <button onClick={handleWsCtxRename} className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 transition-colors">
-                <Pencil className="h-3.5 w-3.5 text-stone-500" />重命名
+                <PencilSimple className="h-3.5 w-3.5 text-stone-500" />重命名
               </button>
               <button onClick={handleWsCtxDelete} className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-rose-600 hover:bg-rose-50 transition-colors">
-                <Trash2 className="h-3.5 w-3.5" />删除工作区
+                <Trash className="h-3.5 w-3.5" />删除工作区
               </button>
             </div>
           </>,
@@ -848,7 +823,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <header className="agnes-rename-dialog-header flex items-center justify-between border-b px-5 py-4">
               <div className="flex min-w-0 items-center gap-3">
                 <span className="agnes-rename-dialog-icon grid h-8 w-8 shrink-0 place-items-center rounded-md">
-                  <Pencil className="h-4 w-4" />
+                  <PencilSimple className="h-4 w-4" />
                 </span>
                 <div className="min-w-0">
                   <h2 id="agnes-rename-dialog-title" className="truncate text-sm font-semibold">

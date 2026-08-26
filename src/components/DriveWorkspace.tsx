@@ -5,33 +5,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import * as QRCode from "qrcode";
 import Artplayer from "artplayer";
 import Hls from "hls.js";
-import {
-  AlertCircle,
-  ArrowDown,
-  ArrowUp,
-  ChevronRight,
-  Cloud,
-  Download,
-  Eye,
-  EyeOff,
-  File,
-  Folder,
-  FolderDown,
-  FolderInput,
-  FolderOpen,
-  HardDrive,
-  LoaderCircle,
-  MoreHorizontal,
-  Play,
-  Plus,
-  RefreshCw,
-  Search,
-  ShieldAlert,
-  Trash2,
-  Upload,
-  ChevronsUpDown,
-  X,
-} from "lucide-react";
+import { WarningCircle, ArrowDown, ArrowUp, CaretRight, Cloud, DownloadSimple, Eye, EyeSlash, File, Folder, FolderMinus, FolderPlus, FolderOpen, HardDrive, CircleNotch, DotsThree, Play, Plus, ArrowsClockwise, MagnifyingGlass, ShieldWarning, Trash, UploadSimple, ArrowsDownUp, X } from "@phosphor-icons/react";
 import {
   remoteTimestampMillis,
   sortDriveItems,
@@ -297,7 +271,7 @@ function SortableFileHeader({
   const active = currentSort.key === sortKey;
   const nextDirection = active && currentSort.direction === "asc" ? "降序" : "升序";
   const SortIcon = !active
-    ? ChevronsUpDown
+    ? ArrowsDownUp
     : currentSort.direction === "asc"
       ? ArrowUp
       : ArrowDown;
@@ -1600,10 +1574,10 @@ export function DriveWorkspace() {
               className="grid h-8 w-8 place-items-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900 disabled:opacity-40"
               title="刷新账户状态与配额"
             >
-              <RefreshCw className="h-4 w-4" />
+              <ArrowsClockwise className="h-4 w-4" />
             </button>
           )}
-          {loading && <LoaderCircle className="h-4 w-4 animate-spin text-stone-400" />}
+          {loading && <CircleNotch className="h-4 w-4 animate-spin text-stone-400" />}
         </div>
       </header>
 
@@ -1614,8 +1588,8 @@ export function DriveWorkspace() {
             : "border-amber-200 bg-amber-50 text-amber-700"
         }`}>
           {authorizationMessage && !error && !accountIssue
-            ? <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
-            : <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+            ? <CircleNotch className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+            : <WarningCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
           <span className="min-w-0 flex-1">{error ?? authorizationMessage ?? accountIssue}</span>
           {mediaPlaybackFallbackItem && !authorizationMessage && (
             <button
@@ -1653,7 +1627,7 @@ export function DriveWorkspace() {
                     {account.account_subject ?? account.provider_id}
                   </span>
                 </span>
-                {account.auth_state !== "connected" && <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-500" />}
+                {account.auth_state !== "connected" && <WarningCircle className="h-3.5 w-3.5 shrink-0 text-amber-500" />}
               </button>
             ))}
             {accounts.length === 0 && (
@@ -1662,7 +1636,7 @@ export function DriveWorkspace() {
           </div>
           <div className="mt-4 border-t border-stone-200 pt-3">
             <div className="mb-2 flex items-center gap-2 px-2">
-              <FolderDown className="h-3.5 w-3.5 text-[#8CA38A]" />
+              <FolderMinus className="h-3.5 w-3.5 text-[#8CA38A]" />
               <span className="text-[10px] font-bold uppercase tracking-wider text-stone-400">自动备份</span>
             </div>
             <div className="mb-2 flex items-center gap-1.5 px-2">
@@ -1695,7 +1669,7 @@ export function DriveWorkspace() {
                         className={`grid h-5 w-5 shrink-0 place-items-center rounded ${source.enabled ? "text-emerald-700" : "text-stone-400"}`}
                         title={source.enabled ? "暂停备份" : "启用备份"}
                       >
-                        {source.enabled ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                        {source.enabled ? <Eye className="h-3 w-3" /> : <EyeSlash className="h-3 w-3" />}
                       </button>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[10px] font-medium text-stone-700">{source.local_root}</span>
@@ -1708,10 +1682,10 @@ export function DriveWorkspace() {
                         </span>
                       </span>
                       <button onClick={() => void updateBackupSource(source, "sync")} disabled={loading || !source.enabled} className="grid h-5 w-5 place-items-center rounded text-stone-400 hover:bg-white hover:text-stone-800 disabled:opacity-30" title="立即同步">
-                        <RefreshCw className="h-3 w-3" />
+                        <ArrowsClockwise className="h-3 w-3" />
                       </button>
                       <button onClick={() => void updateBackupSource(source, "remove")} disabled={loading} className="grid h-5 w-5 place-items-center rounded text-stone-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-30" title="移除备份文件夹">
-                        <Trash2 className="h-3 w-3" />
+                        <Trash className="h-3 w-3" />
                       </button>
                     </div>
                   </div>
@@ -1776,7 +1750,7 @@ export function DriveWorkspace() {
                     className="grid h-8 w-8 place-items-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-600"
                     title="移除账户"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <Trash className="h-4 w-4" />
                   </button>
                 </div>
               </div>
@@ -1787,7 +1761,7 @@ export function DriveWorkspace() {
                     <div className="mr-auto flex min-w-40 flex-1 items-center gap-1 overflow-x-auto">
                       {folderPath.map((folder, index) => (
                         <span key={`${folder.id ?? "root"}-${index}`} className="flex shrink-0 items-center gap-1">
-                          {index > 0 && <ChevronRight className="h-3.5 w-3.5 text-stone-300" />}
+                          {index > 0 && <CaretRight className="h-3.5 w-3.5 text-stone-300" />}
                           <button
                             onClick={() => {
                               setFileSearchQuery("");
@@ -1802,7 +1776,7 @@ export function DriveWorkspace() {
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       <div className="relative w-40 sm:w-56">
-                        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-stone-400" />
+                        <MagnifyingGlass className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-stone-400" />
                         <input
                           type="text"
                           inputMode="search"
@@ -1819,7 +1793,7 @@ export function DriveWorkspace() {
                         />
                         {searchLoading ? (
                           <span className="pointer-events-none absolute right-2.5 top-1/2 grid h-3.5 w-3.5 -translate-y-1/2 place-items-center">
-                            <LoaderCircle className="h-3.5 w-3.5 animate-spin text-stone-400" />
+                            <CircleNotch className="h-3.5 w-3.5 animate-spin text-stone-400" />
                           </span>
                         ) : fileSearchQuery ? (
                           <button
@@ -1838,7 +1812,7 @@ export function DriveWorkspace() {
                         className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 hover:bg-white hover:text-stone-900 disabled:opacity-35"
                         title={selectedProvider?.capabilities.write_files ? "上传文件" : "当前 Provider 不支持上传"}
                       >
-                        <Upload className="h-4 w-4" />
+                        <UploadSimple className="h-4 w-4" />
                       </button>
                     </div>
                   </div>
@@ -1873,7 +1847,7 @@ export function DriveWorkspace() {
                               className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-800 disabled:opacity-40"
                               title="移动选中项目"
                             >
-                              <FolderInput className="h-3.5 w-3.5" />
+                              <FolderPlus className="h-3.5 w-3.5" />
                             </button>
                           )}
                           {selectedProvider?.capabilities.delete_files && (
@@ -1883,7 +1857,7 @@ export function DriveWorkspace() {
                               className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
                               title="将选中项目移入回收站"
                             >
-                              <Trash2 className="h-3.5 w-3.5" />
+                              <Trash className="h-3.5 w-3.5" />
                             </button>
                           )}
                         </div>
@@ -1924,7 +1898,7 @@ export function DriveWorkspace() {
                               className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-800 disabled:opacity-40"
                               title="下载到本地"
                             >
-                              <Download className="h-3.5 w-3.5" />
+                              <DownloadSimple className="h-3.5 w-3.5" />
                             </button>
                           )}
                           {isPreviewableImage(item) && (
@@ -1943,7 +1917,7 @@ export function DriveWorkspace() {
                             className="grid h-7 w-7 place-items-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-800 disabled:opacity-40"
                             title="更多操作"
                           >
-                            <MoreHorizontal className="h-3.5 w-3.5" />
+                            <DotsThree className="h-3.5 w-3.5" />
                           </button>
                         </div>
                       </div>
@@ -2084,7 +2058,7 @@ export function DriveWorkspace() {
                   disabled={loading}
                   className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
                 >
-                  <FolderDown className="h-3.5 w-3.5 text-stone-500" />
+                  <FolderMinus className="h-3.5 w-3.5 text-stone-500" />
                   批量下载
                 </button>
               </>
@@ -2109,7 +2083,7 @@ export function DriveWorkspace() {
                   disabled={loading || !fileContextMenu.item.downloadable}
                   className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
                 >
-                  <Download className="h-3.5 w-3.5" />
+                  <DownloadSimple className="h-3.5 w-3.5" />
                   下载
                 </button>
                 {(selectedProvider?.capabilities.media_playback || selectedProvider?.capabilities.range_download) && isPlayableVideo(fileContextMenu.item) && (
@@ -2138,7 +2112,7 @@ export function DriveWorkspace() {
                     disabled={loading || !activeAgentId || !fileContextMenu.item.downloadable}
                     className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
                   >
-                    <FolderDown className="h-3.5 w-3.5 text-emerald-700" />
+                    <FolderMinus className="h-3.5 w-3.5 text-emerald-700" />
                     导入书架
                   </button>
                 )}
@@ -2153,7 +2127,7 @@ export function DriveWorkspace() {
                     disabled={loading || contextFileIds.length === 0}
                     className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
                   >
-                    <FolderInput className="h-3.5 w-3.5" />
+                    <FolderPlus className="h-3.5 w-3.5" />
                     移动到{contextFileIds.length > 1 ? `（${contextFileIds.length} 项）` : ""}
                   </button>
                 )}
@@ -2163,7 +2137,7 @@ export function DriveWorkspace() {
                     disabled={loading || contextFileIds.length === 0}
                     className="flex w-full items-center gap-2 px-3 py-2 text-left text-rose-700 transition-colors hover:bg-rose-50 disabled:text-stone-300"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <Trash className="h-3.5 w-3.5" />
                     移入回收站{contextFileIds.length > 1 ? `（${contextFileIds.length} 项）` : ""}
                   </button>
                 )}
@@ -2228,11 +2202,11 @@ export function DriveWorkspace() {
                   className="max-h-[calc(100vh-112px)] max-w-full object-contain"
                 />
               ) : (
-                <LoaderCircle className="h-8 w-8 animate-spin text-stone-400" />
+                <CircleNotch className="h-8 w-8 animate-spin text-stone-400" />
               )}
               {imagePreviewLoading && imagePreview.src && (
                 <div className="absolute inset-0 grid place-items-center bg-black/35">
-                  <LoaderCircle className="h-8 w-8 animate-spin text-white" />
+                  <CircleNotch className="h-8 w-8 animate-spin text-white" />
                 </div>
               )}
             </div>
@@ -2271,7 +2245,7 @@ export function DriveWorkspace() {
             <div className="flex min-h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-stone-100 px-4 text-xs">
               {moveDialog.path.map((level, index) => (
                 <div key={`${level.id ?? "root"}-${index}`} className="flex shrink-0 items-center gap-1">
-                  {index > 0 && <ChevronRight className="h-3 w-3 text-stone-300" />}
+                  {index > 0 && <CaretRight className="h-3 w-3 text-stone-300" />}
                   <button
                     onClick={() => openMoveBreadcrumb(index)}
                     disabled={moveLoading || moveSubmitting || index === moveDialog.path.length - 1}
@@ -2294,12 +2268,12 @@ export function DriveWorkspace() {
                 >
                   <Folder className="h-4 w-4 shrink-0 text-amber-500" />
                   <span className="min-w-0 flex-1 truncate">{folder.name}</span>
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-stone-300" />
+                  <CaretRight className="h-3.5 w-3.5 shrink-0 text-stone-300" />
                 </button>
               ))}
               {moveLoading && moveFolders.length === 0 && (
                 <div className="grid min-h-56 place-items-center">
-                  <LoaderCircle className="h-5 w-5 animate-spin text-stone-400" />
+                  <CircleNotch className="h-5 w-5 animate-spin text-stone-400" />
                 </div>
               )}
               {!moveLoading && moveFolders.length === 0 && (
@@ -2337,7 +2311,7 @@ export function DriveWorkspace() {
                   disabled={moveLoading || moveSubmitting || moveTargetIsSource}
                   className="flex h-8 items-center gap-2 rounded-md bg-emerald-700 px-3 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-40"
                 >
-                  {moveSubmitting && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+                  {moveSubmitting && <CircleNotch className="h-3.5 w-3.5 animate-spin" />}
                   移动到此处
                 </button>
               </div>
@@ -2365,7 +2339,7 @@ export function DriveWorkspace() {
               disabled={loading}
               className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-stone-100 disabled:text-stone-300"
             >
-              <ShieldAlert className="h-3.5 w-3.5 text-emerald-700" />
+              <ShieldWarning className="h-3.5 w-3.5 text-emerald-700" />
               添加鉴权信息
             </button>
           </div>
@@ -2489,13 +2463,13 @@ export function DriveWorkspace() {
               )}
               {quarkAuthorizationMode !== "official" && (
                 <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
-                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                  <ShieldWarning className="mt-0.5 h-4 w-4 shrink-0" />
                   <span>这是社区逆向 API 适配器，可能因夸克接口变更或风控失效。Cookie 仅保存在本机系统 Keyring。</span>
                 </div>
               )}
               {quarkAuthorizationMode === "official" && !quarkCredentialAccountId ? (
                 <div className="flex min-h-72 flex-col items-center justify-center gap-3 px-5 text-center">
-                  <ShieldAlert className="h-8 w-8 text-emerald-700" />
+                  <ShieldWarning className="h-8 w-8 text-emerald-700" />
                   <p className="text-sm font-medium text-stone-700">
                     {quarkAuthorizationStatus ?? "正在准备官方授权"}
                   </p>
@@ -2531,7 +2505,7 @@ export function DriveWorkspace() {
                       disabled={quarkQrLoading}
                       className="flex h-9 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-xs font-medium text-stone-600 hover:bg-stone-50 disabled:opacity-50"
                     >
-                      <RefreshCw className="h-3.5 w-3.5" />
+                      <ArrowsClockwise className="h-3.5 w-3.5" />
                       重新打开授权页
                     </button>
                   )}
@@ -2545,11 +2519,11 @@ export function DriveWorkspace() {
                       onClick={() => void startQuarkQrLogin()}
                       className="flex h-9 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-xs font-medium text-stone-600 hover:bg-stone-50"
                     >
-                      <RefreshCw className="h-3.5 w-3.5" />
+                      <ArrowsClockwise className="h-3.5 w-3.5" />
                       重新获取二维码
                     </button>
                   ) : (
-                    <LoaderCircle className="h-7 w-7 animate-spin text-stone-400" />
+                    <CircleNotch className="h-7 w-7 animate-spin text-stone-400" />
                   )}
                   <p className="text-center text-xs text-stone-500">{quarkAuthorizationStatus ?? "正在准备二维码"}</p>
                   <p className="text-center text-[11px] text-stone-400">二维码有效期约 5 分钟，过期后重新切换此页获取</p>
@@ -2581,7 +2555,7 @@ export function DriveWorkspace() {
                         className="grid h-9 w-9 shrink-0 place-items-center text-stone-400 hover:text-stone-700"
                         title={showQuarkCookie ? "隐藏 Cookie" : "显示 Cookie"}
                       >
-                        {showQuarkCookie ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        {showQuarkCookie ? <EyeSlash className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
                     </div>
                   </label>
@@ -2620,7 +2594,7 @@ export function DriveWorkspace() {
                   disabled={loading || (!quarkCookie.trim() && !quarkCookieJsonPath)}
                   className="flex h-8 items-center gap-2 rounded-md bg-emerald-700 px-3 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-40"
                 >
-                  {loading && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+                  {loading && <CircleNotch className="h-3.5 w-3.5 animate-spin" />}
                     {quarkCredentialAccountId ? "保存鉴权" : "连接"}
                 </button>
               )}

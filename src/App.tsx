@@ -9,7 +9,7 @@ import { AppContextMenu } from "./components/AppContextMenu";
 import { CommandPalette } from "./components/CommandPalette";
 import { EmptyState } from "./components/ui/empty-state";
 import { Button } from "./components/ui/button";
-import { Plus, Code2 } from "lucide-react";
+import { Plus, BracketsCurly } from "@phosphor-icons/react";
 import { type AppNotification } from "./components/NotificationCenter";
 import { APP_FEATURES, type AppFeatureId, type ChatMode } from "./lib/features";
 import { useAgentStore, setupTauriEventListeners } from "./store/useAgentStore";
@@ -211,7 +211,7 @@ export default function App() {
         {activeFeature === "chat" && !hasVisibleChatSession && (
           <main className="agnes-chat-workspace grid min-w-0 flex-1 place-items-center bg-canvas px-8 text-center">
             <EmptyState
-              icon={chatMode === "code" ? <Code2 className="h-6 w-6 text-coral" /> : <Plus className="h-6 w-6 text-coral" />}
+              icon={chatMode === "code" ? <BracketsCurly className="h-6 w-6 text-coral" /> : <Plus className="h-6 w-6 text-coral" />}
               title={chatMode === "code" ? "选择或新建代码工作区" : "开启一段新的探索"}
               description={
                 chatMode === "code"

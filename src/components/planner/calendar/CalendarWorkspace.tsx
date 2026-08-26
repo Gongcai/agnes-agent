@@ -10,13 +10,7 @@ import interactionPlugin from "@fullcalendar/interaction";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { DateTime } from "luxon";
-import {
-  CalendarPlus2,
-  CheckSquare2,
-  ChevronLeft,
-  ChevronRight,
-  LoaderCircle,
-} from "lucide-react";
+import { CalendarPlus, CheckSquare, CaretLeft, CaretRight, CircleNotch } from "@phosphor-icons/react";
 import { CalendarFilters } from "./CalendarFilters";
 import { DayAgenda } from "./DayAgenda";
 import { EventEditorDialog } from "./EventEditorDialog";
@@ -134,7 +128,7 @@ export function CalendarWorkspace({
     };
   }, [loadEvents]);
 
-  // Calendar writes performed by the agent share the same local SQLite store,
+  // CalendarBlank writes performed by the agent share the same local SQLite store,
   // but do not pass through this component's own save handlers. Reload the
   // visible range after their tool result so the current calendar stays live.
   useEffect(() => {
@@ -422,7 +416,7 @@ export function CalendarWorkspace({
               className="grid h-8 w-8 place-items-center rounded-md text-stone-600 hover:bg-stone-100"
               title="上一段时间"
             >
-              <ChevronLeft className="h-4 w-4" />
+              <CaretLeft className="h-4 w-4" />
             </button>
             <button
               type="button"
@@ -430,7 +424,7 @@ export function CalendarWorkspace({
               className="grid h-8 w-8 place-items-center rounded-md text-stone-600 hover:bg-stone-100"
               title="下一段时间"
             >
-              <ChevronRight className="h-4 w-4" />
+              <CaretRight className="h-4 w-4" />
             </button>
             <button
               type="button"
@@ -462,7 +456,7 @@ export function CalendarWorkspace({
               disabled={calendars.length === 0 || busy}
               className="flex h-9 items-center gap-2 rounded-md bg-[#4f7f68] px-3 text-xs font-medium text-white disabled:opacity-50"
             >
-              <CalendarPlus2 className="h-4 w-4" />
+              <CalendarPlus className="h-4 w-4" />
               新建事件
             </button>
           </div>
@@ -480,7 +474,7 @@ export function CalendarWorkspace({
         <div className="relative px-5 py-4">
           {loading && (
             <div className="absolute inset-0 z-10 grid place-items-center bg-[#FAF9F5]/70">
-              <LoaderCircle className="h-5 w-5 animate-spin text-stone-400" />
+              <CircleNotch className="h-5 w-5 animate-spin text-stone-400" />
             </div>
           )}
           <FullCalendar
@@ -509,7 +503,7 @@ export function CalendarWorkspace({
             }
             eventContent={(argument) => (
               <span className="flex min-w-0 items-center gap-1 px-0.5">
-                {argument.event.extendedProps.kind === "task" && <CheckSquare2 className="h-3 w-3 shrink-0" />}
+                {argument.event.extendedProps.kind === "task" && <CheckSquare className="h-3 w-3 shrink-0" />}
                 <span className="truncate">{argument.timeText && `${argument.timeText} `}{argument.event.title}</span>
               </span>
             )}

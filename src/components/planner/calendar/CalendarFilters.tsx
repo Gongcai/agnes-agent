@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CalendarDays, CheckSquare2, CirclePlus, X } from "lucide-react";
+import { CalendarBlank, CheckSquare, PlusCircle, X } from "@phosphor-icons/react";
 import type { PlannerCalendar } from "../shared/types";
 
 const colors = ["#4f8a6f", "#3b82a0", "#b7791f", "#9b5f86", "#c45d55", "#697386"];
@@ -50,7 +50,7 @@ export function CalendarFilters({
             className="grid h-7 w-7 place-items-center rounded-md text-stone-500 hover:bg-stone-100"
             title="新建日历"
           >
-            <CirclePlus className="h-4 w-4" />
+            <PlusCircle className="h-4 w-4" />
           </button>
         </div>
 
@@ -76,7 +76,7 @@ export function CalendarFilters({
                 >
                   {visibleIds.has(calendar.id) && <span className="text-[10px] leading-none">✓</span>}
                 </span>
-                <CalendarDays className="h-3.5 w-3.5 shrink-0 text-stone-400" />
+                <CalendarBlank className="h-3.5 w-3.5 shrink-0 text-stone-400" />
                 <span className="truncate">{calendar.name}</span>
               </label>
             );
@@ -94,7 +94,7 @@ export function CalendarFilters({
             onChange={onToggleTaskLayer}
             className="h-4 w-4 accent-stone-600"
           />
-          <CheckSquare2 className="h-3.5 w-3.5 text-stone-400" />
+          <CheckSquare className="h-3.5 w-3.5 text-stone-400" />
           <span>待办</span>
         </label>
       </aside>

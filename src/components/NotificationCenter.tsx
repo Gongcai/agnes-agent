@@ -4,11 +4,11 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Bell,
-  CalendarDots as CalendarDays,
-  CheckCircle as CheckCircle2,
-  CheckSquare as CheckSquare2,
-  CaretRight as ChevronRight,
-  ShieldWarning as ShieldAlert,
+  CalendarBlank as CalendarBlank,
+  CheckCircle,
+  CheckSquare,
+  CaretRight as CaretRight,
+  ShieldWarning,
 } from "@phosphor-icons/react";
 
 export interface AppNotification {
@@ -33,10 +33,10 @@ interface NotificationCenterProps {
 }
 
 function notificationIcon(kind: AppNotification["kind"]) {
-  if (kind === "approval_requested") return ShieldAlert;
-  if (kind === "task_due") return CheckSquare2;
-  if (kind === "event_start") return CalendarDays;
-  return CheckCircle2;
+  if (kind === "approval_requested") return ShieldWarning;
+  if (kind === "task_due") return CheckSquare;
+  if (kind === "event_start") return CalendarBlank;
+  return CheckCircle;
 }
 
 function relativeTime(value: string): string {
@@ -208,7 +208,7 @@ export function NotificationCenter({ onNavigate, className, triggerVariant = "ic
                 </span>
                 {notification.body && <span className="agnes-notification-body mt-1 block line-clamp-2 text-[11px] leading-5 text-stone-500">{notification.body}</span>}
               </span>
-              {actionable && <ChevronRight className="mt-1 h-3.5 w-3.5 shrink-0 text-stone-300" />}
+              {actionable && <CaretRight className="mt-1 h-3.5 w-3.5 shrink-0 text-stone-300" />}
             </button>
           );
         })}

@@ -1,15 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  Check,
-  ExternalLink,
-  FolderInput,
-  GitBranch,
-  LoaderCircle,
-  Puzzle,
-  RefreshCw,
-  Trash2,
-} from "lucide-react";
+import { Check, ArrowSquareOut, FolderPlus, GitBranch, CircleNotch, PuzzlePiece, ArrowsClockwise, Trash } from "@phosphor-icons/react";
 import {
   installSkillsFromGit,
   installSkillsFromPath,
@@ -179,7 +170,7 @@ export const SkillSettingsTab: React.FC = () => {
             disabled={loading}
             className="flex shrink-0 items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-stone-700 shadow-sm transition-colors hover:bg-stone-100 disabled:opacity-50"
           >
-            <FolderInput className="h-3.5 w-3.5" />
+            <FolderPlus className="h-3.5 w-3.5" />
             选择目录
           </button>
         </div>
@@ -230,17 +221,17 @@ export const SkillSettingsTab: React.FC = () => {
           className="rounded-lg p-1.5 text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-40"
           title="刷新 Skills"
         >
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+          <ArrowsClockwise className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
         </button>
       </div>
 
       {loading && skills.length === 0 ? (
         <div className="grid place-items-center py-12 text-stone-400">
-          <LoaderCircle className="h-5 w-5 animate-spin" />
+          <CircleNotch className="h-5 w-5 animate-spin" />
         </div>
       ) : skills.length === 0 ? (
         <div className="rounded-xl border border-dashed border-stone-250 px-6 py-12 text-center">
-          <Puzzle className="mx-auto mb-3 h-6 w-6 text-stone-300" />
+          <PuzzlePiece className="mx-auto mb-3 h-6 w-6 text-stone-300" />
           <div className="text-xs font-semibold text-stone-500">尚未安装 Skill</div>
           <div className="mt-1 text-[10px] text-stone-400">安装后即可从聊天输入框的附件菜单中选择。</div>
         </div>
@@ -254,7 +245,7 @@ export const SkillSettingsTab: React.FC = () => {
                   <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
                     skill.enabled ? "bg-violet-50 text-violet-600" : "bg-stone-100 text-stone-400"
                   }`}>
-                    <Puzzle className="h-4 w-4" />
+                    <PuzzlePiece className="h-4 w-4" />
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -290,7 +281,7 @@ export const SkillSettingsTab: React.FC = () => {
                       className="rounded-lg p-1.5 text-stone-400 hover:bg-stone-100 hover:text-stone-700 disabled:opacity-40"
                       title="从原始来源重新安装"
                     >
-                      <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
+                      <ArrowsClockwise className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
                     </button>
                     <button
                       type="button"
@@ -298,7 +289,7 @@ export const SkillSettingsTab: React.FC = () => {
                       className="rounded-lg p-1.5 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
                       title="打开安装目录"
                     >
-                      <ExternalLink className="h-3.5 w-3.5" />
+                      <ArrowSquareOut className="h-3.5 w-3.5" />
                     </button>
                     <button
                       type="button"
@@ -307,7 +298,7 @@ export const SkillSettingsTab: React.FC = () => {
                       className="rounded-lg p-1.5 text-stone-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
                       title="卸载 Skill"
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
+                      <Trash className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 </div>

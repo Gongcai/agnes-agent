@@ -1,4 +1,4 @@
-import { CalendarDays, CheckSquare2 } from "lucide-react";
+import { CalendarBlank, CheckSquare } from "@phosphor-icons/react";
 import { CalendarWorkspace } from "./planner/calendar/CalendarWorkspace";
 import { TodoWorkspace } from "./planner/tasks/TodoWorkspace";
 import type { PlannerMode } from "./planner/shared/types";
@@ -21,7 +21,7 @@ export function PlannerWorkspace({
   onCloseRequestedEvent,
 }: PlannerWorkspaceProps) {
   const isCalendar = mode === "calendar";
-  const HeaderIcon = isCalendar ? CalendarDays : CheckSquare2;
+  const HeaderIcon = isCalendar ? CalendarBlank : CheckSquare;
 
   return (
     <main className="agnes-feature-workspace agnes-planner-workspace flex h-full min-w-0 flex-1 flex-col bg-[#FAF9F5]">

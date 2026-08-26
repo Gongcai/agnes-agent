@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CalendarClock, Plus, Star, Sun } from "lucide-react";
+import { CalendarBlank, Plus, Star, Sun } from "@phosphor-icons/react";
 import type { TaskList } from "../shared/types";
 
 interface QuickAddValue {
@@ -94,7 +94,7 @@ export function QuickAdd({
           <Star className={`h-4 w-4 ${isImportant ? "fill-current" : ""}`} />
         </button>
         <label className="relative grid h-8 w-8 cursor-pointer place-items-center rounded-md text-stone-400 hover:bg-stone-100" title="设置截止日期">
-          <CalendarClock className={`h-4 w-4 ${dueDate ? "text-amber-700" : ""}`} />
+          <CalendarBlank className={`h-4 w-4 ${dueDate ? "text-amber-700" : ""}`} />
           <input
             type="date"
             value={dueDate}

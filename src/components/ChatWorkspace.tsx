@@ -2,30 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { readImage, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  AlertTriangle,
-  Brain,
-  Check,
-  ChevronDown,
-  Copy,
-  Cpu,
-  Library as Books,
-  FileText,
-  Image as ImageSquare,
-  GitBranch,
-  Pencil,
-  Plus,
-  Puzzle as PuzzlePiece,
-  RefreshCw,
-  ArrowUp as Send,
-  Server,
-  ShieldCheck,
-  Sparkles,
-  Square,
-  Terminal,
-  Trash2,
-  X,
-} from "lucide-react";
+import { Warning, Brain, Check, CaretDown, Copy, Cpu, Books, FileText, ImageSquare, GitBranch, PencilSimple, Plus, PuzzlePiece, ArrowsClockwise, ArrowUp as PaperPlaneRight, HardDrives, ShieldCheck, Sparkle, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -319,7 +296,7 @@ const ToolCallCard: React.FC<{
               高风险
             </span>
           )}
-          <ChevronDown className="agnes-collapse-chevron h-3 w-3 shrink-0 text-ink-muted" />
+          <CaretDown className="agnes-collapse-chevron h-3 w-3 shrink-0 text-ink-muted" />
         </>
       )}
     >
@@ -372,7 +349,7 @@ const ToolCallCard: React.FC<{
               ? "border-rose-300/80 bg-rose-50/50 dark:bg-rose-950/20"
               : "border-amber-300/80 bg-amber-50/50 dark:bg-amber-950/20"
           }`}>
-            <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${
+            <Warning className={`mt-0.5 h-4 w-4 shrink-0 ${
               tc.isSecondaryConfirmation ? "text-rose-600" : "text-amber-600"
             }`} />
             <div className="flex-1">
@@ -879,7 +856,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           return (
             <div
               key={message._renderKey ?? message.id}
-              className={`agnes-message-row group flex gap-4 ${isUser ? "justify-end" : "justify-start"}`}
+              className={`agnes-message-row group flex gap-4 animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out ${isUser ? "justify-end" : "justify-start"}`}
             >
               {!isUser && activeAgent && (
                 <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={32} />
@@ -920,7 +897,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           }}
                           className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors"
                         >
-                          <RefreshCw className="h-3 w-3" />
+                          <ArrowsClockwise className="h-3 w-3" />
                           重发
                         </button>
                       </div>
@@ -952,7 +929,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                             key={part._renderKey ?? part.id}
                             className="flex items-center gap-2 border-y border-amber-200 bg-amber-50/60 px-3 py-2 text-[11px] text-amber-800"
                           >
-                            <RefreshCw className="h-3.5 w-3.5 shrink-0" />
+                            <ArrowsClockwise className="h-3.5 w-3.5 shrink-0" />
                             <span>{part.content}</span>
                           </div>
                         );
@@ -969,7 +946,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                             summary={(
                               <>
                                 <span>Agent思维过程</span>
-                                <ChevronDown className="agnes-collapse-chevron h-3 w-3" />
+                                <CaretDown className="agnes-collapse-chevron h-3 w-3" />
                               </>
                             )}
                           >
@@ -1031,7 +1008,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                         className="rounded p-1 text-stone-400 hover:bg-stone-200/60 hover:text-stone-700"
                         title="编辑并重发"
                       >
-                        <Pencil className="h-3 w-3" />
+                        <PencilSimple className="h-3 w-3" />
                       </button>
                     )}
                     {!isUser && (
@@ -1041,7 +1018,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                         className="rounded p-1 text-stone-400 hover:bg-stone-200/60 hover:text-stone-700 disabled:opacity-30"
                         title="单条重新生成"
                       >
-                        <RefreshCw className="h-3 w-3" />
+                        <ArrowsClockwise className="h-3 w-3" />
                       </button>
                     )}
                     {!isUser && (
@@ -1074,7 +1051,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       className="rounded p-1 text-stone-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-stone-400"
                       title={message.is_leaf ? "删除消息" : "仅可删除末梢消息"}
                     >
-                      <Trash2 className="h-3 w-3" />
+                      <Trash className="h-3 w-3" />
                     </button>
                   </div>
                   {!isUser && (
@@ -1152,7 +1129,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           aria-hidden={!isEmptyConversation}
         >
           <div className="flex items-center justify-center gap-3">
-            <Sparkles className="h-7 w-7 text-coral" />
+            <Sparkle className="h-7 w-7 text-coral" />
             <h1 className="text-3xl font-serif font-normal text-ink">
               {welcomeGreeting}
             </h1>
@@ -1301,7 +1278,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               className="rounded-lg p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
                               title="返回"
                             >
-                              <ChevronDown className="h-3.5 w-3.5 rotate-90" />
+                              <CaretDown className="h-3.5 w-3.5 rotate-90" />
                             </button>
                             <div>
                               <div className="text-[12px] font-semibold text-stone-700">选择知识库</div>
@@ -1343,7 +1320,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               className="rounded-lg p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
                               title="返回"
                             >
-                              <ChevronDown className="h-3.5 w-3.5 rotate-90" />
+                              <CaretDown className="h-3.5 w-3.5 rotate-90" />
                             </button>
                             <div className="min-w-0 flex-1">
                               <div className="text-[12px] font-semibold text-stone-700">选择 Skills</div>
@@ -1444,7 +1421,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     limitTokens={contextLimit}
                     warningThreshold={currentCompressThreshold}
                   />
-                  <ChevronDown className="h-3 w-3" />
+                  <CaretDown className="h-3 w-3" />
                 </button>
 
                 {modelPickerOpen && (
@@ -1463,7 +1440,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                         providers.map((p) => (
                           <div key={p.id} className="mb-1">
                             <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-stone-400">
-                              <Server className="h-3 w-3" />
+                              <HardDrives className="h-3 w-3" />
                               <span className="truncate">{p.name}</span>
                               {p.is_default && (
                                 <span className="text-[#6C806A]">默认</span>
@@ -1649,7 +1626,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   title="发送"
                   aria-label="发送"
                 >
-                  <Send className="h-3 w-3 mr-1" />
+                  <PaperPlaneRight className="h-3 w-3 mr-1" />
                   <span>发送</span>
                 </Button>
               )}

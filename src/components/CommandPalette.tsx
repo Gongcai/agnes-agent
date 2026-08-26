@@ -1,20 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import {
-  BookOpen,
-  Calendar,
-  CheckSquare,
-  Database,
-  HardDrive,
-  MessageSquare,
-  Moon,
-  Plus,
-  Search,
-  Settings,
-  Sun,
-  X,
-  Sparkles,
-} from "lucide-react";
+import { BookOpen, CalendarBlank, CheckSquare, Database, HardDrive, Chat, Moon, Plus, MagnifyingGlass, Gear, Sun, X, Sparkle } from "@phosphor-icons/react";
 import { type AppFeatureId, type ChatMode } from "../lib/features";
 import { useAgentStore } from "../store/useAgentStore";
 import { applyColorScheme, getCachedColorScheme } from "../lib/uiPreferences";
@@ -99,7 +85,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       title: "智能体聊天 (Chat)",
       subtitle: "进入对话工作区与 Agent 交互",
       category: "功能导航",
-      icon: <MessageSquare className="h-4 w-4" />,
+      icon: <Chat className="h-4 w-4" />,
       shortcut: "⌘1",
       action: () => {
         onSelectFeature("chat");
@@ -151,7 +137,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       title: "日程规划 (Calendar)",
       subtitle: "查看日历事件与时间线",
       category: "功能导航",
-      icon: <Calendar className="h-4 w-4" />,
+      icon: <CalendarBlank className="h-4 w-4" />,
       shortcut: "⌘5",
       action: () => {
         onSelectFeature("calendar");
@@ -172,13 +158,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
     });
 
-    // Settings navigation
+    // Gear navigation
     list.push({
       id: "settings-general",
       title: "系统设置",
       subtitle: "偏好、模型、存储与同步配置",
       category: "系统配置",
-      icon: <Settings className="h-4 w-4" />,
+      icon: <Gear className="h-4 w-4" />,
       action: () => {
         onOpenSettings("general");
         onClose();
@@ -190,7 +176,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       title: "模型与 API 密钥",
       subtitle: "配置 LLM 模型 Provider 与系统密钥",
       category: "系统配置",
-      icon: <Sparkles className="h-4 w-4 text-coral" />,
+      icon: <Sparkle className="h-4 w-4 text-coral" />,
       action: () => {
         onOpenSettings("models");
         onClose();
@@ -208,7 +194,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         title: session.title || "未命名会话",
         subtitle: session.workspace_id ? "工作区会话" : "普通会话",
         category: "最近会话",
-        icon: <MessageSquare className="h-4 w-4 text-ink-muted" />,
+        icon: <Chat className="h-4 w-4 text-ink-muted" />,
         action: () => {
           setActiveSessionId(session.id);
           onSelectChatMode(session.workspace_id ? "code" : "home");
@@ -290,9 +276,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         className="w-full max-w-xl overflow-hidden rounded-xl border border-hairline bg-canvas-surface text-ink shadow-floating animate-scale-in flex flex-col max-h-[70vh]"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        {/* Search Input Bar */}
+        {/* MagnifyingGlass Input Bar */}
         <div className="flex items-center gap-3 px-4 py-3.5 border-b border-hairline bg-canvas-surface">
-          <Search className="h-4 w-4 text-ink-muted shrink-0" />
+          <MagnifyingGlass className="h-4 w-4 text-ink-muted shrink-0" />
           <input
             ref={inputRef}
             type="text"

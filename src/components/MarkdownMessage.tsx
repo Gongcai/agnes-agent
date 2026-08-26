@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy } from "@phosphor-icons/react";
 
 /// 代码块：深色背景 + 语言标签 + 复制按钮。
 const CodeBlock: React.FC<{ lang: string; text: string; children: React.ReactNode }> = ({

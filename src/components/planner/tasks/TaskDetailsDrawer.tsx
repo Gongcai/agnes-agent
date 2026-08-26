@@ -1,15 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  CalendarClock,
-  Check,
-  Circle,
-  CirclePlus,
-  Repeat2,
-  Star,
-  Sun,
-  Trash2,
-  X,
-} from "lucide-react";
+import { CalendarBlank, Check, Circle, PlusCircle, Repeat, Star, Sun, Trash, X } from "@phosphor-icons/react";
 import { useConfirmDialog } from "../../ConfirmDialog";
 import type { RepeatOption, Task, TaskList, TaskUpdateChanges } from "../shared/types";
 import {
@@ -191,7 +181,7 @@ export function TaskDetailsDrawer({
 
             <section className="rounded-md border border-stone-200 bg-white p-3">
               <div className="mb-3 flex items-center gap-2 text-xs font-medium text-stone-600">
-                <CalendarClock className="h-4 w-4" /> 截止时间
+                <CalendarBlank className="h-4 w-4" /> 截止时间
               </div>
               <div className="grid grid-cols-3 rounded-md bg-stone-100 p-1">
                 {([
@@ -245,7 +235,7 @@ export function TaskDetailsDrawer({
 
             <label className="block rounded-md border border-stone-200 bg-white p-3 text-xs font-medium text-stone-600">
               <span className="flex items-center gap-2">
-                <Repeat2 className="h-4 w-4" /> 重复
+                <Repeat className="h-4 w-4" /> 重复
               </span>
               <select
                 value={repeat}
@@ -294,7 +284,7 @@ export function TaskDetailsDrawer({
                 ))}
               </div>
               <form onSubmit={addSubtask} className="mt-2 flex items-center gap-2 border-t border-stone-100 pt-2">
-                <CirclePlus className="h-4 w-4 shrink-0 text-stone-400" />
+                <PlusCircle className="h-4 w-4 shrink-0 text-stone-400" />
                 <input
                   value={subtaskTitle}
                   onChange={(event) => setSubtaskTitle(event.target.value)}
@@ -341,7 +331,7 @@ export function TaskDetailsDrawer({
             className="grid h-9 w-9 place-items-center rounded-md text-rose-600 hover:bg-rose-50 disabled:opacity-50"
             title="删除任务"
           >
-            <Trash2 className="h-4 w-4" />
+            <Trash className="h-4 w-4" />
           </button>
           <button
             type="button"

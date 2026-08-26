@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CalendarDays, Clock3, Repeat2, RotateCcw, Trash2, X } from "lucide-react";
+import { CalendarBlank, Clock, Repeat, ArrowCounterClockwise, Trash, X } from "@phosphor-icons/react";
 import { useConfirmDialog } from "../../ConfirmDialog";
 import type {
   CalendarEvent,
@@ -204,7 +204,7 @@ export function EventEditorDialog({
           </label>
 
           <div className="grid grid-cols-[20px_1fr] gap-3">
-            <CalendarDays className="mt-2 h-4 w-4 text-stone-400" />
+            <CalendarBlank className="mt-2 h-4 w-4 text-stone-400" />
             <div className="grid grid-cols-2 gap-3">
               <label className="text-xs font-medium text-stone-600">
                 日历
@@ -244,7 +244,7 @@ export function EventEditorDialog({
           </div>
 
           <div className="grid grid-cols-[20px_1fr] gap-3">
-            <Clock3 className="mt-2 h-4 w-4 text-stone-400" />
+            <Clock className="mt-2 h-4 w-4 text-stone-400" />
             <div>
               <label className="mb-3 flex h-7 items-center gap-2 text-xs text-stone-600">
                 <input
@@ -281,7 +281,7 @@ export function EventEditorDialog({
 
           {scope === "series" && (
             <div className="grid grid-cols-[20px_1fr] gap-3">
-              <Repeat2 className="mt-2 h-4 w-4 text-stone-400" />
+              <Repeat className="mt-2 h-4 w-4 text-stone-400" />
               <label className="text-xs font-medium text-stone-600">
                 重复
                 <select
@@ -324,7 +324,7 @@ export function EventEditorDialog({
                 className="grid h-9 w-9 place-items-center rounded-md text-rose-600 hover:bg-rose-50"
                 title={scope === "occurrence" ? "取消本次日程" : "删除事件"}
               >
-                <Trash2 className="h-4 w-4" />
+                <Trash className="h-4 w-4" />
               </button>
             )}
             {event?.is_exception && scope === "occurrence" && (
@@ -335,7 +335,7 @@ export function EventEditorDialog({
                 className="grid h-9 w-9 place-items-center rounded-md text-stone-600 hover:bg-stone-100 disabled:opacity-50"
                 title="恢复本次日程"
               >
-                <RotateCcw className="h-4 w-4" />
+                <ArrowCounterClockwise className="h-4 w-4" />
               </button>
             )}
           </div>

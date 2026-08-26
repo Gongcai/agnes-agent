@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { X, Trash2, Plus, ChevronDown } from "lucide-react";
+import { X, Trash, Plus, CaretDown } from "@phosphor-icons/react";
 import { useAgentStore, Message } from "../store/useAgentStore";
 
 interface EditPart {
@@ -92,7 +92,7 @@ export const ModifyMemoryModal: React.FC<Props> = ({ message, onClose }) => {
                       className="p-1 rounded text-stone-400 hover:text-red-600 hover:bg-red-50"
                       title="删除该片段"
                     >
-                      <Trash2 className="h-3 w-3" />
+                      <Trash className="h-3 w-3" />
                     </button>
                   </div>
                   <textarea
@@ -104,7 +104,7 @@ export const ModifyMemoryModal: React.FC<Props> = ({ message, onClose }) => {
               ) : (
                 <details className="group">
                   <summary className="flex items-center gap-2 cursor-pointer px-3 py-2 text-xs font-semibold text-stone-600 select-none hover:bg-stone-50">
-                    <ChevronDown className="h-3 w-3 group-open:rotate-180 transition-transform" />
+                    <CaretDown className="h-3 w-3 group-open:rotate-180 transition-transform" />
                     <span className="px-1.5 py-0.5 rounded bg-violet-50 text-violet-600 border border-violet-200/60 text-[10px] font-mono">
                       {p.kind}
                     </span>
@@ -116,7 +116,7 @@ export const ModifyMemoryModal: React.FC<Props> = ({ message, onClose }) => {
                       className="p-1 rounded text-stone-400 hover:text-red-600 hover:bg-red-50"
                       title="删除该片段"
                     >
-                      <Trash2 className="h-3 w-3" />
+                      <Trash className="h-3 w-3" />
                     </button>
                   </summary>
                   <div className="px-3 pb-2.5 pt-1 border-t border-stone-100">

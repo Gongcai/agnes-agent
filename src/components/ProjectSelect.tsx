@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, CaretDown } from "@phosphor-icons/react";
 
 export interface ProjectSelectOption<T extends string = string> {
   value: T;
@@ -119,7 +119,7 @@ export function ProjectSelect<T extends string>({
         onKeyDown={handleKeyDown}
       >
         <span className="min-w-0 flex-1 truncate">{selected?.label ?? value}</span>
-        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-stone-400 transition-transform duration-150" />
+        <CaretDown className="h-3.5 w-3.5 shrink-0 text-stone-400 transition-transform duration-150" />
       </button>
 
       {open && (

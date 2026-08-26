@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, X } from "lucide-react";
+import { Warning, X } from "@phosphor-icons/react";
 
 export interface ConfirmDialogOptions {
   title: string;
@@ -109,7 +109,7 @@ export const ConfirmDialogProvider: React.FC<React.PropsWithChildren> = ({ child
           >
             <header className="agnes-confirm-dialog-header flex items-start gap-3 border-b px-5 py-4">
               <span className="agnes-confirm-dialog-icon grid h-9 w-9 shrink-0 place-items-center rounded-md">
-                <AlertTriangle className="h-4 w-4" />
+                <Warning className="h-4 w-4" />
               </span>
               <div className="min-w-0 flex-1">
                 <h2 id="agnes-confirm-dialog-title" className="text-sm font-semibold leading-5">{request.title}</h2>

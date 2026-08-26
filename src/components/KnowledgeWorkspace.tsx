@@ -2,17 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  BookOpen,
-  CloudUpload,
-  FilePlus2,
-  Files,
-  FolderPlus,
-  LoaderCircle,
-  MonitorSmartphone,
-  Search,
-  Square,
-} from "lucide-react";
+import { BookOpen, CloudArrowUp, FilePlus, Files, FolderPlus, CircleNotch, Devices, MagnifyingGlass, Square } from "@phosphor-icons/react";
 import { useAgentStore } from "../store/useAgentStore";
 
 interface Collection {
@@ -424,7 +414,7 @@ export const KnowledgeWorkspace: React.FC = () => {
             知识库
           </div>
         </div>
-        {loading && <LoaderCircle className="h-4 w-4 animate-spin text-stone-400" />}
+        {loading && <CircleNotch className="h-4 w-4 animate-spin text-stone-400" />}
       </header>
 
       <div className="flex min-h-0 flex-1">
@@ -496,7 +486,7 @@ export const KnowledgeWorkspace: React.FC = () => {
                   onClick={importDocuments}
                   className="flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2 text-xs font-semibold text-stone-700 shadow-sm transition-colors hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <FilePlus2 className="h-4 w-4 text-[#8CA38A]" />
+                  <FilePlus className="h-4 w-4 text-[#8CA38A]" />
                   导入文档
                 </button>
               </div>
@@ -510,7 +500,7 @@ export const KnowledgeWorkspace: React.FC = () => {
               className="flex gap-2"
             >
               <label className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-stone-200 bg-white px-3 shadow-sm">
-                <Search className="h-4 w-4 text-stone-400" />
+                <MagnifyingGlass className="h-4 w-4 text-stone-400" />
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
@@ -555,7 +545,7 @@ export const KnowledgeWorkspace: React.FC = () => {
                       className="flex items-center gap-1 rounded-lg border border-stone-200 px-2 py-1 text-[10px] font-semibold text-stone-600 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {cancellingImport ? (
-                        <LoaderCircle className="h-3 w-3 animate-spin" />
+                        <CircleNotch className="h-3 w-3 animate-spin" />
                       ) : (
                         <Square className="h-3 w-3" />
                       )}
@@ -664,9 +654,9 @@ export const KnowledgeWorkspace: React.FC = () => {
                             title="发布加密知识制品"
                           >
                             {publishingDocumentId === document.id ? (
-                              <LoaderCircle className="h-3 w-3 animate-spin" />
+                              <CircleNotch className="h-3 w-3 animate-spin" />
                             ) : (
-                              <CloudUpload className="h-3 w-3" />
+                              <CloudArrowUp className="h-3 w-3" />
                             )}
                             发布
                           </button>
@@ -677,9 +667,9 @@ export const KnowledgeWorkspace: React.FC = () => {
                             title="查看设备覆盖"
                           >
                             {coverageDocumentId === document.id ? (
-                              <LoaderCircle className="h-3 w-3 animate-spin" />
+                              <CircleNotch className="h-3 w-3 animate-spin" />
                             ) : (
-                              <MonitorSmartphone className="h-3 w-3" />
+                              <Devices className="h-3 w-3" />
                             )}
                             设备
                           </button>
@@ -697,7 +687,7 @@ export const KnowledgeWorkspace: React.FC = () => {
                                   key={device.deviceId}
                                   className="flex items-center gap-2 text-[10px] text-stone-500"
                                 >
-                                  <MonitorSmartphone className="h-3 w-3" />
+                                  <Devices className="h-3 w-3" />
                                   <span className="min-w-0 flex-1 truncate">
                                     {device.deviceName ?? device.deviceId}
                                     {device.current ? "（本机）" : ""}

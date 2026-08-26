@@ -1,21 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  CalendarClock,
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  CirclePlus,
-  Inbox,
-  ListChecks,
-  ListTodo,
-  LoaderCircle,
-  Search,
-  Star,
-  Sun,
-  X,
-} from "lucide-react";
+import { CalendarBlank, Check, CheckCircle, CaretDown, CaretRight, PlusCircle, Tray, ListChecks, ListPlus, CircleNotch, MagnifyingGlass, Star, Sun, X } from "@phosphor-icons/react";
 import type {
   SmartTaskView,
   Task,
@@ -46,9 +31,9 @@ const smartViews: Array<{
 }> = [
   { id: "my-day", label: "我的一天", icon: Sun, tone: "text-sky-600" },
   { id: "important", label: "重要", icon: Star, tone: "text-amber-500" },
-  { id: "planned", label: "已计划", icon: CalendarClock, tone: "text-emerald-600" },
-  { id: "all", label: "全部", icon: Inbox, tone: "text-stone-500" },
-  { id: "completed", label: "已完成", icon: CheckCircle2, tone: "text-violet-600" },
+  { id: "planned", label: "已计划", icon: CalendarBlank, tone: "text-emerald-600" },
+  { id: "all", label: "全部", icon: Tray, tone: "text-stone-500" },
+  { id: "completed", label: "已完成", icon: CheckCircle, tone: "text-violet-600" },
 ];
 
 const listColors = ["#4f8a6f", "#3b82a0", "#b7791f", "#9b5f86", "#c45d55", "#697386"];
@@ -122,9 +107,9 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
     const definitions: Record<SmartTaskView, { title: string; subtitle: string; icon: typeof Sun }> = {
       "my-day": { title: "我的一天", subtitle: formatDateKey(today), icon: Sun },
       important: { title: "重要", subtitle: "标记为重要的任务", icon: Star },
-      planned: { title: "已计划", subtitle: "有截止日期或时间的任务", icon: CalendarClock },
-      all: { title: "全部", subtitle: "所有任务列表", icon: Inbox },
-      completed: { title: "已完成", subtitle: "已完成的任务实例", icon: CheckCircle2 },
+      planned: { title: "已计划", subtitle: "有截止日期或时间的任务", icon: CalendarBlank },
+      all: { title: "全部", subtitle: "所有任务列表", icon: Tray },
+      completed: { title: "已完成", subtitle: "已完成的任务实例", icon: CheckCircle },
     };
     return definitions[view.id];
   }, [lists, today, view]);
@@ -321,7 +306,7 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
           title={task.status === "completed" ? "重新打开任务" : "完成任务"}
         >
           {busyIds.has(task.id) ? (
-            <LoaderCircle className="h-3.5 w-3.5 animate-spin text-current" />
+            <CircleNotch className="h-3.5 w-3.5 animate-spin text-current" />
           ) : (
             <Check className="h-3.5 w-3.5" />
           )}
@@ -397,7 +382,7 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
             className="grid h-7 w-7 place-items-center rounded-md text-stone-500 hover:bg-stone-100"
             title="新建列表"
           >
-            <CirclePlus className="h-4 w-4" />
+            <PlusCircle className="h-4 w-4" />
           </button>
         </div>
         <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto">
@@ -437,7 +422,7 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
             </div>
           </div>
           <label className="flex h-9 w-52 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-stone-400 focus-within:border-stone-400">
-            <Search className="h-4 w-4 shrink-0" />
+            <MagnifyingGlass className="h-4 w-4 shrink-0" />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -472,7 +457,7 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           {loading ? (
             <div className="grid h-40 place-items-center">
-              <LoaderCircle className="h-5 w-5 animate-spin text-stone-400" />
+              <CircleNotch className="h-5 w-5 animate-spin text-stone-400" />
             </div>
           ) : (
             <div className="overflow-hidden rounded-md border border-stone-200 bg-white">
@@ -485,7 +470,7 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
                     onClick={() => setShowCompleted((value) => !value)}
                     className="flex h-11 w-full items-center gap-2 border-b border-stone-100 bg-stone-50 px-4 text-xs font-medium text-stone-600"
                   >
-                    {showCompleted ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                    {showCompleted ? <CaretDown className="h-4 w-4" /> : <CaretRight className="h-4 w-4" />}
                     已完成
                     <span className="text-stone-400">{completedTasks.length}</span>
                   </button>
@@ -497,7 +482,7 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
               {visibleTasks.length === 0 && (
                 <div className="grid min-h-52 place-items-center px-6 text-center">
                   <div>
-                    <ListTodo className="mx-auto h-8 w-8 text-stone-300" />
+                    <ListPlus className="mx-auto h-8 w-8 text-stone-300" />
                     <p className="mt-3 text-sm font-medium text-stone-500">这里还没有任务</p>
                     <p className="mt-1 text-xs text-stone-400">可从上方快速添加，或切换到其他列表。</p>
                   </div>
