@@ -1110,6 +1110,7 @@ def test_debug_prompt_payload_includes_effective_tool_schemas():
                     "memory": {"enabled": True},
                     "planner": {"enabled": False},
                     "web": {"enabled": False},
+                    "storage": {"enabled": False},
                 },
             },
             "settings": {},
@@ -1205,6 +1206,15 @@ def test_get_available_tools():
         "task_create",
         "task_update",
         "task_complete",
+        "storage_accounts_list",
+        "storage_files_list",
+        "storage_files_search",
+        "storage_file_download",
+        "storage_file_upload",
+        "storage_transfer_status",
+        "storage_quota_get",
+        "storage_files_move",
+        "storage_files_trash",
     ]
 
     memory_disabled_names = [

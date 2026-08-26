@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::db::DbActorHandle;
 use crate::error::AppResult;
 use crate::secrets::SecretStore;
+use crate::storage::StorageService;
 use crate::tools::policy::{ApprovalTier, Risk, ToolPolicy};
 use crate::tools::sandbox::SandboxGuard;
 use crate::tools::terminal::TerminalManager;
@@ -22,6 +23,7 @@ pub mod list_files;
 pub mod memory_files;
 pub mod planner;
 pub mod shell;
+pub mod storage;
 pub mod web;
 
 /// Narrow credential facade exposed to built-in tools.
@@ -54,6 +56,7 @@ pub struct ToolCtx<'a> {
     pub workspace_cwd: Option<PathBuf>,
     pub sandbox: &'a dyn SandboxGuard,
     pub terminals: &'a TerminalManager,
+    pub storage: &'a StorageService,
 }
 
 impl<'a> ToolCtx<'a> {
@@ -135,6 +138,15 @@ pub fn builtin_tools() -> Vec<Box<dyn BuiltinTool>> {
         Box::new(planner::TaskCreateTool),
         Box::new(planner::TaskCompleteTool),
         Box::new(planner::TaskUpdateTool),
+        Box::new(storage::StorageAccountsListTool),
+        Box::new(storage::StorageFilesListTool),
+        Box::new(storage::StorageFilesSearchTool),
+        Box::new(storage::StorageFileDownloadTool),
+        Box::new(storage::StorageFileUploadTool),
+        Box::new(storage::StorageTransferStatusTool),
+        Box::new(storage::StorageQuotaGetTool),
+        Box::new(storage::StorageFilesMoveTool),
+        Box::new(storage::StorageFilesTrashTool),
     ]
 }
 
@@ -216,10 +228,19 @@ pub fn is_write_op(tool: &str, args: &Value) -> bool {
         | "task_create"
         | "task_complete"
         | "task_update" => true,
+        "storage_file_download"
+        | "storage_file_upload"
+        | "storage_files_move"
+        | "storage_files_trash" => true,
         "file_read" | "list_files" | "grep" | "memory_list" | "memory_read" | "web_search"
         | "web_fetch" | "browser_open" | "calendar_list" | "task_list" | "get_current_time" => {
             false
         }
+        "storage_accounts_list"
+        | "storage_files_list"
+        | "storage_files_search"
+        | "storage_transfer_status"
+        | "storage_quota_get" => false,
         "shell" => {
             let cmd = args.get("command").and_then(|x| x.as_str()).unwrap_or("");
             shell::command_is_write(cmd)
@@ -373,7 +394,16 @@ mod tests {
                 "task_list",
                 "task_create",
                 "task_complete",
-                "task_update"
+                "task_update",
+                "storage_accounts_list",
+                "storage_files_list",
+                "storage_files_search",
+                "storage_file_download",
+                "storage_file_upload",
+                "storage_transfer_status",
+                "storage_quota_get",
+                "storage_files_move",
+                "storage_files_trash"
             ]
         );
         assert!(builtin_tools()

@@ -365,6 +365,7 @@ fn main() {
                 mcp.clone(),
                 secrets.clone(),
                 home_workspace_dir.clone(),
+                storage.clone(),
             ) {
                 eprintln!("[agent] 启动失败（非致命）：{e}");
             }

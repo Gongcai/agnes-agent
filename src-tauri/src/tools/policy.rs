@@ -20,6 +20,8 @@ pub struct ToolPolicy {
     #[serde(default)]
     pub mcp: McpPolicy,
     #[serde(default)]
+    pub storage: StoragePolicy,
+    #[serde(default)]
     pub sandbox: SandboxPolicy,
     #[serde(default)]
     pub network: NetworkPolicy,
@@ -148,6 +150,28 @@ pub struct McpPolicy {
     pub enabled: bool,
     pub server_ids: Vec<String>,
     pub approval: ApprovalTier,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct StoragePolicy {
+    pub enabled: bool,
+    pub allowed_accounts: Vec<String>,
+    pub max_download_bytes: u64,
+    pub max_upload_bytes: u64,
+    pub approval: ApprovalTier,
+}
+
+impl Default for StoragePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allowed_accounts: Vec::new(),
+            max_download_bytes: 1024 * 1024 * 1024,
+            max_upload_bytes: 1024 * 1024 * 1024,
+            approval: ApprovalTier::Always,
+        }
+    }
 }
 
 impl Default for MemoryPolicy {
@@ -465,6 +489,25 @@ impl ToolPolicy {
         Ok(())
     }
 
+    pub fn check_storage(&self, account_id: &str) -> Result<(), String> {
+        if !self.storage.enabled {
+            return Err("Storage tools are disabled for this agent".into());
+        }
+        if account_id.trim().is_empty() {
+            return Err("Storage account ID must not be empty".into());
+        }
+        if !self.storage.allowed_accounts.is_empty()
+            && !self
+                .storage
+                .allowed_accounts
+                .iter()
+                .any(|allowed| allowed == account_id)
+        {
+            return Err("Storage account is not allowed for this agent".into());
+        }
+        Ok(())
+    }
+
     /// Return the approval tier for a tool. Unknown tools fail closed.
     pub fn approval_for(&self, tool: &str) -> ApprovalTier {
         if tool.starts_with("mcp__") {
@@ -480,6 +523,15 @@ impl ToolPolicy {
                 self.memory.approval
             }
             "web_search" | "web_fetch" | "browser_open" => self.web.approval,
+            "storage_accounts_list"
+            | "storage_files_list"
+            | "storage_files_search"
+            | "storage_transfer_status"
+            | "storage_quota_get" => ApprovalTier::Never,
+            "storage_file_download"
+            | "storage_file_upload"
+            | "storage_files_move"
+            | "storage_files_trash" => self.storage.approval,
             "calendar_list" | "task_list" | "get_current_time" => ApprovalTier::Never,
             "calendar_create"
             | "calendar_event_create"

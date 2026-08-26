@@ -621,6 +621,152 @@ def get_available_tools(
             },
         ])
 
+    # 7. Provider-independent cloud storage tools. Credentials remain inside Rust.
+    storage_enabled = tool_policy.get("storage", {}).get("enabled", True)
+    if storage_enabled and network_allowed:
+        tools.extend([
+            {
+                "type": "function",
+                "function": {
+                    "name": "storage_accounts_list",
+                    "description": "List connected cloud storage accounts and capabilities. Credentials and private configuration are never returned.",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "storage_files_list",
+                    "description": "List remote files and folders in a connected cloud storage account. Returns metadata only.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "account_id": {"type": "string"},
+                            "parent_id": {"type": ["string", "null"]},
+                            "page_token": {"type": ["string", "null"]},
+                            "page_size": {"type": "integer", "minimum": 1, "maximum": 200},
+                        },
+                        "required": ["account_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "storage_files_search",
+                    "description": "Search remote file names and provider-supported metadata. This is not guaranteed to be full-text content search.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "account_id": {"type": "string"},
+                            "query": {"type": "string", "minLength": 1, "maxLength": 200},
+                            "page_token": {"type": ["string", "null"]},
+                            "page_size": {"type": "integer", "minimum": 1, "maximum": 200},
+                        },
+                        "required": ["account_id", "query"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "storage_file_download",
+                    "description": "Download one remote file into the current workspace. The destination must be relative to the workspace.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "account_id": {"type": "string"},
+                            "file_id": {"type": "string"},
+                            "destination_path": {"type": "string"},
+                            "expected_revision": {"type": ["string", "null"]},
+                            "expected_size": {"type": ["integer", "null"], "minimum": 0},
+                        },
+                        "required": ["account_id", "file_id", "destination_path"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "storage_file_upload",
+                    "description": "Upload one workspace file to a connected cloud storage folder. The source path must be relative to the workspace.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "account_id": {"type": "string"},
+                            "source_path": {"type": "string"},
+                            "parent_id": {"type": ["string", "null"]},
+                            "remote_name": {"type": ["string", "null"]},
+                        },
+                        "required": ["account_id", "source_path"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "storage_transfer_status",
+                    "description": "Read the status of a cloud storage transfer started by this application.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"transfer_id": {"type": "string"}},
+                        "required": ["transfer_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "storage_quota_get",
+                    "description": "Read the quota of a connected cloud storage account.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"account_id": {"type": "string"}},
+                        "required": ["account_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "storage_files_move",
+                    "description": "Move remote files to another remote folder. Requires approval.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "account_id": {"type": "string"},
+                            "file_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100},
+                            "target_folder_id": {"type": ["string", "null"]},
+                        },
+                        "required": ["account_id", "file_ids"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "storage_files_trash",
+                    "description": "Move remote files to the provider trash. Permanent deletion is not supported by this tool.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "account_id": {"type": "string"},
+                            "file_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100},
+                        },
+                        "required": ["account_id", "file_ids"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        ])
+
     if tool_policy.get("mcp", {}).get("enabled", False):
         for tool in (dynamic_tools or [])[:128]:
             function = tool.get("function") if isinstance(tool, dict) else None

@@ -193,6 +193,7 @@ impl AgentManager {
         mcp: Arc<McpManager>,
         secrets: SharedSecretStore,
         home_workspace_dir: std::path::PathBuf,
+        storage: Arc<crate::storage::StorageService>,
     ) -> AppResult<()> {
         if self.running.swap(true, Ordering::SeqCst) {
             return Ok(());
@@ -226,6 +227,7 @@ impl AgentManager {
                 mcp,
                 secrets,
                 home_workspace_dir,
+                storage,
             )
             .await
             {

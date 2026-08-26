@@ -10,6 +10,7 @@ use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::mcp::McpManager;
 use crate::secrets::SharedSecretStore;
+use crate::storage::StorageService;
 use crate::tools::builtin::{builtin_tools, SearchSecretAccess, ToolCtx};
 use crate::tools::permissions::SandboxEscalation;
 use crate::tools::policy::ToolPolicy;
@@ -23,6 +24,7 @@ pub struct ToolExecutor {
     secrets: SharedSecretStore,
     terminals: Arc<TerminalManager>,
     home_workspace_dir: PathBuf,
+    storage: Arc<StorageService>,
 }
 
 impl ToolExecutor {
@@ -31,6 +33,7 @@ impl ToolExecutor {
         mcp: Arc<McpManager>,
         secrets: SharedSecretStore,
         home_workspace_dir: PathBuf,
+        storage: Arc<StorageService>,
     ) -> Self {
         Self {
             db,
@@ -38,6 +41,7 @@ impl ToolExecutor {
             secrets,
             terminals: Arc::new(TerminalManager::default()),
             home_workspace_dir,
+            storage,
         }
     }
 
@@ -175,6 +179,7 @@ impl ToolExecutor {
             workspace_cwd,
             sandbox: &sandbox,
             terminals: self.terminals.as_ref(),
+            storage: self.storage.as_ref(),
         };
 
         for impl_ in builtin_tools() {
@@ -238,6 +243,20 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
+
+    fn test_storage_service() -> Arc<crate::storage::StorageService> {
+        let secrets = Arc::new(crate::secrets::InMemorySecretStore::default());
+        let credentials = Arc::new(crate::storage::KeyringProviderCredentialStore::new(
+            secrets.clone(),
+        ));
+        let sync_credentials = Arc::new(crate::storage::SyncProviderCredentialAccess::new(secrets));
+        Arc::new(crate::storage::StorageService::new(
+            spawn_db_actor(PathBuf::from("target/test_storage_tools.db")),
+            Arc::new(crate::storage::StorageProviderRegistry::new()),
+            credentials,
+            sync_credentials,
+        ))
+    }
 
     #[test]
     fn effective_policy_adds_workspace_once_to_shell_and_file_roots() {
@@ -313,6 +332,7 @@ mod tests {
             mcp,
             secrets,
             PathBuf::from("target/test_home_workspace"),
+            test_storage_service(),
         );
 
         db.insert_agent(new_agent("test-agent", "Test Agent"))
@@ -378,6 +398,7 @@ mod tests {
             planner: Default::default(),
             web: Default::default(),
             mcp: Default::default(),
+            storage: Default::default(),
             sandbox: Default::default(),
             network: Default::default(),
         };

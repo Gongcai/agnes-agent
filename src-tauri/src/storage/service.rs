@@ -457,6 +457,23 @@ impl StorageService {
         }
     }
 
+    pub async fn get_file(&self, account_id: String, file_id: String) -> AppResult<RemoteFileItem> {
+        let (row, session) = self.connect_account_with_row(&account_id).await?;
+        let file_source = session.file_source().ok_or_else(|| {
+            AppError::Other("Storage provider does not support file metadata".into())
+        })?;
+        match file_source.get_file(&file_id).await {
+            Ok(file) => {
+                self.update_provider_status(&row, None).await;
+                Ok(file)
+            }
+            Err(error) => {
+                self.update_provider_status(&row, Some(&error)).await;
+                Err(provider_error(error))
+            }
+        }
+    }
+
     pub async fn refresh_quota(&self, account_id: String) -> AppResult<ProviderQuota> {
         let (row, session) = self.connect_account_with_row(&account_id).await?;
         let quota_source = session.quota_source().ok_or_else(|| {
@@ -491,6 +508,45 @@ impl StorageService {
         expected_size: Option<u64>,
         destination: String,
     ) -> AppResult<()> {
+        self.download_file_with_job(
+            account_id,
+            file_id,
+            expected_revision,
+            expected_size,
+            destination,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn download_file_with_job(
+        &self,
+        account_id: String,
+        file_id: String,
+        expected_revision: Option<String>,
+        expected_size: Option<u64>,
+        destination: String,
+    ) -> AppResult<String> {
+        self.download_file_with_job_limit(
+            account_id,
+            file_id,
+            expected_revision,
+            expected_size,
+            destination,
+            None,
+        )
+        .await
+    }
+
+    pub async fn download_file_with_job_limit(
+        &self,
+        account_id: String,
+        file_id: String,
+        expected_revision: Option<String>,
+        expected_size: Option<u64>,
+        destination: String,
+        max_bytes: Option<u64>,
+    ) -> AppResult<String> {
         let destination = std::path::PathBuf::from(destination);
         validate_download_destination(&destination)?;
         let (row, session) = self.connect_account_with_row(&account_id).await?;
@@ -545,7 +601,7 @@ impl StorageService {
                 bytes_total,
                 descriptor.capabilities.stable_file_sizes,
                 supports_range_download(&descriptor, &remote_file),
-                None,
+                max_bytes,
             )
             .await;
         match result {
@@ -563,7 +619,7 @@ impl StorageService {
                 )
                 .await?;
                 self.update_provider_status(&row, None).await;
-                Ok(())
+                Ok(job_id)
             }
             Err(DownloadFailure::Provider { error, transferred }) => {
                 self.update_provider_status(&row, Some(&error)).await;
@@ -1036,6 +1092,18 @@ impl StorageService {
         source: String,
         remote_name: String,
     ) -> AppResult<RemoteFileItem> {
+        self.upload_file_as_with_job(account_id, parent_id, source, remote_name)
+            .await
+            .map(|(file, _)| file)
+    }
+
+    pub async fn upload_file_as_with_job(
+        &self,
+        account_id: String,
+        parent_id: Option<String>,
+        source: String,
+        remote_name: String,
+    ) -> AppResult<(RemoteFileItem, String)> {
         const DEFAULT_UPLOAD_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 
         let source = std::path::PathBuf::from(source);
@@ -1139,7 +1207,7 @@ impl StorageService {
                 self.update_transfer(&job_id, "completed", bytes_total, Some(bytes_total), None)
                     .await?;
                 self.update_provider_status(&row, None).await;
-                Ok(file)
+                Ok((file, job_id))
             }
             Err(UploadFailure::Provider { error, transferred }) => {
                 let _ = uploader.abort_file_upload(&session.session_id).await;

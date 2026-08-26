@@ -205,6 +205,7 @@ pub async fn run<R: tauri::Runtime>(
     mcp: Arc<McpManager>,
     secrets: SharedSecretStore,
     home_workspace_dir: PathBuf,
+    storage: Arc<crate::storage::StorageService>,
 ) -> AppResult<()> {
     std_listener
         .set_nonblocking(true)
@@ -231,6 +232,7 @@ pub async fn run<R: tauri::Runtime>(
         let secrets = secrets.clone();
         let active_runs = active_runs.clone();
         let home_workspace_dir = home_workspace_dir.clone();
+        let storage = storage.clone();
 
         tokio::spawn(async move {
             if let Err(e) = handle_conn(
@@ -242,6 +244,7 @@ pub async fn run<R: tauri::Runtime>(
                 mcp,
                 secrets,
                 home_workspace_dir,
+                storage,
                 active_runs,
             )
             .await
@@ -262,6 +265,7 @@ async fn handle_conn<R: tauri::Runtime>(
     mcp: Arc<McpManager>,
     secrets: SharedSecretStore,
     home_workspace_dir: PathBuf,
+    storage: Arc<crate::storage::StorageService>,
     active_runs: Arc<tokio::sync::Mutex<HashMap<String, ActiveRun>>>,
 ) -> AppResult<()> {
     let ws = accept_async(stream)
@@ -286,7 +290,13 @@ async fn handle_conn<R: tauri::Runtime>(
         }
     });
 
-    let tool_executor = ToolExecutor::new(db.clone(), mcp, secrets, home_workspace_dir.clone());
+    let tool_executor = ToolExecutor::new(
+        db.clone(),
+        mcp,
+        secrets,
+        home_workspace_dir.clone(),
+        storage,
+    );
     let mut tool_tasks: HashMap<String, Vec<tokio::task::JoinHandle<()>>> = HashMap::new();
 
     // 读取循环
@@ -1231,6 +1241,20 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command as TokioCommand;
 
+    fn test_storage_service() -> Arc<crate::storage::StorageService> {
+        let secrets = Arc::new(crate::secrets::InMemorySecretStore::default());
+        let credentials = Arc::new(crate::storage::KeyringProviderCredentialStore::new(
+            secrets.clone(),
+        ));
+        let sync_credentials = Arc::new(crate::storage::SyncProviderCredentialAccess::new(secrets));
+        Arc::new(crate::storage::StorageService::new(
+            crate::db::spawn_db_actor(std::path::PathBuf::from("target/test_ws_storage.db")),
+            Arc::new(crate::storage::StorageProviderRegistry::new()),
+            credentials,
+            sync_credentials,
+        ))
+    }
+
     fn test_run() -> ActiveRun {
         ActiveRun {
             assistant_message_id: "assistant-1".into(),
@@ -1385,6 +1409,7 @@ mod tests {
                 mcp,
                 secrets,
                 std::path::PathBuf::from("target/test_home_workspace"),
+                test_storage_service(),
             )
             .await;
         });
