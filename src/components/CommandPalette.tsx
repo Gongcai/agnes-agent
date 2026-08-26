@@ -273,7 +273,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       }}
     >
       <div
-        className="w-full max-w-xl overflow-hidden rounded-xl border border-hairline bg-canvas-surface text-ink shadow-floating animate-scale-in flex flex-col max-h-[70vh]"
+        className="w-full max-w-xl overflow-hidden rounded-xl border border-hairline bg-canvas-surface backdrop-blur-xl text-ink shadow-modal animate-scale-in flex flex-col max-h-[70vh]"
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* MagnifyingGlass Input Bar */}

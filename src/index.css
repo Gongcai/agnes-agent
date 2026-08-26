@@ -354,8 +354,8 @@ body.quick-window-body #root {
 :root {
   --claude-canvas: #faf9f5;
   --claude-sidebar: #f5f0e8;
-  --claude-surface: #faf9f5;
-  --claude-surface-soft: #f5f0e8;
+  --claude-surface: rgba(250, 249, 245, 0.85); /* added translucency for glassmorphism */
+  --claude-surface-soft: rgba(245, 240, 232, 0.85);
   --claude-surface-card: #efe9de;
   --claude-surface-strong: #e8e0d2;
   --claude-sidebar-highlight: #efe9de;
@@ -365,8 +365,8 @@ body.quick-window-body #root {
   --claude-body: #3d3d3a;
   --claude-muted: #747269;
   --claude-muted-soft: #96938a;
-  --claude-border: #e6dfd8;
-  --claude-border-strong: #d8cfc1;
+  --claude-border: rgba(31, 30, 27, 0.08); /* faint transparent line instead of solid */
+  --claude-border-strong: rgba(31, 30, 27, 0.16);
   --claude-clay: #cc785c;
   --claude-clay-dark: #a9583e;
   --claude-clay-soft: #f3e2dc;
@@ -406,8 +406,8 @@ body.quick-window-body #root {
   --ring: 14 72% 66%;
   --claude-canvas: #1f1f1d;
   --claude-sidebar: #1f1f1d;
-  --claude-surface: #1f1f1d;
-  --claude-surface-soft: #2d2c29;
+  --claude-surface: rgba(31, 31, 29, 0.75);
+  --claude-surface-soft: rgba(45, 44, 41, 0.75);
   --claude-surface-card: #252320;
   --claude-surface-strong: #383631;
   --claude-sidebar-highlight: #3b3935;
@@ -516,6 +516,8 @@ pre,
   z-index: 60;
   min-height: 40px;
   background: var(--claude-header) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border-color: var(--claude-border) !important;
   color: var(--claude-muted);
 }
