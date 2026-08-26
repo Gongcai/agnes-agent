@@ -8,7 +8,7 @@ This file provides guidance to Codex when working with code in this repository.
 
 # LANGUAGE
 
-- 自然语言使用：代码内的注释使用英文标准注释，与用户交谈、汇报或者文档也使用英文
+- 自然语言使用：代码内的注释使用英文标准注释，与用户交谈、汇报或者文档使用中文
 
 # Git 提交
 
@@ -22,6 +22,7 @@ This file provides guidance to Codex when working with code in this repository.
 # 常用命令
 
 Rust / Tauri 桌面端：
+
 ```bash
 pnpm tauri dev         # 开发模式，sidecar 通过 uv 启动
 pnpm tauri build       # 发布打包，自动冻结并内置 agentd sidecar
@@ -31,6 +32,7 @@ cargo test             # Rust 单元测试
 ```
 
 Python Agent sidecar：
+
 ```bash
 cd agent
 uv sync
@@ -40,6 +42,7 @@ uv run pytest tests/test_reasoning.py   # 运行指定测试文件
 ```
 
 Cloudflare Worker / D1：
+
 ```bash
 wrangler dev                    # 本地开发
 wrangler deploy                 # 部署
@@ -47,6 +50,7 @@ wrangler d1 execute <db> --local --file=schema.sql   # 初始化 D1
 ```
 
 安卓（Tauri）：
+
 ```bash
 pnpm tauri android dev          # 连设备/模拟器调试
 pnpm tauri android build        # 打包 APK/AAB
