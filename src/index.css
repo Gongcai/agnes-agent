@@ -1787,6 +1787,8 @@ pre,
 
 .agnes-context-menu {
   background: var(--claude-surface);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
   border-color: var(--claude-border-strong);
   color: var(--claude-body);
   font-family: var(--claude-ui-font);
@@ -2481,4 +2483,30 @@ pre,
   .agnes-chat-empty-welcome h1 {
     font-size: 24px;
   }
+}
+
+/* Fix for WebKitGTK missing backdrop-filter prefix */
+.backdrop-blur-sm {
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+.backdrop-blur-md {
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+.backdrop-blur-lg {
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+.backdrop-blur-xl {
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+}
+.backdrop-blur-2xl {
+  -webkit-backdrop-filter: blur(40px);
+  backdrop-filter: blur(40px);
+}
+.backdrop-blur-3xl {
+  -webkit-backdrop-filter: blur(64px);
+  backdrop-filter: blur(64px);
 }

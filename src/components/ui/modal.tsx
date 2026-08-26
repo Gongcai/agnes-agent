@@ -65,7 +65,7 @@ export const Modal: React.FC<ModalProps> = ({
         role="dialog"
         aria-modal="true"
         className={cn(
-          "relative flex flex-col w-full overflow-hidden rounded-xl border border-hairline bg-canvas-surface text-ink shadow-modal animate-scale-in",
+          "relative flex flex-col w-full overflow-hidden rounded-xl border border-hairline bg-canvas-surface backdrop-blur-xl text-ink shadow-modal animate-scale-in",
           maxWidthMap[maxWidth],
           className
         )}

@@ -277,7 +277,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* MagnifyingGlass Input Bar */}
-        <div className="flex items-center gap-3 px-4 py-3.5 border-b border-hairline bg-canvas-surface">
+        <div className="flex items-center gap-3 px-4 py-3.5 border-b border-hairline bg-transparent">
           <MagnifyingGlass className="h-4 w-4 text-ink-muted shrink-0" />
           <input
             ref={inputRef}
