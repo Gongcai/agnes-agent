@@ -318,7 +318,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         {/* Results List */}
         <div
           ref={listRef}
-          className="flex-1 overflow-y-auto p-2 divide-y divide-hairline/40 select-none"
+          className="flex-1 overflow-y-auto p-2 space-y-0.5 select-none"
         >
           {filteredItems.length === 0 ? (
             <div className="py-12 text-center text-xs text-ink-muted">
@@ -332,9 +332,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                 !prevItem || prevItem.category !== item.category;
 
               return (
-                <div key={item.id} className="pt-1 first:pt-0">
+                <div key={item.id}>
                   {showCategory && (
-                    <div className="px-3 py-1.5 text-[10px] font-medium tracking-wider uppercase text-ink-muted">
+                    <div className={`px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase text-ink-muted ${index > 0 ? "mt-2 pt-2 border-t border-hairline" : ""}`}>
                       {item.category}
                     </div>
                   )}
@@ -344,7 +344,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                     onMouseEnter={() => setSelectedIndex(index)}
                     className={`flex items-center justify-between gap-3 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
                       isSelected
-                        ? "bg-coral/10 text-coral dark:bg-coral/15"
+                        ? "bg-coral/15 text-coral dark:bg-coral/20 font-medium"
                         : "text-ink hover:bg-canvas-surface-card"
                     }`}
                   >
@@ -355,7 +355,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                           {item.title}
                         </div>
                         {item.subtitle && (
-                          <div className="text-[11px] text-ink-muted truncate">
+                          <div className="text-[11px] text-ink-muted truncate font-normal">
                             {item.subtitle}
                           </div>
                         )}

@@ -32,7 +32,7 @@ body {
   margin: 0;
   background-color: var(--claude-canvas);
   color: var(--claude-ink);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
+  font-family: "Google Sans", "Google Sans Text", "Noto Sans SC", "Noto Sans Simplified Chinese", "Noto Sans CJK SC", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -379,7 +379,7 @@ body.quick-window-body #root {
   --claude-header: rgba(250, 249, 245, 0.96);
   --claude-header-soft: rgba(245, 240, 232, 0.96);
   --claude-overlay: rgba(31, 30, 27, 0.34);
-  --claude-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
+  --claude-ui-font: "Google Sans", "Google Sans Text", "Noto Sans SC", "Noto Sans Simplified Chinese", "Noto Sans CJK SC", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --claude-display-font: "Copernicus", "Tiempos Headline", "Noto Serif", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
   --claude-mono-font: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 }
