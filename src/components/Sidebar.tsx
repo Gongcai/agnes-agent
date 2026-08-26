@@ -70,23 +70,6 @@ const FEATURE_ICONS: Record<AppFeatureId, PhosphorIcon> = {
   tasks: CheckSquare2,
 };
 
-function readLocalBoolean(key: string, fallback: boolean): boolean {
-  try {
-    const value = window.localStorage.getItem(key);
-    return value === null ? fallback : value === "true";
-  } catch {
-    return fallback;
-  }
-}
-
-function writeLocalBoolean(key: string, value: boolean): void {
-  try {
-    window.localStorage.setItem(key, String(value));
-  } catch {
-    // UI preferences are optional when browser storage is unavailable.
-  }
-}
-
 export const Sidebar: React.FC<SidebarProps> = ({
   isOpen,
   activeFeature,
@@ -129,9 +112,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     x: number;
     y: number;
   } | null>(null);
-  const [moreExpanded, setMoreExpanded] = useState(() =>
-    readLocalBoolean("agnes.ui.sidebar.more-expanded", false),
-  );
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [userProfile, setUserProfile] = useState<SidebarUserProfile>({ avatar: "", name: "" });
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
@@ -203,10 +183,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, [renameDialog]);
 
   useEffect(() => {
-    writeLocalBoolean("agnes.ui.sidebar.more-expanded", moreExpanded);
-  }, [moreExpanded]);
-
-  useEffect(() => {
     if (!sessionSearchOpen) return;
     const frame = requestAnimationFrame(() => sessionSearchInputRef.current?.focus());
     const handleEscape = (event: KeyboardEvent) => {
@@ -234,10 +210,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setSessionSearchOpen(false);
     setSessionSearchQuery("");
   }, [activeAgentId]);
-
-  useEffect(() => {
-    if (activeFeature !== "chat" && activeFeature !== "drive") setMoreExpanded(true);
-  }, [activeFeature]);
 
   useLayoutEffect(() => {
     const sidebar = sidebarRef.current;
@@ -284,7 +256,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       resizeObserver.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [activeFeature, isOpen, moreExpanded]);
+  }, [activeFeature, isOpen]);
 
   // Expand newly loaded workspace groups by default.
   useEffect(() => {
@@ -346,7 +318,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (workspace) {
         handleAddWorkspaceSession(workspace.id);
       } else {
-        setMoreExpanded(true);
         onSelectFeature("drive");
       }
       return;
@@ -562,59 +533,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
       </div>
 
-      <nav className="agnes-sidebar-nav shrink-0 border-b border-stone-200/80 px-3 pb-3 pt-1" aria-label="更多功能">
+      <nav className="agnes-sidebar-nav shrink-0 border-b border-stone-200/80 px-3 pb-3 pt-1 space-y-1" aria-label="功能导航">
         <button
           type="button"
-          onClick={() => setMoreExpanded((expanded) => !expanded)}
-          className="agnes-more-toggle agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3"
-          aria-expanded={moreExpanded}
-          title={moreExpanded ? "收起更多功能" : "展开更多功能"}
+          onClick={openSessionSearch}
+          className="agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3"
+          title={isOpen ? undefined : "搜索会话"}
         >
           <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
-            <ChevronRight className="agnes-more-chevron h-4 w-4" />
+            <Search className="h-4 w-4" weight="regular" />
           </span>
-          <span className="agnes-sidebar-label">更多功能</span>
+          <span className="agnes-sidebar-label truncate text-xs">搜索</span>
         </button>
-        <div
-          className="agnes-more-features"
-          data-expanded={moreExpanded}
-          aria-hidden={!moreExpanded}
-        >
-          <div className="agnes-more-features-inner space-y-1">
+        {ENABLED_APP_FEATURES.filter((feature) => feature.id !== "chat" && feature.id !== "drive").map((feature) => {
+          const Icon = FEATURE_ICONS[feature.id];
+          const selected = feature.id === activeFeature;
+          return (
             <button
-              type="button"
-              onClick={openSessionSearch}
-              className="agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3"
-              title={isOpen ? undefined : "搜索会话"}
-              tabIndex={moreExpanded ? 0 : -1}
+              key={feature.id}
+              onClick={() => onSelectFeature(feature.id)}
+              data-feature-id={feature.id}
+              className={`agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3 ${selected ? "font-medium text-stone-900" : ""}`}
+              title={isOpen ? undefined : feature.label}
+              aria-current={selected ? "page" : undefined}
             >
               <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
-                <Search className="h-4 w-4" weight="regular" />
+                <Icon className="h-4 w-4" weight="regular" />
               </span>
-              <span className="agnes-sidebar-label truncate text-xs">搜索</span>
+              <span className="agnes-sidebar-label truncate text-xs">{feature.label}</span>
             </button>
-            {ENABLED_APP_FEATURES.filter((feature) => feature.id !== "chat" && feature.id !== "drive").map((feature) => {
-              const Icon = FEATURE_ICONS[feature.id];
-              const selected = feature.id === activeFeature;
-              return (
-                <button
-                  key={feature.id}
-                  onClick={() => onSelectFeature(feature.id)}
-                  data-feature-id={feature.id}
-                  className={`agnes-sidebar-primary-action flex h-9 w-full items-center gap-2 px-3 ${selected ? "font-medium text-stone-900" : ""}`}
-                  title={isOpen ? undefined : feature.label}
-                  aria-current={selected ? "page" : undefined}
-                  tabIndex={moreExpanded ? 0 : -1}
-                >
-                  <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
-                    <Icon className="h-4 w-4" weight="regular" />
-                  </span>
-                  <span className="agnes-sidebar-label truncate text-xs">{feature.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+          );
+        })}
       </nav>
 
       {/* Session navigation is hidden when the sidebar becomes an icon rail. */}
