@@ -2429,16 +2429,21 @@ mod tests {
                     "provider detail endpoint returned unrelated metadata",
                 ));
             }
+            let misleading_download_hint = file_id == "remote-hint-disabled";
             Ok(RemoteFileItem {
                 id: file_id.into(),
                 parent_id: None,
                 name: "Notes.md".into(),
-                kind: RemoteFileKind::File,
+                kind: if misleading_download_hint {
+                    RemoteFileKind::Folder
+                } else {
+                    RemoteFileKind::File
+                },
                 media_type: Some("text/markdown".into()),
                 size: Some(128),
                 modified_at: None,
                 revision: Some("revision-1".into()),
-                downloadable: file_id != "remote-hint-disabled",
+                downloadable: !misleading_download_hint,
             })
         }
 

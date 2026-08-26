@@ -6,7 +6,6 @@ use std::path::{Component, Path, PathBuf};
 use crate::db::repo::storage::StorageTransferJobRow;
 use crate::error::{AppError, AppResult};
 use crate::storage::service::StorageAccountView;
-use crate::storage::RemoteFileKind;
 use crate::tools::builtin::{BuiltinTool, ToolCtx};
 use crate::tools::policy::Risk;
 
@@ -388,22 +387,9 @@ impl BuiltinTool for StorageFileDownloadTool {
             Ok(v) => v,
             Err(e) => return fail(ctx, e).await,
         };
-        let remote = match ctx
-            .storage
-            .get_file(account_id.clone(), file_id.clone())
-            .await
-        {
-            Ok(remote) => remote,
-            Err(error) => return fail(ctx, error).await,
-        };
-        if remote.kind != RemoteFileKind::File || !remote.downloadable {
-            return fail(ctx, "Remote item is not downloadable").await;
-        }
-        if remote
-            .size
-            .or(expected_size)
-            .is_some_and(|size| size > ctx.policy.storage.max_download_bytes)
-        {
+        // Provider detail endpoints can disagree with list results about file type and
+        // downloadability. Treat those fields as hints and let the download endpoint decide.
+        if expected_size.is_some_and(|size| size > ctx.policy.storage.max_download_bytes) {
             return fail(ctx, "Remote file exceeds the agent download size limit").await;
         }
         if destination.exists() {
