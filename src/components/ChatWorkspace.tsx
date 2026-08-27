@@ -19,6 +19,7 @@ import { ModifyMemoryModal } from "./ModifyMemoryModal";
 import { useConfirmDialog } from "./ConfirmDialog";
 import { listInstalledSkills, type InstalledSkill } from "../lib/skills";
 import {
+  DEFAULT_CONTEXT_LIMIT,
   DEFAULT_MAX_OUTPUT_TOKENS,
   getCachedAutoFollowStreaming,
   getCachedAutoExpandThoughts,
@@ -763,7 +764,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const currentThinkingMode = draftSession?.thinkingMode
     ?? (activeSession?.thinking_mode || activeAgent?.thinking_mode || "off");
   const currentMaxTokens = draftSession?.maxTokens ?? activeSession?.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
-  const contextLimit = activeSession?.context_limit ?? currentModel?.descriptor?.context_window ?? 8192;
+  const contextLimit = activeSession?.context_limit ?? currentModel?.descriptor?.context_window ?? DEFAULT_CONTEXT_LIMIT;
   const currentCompressThreshold = draftSession?.compressThreshold ?? activeSession?.compress_threshold ?? 0.85;
   const summaryTriggerTokens = Math.floor(contextLimit * currentCompressThreshold);
   let currentContextTokens = 0;

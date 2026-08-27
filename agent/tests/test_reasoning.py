@@ -27,13 +27,20 @@ from app.main import (
     resolve_task_llm,
 )
 from app.models import (
+    DEFAULT_CONTEXT_LIMIT,
     DEFAULT_MAX_OUTPUT_TOKENS,
     LlmConfig,
     MODEL_REQUEST_TIMEOUT_SECONDS,
     classify_llm_error,
     completion,
     embed_texts,
+    get_max_context_tokens,
 )
+
+
+def test_unknown_models_use_the_128k_default_context_limit():
+    assert DEFAULT_CONTEXT_LIMIT == 128_000
+    assert get_max_context_tokens("new-provider-model") == 128_000
 
 
 def test_sidecar_cli_treats_keyboard_interrupt_as_clean_exit(monkeypatch, capsys):

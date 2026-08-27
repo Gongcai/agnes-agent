@@ -4,6 +4,7 @@ export const UI_AUTO_FOLLOW_STREAMING_KEY = "ui:auto_follow_streaming";
 export const UI_FONT_SCALE_KEY = "ui:font_scale";
 export const UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY = "ui:default_max_output_tokens";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 131_072;
+export const DEFAULT_CONTEXT_LIMIT = 128_000;
 export const MIN_MAX_OUTPUT_TOKENS = 128;
 export const MAX_MAX_OUTPUT_TOKENS = 1_048_576;
 

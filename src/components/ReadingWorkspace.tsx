@@ -15,6 +15,7 @@ import {
   type ReadingPreferences,
 } from "../lib/readingPreferences";
 import {
+  DEFAULT_CONTEXT_LIMIT,
   DEFAULT_MAX_OUTPUT_TOKENS,
   getCachedAutoFollowStreaming,
   getCachedAutoExpandThoughts,
@@ -886,7 +887,7 @@ export const ReadingWorkspace: React.FC = () => {
     .find((provider) => provider.id === readingProviderId)
     ?.models.find((model) => model.id === readingModelId);
   const readingThinkingMode = readingSession?.thinking_mode || activeAgent?.thinking_mode || "off";
-  const readingContextLimit = readingSession?.context_limit ?? readingModelDescriptor?.context_window ?? 8192;
+  const readingContextLimit = readingSession?.context_limit ?? readingModelDescriptor?.context_window ?? DEFAULT_CONTEXT_LIMIT;
   const readingCompressThreshold = readingSession?.compress_threshold ?? 0.85;
   const latestReadingAssistant = [...messages]
     .reverse()
