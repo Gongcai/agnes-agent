@@ -241,6 +241,12 @@ pub async fn ping() -> String {
     "pong from Rust".to_string()
 }
 
+/// Returns the platform runtime state without exposing process paths or secrets.
+#[tauri::command]
+pub fn get_runtime_status(state: tauri::State<'_, AppState>) -> crate::runtime::AgentRuntimeStatus {
+    state.runtime.status()
+}
+
 /// Opens the webview inspector in development builds.
 #[tauri::command]
 pub fn open_webview_devtools(window: tauri::WebviewWindow) {

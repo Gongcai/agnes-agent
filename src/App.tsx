@@ -49,7 +49,9 @@ export default function App() {
     setActiveAgentId,
     setActiveSessionId,
   } = useAgentStore();
-  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(() => (
+    typeof window === "undefined" || !window.matchMedia("(max-width: 640px)").matches
+  ));
   const [activeFeature, setActiveFeature] = useState<AppFeatureId>("chat");
   const [chatMode, setChatMode] = useState<ChatMode>("home");
   const [requestedPlannerTaskId, setRequestedPlannerTaskId] = useState<string | null>(null);
@@ -117,6 +119,7 @@ export default function App() {
     discardDraftSession();
     setChatMode(mode);
     setActiveFeature("chat");
+    if (window.matchMedia("(max-width: 640px)").matches) setIsSidebarOpen(false);
     const modeSessions = sessions.filter((session) => (
       session.agent_id === activeAgentId
       && (mode === "code" ? Boolean(session.workspace_id) : !session.workspace_id)
@@ -130,7 +133,13 @@ export default function App() {
     if (!activeAgentId) return;
     setChatMode(workspaceId ? "code" : "home");
     setActiveFeature("chat");
+    if (window.matchMedia("(max-width: 640px)").matches) setIsSidebarOpen(false);
     startDraftSession(activeAgentId, workspaceId);
+  };
+
+  const handleSelectFeature = (feature: AppFeatureId) => {
+    setActiveFeature(feature);
+    if (window.matchMedia("(max-width: 640px)").matches) setIsSidebarOpen(false);
   };
 
   const handleOpenSettings = (tab: "profile" | "general" | "agents" | "memory" | "storage" | "models" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug" = "agents") => {
@@ -193,13 +202,21 @@ export default function App() {
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
+        {isSidebarOpen && (
+          <button
+            type="button"
+            className="agnes-mobile-sidebar-backdrop"
+            aria-label="关闭导航"
+            onClick={() => setIsSidebarOpen(false)}
+          />
+        )}
         <Sidebar
           isOpen={isSidebarOpen}
           activeFeature={activeFeature}
           chatMode={chatMode}
           onSelectChatMode={handleSelectChatMode}
           onStartConversation={handleStartConversation}
-          onSelectFeature={setActiveFeature}
+          onSelectFeature={handleSelectFeature}
           onOpenSettings={handleOpenSettings}
           onNotificationNavigate={handleNotificationNavigate}
         />
@@ -267,7 +284,7 @@ export default function App() {
       <CommandPalette
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
-        onSelectFeature={setActiveFeature}
+        onSelectFeature={handleSelectFeature}
         onSelectChatMode={handleSelectChatMode}
         onStartConversation={handleStartConversation}
         onOpenSettings={handleOpenSettings}

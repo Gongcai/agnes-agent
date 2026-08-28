@@ -7,6 +7,7 @@ use crate::document_parser::DocumentParserManager;
 use crate::mcp::McpManager;
 use crate::notifications::NotificationService;
 use crate::pdf_models::PdfModelPackageManager;
+use crate::runtime::AgentRuntime;
 use crate::secrets::SecretStore;
 use crate::storage::{LocalBackupService, StorageMediaProxy, StorageService};
 use crate::sync::engine::SyncService;
@@ -18,6 +19,7 @@ pub struct AppState {
     pub home_workspace_dir: PathBuf,
     pub db: DbActorHandle,
     pub agent: Arc<AgentManager>,
+    pub runtime: Arc<dyn AgentRuntime>,
     pub mcp: Arc<McpManager>,
     pub secrets: Arc<dyn SecretStore>,
     pub storage: Arc<StorageService>,

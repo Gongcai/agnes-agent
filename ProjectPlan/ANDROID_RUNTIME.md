@@ -1,6 +1,6 @@
 # Android 本地 Agent 与 Linux Runtime 设计
 
-> 状态：规划确定，尚未开始实现
+> 状态：A0 开发中；Android scaffold 与可运行客户端基础已完成
 > 更新时间：2026-08-28
 > 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`
 
@@ -151,12 +151,14 @@ Android 有两种执行模式：
 
 ### A0：Android 基础客户端与 Runtime 接口
 
-- Tauri Android scaffold、arm64 真机调试和基础构建链；
-- 移动端 drawer、聊天、Agent、Session、Memory 页面；
-- Android SQLite、E2EE、设备配对和同步 bootstrap；
-- `AgentRuntime` 抽象，将桌面 sidecar 与 Android Runtime 解耦；
-- Android Keystore 接入；
-- workspace binding 数据模型和 SAF 权限状态；
+- [x] Tauri Android scaffold、ARM64 构建链和 debug APK；
+- [x] Android 专用 Tauri 配置，跳过桌面 sidecar 打包；
+- [x] 移动端 drawer、聊天、Agent、Session、Memory 页面复用现有 UI；
+- [x] Android library target、桌面/Android 条件编译和 Rustls 网络栈；
+- [x] `AgentRuntime` 抽象，将桌面 sidecar 与 Android Runtime 解耦；
+- [ ] Android SQLite、E2EE、设备配对和同步 bootstrap 的真机验收；
+- [ ] Android Keystore 接入；
+- [ ] workspace binding 数据模型和 SAF 权限状态；
 - 可先使用测试数据，不把双设备完整验收作为 A0 阻塞条件。
 
 ### A1：Linux Runtime 原型

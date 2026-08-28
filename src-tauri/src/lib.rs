@@ -14,6 +14,7 @@ mod notifications;
 mod pdf_models;
 mod reading;
 mod reading_context_menu;
+mod runtime;
 mod secrets;
 mod skills;
 mod state;
@@ -400,9 +401,10 @@ pub fn run() {
             storage::artifact_cache::start_background(db.clone(), data_dir.join("artifacts"));
             backup.clone().start_background();
 
-            // 2) 启动 AgentManager：Rust 起 WS Server + 拉起 Python sidecar。
-            //    非致命：失败仅日志，不阻断 UI 启动。
+            // 2) Desktop owns the Python sidecar. Android gets a runtime status
+            // placeholder until the Linux Runtime Service is installed.
             let agent = Arc::new(agent::AgentManager::new());
+            #[cfg(not(target_os = "android"))]
             if let Err(e) = agent.start(
                 db.clone(),
                 app.handle().clone(),
@@ -413,6 +415,13 @@ pub fn run() {
             ) {
                 eprintln!("[agent] 启动失败（非致命）：{e}");
             }
+
+            #[cfg(target_os = "android")]
+            let runtime: Arc<dyn runtime::AgentRuntime> =
+                Arc::new(runtime::AndroidLinuxRuntime::new());
+            #[cfg(not(target_os = "android"))]
+            let runtime: Arc<dyn runtime::AgentRuntime> =
+                Arc::new(runtime::DesktopSidecarRuntime::new(agent.clone()));
 
             #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
@@ -428,6 +437,7 @@ pub fn run() {
                 home_workspace_dir,
                 db,
                 agent,
+                runtime,
                 mcp,
                 secrets,
                 storage,
@@ -451,6 +461,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::ping,
+            commands::get_runtime_status,
             commands::open_webview_devtools,
             commands::list_agents,
             commands::update_agent_model,

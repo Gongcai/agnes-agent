@@ -81,7 +81,7 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
         </button>
       )}
 
-      <div className="flex shrink-0 items-center gap-0.5">
+      <div className="agnes-window-controls flex shrink-0 items-center gap-0.5">
         <button
           type="button"
           onClick={minimize}
@@ -113,4 +113,3 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
     </header>
   );
 };
-

@@ -184,6 +184,10 @@ impl AgentManager {
         }
     }
 
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
     /// 启动：绑定 127.0.0.1 随机端口，生成一次性 token，拉起 Python sidecar。
     /// 并将 WS Server 任务提交到 Tauri 的异步运行时。
     pub fn start(
