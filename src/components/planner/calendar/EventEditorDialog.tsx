@@ -148,7 +148,7 @@ export function EventEditorDialog({
   const isOccurrence = Boolean(event?.original_occurrence);
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-stone-900 p-4" role="presentation">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/25 p-4" role="presentation">
       <form
         onSubmit={submit}
         className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-lg border border-stone-200 bg-white shadow-xl"

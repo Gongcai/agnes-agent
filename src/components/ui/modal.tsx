@@ -54,7 +54,7 @@ export const Modal: React.FC<ModalProps> = ({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink dark:bg-black animate-fade-in"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/30 dark:bg-black/60 animate-fade-in"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

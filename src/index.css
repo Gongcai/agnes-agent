@@ -375,7 +375,7 @@ body.quick-window-body #root {
   --claude-danger-hover: #963535;
   --claude-header: #faf9f5;
   --claude-header-soft: #f5f0e8;
-  --claude-overlay: #1f1e1b;
+  --claude-overlay: rgba(31, 30, 27, 0.34);
   --claude-ui-font: "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "PingFang SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
   --claude-display-font: "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "PingFang SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
   --claude-mono-font: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
@@ -427,7 +427,7 @@ body.quick-window-body #root {
   --claude-danger-hover: #c66160;
   --claude-header: #1f1f1d;
   --claude-header-soft: #1f1f1d;
-  --claude-overlay: #000000;
+  --claude-overlay: rgba(0, 0, 0, 0.58);
   --claude-shadow: rgba(0, 0, 0, 0.42);
 }
 

@@ -2149,7 +2149,7 @@ export function DriveWorkspace() {
 
       {mediaPlayback && (
         <div
-          className="fixed inset-0 z-[70] grid place-items-center bg-black p-4"
+          className="fixed inset-0 z-[70] grid place-items-center bg-black/60 p-4"
           onClick={() => setMediaPlayback(null)}
         >
           <div
@@ -2176,7 +2176,7 @@ export function DriveWorkspace() {
 
       {imagePreview && (
         <div
-          className="fixed inset-0 z-[70] grid place-items-center bg-black p-4"
+          className="fixed inset-0 z-[70] grid place-items-center bg-black/70 p-4"
           onClick={closeImagePreview}
         >
           <div
@@ -2205,7 +2205,7 @@ export function DriveWorkspace() {
                 <CircleNotch className="h-8 w-8 animate-spin text-stone-400" />
               )}
               {imagePreviewLoading && imagePreview.src && (
-                <div className="absolute inset-0 grid place-items-center bg-black">
+                <div className="absolute inset-0 grid place-items-center bg-black/35">
                   <CircleNotch className="h-8 w-8 animate-spin text-white" />
                 </div>
               )}
@@ -2216,7 +2216,7 @@ export function DriveWorkspace() {
 
       {moveDialog && (
         <div
-          className="fixed inset-0 z-[60] grid place-items-center bg-black p-4"
+          className="fixed inset-0 z-[60] grid place-items-center bg-black/20 p-4"
           onClick={closeMoveDialog}
         >
           <div
@@ -2348,7 +2348,7 @@ export function DriveWorkspace() {
 
       {knowledgeImportItem && (
         <div
-          className="fixed inset-0 z-[60] grid place-items-center bg-black p-4"
+          className="fixed inset-0 z-[60] grid place-items-center bg-black/20 p-4"
           onClick={() => setKnowledgeImportItem(null)}
         >
           <div
@@ -2387,7 +2387,7 @@ export function DriveWorkspace() {
       )}
 
       {showQuarkAuthorization && (
-        <div className="fixed inset-0 z-[80] grid place-items-center bg-stone-900 p-4">
+        <div className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/30 p-4">
           <div className="w-full max-w-lg rounded-lg border border-stone-200 bg-[#FAF9F5] shadow-2xl">
             <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3">
               <div>

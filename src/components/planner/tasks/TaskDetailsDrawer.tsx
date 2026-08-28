@@ -111,7 +111,7 @@ export function TaskDetailsDrawer({
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-stone-900" role="presentation">
+    <div className="fixed inset-0 z-40 flex justify-end bg-stone-950/20" role="presentation">
       <aside
         className="flex h-full w-full max-w-md flex-col border-l border-stone-200 bg-[#FAF9F5] shadow-2xl"
         role="dialog"

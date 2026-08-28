@@ -666,7 +666,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {sessionSearchOpen && createPortal(
         <div
-          className="fixed inset-0 z-[100] grid place-items-start bg-stone-900 p-4 pt-[min(14vh,7rem)]"
+          className="fixed inset-0 z-[100] grid place-items-start bg-stone-950/25 p-4 pt-[min(14vh,7rem)]"
           role="presentation"
           onMouseDown={closeSessionSearch}
         >

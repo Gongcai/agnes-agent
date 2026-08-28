@@ -2218,7 +2218,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   return (
-    <div className="agnes-settings-overlay fixed inset-0 z-50 flex items-center justify-center bg-black">
+    <div className="agnes-settings-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="agnes-settings-modal w-[960px] h-[640px] border border-stone-200 bg-white rounded-2xl overflow-hidden shadow-2xl flex flex-col">
         {/* Header */}
         <header className="px-5 py-4 border-b border-stone-200 bg-stone-50 flex justify-between items-center shrink-0">
@@ -5361,7 +5361,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       
       {/* Model Selection Modal */}
       {isModelSelectOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30">
           <div className="agnes-model-select-modal w-[480px] max-h-[500px] bg-white border border-stone-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             <div className="px-5 py-3.5 border-b border-stone-200 bg-stone-50 flex justify-between items-center shrink-0">
               <h4 className="text-sm font-semibold text-stone-800">选择要导入的模型</h4>
@@ -5429,7 +5429,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       {/* 头像圆形裁剪浮层 */}
       {cropSrc && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40">
           <div className="w-[360px] bg-white border border-stone-200 rounded-2xl shadow-2xl p-5 flex flex-col items-center gap-4">
             <h4 className="text-sm font-semibold text-stone-800 self-start">裁剪圆形头像</h4>
             <canvas

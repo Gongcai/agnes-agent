@@ -267,7 +267,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[300] flex items-start justify-center pt-[14vh] px-4 bg-ink dark:bg-black animate-fade-in"
+      className="fixed inset-0 z-[300] flex items-start justify-center pt-[14vh] px-4 bg-ink/30 dark:bg-black/60 animate-fade-in"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

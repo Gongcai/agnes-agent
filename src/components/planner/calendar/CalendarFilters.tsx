@@ -100,7 +100,7 @@ export function CalendarFilters({
       </aside>
 
       {isCreating && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-900 p-4" role="presentation">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/25 p-4" role="presentation">
           <form
             onSubmit={submit}
             className="w-full max-w-sm rounded-lg border border-stone-200 bg-white p-5 shadow-xl"
