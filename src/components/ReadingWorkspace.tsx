@@ -18,8 +18,10 @@ import {
 import {
   DEFAULT_CONTEXT_LIMIT,
   DEFAULT_MAX_OUTPUT_TOKENS,
+  fontScaleFactor,
   getCachedAutoFollowStreaming,
   getCachedAutoExpandThoughts,
+  getCachedFontScale,
   getResolvedColorScheme,
   subscribeUIPreferenceChanges,
   type ResolvedColorScheme,
@@ -228,9 +230,11 @@ function appSerifFontFamily(): string {
 function epubTheme(
   colorScheme: ResolvedColorScheme,
   preferences: ReadingPreferences,
+  fontScale: Parameters<typeof fontScaleFactor>[0],
 ): Record<string, Record<string, string>> {
   const dark = colorScheme === "dark";
   const serifFont = `${appSerifFontFamily()} !important`;
+  const fontSize = preferences.fontSize * fontScaleFactor(fontScale);
   return {
     html: {
       background: dark ? "#1f1e1b" : "#fbfaf6",
@@ -240,7 +244,7 @@ function epubTheme(
       background: dark ? "#1f1e1b" : "#fbfaf6",
       color: dark ? "#dedad1" : "#282723",
       "font-family": serifFont,
-      "font-size": `${preferences.fontSize}px !important`,
+      "font-size": `${fontSize}px !important`,
       "line-height": `${preferences.lineHeight} !important`,
       width: "100% !important",
       "max-width": `${preferences.contentWidth}px !important`,
@@ -385,6 +389,7 @@ const EpubPane: React.FC<{
   const openSelectionMenuRef = useRef(onOpenSelectionMenu);
   const colorSchemeRef = useRef(colorScheme);
   const preferencesRef = useRef(preferences);
+  const fontScaleRef = useRef(getCachedFontScale());
   const highlightsRef = useRef(highlights);
   const appliedHighlightsRef = useRef(new Map<string, { cfiRange: string; color: string }>());
   const [toc, setToc] = useState<NavItem[]>([]);
@@ -405,14 +410,22 @@ const EpubPane: React.FC<{
 
   useEffect(() => { highlightModeRef.current = highlightMode; }, [highlightMode]);
   useEffect(() => subscribeUIPreferenceChanges((change) => {
-    if (change.fontScale !== undefined) setRootZoom(getRootZoomScale());
+    if (change.fontScale !== undefined) {
+      fontScaleRef.current = change.fontScale;
+      renditionRef.current?.themes.default(epubTheme(
+        colorSchemeRef.current,
+        preferencesRef.current,
+        change.fontScale,
+      ));
+      setRootZoom(getRootZoomScale());
+    }
   }), []);
   useEffect(() => { createHighlightRef.current = onCreateHighlight; }, [onCreateHighlight]);
   useEffect(() => { openSelectionMenuRef.current = onOpenSelectionMenu; }, [onOpenSelectionMenu]);
   useEffect(() => {
     colorSchemeRef.current = colorScheme;
     preferencesRef.current = preferences;
-    renditionRef.current?.themes.default(epubTheme(colorScheme, preferences));
+    renditionRef.current?.themes.default(epubTheme(colorScheme, preferences, fontScaleRef.current));
   }, [colorScheme, preferences]);
 
   // The discussion sidebar animates its width over 300ms; WebKit's ResizeObserver
@@ -559,7 +572,11 @@ const EpubPane: React.FC<{
           allowScriptedContent: false,
         });
         renditionRef.current = rendered;
-        rendered.themes.default(epubTheme(colorSchemeRef.current, preferencesRef.current));
+        rendered.themes.default(epubTheme(
+          colorSchemeRef.current,
+          preferencesRef.current,
+          fontScaleRef.current,
+        ));
         rendered.on("relocated", (location: Location) => {
           const cfi = location?.start?.cfi;
           if (!cfi) return;
