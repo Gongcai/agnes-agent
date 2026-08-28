@@ -15,7 +15,7 @@
     "sync:dev": "pnpm --filter @agnes/sync-api dev",
     "sync:test": "pnpm --filter @agnes/sync-api test",
     "sync:typecheck": "pnpm --filter @agnes/sync-api typecheck",
-    "tauri": "GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri"
+    "tauri": "tauri"
   },
   "dependencies": {
     "@fullcalendar/core": "6.1.21",

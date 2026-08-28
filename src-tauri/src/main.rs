@@ -43,13 +43,32 @@ const TRAY_QUIT_ID: &str = "tray-quit";
 
 #[cfg(target_os = "linux")]
 fn configure_linux_webview_environment() {
-    // WebKitGTK's DMA-BUF renderer can produce an empty surface on some Arch GPU stacks.
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+    // WebKitGTK's DMA-BUF renderer crashes GTK3 on Wayland (explicit-sync bug) and fails
+    // GBM buffer creation on X11 with NVIDIA hybrid GPUs, so it stays disabled by default.
+    // AGNES_WEBKIT_ENABLE_DMABUF=1 opts back in for debugging; on hybrid GPU laptops
+    // AGNES_WEBKIT_RENDER_DEVICE can pin a working render node (e.g. the Intel iGPU).
+    let dmabuf_opt_in = std::env::var("AGNES_WEBKIT_ENABLE_DMABUF")
+        .map(|value| value == "1")
+        .unwrap_or(false);
+    if dmabuf_opt_in {
+        std::env::remove_var("WEBKIT_DISABLE_DMABUF_RENDERER");
+        if let Ok(device) = std::env::var("AGNES_WEBKIT_RENDER_DEVICE") {
+            if !device.is_empty() {
+                std::env::set_var("WEBKIT_WEB_RENDER_DEVICE_FILE", device);
+            }
+        }
+    } else if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
-    // Keep release launches aligned with the X11-backed development command.
-    if std::env::var_os("GDK_BACKEND").is_none() {
-        std::env::set_var("GDK_BACKEND", "x11");
+    // Run native Wayland inside Wayland sessions; X11 elsewhere. AGNES_GDK_BACKEND and
+    // an existing GDK_BACKEND take precedence.
+    if let Ok(backend) = std::env::var("AGNES_GDK_BACKEND") {
+        if !backend.is_empty() {
+            std::env::set_var("GDK_BACKEND", backend);
+        }
+    } else if std::env::var_os("GDK_BACKEND").is_none() {
+        let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+        std::env::set_var("GDK_BACKEND", if session == "wayland" { "wayland" } else { "x11" });
     }
 }
 
