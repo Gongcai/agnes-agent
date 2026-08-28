@@ -255,6 +255,38 @@ function epubTheme(
   };
 }
 
+interface EpubManagerHandle {
+  rendered?: boolean;
+  updateLayout?: () => void;
+  bounds?: () => { width: number; height: number };
+  stage?: { resizeFunc?: EventListener | null };
+  views?: {
+    forEach: (callback: (view: {
+      size?: (width?: number | null, height?: number | null) => void;
+    }) => void) => void;
+  };
+  _bounds?: { width: number; height: number };
+}
+
+function epubManager(rendition: Rendition): EpubManagerHandle | undefined {
+  return (rendition as unknown as { manager?: EpubManagerHandle }).manager;
+}
+
+// rendition.resize() clears every view and re-displays the current location,
+// which in scrolled-doc flow lands back on the first page because the restore
+// scroll runs before the reflowed content heights settle. updateLayout()
+// re-measures the stage and re-formats the already rendered views in place,
+// keeping the scroll position. Existing views retain their old locked iframe
+// width unless it is passed to size(), so update both the view frame and its
+// inner document.
+function softResizeRendition(rendition: Rendition, width: number): void {
+  const manager = epubManager(rendition);
+  if (!manager?.rendered || typeof manager.updateLayout !== "function") return;
+  manager.updateLayout();
+  manager.views?.forEach((view) => view.size?.(width, null));
+  if (typeof manager.bounds === "function") manager._bounds = manager.bounds();
+}
+
 function flattenToc(items: NavItem[]): NavItem[] {
   return items.flatMap((item) => [item, ...flattenToc(item.subitems ?? [])]);
 }
@@ -365,8 +397,16 @@ const EpubPane: React.FC<{
   const [editingHighlightId, setEditingHighlightId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [colorDraft, setColorDraft] = useState("yellow");
+  // The app-wide font scale applies CSS zoom to <html>. WebKitGTK sizes the epub
+  // iframe's inner viewport by the frame's post-zoom size, so leaving the zoom in
+  // place makes the book content overflow its frame and hide behind the sidebar.
+  // The host div cancels the root zoom out for the whole epub region.
+  const [rootZoom, setRootZoom] = useState(() => getRootZoomScale());
 
   useEffect(() => { highlightModeRef.current = highlightMode; }, [highlightMode]);
+  useEffect(() => subscribeUIPreferenceChanges((change) => {
+    if (change.fontScale !== undefined) setRootZoom(getRootZoomScale());
+  }), []);
   useEffect(() => { createHighlightRef.current = onCreateHighlight; }, [onCreateHighlight]);
   useEffect(() => { openSelectionMenuRef.current = onOpenSelectionMenu; }, [onOpenSelectionMenu]);
   useEffect(() => {
@@ -386,13 +426,12 @@ const EpubPane: React.FC<{
       const host = hostRef.current;
       const rendition = renditionRef.current;
       if (!host || !rendition) return;
-      const width = host.clientWidth;
-      const height = host.clientHeight;
-      if (width > 0 && height > 0) rendition.resize(width, height);
+      if (host.clientWidth <= 0 || host.clientHeight <= 0) return;
+      softResizeRendition(rendition, host.clientWidth);
     };
     const settleTimer = window.setTimeout(resizeToHost, 350);
     return () => window.clearTimeout(settleTimer);
-  }, [discussionOpen, loading]);
+  }, [discussionOpen, loading, rootZoom]);
 
   const syncHighlights = () => {
     const rendition = renditionRef.current;
@@ -658,6 +697,13 @@ const EpubPane: React.FC<{
         });
         await rendered.display(book.progress_cfi || undefined);
         if (!disposed) {
+          // epubjs also registers a window resize listener that re-renders every
+          // view (losing the scroll position); sizing is handled by the
+          // ResizeObserver below through softResizeRendition instead.
+          const stageHandle = epubManager(rendered)?.stage;
+          if (stageHandle?.resizeFunc) {
+            window.removeEventListener("resize", stageHandle.resizeFunc);
+          }
           resizeObserver = new ResizeObserver(() => {
             if (resizeTimer !== null) window.clearTimeout(resizeTimer);
             resizeTimer = window.setTimeout(() => {
@@ -665,7 +711,7 @@ const EpubPane: React.FC<{
               if (disposed || !rendered) return;
               const width = host.clientWidth;
               const height = host.clientHeight;
-              if (width > 0 && height > 0) rendered.resize(width, height);
+              if (width > 0 && height > 0) softResizeRendition(rendered, width);
             }, 80);
           });
           resizeObserver.observe(host);
@@ -942,7 +988,7 @@ const EpubPane: React.FC<{
 
       {loading && <div className="absolute inset-0 z-10 grid place-items-center bg-canvas/80"><CircleNotch className="h-5 w-5 animate-spin text-clay" /></div>}
       {error && <div className="m-5 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs leading-relaxed text-rose-700">无法打开这本 EPUB：{error}</div>}
-      <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden" />
+      <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden" style={{ zoom: rootZoom > 0 ? 1 / rootZoom : 1 }} />
     </section>
   );
 };
