@@ -54,4 +54,5 @@ wrangler d1 execute <db> --local --file=schema.sql   # 初始化 D1
 ```bash
 pnpm tauri android dev          # 连设备/模拟器调试
 pnpm tauri android build        # 打包 APK/AAB
+pnpm android:build              # 自动配置已安装 NDK，默认构建 ARM64 APK
 ```

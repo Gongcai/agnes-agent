@@ -10,6 +10,7 @@
     "build:sidecar": "node scripts/build-sidecar.mjs",
     "build:pdf-package": "node scripts/build-pdf-model-package.mjs",
     "preview": "vite preview",
+    "android:build": "node scripts/android-build.mjs",
     "test": "vitest run src",
     "test:watch": "vitest src",
     "sync:dev": "pnpm --filter @agnes/sync-api dev",
