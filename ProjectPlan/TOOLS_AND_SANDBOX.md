@@ -1,7 +1,7 @@
 # 基础工具调用 + 安全沙箱 设计
 
 > 目标：补齐基础工具集、把 workspace 打通为工具默认 cwd、引入分层安全沙箱、统一风险/审批模型。
-> 范围：Linux 桌面优先（项目当前运行环境），macOS/Android 后续按需适配。
+> 范围：Linux 桌面与 Android Linux Runtime；macOS 按需适配。
 
 ## 一、当前缺口（已勘探确认）
 

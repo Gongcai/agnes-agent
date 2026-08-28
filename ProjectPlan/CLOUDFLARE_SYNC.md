@@ -3,7 +3,7 @@
 > 状态：Phase 0-4 已完成，E2EE Worker 已部署且 production D1 为空
 > 记忆同步状态：旧实体实现已废弃；`memory_file` 破坏式替换见 Phase M，尚未实施
 > 调研日期：2026-07-17
-> 适用版本：V0.3 Cloudflare 同步、V0.4 Android 轻客户端  
+> 适用版本：V0.3 Cloudflare 同步、Android 本地 Agent 与跨设备同步
 > 关联文档：`PROJECT.md`、`architecture.md`、`UI_DESIGN.md`、`STORAGE_AND_RAG.md`
 
 ## 1. 结论
@@ -23,7 +23,7 @@ D1 **不替换**桌面端和 Android 端的本地 SQLite。系统继续坚持 lo
 2. 本地写入成功即视为业务成功，不等待云端；
 3. Rust 在后台将事务性 outbox 推送到 Worker，并按游标拉取其他设备的变更；
 4. Worker 或 D1 不可用、网络断开、免费额度耗尽时，只影响同步，不影响聊天、记忆和工具执行；
-5. React 只展示同步状态，Python sidecar 不直接访问同步 API 或云数据库。
+5. React 只展示同步状态，任何桌面 sidecar 或 Android Linux Runtime 内的 Python Agent 都不直接访问同步 API 或云数据库。
 
 不采用以下方案：
 
@@ -197,7 +197,7 @@ workspace_binding         # 仅本地
 设备作用域由数据库实例天然隔离；云端 workspace payload 不包含 binding。同步到新设备但
 尚未绑定目录的 workspace 可以展示逻辑信息，但工具执行不得把空路径当作 cwd。
 
-Android 可以看到某个 session 属于哪个逻辑 workspace，但没有本地目录时不得尝试执行文件工具。
+Android 可以看到某个 session 属于哪个逻辑 workspace；有有效的应用私有目录或 SAF 授权绑定时可以执行本地工具，没有绑定时不得尝试执行文件工具。Android Runtime 的 rootfs、URI 和宿主绝对路径始终只保存在本机。
 
 Phase 3A 已将逻辑 `workspace_id` 纳入 Session payload，同时继续排除
 `workspace_bindings.folder_path / last_validated_at`。Workspace 创建、重命名、删除与 outbox
@@ -1324,11 +1324,13 @@ D1 Time Travel 在免费层保留 7 天，默认启用且可按时间点恢复�
 - Worker bootstrap 顺序扩展到 Planner 依赖层级；`0004_planner_bootstrap_order.sql` 将更新已部署 D1 的
   expression index。回归覆盖本地 outbox、远端无回声、例外墓碑、乱序父子待办恢复及 Worker 排序。
 
-### Phase 5：Android 与 R2
+### Phase 5：Android、Linux Runtime 与 R2
 
 - Android 使用相同 Sync Protocol 和 E2EE；
-- Android 保持本地 SQLite 缓存；
-- workspace folder binding 在 Android 为空；
+- Android 保持本地 SQLite，并允许应用私有工作区或 SAF `workspace_binding`；
+- Android 通过独立 Runtime Service + PRoot/Ubuntu ARM64 运行本地 Python Agent；
+- Android Runtime 与 Rust Core 之间使用受认证的本地 IPC，Python Agent 不直接访问同步 API、SQLite 或 Android 文件权限；
+- Android 与桌面端共享 Agent Protocol；SSH 仅作为桌面远程执行 adapter；
 - [x] 按 `STORAGE_AND_RAG.md` 接入 R2 加密制品：Worker Multipart 上传、分片 hash、完成校验、owner-scoped opaque key、manifest/replica/change/device state API 和 Range 下载；
 - [x] 桌面端自动维护 `r2-managed` 账户，只读复用同步 Keyring 凭证，并兼容 Bearer 与 Cloudflare Access 鉴权；
 - [x] Rust 客户端接入 object manifest/change/device-state API，并将 object cursor 与聊天 pull cursor 分离；
@@ -1341,7 +1343,9 @@ D1 Time Travel 在免费层保留 7 天，默认启用且可按时间点恢复�
 - 桌面端完成 E2EE 恢复材料确认、设备 token 写入 Keyring 和真实 Worker Bearer 认证；547 条测试同步变更可在一次手动同步中自动排空，冲突/失败保持为 0/0。
 - 远端当前仅保留测试数据（1 台测试设备、215 个测试实体、547 条同步变更）；一个测试知识制品已完成 R2 Multipart 上传，manifest/replica/change/device state 各写入一条记录，重复发布复用同一 artifact。
 - 远端直接下载所得密文对象为 59,271 字节，SHA-256 与 D1 manifest 一致；Wrangler bucket 汇总计数当时仍为 0，属于聚合统计延迟，实际对象读取成功。
-- 真实 R2 桌面发布验收已完成；安卓端多设备 Range 下载、原子安装和设备状态回写继续留到 Android 客户端完成后统一执行。
+- 真实 R2 桌面发布验收已完成；安卓端多设备 Range 下载、原子安装和设备状态回写继续留到 Android 主体与 Linux Runtime 完成后统一执行。
+
+Android 的具体阶段、rootfs 安装、工作区互通、Runtime 生命周期和验收标准见 `ProjectPlan/ANDROID_RUNTIME.md` 的 A0-A3。
 
 ---
 

@@ -20,9 +20,11 @@ Linux 桌面端的标准发行构建、Arch Linux AppImage 兼容处理与产物
 
 同步 E2EE 的密码学格式、AAD、keyset 与上线门禁详见 `ProjectPlan/E2EE.md`。
 
+Android 本地完整 Agent、PRoot/Ubuntu Runtime、Android Service、工作区互通与分阶段验收详见 `ProjectPlan/ANDROID_RUNTIME.md`。
+
 # 项目定位
 
-`agnes-agent` 是一个**带 Agent 能力的酒馆式多角色聊天应用**（更接近 SillyTavern + Agents，而非纯 Agent 工具）。核心是可创建/管理多个 **AGENTS（角色卡）**，每个 Agent 有独立人设、系统提示词、工具权限与长期记忆；用户与某个 Agent 在 session 中对话，Agent 背后挂 Python LangGraph 运行时执行工具。**桌面端（Tauri）是真正的执行器**，负责本地文件、终端、Git、SSH、工具调用；**安卓端优先做轻客户端 + SSH 控制器**，不在 Android 内置 Termux/Ubuntu 跑完整 Agent（维护成本、权限、后台存活、依赖安装都太烦）。
+`agnes-agent` 是一个**带 Agent 能力的酒馆式多角色聊天应用**（更接近 SillyTavern + Agents，而非纯 Agent 工具）。核心是可创建/管理多个 **AGENTS（角色卡）**，每个 Agent 有独立人设、系统提示词、工具权限与长期记忆；用户与某个 Agent 在 session 中对话，Agent 背后挂 Python LangGraph 运行时执行工具。**桌面端和安卓端都是执行器**：桌面端在宿主操作系统运行 Agent，安卓端通过独立 Linux Runtime 在本地运行完整 Agent。SSH 作为连接桌面 Agent 的兼容能力保留，但不是安卓端的唯一执行路径。
 
 # 技术栈
 
@@ -35,7 +37,7 @@ Linux 桌面端的标准发行构建、Arch Linux AppImage 兼容处理与产物
 | 云端同步 | Cloudflare Workers + Hono + D1 + Drizzle ORM |
 | 大对象存储 | 本地内容库 + Cloudflare R2 / Google Drive 加密副本 |
 | Embedding | BGE-M3 / Qwen Embedding / Ollama embeddinggemma（本地优先），Cloudflare Workers AI 也提供 BGE-M3 |
-| 安卓 | Tauri Android（聊天/历史/记忆 → 后续 SSH 控制桌面 Agent） |
+| 安卓 | Tauri Android + Android Service + PRoot/Ubuntu ARM64（本地完整 Agent；SSH 作为桌面远程 adapter） |
 
 # 架构
 
@@ -59,8 +61,11 @@ Linux 桌面端的标准发行构建、Arch Linux AppImage 兼容处理与产物
                ▼
 ┌─────────────────────────────┐
 │ Android Tauri App            │
-│  Chat UI + 本地 SQLite 缓存  │
-│  Optional: SSH 控制桌面 Agent │
+│  Chat UI + Rust Core         │
+│  SQLite + Sync + E2EE        │
+│  Android Runtime Service     │
+│  PRoot + Ubuntu + Python Agent│
+│  Optional: SSH 桌面远程模式  │
 └─────────────────────────────┘
 ```
 
@@ -185,7 +190,7 @@ Home 普通会话共享一个设备本地的通用工作区，首选系统 Docum
 | V0.1 | Tauri 2 + React 聊天 UI + SQLite + Python LangGraph sidecar + LiteLLM | 已完成：开发态通过 `uv` 启动，发布态使用 PyInstaller 冻结为按 target triple 命名的 `agentd` 并由 Tauri `externalBin` 内置；发布构建会自动执行独立 WebSocket 协议握手测试，安装后不依赖 Python 或 `uv` |
 | V0.2 | message summary + 持久记忆文件系统 + prompt assembler | 会话摘要已完成；旧结构化/向量记忆实现将直接删除并按 `MEMORY_SYSTEM.md` 重构为虚拟 Markdown 文件系统，不做数据迁移。正式行为提示词为 `MEMORY_FILESYSTEM_PROMPT.md` |
 | V0.3 | Cloudflare Workers + D1 + 事务性 outbox + 增量同步 + E2EE | Phase 0-4 已完成：密文传输、SPAKE2 新设备配对、两阶段密钥轮换、Recovery Bundle 多版本恢复和线上日志审计均已完成；Worker 已部署，真实桌面端已用测试数据完成 E2EE 同步、手动排空和断点续推验收。远端当前仅保留测试设备与测试同步数据，未上传真实业务内容 |
-| V0.4 | Tauri Android 聊天/历史/记忆 + 云同步 + SSH 控制桌面 Agent | 暂缓：先稳定桌面客户端与本地 Agent 能力，再启动 Android 客户端 |
+| V0.4 | Android 基础客户端 + 云同步 + E2EE + AgentRuntime 接口 | 规划中：先完成 Tauri Android、移动 UI、本地 SQLite、设备配对、同步和运行时抽象；双设备完整验收后置 |
 | V0.5 | MCP + Skills + diff review + workspace sandbox + tool audit + 多模型 fallback | 已完成桌面端基础闭环：工具、审批、Linux 沙箱、审计、模型路由、内置 `web_search/web_fetch/browser_open`、可配置 SearXNG/Brave Search Provider、MCP Client、主模型零输出故障回退、兼容 `SKILL.md` 的本地/Git 安装与运行时资源边界，以及 `file_write/file_edit/apply_patch` 批准前变更预览均已接入；沙箱支持规范化软链接的额外可写根目录，`uv`/pnpm/Cargo 等开发工具可复用真实用户缓存和工具链目录；浏览器为隔离无登录的严格只读渲染能力。diff review 当前按整次文件工具调用批准或拒绝，不预测 Shell/Git/MCP 的任意副作用，也不提供逐 hunk 选择 |
 | V0.6 | 侧边栏子功能导航 + 知识库 + 本地 RAG + 加密向量制品 + 通用网盘 Provider | 代码阶段已完成：本地 RAG、chunks/embeddings artifact 导出与事务性 sqlite-vec 导入、artifact v1 加密/校验/原子安装、SQLite manifest/replica/device 状态、Google Drive 对象副本编排、R2 Worker Multipart/Range 数据面、Rust object 控制面客户端及独立 artifact replication coordinator 已完成；知识库已通过独立轻量 `document-parserd` 支持 DOCX/PPTX/XLSX 结构化解析，并通过显式安装的离线模型包支持 PDF 版面、表格和中英文 OCR，保留标题、页码、幻灯片、工作表、表格范围和解析器指纹；知识库支持按文档构建、缓存和发布 R2 加密向量制品，失败重试复用同一 artifact，并在页面展示向量覆盖、ready 副本和远端设备安装状态；本地制品存储提供默认 2 GiB 配额、容量统计、手动清理和定时安全 GC，只回收已有 ready 远端副本的缓存或旧安装目录；聊天 pull cursor 与 object cursor 已分离。Worker 已接入 R2 孤儿副本对账、7 天宽限期、有界定时 GC 与中断重试，契约测试覆盖分片校验、owner 隔离、逻辑版本 CAS、幂等重放、设备落地状态、过期上传和孤儿回收。Google Drive 与夸克真实账户基础链路、文件管理和知识库/书架导入均已验收，Google Workspace 文档导出与 token 刷新也已通过；真实 R2 bucket、D1 migration、Worker 部署、知识制品发布、重复复用、密文对象下载 Hash 和本机设备状态均已验收；跨设备 Range 下载与原子安装仍待安卓端完成后统一验证 |
 | V0.7 | 本地日历 + 待办 | 已完成：本地域模型、Local Provider、受审批约束的 Agent 工具、完整桌面工作区、本地统一通知服务和 D1 E2EE 同步均已完成。日历支持月/周/日/议程、多日历叠加、当天议程、待办图层及重复 occurrence 例外；待办支持五类智能视图、自定义列表、重要/我的一天、日期或精确时间、步骤和完成后生成下一重复实例；通知中心覆盖 AI 回复/许可、任务到期和日历事件。Google Calendar / Google Tasks / CalDAV 不纳入默认路线图，未来仅按实际需求作为可选扩展评估。 |
@@ -195,8 +200,8 @@ Home 普通会话共享一个设备本地的通用工作区，首选系统 Docum
 
 - 项目定位是"带 Agent 能力的酒馆式多角色聊天"，不是纯 Agent 工具：核心是可创建多个 AGENTS（角色卡），每个有独立人设/系统提示词/工具权限/长期记忆。
 - session 与 AGENTS 多对一；长期记忆虚拟文件系统按 Agent 隔离，不是全局单一记忆，也不隐式继承全局画像。
-- 桌面端是执行器，安卓端轻交互，不要在 Android 内置完整 Agent 作为 MVP。
-- 当前优先稳定桌面端与本地 Agent 基础能力；Android 客户端在桌面端稳定后再恢复排期。
+- 桌面端和安卓端都可以是执行器；安卓端通过独立 Linux Runtime 运行完整 Agent，第一版可以先交付轻客户端能力。
+- Android 的 PRoot/Ubuntu Runtime、Service 生命周期、工作区互通和验收按 `ANDROID_RUNTIME.md` 分阶段实施。
 - 向量库本地优先，不跨端同步；云端只同步文本与用户数据。
 - 上一条中“向量不跨端同步”专指原始向量行不进 D1/服务端检索；大型 RAG 允许以客户端加密、指纹完全匹配的便携制品存入 R2/Google Drive。
 - Provider API Key、同步凭证和 E2EE 主密钥只进入 OS Keyring / Android Keystore，不进入 SQLite、renderer 明文 IPC 或同步 payload。

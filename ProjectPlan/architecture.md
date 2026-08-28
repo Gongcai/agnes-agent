@@ -14,11 +14,11 @@ Presentation Plane  (React)
   通过 Tauri IPC 与 Rust 通信，绝不碰本地系统
 
 Execution + Data Plane (Rust / src-tauri)   ← 唯一资源拥有者
-  唯一拥有：SQLite / 文件 / shell / PTY / SSH / 工具执行 / sidecar 生命周期 / 同步
-  内部：DbActor（DB 单写者）、ToolExecutor（工具执行+审计）、AgentManager（sidecar 生命周期）
+  唯一拥有：SQLite / 文件 / shell / PTY / SSH / 工具执行 / Agent Runtime 生命周期 / 同步
+  内部：DbActor（DB 单写者）、ToolExecutor（工具执行+审计）、AgentManager（桌面 sidecar 生命周期）、RuntimeManager（Android Linux Runtime 生命周期）
 
 Reasoning Plane (Python sidecar / agent)
-  LangGraph + LiteLLM
+  LangGraph + LiteLLM（桌面 sidecar 或 Android Linux Runtime 内的 Python）
   只做：prompt 拼装 / 模型推理 / 工具*选择*（包括本轮记忆读写决策）
   绝不直接访问 DB / 文件系统 / shell
 ```
@@ -43,7 +43,7 @@ agnes-agent/
 │       ├── error.rs            # 统一错误 AppError
 │       ├── state.rs            # 托管 DbActor / AgentManager / Config
 │       ├── commands/           # Tauri 命令（IPC 边界：仅校验+委托）
-│       ├── agent/              # AgentManager + WS Server + Agent Protocol
+│       ├── agent/              # AgentManager + RuntimeManager + WS Server + Agent Protocol
 │       ├── db/                 # rusqlite + DbActor + repo/
 │       ├── tools/              # ToolExecutor + 各工具实现 + tool_policy
 │       ├── fs.rs pty.rs ssh.rs
@@ -188,6 +188,8 @@ Python 本轮内只做：prompt 拼装 / 模型调用 / 工具决策。持久记
     DevUvLauncher      → std::process::Command 启动 `uv run python -m app.main`
     BundledBinLauncher → 发布态加载 externalBin（agentd 二进制）
   ```
+
+  Android 通过 `RuntimeManager` 连接原生 Android Runtime Service。Service 负责 Foreground Service 生命周期、PRoot/Ubuntu rootfs、PTY 和受控进程；Python Agent 仍通过相同 Agent Protocol 连接 Rust，不直接访问 Android 数据层。
 - `tools/`：`ToolExecutor` + 每工具模块（shell/file/git/ssh/memory/browser），统一 trait；MCP 外部工具 V0.5 以同类 trait 接入。
 - `storage/`：网盘领域 DTO、`FileSourceProvider / FileUploadProvider / FileManagementProvider / ObjectStorageProvider / QuotaProvider / ProviderFactory` 窄端口、Keyring 凭证 adapter、开放注册表与 `StorageService`。`ProviderFactory` 同时提供可选的一次性授权和 challenge/poll 两阶段授权，凭证结果不经过 renderer。`google_drive` 通过官方 API 实现 Desktop OAuth + PKCE、Drive v3 文件源/断点上传、用户文件移入回收站及 `appDataFolder` 对象存储；`quark_drive` 通过 community HTTP adapter 实现文本/JSON Cookie 与二维码授权、文件源、分片上传、配额和移入回收站，但不实现应用对象存储。业务层和 renderer 不依赖任一服务商 API 类型。
 - `memory/`：实现按 Agent 隔离的虚拟 Markdown 记忆文件系统、frontmatter/事实标签校验、目录 listing、版本 CAS、有限修订与冲突恢复（见 §8 和 `MEMORY_SYSTEM.md`）。
@@ -408,11 +410,11 @@ pnpm test                         # vitest
 | memory summary | `sessions.summary` | summary 是会话级状态 |
 | 工具权限 | capability + approval + sandbox + audit | 审批非唯一防线 |
 | sync | append-only + version/tombstone | 为离线同步准备 |
-| Android | 不跑 Python sidecar | 先做轻客户端 / SSH 控制器 |
+| Android Runtime | Android Service + PRoot/Ubuntu ARM64 + Python Agent | 让安卓最终具备本地完整 Agent；Service 独立于 Activity 管理运行时 |
 | 包管理 | pnpm workspace（不用 turborepo） | 轻量 monorepo |
 
 ---
 
 ## 15. 后续扩展（不推翻本架构）
 
-Android（V0.4 轻客户端+SSH）、Cloudflare 同步（V0.3）、MCP 外部工具（V0.5）、局域网 Web 控制台——均挂载在现有三平面边界之上，不重构核心。
+Android（`ANDROID_RUNTIME.md` 的 A0-A3）、Cloudflare 同步（V0.3）、MCP 外部工具（V0.5）、局域网 Web 控制台——均挂载在现有三平面边界之上，不重构核心。SSH 作为 Android Desktop Remote adapter 保留。

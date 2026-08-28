@@ -8,7 +8,7 @@ Agnes Agent 是一个本地优先的桌面应用，用于多 Agent 对话、持�
 
 ## 项目状态
 
-项目仍在积极开发中。桌面端主要工作流已经可用，但暂未建立正式发布版本和公共兼容性承诺。Android 客户端暂按轻量交互端和 SSH 控制器规划，不会在 Android 内置完整的本地 Agent 运行时。
+项目仍在积极开发中。桌面端主要工作流已经可用，但暂未建立正式发布版本和公共兼容性承诺。Android 端先交付轻客户端和同步基础，后续通过独立的 PRoot/Ubuntu Linux Runtime 在手机本地运行完整 Agent；SSH 作为连接桌面 Agent 的兼容模式保留。
 
 ## 当前能力
 
@@ -125,6 +125,7 @@ Google Drive 需要 Google Desktop OAuth client JSON 文件。应用会打开 OA
 ## 文档
 
 - [项目总览和路线图](ProjectPlan/PROJECT.md)
+- [Android 本地 Agent 与 Linux Runtime 规划](ProjectPlan/ANDROID_RUNTIME.md)
 - [存储、RAG 和外部服务](ProjectPlan/STORAGE_AND_RAG.md)
 - [记忆文件系统](ProjectPlan/MEMORY_SYSTEM.md)
 - [记忆运行时提示词](ProjectPlan/MEMORY_FILESYSTEM_PROMPT.md)

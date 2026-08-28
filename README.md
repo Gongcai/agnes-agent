@@ -8,7 +8,7 @@ The desktop application uses Tauri 2, React, TypeScript, Rust, SQLite, and Pytho
 
 ## Status
 
-This repository is under active development. The desktop workflow is usable, but releases and public compatibility guarantees have not been established. Android is planned as a lightweight client and SSH controller rather than a full local Agent runtime.
+This repository is under active development. The desktop workflow is usable, but releases and public compatibility guarantees have not been established. Android will initially ship the lightweight client and sync foundation, then run the full local Agent through an isolated PRoot/Ubuntu Linux Runtime; SSH remains a compatibility mode for connecting to a desktop Agent.
 
 ## Features
 
@@ -123,6 +123,7 @@ Do not commit cookies, OAuth client files, access tokens, `.env` files, or other
 ## Documentation
 
 - [Project overview and roadmap](ProjectPlan/PROJECT.md)
+- [Android local Agent and Linux Runtime plan](ProjectPlan/ANDROID_RUNTIME.md)
 - [Storage, RAG, and external services](ProjectPlan/STORAGE_AND_RAG.md)
 - [Memory filesystem behavior](ProjectPlan/MEMORY_SYSTEM.md)
 - [Memory runtime prompt](ProjectPlan/MEMORY_FILESYSTEM_PROMPT.md)
