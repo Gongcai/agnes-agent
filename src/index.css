@@ -2118,27 +2118,6 @@ pre,
   transform: translateX(16px);
 }
 
-.agnes-reading-workspace > section,
-.agnes-reading-workspace > div > section {
-  background: var(--claude-canvas) !important;
-}
-
-.agnes-reading-workspace aside {
-  background: var(--claude-canvas) !important;
-  border-color: var(--claude-border) !important;
-}
-
-.agnes-reading-workspace textarea,
-.agnes-reading-workspace select {
-  background: var(--claude-surface) !important;
-  border-color: var(--claude-border-strong) !important;
-}
-
-:root[data-agnes-theme="dark"] .agnes-reading-model-selected {
-  background: var(--claude-clay-soft) !important;
-  color: var(--claude-clay) !important;
-}
-
 @media (max-width: 640px) {
   .agnes-settings-modal {
     width: calc(100vw - 16px) !important;
@@ -2315,12 +2294,10 @@ pre,
   color: var(--claude-ink) !important;
 }
 
-:root[data-agnes-theme="dark"] .agnes-reading-workspace [class*="hover:bg-stone-"]:hover,
 :root[data-agnes-theme="dark"] .agnes-knowledge-workspace [class*="hover:bg-stone-"]:hover {
   background-color: var(--claude-surface-soft) !important;
 }
 
-:root[data-agnes-theme="dark"] .agnes-reading-workspace [class*="hover:bg-emerald-50"]:hover,
 :root[data-agnes-theme="dark"] .agnes-knowledge-workspace [class*="hover:bg-emerald-50"]:hover {
   background-color: var(--claude-clay-soft) !important;
 }

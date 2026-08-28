@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -24,6 +25,7 @@ import {
   type ResolvedColorScheme,
 } from "../lib/uiPreferences";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { getRootZoomScale, viewportPointToLocalPoint } from "../lib/zoomGeometry";
 
 /** Shared ease-out curve for panel / message entrances. */
 const EASE_OUT: [number, number, number, number] = [0.22, 1, 0.36, 1];
@@ -41,6 +43,84 @@ const READING_STARTER_PROMPTS = [
   "作者在这里的核心论点是什么？",
   "这个概念我没看懂，讲得通俗一点",
 ];
+
+const POPOVER_GAP = 6;
+const POPOVER_PADDING = 8;
+
+interface ReadingPopoverProps {
+  anchorRef: React.RefObject<HTMLButtonElement | null>;
+  onClose: () => void;
+  className?: string;
+  children: React.ReactNode;
+}
+
+/**
+ * Dropdown rendered through a portal. The discussion panel lives inside an
+ * `overflow-hidden` sidebar, so an in-flow absolutely positioned panel gets
+ * clipped to the sidebar box — portalling to <body> is what lets it overflow.
+ */
+const ReadingPopover: React.FC<ReadingPopoverProps> = ({ anchorRef, onClose, className, children }) => {
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [layout, setLayout] = useState<{ left: number; top: number; maxHeight: number; flipped: boolean } | null>(null);
+  // Kept in a ref so re-renders with a fresh inline callback don't re-run the layout effect.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const node = popoverRef.current;
+    if (!anchor || !node) return;
+    const zoom = getRootZoomScale();
+    const rect = anchor.getBoundingClientRect();
+    const { x: anchorRight, y: anchorBottom } = viewportPointToLocalPoint(rect.right, rect.bottom, zoom);
+    const anchorTop = rect.top / zoom;
+    const width = node.getBoundingClientRect().width / zoom;
+    const wanted = node.getBoundingClientRect().height / zoom;
+    const viewportWidth = document.documentElement.clientWidth;
+    const viewportHeight = document.documentElement.clientHeight;
+    const spaceBelow = viewportHeight - anchorBottom - POPOVER_GAP - POPOVER_PADDING;
+    const spaceAbove = anchorTop - POPOVER_GAP - POPOVER_PADDING;
+    // Flip above the anchor only when that really does give more room.
+    const placeAbove = wanted > spaceBelow && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(160, Math.min(wanted, placeAbove ? spaceAbove : spaceBelow));
+    setLayout({
+      left: Math.max(
+        POPOVER_PADDING,
+        Math.min(anchorRight - width, viewportWidth - width - POPOVER_PADDING),
+      ),
+      top: placeAbove
+        ? Math.max(POPOVER_PADDING, anchorTop - POPOVER_GAP - maxHeight)
+        : Math.max(POPOVER_PADDING, Math.min(anchorBottom + POPOVER_GAP, viewportHeight - maxHeight - POPOVER_PADDING)),
+      maxHeight,
+      flipped: placeAbove,
+    });
+    const close = () => onCloseRef.current();
+    window.addEventListener("resize", close);
+    return () => window.removeEventListener("resize", close);
+  }, [anchorRef]);
+
+  return createPortal(
+    <>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.12 }}
+        className="fixed inset-0 z-[150]"
+        onClick={onClose}
+      />
+      <motion.div
+        ref={popoverRef}
+        {...PANEL_MOTION}
+        className={`fixed z-[151] flex flex-col overflow-hidden ${layout?.flipped ? "origin-bottom" : "origin-top"} ${layout ? "" : "invisible"} ${className ?? ""}`}
+        style={{ left: layout?.left ?? 0, top: layout?.top ?? 0, maxHeight: layout?.maxHeight }}
+      >
+        {children}
+      </motion.div>
+    </>,
+    document.body,
+  );
+};
 
 interface ReadingBook {
   id: string;
@@ -618,20 +698,20 @@ const EpubPane: React.FC<{
   }, []);
 
   return (
-    <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[#fbfaf6]">
-      <div className="relative flex h-12 shrink-0 items-center gap-2 border-b border-stone-200 bg-white/70 px-3">
-        <button onClick={onBackToShelf} className="rounded p-1 text-stone-500 hover:bg-stone-100" title="返回书架"><ArrowLeft className="h-4 w-4" /></button>
-        <BookOpen className="h-4 w-4 text-emerald-700" />
+    <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
+      <div className="relative flex h-12 shrink-0 items-center gap-2 border-b border-hairline bg-canvas-header px-3">
+        <button onClick={onBackToShelf} className="rounded p-1 text-ink-muted hover:bg-canvas-surface-strong" title="返回书架"><ArrowLeft className="h-4 w-4" /></button>
+        <BookOpen className="h-4 w-4 text-clay" />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-semibold text-stone-800">{book.title}</span>
-          {currentChapter && <span className="block truncate text-[9px] text-stone-400">{currentChapter}</span>}
+          <span className="block truncate text-sm font-semibold text-ink">{book.title}</span>
+          {currentChapter && <span className="block truncate text-[9px] text-ink-muted-soft">{currentChapter}</span>}
         </span>
-        <span className="w-9 shrink-0 text-right font-mono text-[9px] tabular-nums text-stone-400" title="阅读进度">
+        <span className="w-9 shrink-0 text-right font-mono text-[9px] tabular-nums text-ink-muted-soft" title="阅读进度">
           {Math.round(readingProgress * 100)}%
         </span>
         {toc.length > 0 && (
           <select
-            className="max-w-40 rounded-md border border-stone-200 bg-white px-2 py-1 text-xs text-stone-600 outline-none xl:max-w-48"
+            className="max-w-40 rounded-md border border-hairline bg-canvas-input px-2 py-1 text-xs text-ink-body outline-none xl:max-w-48"
             defaultValue=""
             onChange={(event) => event.target.value && navigate(event.target.value)}
             aria-label="跳转目录"
@@ -642,21 +722,21 @@ const EpubPane: React.FC<{
         )}
         <button
           onClick={onToggleHighlightMode}
-          className={`agnes-reading-highlight-toggle flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium transition-colors ${highlightMode ? "border-amber-300 bg-amber-100 text-amber-800" : "border-stone-200 text-stone-500 hover:bg-stone-100"}`}
+          className={`agnes-reading-highlight-toggle flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium transition-colors ${highlightMode ? "border-theme-warning bg-canvas-surface-strong text-theme-warning" : "border-hairline text-ink-muted hover:bg-canvas-surface-strong"}`}
           title={highlightMode ? "退出划线模式" : "进入划线模式"}
           aria-pressed={highlightMode}
         >
           <HighlighterCircle className="h-4 w-4" />
           <span className="hidden xl:inline">{highlightMode ? "划线中" : "划线"}</span>
         </button>
-        <div className={`hidden h-8 shrink-0 items-center gap-1 rounded-md border border-stone-200 px-1 sm:flex ${highlightMode ? "opacity-100" : "opacity-45"}`} aria-label="划线颜色">
+        <div className={`hidden h-8 shrink-0 items-center gap-1 rounded-md border border-hairline px-1 sm:flex ${highlightMode ? "opacity-100" : "opacity-45"}`} aria-label="划线颜色">
           {HIGHLIGHT_COLORS.map((color) => (
             <button
               key={color}
               type="button"
               disabled={!highlightMode}
               onClick={() => onHighlightColorChange(color)}
-              className={`grid h-5 w-5 place-items-center rounded-full border transition-transform hover:scale-110 disabled:cursor-default ${highlightColor === color ? "border-stone-700" : "border-transparent"}`}
+              className={`grid h-5 w-5 place-items-center rounded-full border transition-transform hover:scale-110 disabled:cursor-default ${highlightColor === color ? "border-hairline-strong" : "border-transparent"}`}
               title={`${HIGHLIGHT_COLOR_LABELS[color]}划线`}
               aria-label={`${HIGHLIGHT_COLOR_LABELS[color]}划线`}
               aria-pressed={highlightColor === color}
@@ -671,13 +751,13 @@ const EpubPane: React.FC<{
             setIsHighlightsOpen((open) => !open);
             setIsTypographyOpen(false);
           }}
-          className={`relative rounded p-1.5 ${isHighlightsOpen ? "bg-stone-100 text-stone-800" : "text-stone-500 hover:bg-stone-100"}`}
+          className={`relative rounded p-1.5 ${isHighlightsOpen ? "bg-canvas-surface-strong text-ink" : "text-ink-muted hover:bg-canvas-surface-strong"}`}
           title="高亮与批注"
           aria-pressed={isHighlightsOpen}
         >
           <Notepad className="h-4 w-4" />
           {highlights.length > 0 && (
-            <span className="absolute -right-1 -top-1 min-w-3.5 rounded-full bg-stone-700 px-0.5 text-center font-mono text-[8px] leading-[14px] text-white">
+            <span className="absolute -right-1 -top-1 min-w-3.5 rounded-full bg-ink px-0.5 text-center font-mono text-[8px] leading-[14px] text-canvas">
               {Math.min(highlights.length, 99)}
             </span>
           )}
@@ -688,40 +768,40 @@ const EpubPane: React.FC<{
             setIsTypographyOpen((open) => !open);
             setIsHighlightsOpen(false);
           }}
-          className={`rounded p-1.5 ${isTypographyOpen ? "bg-stone-100 text-stone-800" : "text-stone-500 hover:bg-stone-100"}`}
+          className={`rounded p-1.5 ${isTypographyOpen ? "bg-canvas-surface-strong text-ink" : "text-ink-muted hover:bg-canvas-surface-strong"}`}
           title="阅读排版"
           aria-pressed={isTypographyOpen}
         >
           <Faders className="h-4 w-4" />
         </button>
-        <button onClick={() => renditionRef.current?.prev().catch(console.error)} className="rounded p-1 text-stone-500 hover:bg-stone-100" title="上一页">
+        <button onClick={() => renditionRef.current?.prev().catch(console.error)} className="rounded p-1 text-ink-muted hover:bg-canvas-surface-strong" title="上一页">
           <CaretLeft className="h-4 w-4" />
         </button>
-        <button onClick={() => renditionRef.current?.next().catch(console.error)} className="rounded p-1 text-stone-500 hover:bg-stone-100" title="下一页">
+        <button onClick={() => renditionRef.current?.next().catch(console.error)} className="rounded p-1 text-ink-muted hover:bg-canvas-surface-strong" title="下一页">
           <CaretRight className="h-4 w-4" />
         </button>
-        <span className="absolute inset-x-0 bottom-0 h-px bg-stone-200">
-          <span className="block h-full bg-[#c56f52] transition-[width] duration-300" style={{ width: `${readingProgress * 100}%` }} />
+        <span className="absolute inset-x-0 bottom-0 h-px bg-canvas-surface-strong">
+          <span className="block h-full bg-clay transition-[width] duration-300" style={{ width: `${readingProgress * 100}%` }} />
         </span>
       </div>
 
       {isHighlightsOpen && (
         <>
           <div className="fixed inset-0 z-20" onClick={() => setIsHighlightsOpen(false)} />
-          <div className="absolute right-3 top-14 z-30 flex max-h-[min(70vh,560px)] w-[min(340px,calc(100%-24px))] flex-col overflow-hidden rounded-md border border-stone-200 bg-white shadow-xl">
-            <header className="flex h-10 shrink-0 items-center gap-2 border-b border-stone-100 px-3">
-              <Notepad className="h-3.5 w-3.5 text-stone-500" />
-              <span className="flex-1 text-xs font-semibold text-stone-700">高亮与批注</span>
-              <span className="font-mono text-[9px] text-stone-400">{highlights.length}</span>
-              <button type="button" onClick={() => setIsHighlightsOpen(false)} className="rounded p-1 text-stone-400 hover:bg-stone-100" title="关闭"><X className="h-3.5 w-3.5" /></button>
+          <div className="absolute right-3 top-14 z-30 flex max-h-[min(70vh,560px)] w-[min(340px,calc(100%-24px))] flex-col overflow-hidden rounded-md border border-hairline bg-canvas-surface-card shadow-xl">
+            <header className="flex h-10 shrink-0 items-center gap-2 border-b border-hairline px-3">
+              <Notepad className="h-3.5 w-3.5 text-ink-muted" />
+              <span className="flex-1 text-xs font-semibold text-ink-body">高亮与批注</span>
+              <span className="font-mono text-[9px] text-ink-muted-soft">{highlights.length}</span>
+              <button type="button" onClick={() => setIsHighlightsOpen(false)} className="rounded p-1 text-ink-muted-soft hover:bg-canvas-surface-strong" title="关闭"><X className="h-3.5 w-3.5" /></button>
             </header>
             <div className="min-h-0 overflow-y-auto">
               {highlights.length === 0 ? (
-                <div className="px-4 py-10 text-center text-xs text-stone-400">暂无高亮</div>
+                <div className="px-4 py-10 text-center text-xs text-ink-muted-soft">暂无高亮</div>
               ) : highlights.map((highlight) => {
                 const editing = editingHighlightId === highlight.id;
                 return (
-                  <article key={highlight.id} className="border-b border-stone-100 px-3 py-3 last:border-b-0">
+                  <article key={highlight.id} className="border-b border-hairline px-3 py-3 last:border-b-0">
                     <div className="flex items-start gap-2">
                       <button
                         type="button"
@@ -729,7 +809,7 @@ const EpubPane: React.FC<{
                         className="min-w-0 flex-1 text-left"
                         title="定位到原文"
                       >
-                        <span className="line-clamp-3 text-xs leading-5 text-stone-700">{highlight.quote}</span>
+                        <span className="line-clamp-3 text-xs leading-5 text-ink-body">{highlight.quote}</span>
                       </button>
                       <button
                         type="button"
@@ -738,7 +818,7 @@ const EpubPane: React.FC<{
                           setNoteDraft(highlight.note ?? "");
                           setColorDraft(highlight.color);
                         }}
-                        className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                        className="rounded p-1 text-ink-muted-soft hover:bg-canvas-surface-strong hover:text-ink-body"
                         title="编辑批注"
                       >
                         <PencilSimple className="h-3.5 w-3.5" />
@@ -753,14 +833,14 @@ const EpubPane: React.FC<{
                           })) return;
                           await onDeleteHighlight(highlight);
                         }}
-                        className="rounded p-1 text-stone-400 hover:bg-rose-50 hover:text-rose-600"
+                        className="rounded p-1 text-ink-muted-soft hover:bg-rose-50 hover:text-rose-600"
                         title="删除高亮"
                       >
                         <Trash className="h-3.5 w-3.5" />
                       </button>
                     </div>
                     {!editing && highlight.note && (
-                      <p className="mt-2 whitespace-pre-wrap border-l border-stone-200 pl-2 text-[10px] leading-4 text-stone-500">{highlight.note}</p>
+                      <p className="mt-2 whitespace-pre-wrap border-l border-hairline pl-2 text-[10px] leading-4 text-ink-muted">{highlight.note}</p>
                     )}
                     {editing && (
                       <div className="mt-2 space-y-2">
@@ -770,7 +850,7 @@ const EpubPane: React.FC<{
                           maxLength={20_000}
                           rows={3}
                           placeholder="添加批注..."
-                          className="w-full resize-y rounded-md border border-stone-200 bg-stone-50 px-2 py-1.5 text-xs leading-5 text-stone-700 outline-none focus:border-stone-400"
+                          className="w-full resize-y rounded-md border border-hairline bg-canvas-surface-soft px-2 py-1.5 text-xs leading-5 text-ink-body outline-none focus:border-hairline-strong"
                         />
                         <div className="flex items-center gap-1.5">
                           {HIGHLIGHT_COLORS.map((color) => (
@@ -778,7 +858,7 @@ const EpubPane: React.FC<{
                               key={color}
                               type="button"
                               onClick={() => setColorDraft(color)}
-                              className={`grid h-6 w-6 place-items-center rounded-full border ${colorDraft === color ? "border-stone-700" : "border-transparent"}`}
+                              className={`grid h-6 w-6 place-items-center rounded-full border ${colorDraft === color ? "border-hairline-strong" : "border-transparent"}`}
                               title={HIGHLIGHT_COLOR_LABELS[color]}
                               aria-pressed={colorDraft === color}
                             >
@@ -791,7 +871,7 @@ const EpubPane: React.FC<{
                               void onUpdateHighlight(highlight.id, noteDraft.trim() || null, colorDraft)
                                 .then(() => setEditingHighlightId(null));
                             }}
-                            className="ml-auto grid h-7 w-7 place-items-center rounded-md bg-stone-800 text-white hover:bg-stone-700"
+                            className="ml-auto grid h-7 w-7 place-items-center rounded-md bg-ink text-canvas transition-opacity hover:opacity-80"
                             title="保存批注"
                           >
                             <Check className="h-3.5 w-3.5" />
@@ -810,36 +890,36 @@ const EpubPane: React.FC<{
       {isTypographyOpen && (
         <>
           <div className="fixed inset-0 z-20" onClick={() => setIsTypographyOpen(false)} />
-          <div className="absolute right-3 top-14 z-30 w-72 rounded-md border border-stone-200 bg-white p-4 shadow-xl">
+          <div className="absolute right-3 top-14 z-30 w-72 rounded-md border border-hairline bg-canvas-surface-card p-4 shadow-xl">
             <div className="mb-4 flex items-center gap-2">
-              <TextT className="h-4 w-4 text-stone-500" />
-              <span className="flex-1 text-xs font-semibold text-stone-700">阅读排版</span>
+              <TextT className="h-4 w-4 text-ink-muted" />
+              <span className="flex-1 text-xs font-semibold text-ink-body">阅读排版</span>
               <button
                 type="button"
                 onClick={() => onPreferencesChange(DEFAULT_READING_PREFERENCES)}
-                className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+                className="rounded p-1 text-ink-muted-soft hover:bg-canvas-surface-strong hover:text-ink-body"
                 title="恢复默认排版"
               >
                 <ArrowCounterClockwise className="h-3.5 w-3.5" />
               </button>
             </div>
-            <label className="block text-[10px] text-stone-500">
+            <label className="block text-[10px] text-ink-muted">
               <span className="mb-1.5 flex justify-between"><span>字号</span><span className="font-mono">{preferences.fontSize}px</span></span>
-              <input type="range" min={14} max={26} step={1} value={preferences.fontSize} onChange={(event) => onPreferencesChange(normalizeReadingPreferences({ ...preferences, fontSize: Number(event.target.value) }))} className="w-full accent-[#c56f52]" />
+              <input type="range" min={14} max={26} step={1} value={preferences.fontSize} onChange={(event) => onPreferencesChange(normalizeReadingPreferences({ ...preferences, fontSize: Number(event.target.value) }))} className="w-full accent-clay" />
             </label>
-            <label className="mt-4 block text-[10px] text-stone-500">
+            <label className="mt-4 block text-[10px] text-ink-muted">
               <span className="mb-1.5 flex justify-between"><span>行距</span><span className="font-mono">{preferences.lineHeight.toFixed(1)}</span></span>
-              <input type="range" min={1.4} max={2.4} step={0.1} value={preferences.lineHeight} onChange={(event) => onPreferencesChange(normalizeReadingPreferences({ ...preferences, lineHeight: Number(event.target.value) }))} className="w-full accent-[#c56f52]" />
+              <input type="range" min={1.4} max={2.4} step={0.1} value={preferences.lineHeight} onChange={(event) => onPreferencesChange(normalizeReadingPreferences({ ...preferences, lineHeight: Number(event.target.value) }))} className="w-full accent-clay" />
             </label>
-            <label className="mt-4 block text-[10px] text-stone-500">
+            <label className="mt-4 block text-[10px] text-ink-muted">
               <span className="mb-1.5 flex justify-between"><span>正文宽度</span><span className="font-mono">{preferences.contentWidth}px</span></span>
-              <input type="range" min={560} max={1_000} step={20} value={preferences.contentWidth} onChange={(event) => onPreferencesChange(normalizeReadingPreferences({ ...preferences, contentWidth: Number(event.target.value) }))} className="w-full accent-[#c56f52]" />
+              <input type="range" min={560} max={1_000} step={20} value={preferences.contentWidth} onChange={(event) => onPreferencesChange(normalizeReadingPreferences({ ...preferences, contentWidth: Number(event.target.value) }))} className="w-full accent-clay" />
             </label>
           </div>
         </>
       )}
 
-      {loading && <div className="absolute inset-0 z-10 grid place-items-center bg-[#fbfaf6]/80"><CircleNotch className="h-5 w-5 animate-spin text-emerald-700" /></div>}
+      {loading && <div className="absolute inset-0 z-10 grid place-items-center bg-canvas/80"><CircleNotch className="h-5 w-5 animate-spin text-clay" /></div>}
       {error && <div className="m-5 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs leading-relaxed text-rose-700">无法打开这本 EPUB：{error}</div>}
       <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden" />
     </section>
@@ -887,6 +967,8 @@ export const ReadingWorkspace: React.FC = () => {
   const [autoFollowStreaming, setAutoFollowStreaming] = useState(getCachedAutoFollowStreaming);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const historyButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const preferenceSaveTimerRef = useRef<number | null>(null);
   const pendingReadingPreferencesRef = useRef<ReadingPreferences | null>(null);
   const prefersReducedMotion = useReducedMotion();
@@ -1238,7 +1320,7 @@ export const ReadingWorkspace: React.FC = () => {
   };
 
   return (
-    <main className="agnes-feature-workspace agnes-reading-workspace flex min-w-0 flex-1 flex-col bg-[#faf9f5] lg:flex-row">
+    <main className="agnes-feature-workspace agnes-reading-workspace flex min-w-0 flex-1 flex-col bg-canvas lg:flex-row">
       {selectedBook ? (
         <div className="relative flex min-h-64 min-w-0 flex-1 flex-col lg:min-h-0 lg:flex-row" onClick={() => setSelectionMenu(null)}>
           <EpubPane
@@ -1263,7 +1345,7 @@ export const ReadingWorkspace: React.FC = () => {
           />
 
           <aside
-            className={`flex w-full shrink-0 flex-col overflow-hidden border-t border-stone-200 bg-white transition-[width,min-width,height,min-height] duration-300 ease-out motion-reduce:transition-none lg:h-auto lg:min-h-0 lg:border-l lg:border-t-0 ${
+            className={`flex w-full shrink-0 flex-col overflow-hidden border-t border-hairline bg-canvas transition-[width,min-width,height,min-height] duration-300 ease-out motion-reduce:transition-none lg:h-auto lg:min-h-0 lg:border-l lg:border-t-0 ${
               isDiscussionOpen
                 ? "h-[42%] min-h-64 lg:w-[min(32vw,400px)] lg:min-w-80"
                 : "h-10 min-h-10 lg:w-9 lg:min-w-9"
@@ -1271,28 +1353,29 @@ export const ReadingWorkspace: React.FC = () => {
           >
             {isDiscussionOpen ? (
               <>
-              <header className="relative border-b border-stone-200">
+              <header className="relative border-b border-hairline">
                 <div className="flex h-12 items-center gap-2 px-4">
-                  <ChatCircleDots className="h-4 w-4 text-emerald-700" />
-                  <span className="min-w-0 flex-1 text-sm font-semibold text-stone-800">阅读讨论</span>
+                  <ChatCircleDots className="h-4 w-4 text-clay" />
+                  <span className="min-w-0 flex-1 text-sm font-semibold text-ink">阅读讨论</span>
                   <div
                     className="hidden items-center gap-1.5 sm:flex"
                     title={`上下文 ${readingContextTokens.toLocaleString()} / ${readingContextLimit.toLocaleString()} Token；总结阈值 ${readingSummaryTrigger.toLocaleString()} Token`}
                   >
-                    <div className="h-1.5 w-14 overflow-hidden rounded-full bg-stone-200">
+                    <div className="h-1.5 w-14 overflow-hidden rounded-full bg-canvas-surface-strong">
                       <motion.div
-                        className={`h-full rounded-full ${readingContextPercent >= readingCompressThreshold * 100 ? "bg-amber-500" : "bg-emerald-600"}`}
+                        className={`h-full rounded-full ${readingContextPercent >= readingCompressThreshold * 100 ? "bg-theme-warning" : "bg-clay"}`}
                         initial={false}
                         animate={{ width: `${readingContextPercent}%` }}
                         transition={{ duration: 0.5, ease: EASE_OUT }}
                       />
                     </div>
-                    <span className="font-mono text-[10px] tabular-nums text-stone-400">{readingContextPercent.toFixed(0)}%</span>
+                    <span className="font-mono text-[10px] tabular-nums text-ink-muted-soft">{readingContextPercent.toFixed(0)}%</span>
                   </div>
                   <button
+                    ref={historyButtonRef}
                     onClick={() => setIsConversationHistoryOpen((open) => !open)}
                     disabled={!conversationReady || loading}
-                    className={`agnes-reading-panel-action grid h-7 w-7 place-items-center rounded-md transition-transform active:scale-90 disabled:opacity-40 ${isConversationHistoryOpen ? "text-stone-700" : "text-stone-400 hover:text-stone-700"}`}
+                    className={`agnes-reading-panel-action grid h-7 w-7 place-items-center rounded-md transition-transform active:scale-90 disabled:opacity-40 ${isConversationHistoryOpen ? "text-ink-body" : "text-ink-muted-soft hover:text-ink-body"}`}
                     title="讨论历史"
                     aria-pressed={isConversationHistoryOpen}
                   >
@@ -1321,93 +1404,78 @@ export const ReadingWorkspace: React.FC = () => {
                         .finally(() => setLoading(false));
                     }}
                     disabled={!conversationReady || isStreaming || loading}
-                    className="agnes-reading-panel-action grid h-7 w-7 place-items-center rounded-md text-stone-400 transition-transform hover:text-stone-700 active:scale-90 disabled:opacity-40"
+                    className="agnes-reading-panel-action grid h-7 w-7 place-items-center rounded-md text-ink-muted-soft transition-transform hover:text-ink-body active:scale-90 disabled:opacity-40"
                     title="新建讨论"
                   >
                     <Plus className="h-4 w-4" />
                   </button>
-                  <button onClick={() => setIsDiscussionOptionsOpen((open) => !open)} className={`agnes-reading-panel-action grid h-7 w-7 place-items-center rounded-md transition-transform active:scale-90 ${isDiscussionOptionsOpen ? "text-stone-700" : "text-stone-400 hover:text-stone-700"}`} title="讨论设置" aria-pressed={isDiscussionOptionsOpen}><SlidersHorizontal className="h-4 w-4" /></button>
-                  <button onClick={() => setIsDiscussionOpen(false)} className="agnes-reading-panel-action grid h-7 w-7 place-items-center rounded-md text-stone-400 transition-transform hover:text-stone-700 active:scale-90" title="收起讨论" aria-expanded="true"><SidebarSimple className="h-4 w-4" /></button>
+                  <button ref={settingsButtonRef} onClick={() => setIsDiscussionOptionsOpen((open) => !open)} className={`agnes-reading-panel-action grid h-7 w-7 place-items-center rounded-md transition-transform active:scale-90 ${isDiscussionOptionsOpen ? "text-ink-body" : "text-ink-muted-soft hover:text-ink-body"}`} title="讨论设置" aria-pressed={isDiscussionOptionsOpen}><SlidersHorizontal className="h-4 w-4" /></button>
+                  <button onClick={() => setIsDiscussionOpen(false)} className="agnes-reading-panel-action grid h-7 w-7 place-items-center rounded-md text-ink-muted-soft transition-transform hover:text-ink-body active:scale-90" title="收起讨论" aria-expanded="true"><SidebarSimple className="h-4 w-4" /></button>
                 </div>
                 <AnimatePresence>
                 {isConversationHistoryOpen && (
-                  <>
-                    <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={{ duration: 0.12 }}
-                      className="fixed inset-0 z-20"
-                      onClick={() => setIsConversationHistoryOpen(false)}
-                    />
-                    <motion.div
-                      {...PANEL_MOTION}
-                      className="absolute right-12 top-10 z-30 w-64 origin-top-right overflow-hidden rounded-md border border-stone-200 bg-white shadow-xl"
-                    >
-                      <div className="border-b border-stone-100 px-3 py-2 text-[11px] font-semibold text-stone-500">讨论历史</div>
+                  <ReadingPopover
+                    key="reading-history"
+                    anchorRef={historyButtonRef}
+                    onClose={() => setIsConversationHistoryOpen(false)}
+                    className="w-64 rounded-md border border-hairline bg-canvas-surface-card shadow-xl"
+                  >
+                      <div className="border-b border-hairline px-3 py-2 text-[11px] font-semibold text-ink-muted">讨论历史</div>
                       <div className="max-h-64 overflow-y-auto py-1">
                         {readingConversations.map((conversation, index) => (
                           <button
                             key={conversation.session_id}
                             onClick={() => void switchReadingConversation(conversation.session_id)}
                             disabled={isStreaming || loading}
-                            className={`flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-stone-50 disabled:opacity-50 ${conversation.session_id === readingSessionId ? "bg-emerald-50" : ""}`}
+                            className={`flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-canvas-surface-soft disabled:opacity-50 ${conversation.session_id === readingSessionId ? "bg-clay-soft" : ""}`}
                           >
-                            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${conversation.session_id === readingSessionId ? "bg-emerald-600" : "bg-stone-300"}`} />
+                            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${conversation.session_id === readingSessionId ? "bg-clay" : "bg-canvas-surface-strong"}`} />
                             <span className="min-w-0 flex-1">
-                              <span className="block truncate text-xs font-medium text-stone-700">
+                              <span className="block truncate text-xs font-medium text-ink-body">
                                 {conversation.session_id === readingSessionId ? "当前讨论" : `历史讨论 ${readingConversations.length - index}`}
                               </span>
-                              <span className="mt-0.5 block text-[10px] text-stone-400">{conversationDate(conversation.created_at)}</span>
+                              <span className="mt-0.5 block text-[10px] text-ink-muted-soft">{conversationDate(conversation.created_at)}</span>
                             </span>
                           </button>
                         ))}
                       </div>
-                    </motion.div>
-                  </>
+                  </ReadingPopover>
                 )}
                 </AnimatePresence>
                 <AnimatePresence>
                 {isDiscussionOptionsOpen && (
-                  <>
-                    <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={{ duration: 0.12 }}
-                      className="fixed inset-0 z-20"
-                      onClick={() => setIsDiscussionOptionsOpen(false)}
-                    />
-                    <motion.div
-                      {...PANEL_MOTION}
-                      className="claude-popover agnes-reading-model-popup absolute right-2 top-11 z-30 flex max-h-[min(78vh,560px)] w-[min(348px,calc(100vw-24px))] origin-top-right flex-col overflow-hidden rounded-md border border-stone-200 bg-white shadow-2xl"
-                    >
-                      <div className="flex shrink-0 items-center gap-2 border-b border-stone-100 px-3 py-2.5">
-                        <SlidersHorizontal className="h-3.5 w-3.5 text-stone-500" />
-                        <span className="min-w-0 flex-1 text-xs font-semibold text-stone-700">讨论设置</span>
-                        <button type="button" onClick={() => setIsDiscussionOptionsOpen(false)} className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700" title="关闭设置">
+                  <ReadingPopover
+                    key="reading-options"
+                    anchorRef={settingsButtonRef}
+                    onClose={() => setIsDiscussionOptionsOpen(false)}
+                    className="claude-popover agnes-reading-model-popup w-[min(348px,calc(100vw-24px))] rounded-md border border-hairline bg-canvas-surface-card shadow-2xl"
+                  >
+                      <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-2.5">
+                        <SlidersHorizontal className="h-3.5 w-3.5 text-ink-muted" />
+                        <span className="min-w-0 flex-1 text-xs font-semibold text-ink-body">讨论设置</span>
+                        <button type="button" onClick={() => setIsDiscussionOptionsOpen(false)} className="rounded p-1 text-ink-muted-soft hover:bg-canvas-surface-strong hover:text-ink-body" title="关闭设置">
                           <X className="h-3.5 w-3.5" />
                         </button>
                       </div>
                       <div className="min-h-0 overflow-y-auto p-3">
-                        <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-stone-500">
+                        <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-ink-muted">
                           <Cpu className="h-3.5 w-3.5" />
                           <span>模型</span>
-                          <span className="ml-auto font-mono font-normal text-stone-400">{readingModelDescriptor?.context_window ? `${Math.round(readingModelDescriptor.context_window / 1024)}K 上下文` : "上下文自动"}</span>
+                          <span className="ml-auto font-mono font-normal text-ink-muted-soft">{readingModelDescriptor?.context_window ? `${Math.round(readingModelDescriptor.context_window / 1024)}K 上下文` : "上下文自动"}</span>
                         </div>
-                        <div className="mb-3 rounded-md border border-stone-200 bg-stone-50/70 p-1.5">
+                        <div className="mb-3 rounded-md border border-hairline bg-canvas-surface-soft p-1.5">
                           {providers.length === 0 ? (
-                            <div className="px-2 py-3 text-center text-[10px] text-stone-400">暂无服务商，请先在模型设置中添加</div>
+                            <div className="px-2 py-3 text-center text-[10px] text-ink-muted-soft">暂无服务商，请先在模型设置中添加</div>
                           ) : (
                             providers.map((provider) => (
                               <div key={provider.id}>
-                                <div className="flex items-center gap-1.5 px-1.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-stone-400">
+                                <div className="flex items-center gap-1.5 px-1.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-ink-muted-soft">
                                   <HardDrives className="h-3 w-3" />
                                   <span className="min-w-0 truncate">{provider.name}</span>
-                                  {provider.is_default && <span className="text-emerald-700">默认</span>}
+                                  {provider.is_default && <span className="text-clay">默认</span>}
                                 </div>
                                 {provider.models.length === 0 ? (
-                                  <div className="px-1.5 py-1 text-[10px] text-stone-300">无可用模型</div>
+                                  <div className="px-1.5 py-1 text-[10px] text-ink-muted-soft">无可用模型</div>
                                 ) : (
                                   provider.models.map((model) => {
                                     const modelRef = `${provider.id}/${model.id}`;
@@ -1418,10 +1486,10 @@ export const ReadingWorkspace: React.FC = () => {
                                         type="button"
                                         disabled={!readingSessionId || isStreaming || loading}
                                         onClick={() => applyReadingLlm(modelRef)}
-                                        className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left font-mono text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${active ? "agnes-reading-model-selected bg-emerald-100/70 text-emerald-800" : "text-stone-600 hover:bg-white"}`}
+                                        className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left font-mono text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${active ? "agnes-reading-model-selected bg-clay-soft text-clay-dark" : "text-ink-body hover:bg-canvas-surface"}`}
                                       >
                                         <span className="min-w-0 flex-1 truncate">{model.id}</span>
-                                        {model.capabilities.input_modalities.includes("image") && <span className="font-sans text-[10px] text-stone-400">视觉</span>}
+                                        {model.capabilities.input_modalities.includes("image") && <span className="font-sans text-[10px] text-ink-muted-soft">视觉</span>}
                                         {active && <Check className="h-3 w-3 shrink-0" />}
                                       </button>
                                     );
@@ -1432,11 +1500,11 @@ export const ReadingWorkspace: React.FC = () => {
                           )}
                         </div>
 
-                        <div className="border-t border-stone-100 pt-3">
-                          <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-stone-500">
+                        <div className="border-t border-hairline pt-3">
+                          <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-ink-muted">
                             <Cpu className="h-3.5 w-3.5" />
                             <span>思考模式</span>
-                            <span className="ml-auto text-[10px] font-normal text-stone-400">{READING_THINKING_LABEL[readingThinkingMode] ?? readingThinkingMode}</span>
+                            <span className="ml-auto text-[10px] font-normal text-ink-muted-soft">{READING_THINKING_LABEL[readingThinkingMode] ?? readingThinkingMode}</span>
                           </div>
                           <div className="grid grid-cols-5 gap-1">
                             {READING_THINKING_OPTIONS.map((option) => (
@@ -1446,7 +1514,7 @@ export const ReadingWorkspace: React.FC = () => {
                                 disabled={!readingSessionId || isStreaming || loading}
                                 title={option.desc}
                                 onClick={() => applyReadingLlm(effectiveReadingModel, option.value)}
-                                className={`rounded border px-1 py-1.5 text-[10px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${readingThinkingMode === option.value ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-stone-200 bg-stone-50 text-stone-500 hover:bg-stone-100"}`}
+                                className={`rounded border px-1 py-1.5 text-[10px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${readingThinkingMode === option.value ? "border-clay-soft bg-clay-soft text-clay-dark" : "border-hairline bg-canvas-surface-soft text-ink-muted hover:bg-canvas-surface-strong"}`}
                               >
                                 {option.label}
                               </button>
@@ -1454,8 +1522,8 @@ export const ReadingWorkspace: React.FC = () => {
                           </div>
                         </div>
 
-                        <div className="mt-3 space-y-2 border-t border-stone-100 pt-3">
-                          <label className="flex items-center gap-2 text-[10px] text-stone-500">
+                        <div className="mt-3 space-y-2 border-t border-hairline pt-3">
+                          <label className="flex items-center gap-2 text-[10px] text-ink-muted">
                             <span className="min-w-0 flex-1">最大输出 Token</span>
                             <input
                               key={`${readingSessionId}-${readingMaxTokens}`}
@@ -1471,10 +1539,10 @@ export const ReadingWorkspace: React.FC = () => {
                                 event.currentTarget.value = String(value);
                                 if (value !== readingMaxTokens) applyReadingLlm(effectiveReadingModel, readingThinkingMode, value);
                               }}
-                              className="h-7 w-24 rounded border border-stone-200 bg-stone-50 px-2 text-right font-mono text-[10px] text-stone-700 outline-none focus:border-emerald-400"
+                              className="h-7 w-24 rounded border border-hairline bg-canvas-surface-soft px-2 text-right font-mono text-[10px] text-ink-body outline-none focus:border-clay"
                             />
                           </label>
-                          <label className="flex items-center gap-2 text-[10px] text-stone-500">
+                          <label className="flex items-center gap-2 text-[10px] text-ink-muted">
                             <span className="min-w-0 flex-1">自动总结阈值</span>
                             <input
                               key={`${readingSessionId}-${readingCompressThreshold}`}
@@ -1492,29 +1560,28 @@ export const ReadingWorkspace: React.FC = () => {
                                   void setSessionCompressThreshold(readingSessionId, value).catch((reason) => setError(String(reason)));
                                 }
                               }}
-                              className="h-7 w-20 rounded border border-stone-200 bg-stone-50 px-2 text-right font-mono text-[10px] text-stone-700 outline-none focus:border-emerald-400"
+                              className="h-7 w-20 rounded border border-hairline bg-canvas-surface-soft px-2 text-right font-mono text-[10px] text-ink-body outline-none focus:border-clay"
                               aria-label="自动总结阈值"
                             />
-                            <span className="shrink-0 text-[10px] text-stone-400">触发 {readingSummaryTrigger.toLocaleString()}</span>
+                            <span className="shrink-0 text-[10px] text-ink-muted-soft">触发 {readingSummaryTrigger.toLocaleString()}</span>
                           </label>
                         </div>
 
-                        <div className="mt-3 space-y-2 border-t border-stone-100 pt-3">
-                          <div className="mb-1 text-[10px] font-semibold text-stone-500">书籍上下文</div>
-                          <label className="flex cursor-pointer items-center gap-2 text-[10px] text-stone-500">
-                            <input type="checkbox" checked={selectedBook.model_knows_content} onChange={(event) => void updateBook("update_reading_book_mode", { modelKnowsContent: event.target.checked })} className="accent-emerald-700" />
+                        <div className="mt-3 space-y-2 border-t border-hairline pt-3">
+                          <div className="mb-1 text-[10px] font-semibold text-ink-muted">书籍上下文</div>
+                          <label className="flex cursor-pointer items-center gap-2 text-[10px] text-ink-muted">
+                            <input type="checkbox" checked={selectedBook.model_knows_content} onChange={(event) => void updateBook("update_reading_book_mode", { modelKnowsContent: event.target.checked })} className="accent-clay" />
                             AI 已知这本书
                           </label>
                           {!selectedBook.model_knows_content && selectedBook.content_context_decided && (
-                            <label className="flex cursor-pointer items-center gap-2 text-[10px] text-stone-500">
-                              <input type="checkbox" checked={selectedBook.content_context_allowed} onChange={(event) => void updateBook("set_reading_book_content_context_allowed", { allowed: event.target.checked })} className="accent-emerald-700" />
+                            <label className="flex cursor-pointer items-center gap-2 text-[10px] text-ink-muted">
+                              <input type="checkbox" checked={selectedBook.content_context_allowed} onChange={(event) => void updateBook("set_reading_book_content_context_allowed", { allowed: event.target.checked })} className="accent-clay" />
                               允许检索本书片段
                             </label>
                           )}
                         </div>
                       </div>
-                    </motion.div>
-                  </>
+                  </ReadingPopover>
                 )}
                 </AnimatePresence>
               </header>
@@ -1534,7 +1601,7 @@ export const ReadingWorkspace: React.FC = () => {
                     >
                       {!isUser && (
                         <span
-                          className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-emerald-50 text-emerald-700"
+                          className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-clay-soft text-clay"
                           title={`输入 ${message.input_tokens ?? 0} · 缓存 ${message.cached_tokens ?? 0} · 输出 ${message.output_tokens ?? 0} Token`}
                         >
                           <Sparkle className="h-3 w-3" />
@@ -1545,7 +1612,7 @@ export const ReadingWorkspace: React.FC = () => {
                           {[0, 1, 2].map((dot) => (
                             <motion.span
                               key={dot}
-                              className="h-1.5 w-1.5 rounded-full bg-stone-300"
+                              className="h-1.5 w-1.5 rounded-full bg-canvas-surface-strong"
                               animate={prefersReducedMotion ? undefined : { opacity: [0.25, 1, 0.25] }}
                               transition={{ duration: 1.1, repeat: Infinity, delay: dot * 0.16, ease: "easeInOut" }}
                             />
@@ -1553,14 +1620,14 @@ export const ReadingWorkspace: React.FC = () => {
                         </span>
                       ) : (
                         <div className={isUser
-                          ? "max-w-[85%] rounded-2xl rounded-br-md bg-emerald-50 px-3.5 py-2.5 text-sm text-stone-800"
-                          : "min-w-0 flex-1 text-sm text-stone-700"}
+                          ? "max-w-[85%] rounded-2xl rounded-br-md bg-clay-soft px-3.5 py-2.5 text-sm text-ink"
+                          : "min-w-0 flex-1 text-sm text-ink-body"}
                         >
                           <div className="space-y-2.5">
                             {message.parts.map((part) => {
                               if (part.kind === "model_fallback") {
                                 return (
-                                  <div key={part._renderKey ?? part.id} className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50/60 px-2.5 py-2 text-[10px] text-amber-800">
+                                  <div key={part._renderKey ?? part.id} className="flex items-center gap-2 rounded-md border border-theme-warning bg-canvas-surface-strong px-2.5 py-2 text-[10px] text-theme-warning">
                                     <ArrowsClockwise className="h-3.5 w-3.5 shrink-0" />
                                     <span>{part.content}</span>
                                   </div>
@@ -1607,7 +1674,7 @@ export const ReadingWorkspace: React.FC = () => {
                             })}
                           </div>
                           {!isUser && messageIndex === lastAssistantIndex && (
-                            <div className="mt-2 font-mono text-[10px] tabular-nums text-stone-400">
+                            <div className="mt-2 font-mono text-[10px] tabular-nums text-ink-muted-soft">
                               输入 {message.input_tokens ?? 0} · 缓存 {message.cached_tokens ?? 0} · 输出 {message.output_tokens ?? 0}
                             </div>
                           )}
@@ -1617,15 +1684,15 @@ export const ReadingWorkspace: React.FC = () => {
                   );
                 })}
                 {!conversationReady && (
-                  <p className="py-12 text-center text-xs text-stone-400">暂无讨论</p>
+                  <p className="py-12 text-center text-xs text-ink-muted-soft">暂无讨论</p>
                 )}
                 {conversationReady && !messages.length && (
                   <div className="flex flex-col items-center px-1 py-10 text-center">
-                    <span className="mb-3 grid h-9 w-9 place-items-center rounded-full bg-stone-100 text-stone-400">
+                    <span className="mb-3 grid h-9 w-9 place-items-center rounded-full bg-canvas-surface-strong text-ink-muted-soft">
                       <ChatCircleDots className="h-4 w-4" />
                     </span>
-                    <p className="text-xs font-medium text-stone-500">还没有讨论</p>
-                    <p className="mt-1 text-[11px] leading-relaxed text-stone-400">
+                    <p className="text-xs font-medium text-ink-muted">还没有讨论</p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-ink-muted-soft">
                       选中正文可以直接引用提问，或从下面挑一个开始
                     </p>
                     <div className="mt-4 flex w-full flex-col gap-1.5">
@@ -1637,7 +1704,7 @@ export const ReadingWorkspace: React.FC = () => {
                             setQuestion(prompt);
                             composerRef.current?.focus();
                           }}
-                          className="rounded-lg border border-stone-200 px-3 py-2 text-left text-[11px] text-stone-600 transition-colors hover:border-emerald-300 hover:bg-emerald-50/60 hover:text-stone-800"
+                          className="rounded-lg border border-hairline px-3 py-2 text-left text-[11px] text-ink-body transition-colors hover:border-clay-soft hover:bg-clay-soft hover:text-ink"
                         >
                           {prompt}
                         </button>
@@ -1647,7 +1714,7 @@ export const ReadingWorkspace: React.FC = () => {
                 )}
                 <div ref={messageEndRef} />
               </div>
-              <div className="border-t border-stone-200 p-3">
+              <div className="border-t border-hairline p-3">
                 <AnimatePresence initial={false}>
                   {quotedSelection && (
                     <motion.div
@@ -1655,30 +1722,30 @@ export const ReadingWorkspace: React.FC = () => {
                       animate={{ opacity: 1, height: "auto", marginBottom: 8 }}
                       exit={{ opacity: 0, height: 0, marginBottom: 0 }}
                       transition={{ duration: 0.18, ease: EASE_OUT }}
-                      className="flex items-center gap-2 overflow-hidden rounded-lg border border-emerald-200 bg-emerald-50/50 px-2.5 py-2 text-[11px] text-stone-600"
+                      className="flex items-center gap-2 overflow-hidden rounded-lg border border-clay-soft bg-clay-soft px-2.5 py-2 text-[11px] text-ink-body"
                     >
-                      <Quotes className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
+                      <Quotes className="h-3.5 w-3.5 shrink-0 text-clay" />
                       <span className="min-w-0 flex-1 truncate">{quotedSelection.quote}</span>
-                      <button onClick={() => setQuotedSelection(null)} className="rounded p-0.5 text-stone-400 transition-colors hover:bg-emerald-100 hover:text-stone-700" title="移除引用"><X className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => setQuotedSelection(null)} className="rounded p-0.5 text-ink-muted-soft transition-colors hover:bg-clay-soft hover:text-ink-body" title="移除引用"><X className="h-3.5 w-3.5" /></button>
                     </motion.div>
                   )}
                 </AnimatePresence>
-                <div className="rounded-lg border border-stone-200 bg-white transition-colors focus-within:border-emerald-400">
+                <div className="rounded-lg border border-hairline bg-canvas-input transition-colors focus-within:border-clay">
                   <textarea
                     ref={composerRef}
                     value={question}
                     onChange={(event) => setQuestion(event.target.value)}
                     onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); ask(); } }}
                     placeholder={isStreaming ? "正在生成回复…" : "问问这本书..."}
-                    className="block max-h-40 min-h-[56px] w-full resize-none overflow-y-auto bg-transparent px-3 pt-2.5 text-sm leading-relaxed text-stone-800 outline-none placeholder:text-stone-400"
+                    className="block max-h-40 min-h-[56px] w-full resize-none overflow-y-auto bg-transparent px-3 pt-2.5 text-sm leading-relaxed text-ink outline-none placeholder:text-ink-muted-soft"
                   />
                   <div className="flex items-center justify-between gap-2 px-2.5 pb-2 pt-1">
-                    <span className="text-[10px] text-stone-400">Enter 发送，Shift+Enter 换行</span>
+                    <span className="text-[10px] text-ink-muted-soft">Enter 发送，Shift+Enter 换行</span>
                     <button
                       type="button"
                       onClick={ask}
                       disabled={!question.trim() || isStreaming || !conversationReady}
-                      className="flex h-7 items-center gap-1.5 rounded-md bg-emerald-700 px-2.5 text-[11px] font-semibold text-white transition-all hover:bg-emerald-800 active:scale-[0.97] disabled:cursor-not-allowed disabled:bg-stone-300 disabled:active:scale-100"
+                      className="flex h-7 items-center gap-1.5 rounded-md bg-clay px-2.5 text-[11px] font-semibold text-white transition-all hover:bg-clay-dark active:scale-[0.97] disabled:cursor-not-allowed disabled:bg-canvas-surface-strong disabled:active:scale-100"
                     >
                       {isStreaming ? <CircleNotch className="h-3.5 w-3.5 animate-spin" /> : <PaperPlaneRight className="h-3.5 w-3.5" />}
                       {isStreaming ? "生成中" : "发送"}
@@ -1690,7 +1757,7 @@ export const ReadingWorkspace: React.FC = () => {
             ) : (
               <button
                 onClick={() => setIsDiscussionOpen(true)}
-                className="agnes-reading-panel-action flex h-full w-full items-center justify-center text-stone-400 hover:text-stone-700 lg:items-start lg:pt-4"
+                className="agnes-reading-panel-action flex h-full w-full items-center justify-center text-ink-muted-soft hover:text-ink-body lg:items-start lg:pt-4"
                 title="展开讨论"
                 aria-expanded="false"
               >
@@ -1700,32 +1767,32 @@ export const ReadingWorkspace: React.FC = () => {
           </aside>
         </div>
       ) : (
-        <section className="flex min-w-0 flex-1 flex-col bg-[#fbfaf6]">
-          <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white/70 px-5">
-            <div className="flex items-center gap-2 text-sm font-semibold text-stone-800"><BookmarkSimple className="h-4 w-4 text-emerald-700" />书架</div>
-            <button onClick={() => void importBook()} disabled={!activeAgentId || loading} className="flex items-center gap-2 rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50">
+        <section className="flex min-w-0 flex-1 flex-col bg-canvas">
+          <header className="flex h-14 shrink-0 items-center justify-between border-b border-hairline bg-canvas-header px-5">
+            <div className="flex items-center gap-2 text-sm font-semibold text-ink"><BookmarkSimple className="h-4 w-4 text-clay" />书架</div>
+            <button onClick={() => void importBook()} disabled={!activeAgentId || loading} className="flex items-center gap-2 rounded-md bg-clay px-3 py-2 text-xs font-semibold text-white hover:bg-clay-dark disabled:opacity-50">
               {loading ? <CircleNotch className="h-3.5 w-3.5 animate-spin" /> : <FileArrowUp className="h-3.5 w-3.5" />} 导入 EPUB
             </button>
           </header>
           {books.length ? (
             <div className="grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 overflow-y-auto p-5">
               {books.map((book) => (
-                <article key={book.id} className="group min-h-28 rounded-md border border-stone-200 bg-white p-4 text-left text-stone-600 transition-colors hover:border-emerald-300 hover:bg-emerald-50/50">
+                <article key={book.id} className="group min-h-28 rounded-md border border-hairline bg-canvas-surface-card p-4 text-left text-ink-body transition-colors hover:border-clay-soft hover:bg-clay-soft">
                   <button onClick={() => book.local_path && openBook(book.id)} disabled={!book.local_path} className="block w-full text-left disabled:cursor-not-allowed disabled:opacity-55">
-                    <BookOpen className="mb-5 h-5 w-5 text-emerald-700" />
-                    <span className="block truncate text-sm font-semibold text-stone-700">{book.title}</span>
-                    <span className="mt-1 block truncate text-[11px] text-stone-400">{book.author || "未知作者"}</span>
-                    {!book.local_path && <span className="mt-2 block text-[10px] text-amber-700">等待 EPUB 下载</span>}
+                    <BookOpen className="mb-5 h-5 w-5 text-clay" />
+                    <span className="block truncate text-sm font-semibold text-ink-body">{book.title}</span>
+                    <span className="mt-1 block truncate text-[11px] text-ink-muted-soft">{book.author || "未知作者"}</span>
+                    {!book.local_path && <span className="mt-2 block text-[10px] text-theme-warning">等待 EPUB 下载</span>}
                   </button>
-                  <div className="mt-3 flex items-center justify-between gap-2 border-t border-stone-100 pt-2">
-                    <span className="truncate text-[10px] text-stone-400">
+                  <div className="mt-3 flex items-center justify-between gap-2 border-t border-hairline pt-2">
+                    <span className="truncate text-[10px] text-ink-muted-soft">
                       {book.ready_replica_count > 0 ? `已发布 · ${book.ready_replica_count} 个副本` : "仅本机"}
                     </span>
                     <button
                       onClick={() => void publishBook(book.id)}
                       disabled={!book.local_path || loading}
                       title={book.ready_replica_count > 0 ? "重新确认 EPUB 云端副本" : "发布加密 EPUB"}
-                      className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:text-stone-300"
+                      className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium text-clay hover:bg-clay-soft disabled:cursor-not-allowed disabled:text-ink-muted-soft"
                     >
                       {loading ? <CircleNotch className="h-3 w-3 animate-spin" /> : <CloudArrowUp className="h-3 w-3" />}
                       {book.ready_replica_count > 0 ? "已发布" : "发布"}
@@ -1735,7 +1802,7 @@ export const ReadingWorkspace: React.FC = () => {
               ))}
             </div>
           ) : (
-            <div className="grid flex-1 place-items-center"><BookmarkSimple className="h-7 w-7 text-stone-300" /></div>
+            <div className="grid flex-1 place-items-center"><BookmarkSimple className="h-7 w-7 text-ink-muted-soft" /></div>
           )}
         </section>
       )}
@@ -1743,12 +1810,12 @@ export const ReadingWorkspace: React.FC = () => {
       {selectionMenu && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setSelectionMenu(null)} onContextMenu={(event) => { event.preventDefault(); setSelectionMenu(null); }} />
-          <div className="fixed z-50 w-44 overflow-hidden rounded-md border border-stone-200 bg-white py-1 text-xs text-stone-700 shadow-2xl" style={{ left: selectionMenu.x, top: selectionMenu.y }}>
-            <button onClick={() => void copySelection()} className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-stone-100"><Copy className="h-3.5 w-3.5 text-stone-500" />复制</button>
-            <button onClick={() => { setQuotedSelection(selectionMenu.selection); setSelectionMenu(null); setIsDiscussionOpen(true); }} className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-stone-100"><Quotes className="h-3.5 w-3.5 text-stone-500" />引用</button>
-            <button onClick={() => void translateSelection()} disabled={!conversationReady || isStreaming} className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"><Translate className="h-3.5 w-3.5 text-stone-500" />翻译</button>
-            <div className="mt-1 flex items-center gap-1 border-t border-stone-100 px-3 py-2">
-              <HighlighterCircle className="mr-auto h-3.5 w-3.5 text-stone-500" />
+          <div className="fixed z-50 w-44 overflow-hidden rounded-md border border-hairline bg-canvas-surface-card py-1 text-xs text-ink-body shadow-2xl" style={{ left: selectionMenu.x, top: selectionMenu.y }}>
+            <button onClick={() => void copySelection()} className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-canvas-surface-strong"><Copy className="h-3.5 w-3.5 text-ink-muted" />复制</button>
+            <button onClick={() => { setQuotedSelection(selectionMenu.selection); setSelectionMenu(null); setIsDiscussionOpen(true); }} className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-canvas-surface-strong"><Quotes className="h-3.5 w-3.5 text-ink-muted" />引用</button>
+            <button onClick={() => void translateSelection()} disabled={!conversationReady || isStreaming} className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-canvas-surface-strong disabled:cursor-not-allowed disabled:opacity-40"><Translate className="h-3.5 w-3.5 text-ink-muted" />翻译</button>
+            <div className="mt-1 flex items-center gap-1 border-t border-hairline px-3 py-2">
+              <HighlighterCircle className="mr-auto h-3.5 w-3.5 text-ink-muted" />
               {HIGHLIGHT_COLORS.map((color) => (
                 <button
                   key={color}
@@ -1758,7 +1825,7 @@ export const ReadingWorkspace: React.FC = () => {
                     setSelectionMenu(null);
                     void createHighlight(selection, color);
                   }}
-                  className="grid h-6 w-6 place-items-center rounded-full border border-transparent hover:border-stone-400"
+                  className="grid h-6 w-6 place-items-center rounded-full border border-transparent hover:border-hairline-strong"
                   title={`${HIGHLIGHT_COLOR_LABELS[color]}高亮`}
                   aria-label={`${HIGHLIGHT_COLOR_LABELS[color]}高亮`}
                 >
@@ -1771,13 +1838,13 @@ export const ReadingWorkspace: React.FC = () => {
       )}
 
       {showConsent && selectedBook && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-900/25 p-5">
-          <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl">
-            <div className="flex items-center gap-2 text-sm font-semibold text-stone-900"><ShieldWarning className="h-4 w-4 text-amber-600" />允许书内检索？</div>
-            <p className="mt-3 text-sm leading-relaxed text-stone-600">这本书尚未标记为 AI 已知。允许后，讨论时会向当前模型服务发送划线附近文本及最多数段本书的相关片段，不会发送整本 EPUB。</p>
+        <div className="fixed inset-0 z-50 grid place-items-center bg-canvas-overlay p-5">
+          <div className="w-full max-w-md rounded-lg bg-canvas-surface-card p-5 shadow-xl">
+            <div className="flex items-center gap-2 text-sm font-semibold text-ink"><ShieldWarning className="h-4 w-4 text-theme-warning" />允许书内检索？</div>
+            <p className="mt-3 text-sm leading-relaxed text-ink-body">这本书尚未标记为 AI 已知。允许后，讨论时会向当前模型服务发送划线附近文本及最多数段本书的相关片段，不会发送整本 EPUB。</p>
             <div className="mt-5 flex justify-end gap-2">
-              <button onClick={() => { setShowConsent(false); void submitQuestion(false); }} className="rounded-md border border-stone-200 px-3 py-2 text-xs font-semibold text-stone-600 hover:bg-stone-50">仅讨论选段</button>
-              <button onClick={() => void submitQuestion(true)} className="rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800">允许书内检索</button>
+              <button onClick={() => { setShowConsent(false); void submitQuestion(false); }} className="rounded-md border border-hairline px-3 py-2 text-xs font-semibold text-ink-body hover:bg-canvas-surface-soft">仅讨论选段</button>
+              <button onClick={() => void submitQuestion(true)} className="rounded-md bg-clay px-3 py-2 text-xs font-semibold text-white hover:bg-clay-dark">允许书内检索</button>
             </div>
           </div>
         </div>

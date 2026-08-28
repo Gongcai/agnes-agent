@@ -13,6 +13,9 @@ export default {
           "surface-card": "var(--claude-surface-card)",
           "surface-strong": "var(--claude-surface-strong)",
           input: "var(--claude-input)",
+          header: "var(--claude-header)",
+          "header-soft": "var(--claude-header-soft)",
+          overlay: "var(--claude-overlay)",
         },
         ink: {
           DEFAULT: "var(--claude-ink)",
