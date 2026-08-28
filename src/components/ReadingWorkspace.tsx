@@ -377,8 +377,11 @@ const EpubPane: React.FC<{
 
   // The discussion sidebar animates its width over 300ms; WebKit's ResizeObserver
   // can stop firing before the transition settles, leaving the rendition sized
-  // for an intermediate width. Resize again once the animation is done.
+  // for an intermediate width. Resize again once the animation is done. Never
+  // resize while the book is still loading — epubjs stalls if its display
+  // pipeline is interrupted.
   useEffect(() => {
+    if (loading) return;
     const resizeToHost = () => {
       const host = hostRef.current;
       const rendition = renditionRef.current;
@@ -389,7 +392,7 @@ const EpubPane: React.FC<{
     };
     const settleTimer = window.setTimeout(resizeToHost, 350);
     return () => window.clearTimeout(settleTimer);
-  }, [discussionOpen]);
+  }, [discussionOpen, loading]);
 
   const syncHighlights = () => {
     const rendition = renditionRef.current;
