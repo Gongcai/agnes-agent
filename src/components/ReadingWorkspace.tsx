@@ -3,7 +3,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import ePub, { type Book, type Contents, type Location, type NavItem, type Rendition } from "epubjs";
-import { ArrowLeft, BookmarkSimple, BookOpen, Check, CaretDown, CaretLeft, CaretRight, Copy, Cpu, CloudArrowUp, FileArrowUp, HardDrives, HighlighterCircle, ClockCounterClockwise, Translate, CircleNotch, ChatCircleDots, Notepad, SidebarSimple, PencilSimple, Plus, Quotes, ArrowsClockwise, ArrowCounterClockwise, PaperPlaneRight, Faders, ShieldWarning, SlidersHorizontal, Trash, TextT, X } from "@phosphor-icons/react";
+import { ArrowLeft, BookmarkSimple, BookOpen, Check, CaretDown, CaretLeft, CaretRight, Copy, Cpu, CloudArrowUp, FileArrowUp, HardDrives, HighlighterCircle, ClockCounterClockwise, Translate, CircleNotch, ChatCircleDots, Notepad, SidebarSimple, PencilSimple, Plus, Quotes, ArrowsClockwise, ArrowCounterClockwise, PaperPlaneRight, Faders, ShieldWarning, SlidersHorizontal, Sparkle, Trash, TextT, X } from "@phosphor-icons/react";
 import { AnimatedDisclosure } from "./AnimatedDisclosure";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { useAgentStore } from "../store/useAgentStore";
@@ -23,6 +23,24 @@ import {
   subscribeUIPreferenceChanges,
   type ResolvedColorScheme,
 } from "../lib/uiPreferences";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+
+/** Shared ease-out curve for panel / message entrances. */
+const EASE_OUT: [number, number, number, number] = [0.22, 1, 0.36, 1];
+/** Panel entrance is short on purpose: this is a utility surface, not a showcase. */
+const PANEL_MOTION = {
+  initial: { opacity: 0, y: -6, scale: 0.97 },
+  animate: { opacity: 1, y: 0, scale: 1 },
+  exit: { opacity: 0, y: -6, scale: 0.97 },
+  transition: { duration: 0.14, ease: EASE_OUT },
+} as const;
+
+/** Offered as one-tap chips in the empty state; they fill the composer rather than sending. */
+const READING_STARTER_PROMPTS = [
+  "帮我总结这一章的要点",
+  "作者在这里的核心论点是什么？",
+  "这个概念我没看懂，讲得通俗一点",
+];
 
 interface ReadingBook {
   id: string;
@@ -868,8 +886,10 @@ export const ReadingWorkspace: React.FC = () => {
   const [autoExpandThoughts, setAutoExpandThoughts] = useState(getCachedAutoExpandThoughts);
   const [autoFollowStreaming, setAutoFollowStreaming] = useState(getCachedAutoFollowStreaming);
   const messageEndRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const preferenceSaveTimerRef = useRef<number | null>(null);
   const pendingReadingPreferencesRef = useRef<ReadingPreferences | null>(null);
+  const prefersReducedMotion = useReducedMotion();
 
   const selectedBook = useMemo(
     () => books.find((book) => book.id === selectedBookId) ?? null,
@@ -895,6 +915,11 @@ export const ReadingWorkspace: React.FC = () => {
   const readingContextTokens = latestReadingAssistant?.context_tokens ?? 0;
   const readingContextPercent = Math.min(100, (readingContextTokens / Math.max(1, readingContextLimit)) * 100);
   const readingSummaryTrigger = Math.floor(readingContextLimit * readingCompressThreshold);
+  /** Only the newest assistant reply shows its token tally, so history stays quiet. */
+  const lastAssistantIndex = useMemo(
+    () => messages.reduce((last, message, index) => (message.role === "assistant" ? index : last), -1),
+    [messages],
+  );
 
   const applyReadingLlm = (
     model = effectiveReadingModel,
@@ -986,6 +1011,14 @@ export const ReadingWorkspace: React.FC = () => {
     if (!autoFollowStreaming && latestMessage?.role !== "user") return;
     messageEndRef.current?.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" });
   }, [messages, isStreaming, autoFollowStreaming]);
+
+  // Grow the composer with its content up to a ceiling, then let it scroll.
+  useEffect(() => {
+    const node = composerRef.current;
+    if (!node) return;
+    node.style.height = "auto";
+    node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
+  }, [question]);
 
   const importBook = async () => {
     if (!activeAgentId) return;
@@ -1247,17 +1280,19 @@ export const ReadingWorkspace: React.FC = () => {
                     title={`上下文 ${readingContextTokens.toLocaleString()} / ${readingContextLimit.toLocaleString()} Token；总结阈值 ${readingSummaryTrigger.toLocaleString()} Token`}
                   >
                     <div className="h-1.5 w-14 overflow-hidden rounded-full bg-stone-200">
-                      <div
+                      <motion.div
                         className={`h-full rounded-full ${readingContextPercent >= readingCompressThreshold * 100 ? "bg-amber-500" : "bg-emerald-600"}`}
-                        style={{ width: `${readingContextPercent}%` }}
+                        initial={false}
+                        animate={{ width: `${readingContextPercent}%` }}
+                        transition={{ duration: 0.5, ease: EASE_OUT }}
                       />
                     </div>
-                    <span className="font-mono text-[9px] tabular-nums text-stone-400">{readingContextPercent.toFixed(0)}%</span>
+                    <span className="font-mono text-[10px] tabular-nums text-stone-400">{readingContextPercent.toFixed(0)}%</span>
                   </div>
                   <button
                     onClick={() => setIsConversationHistoryOpen((open) => !open)}
                     disabled={!conversationReady || loading}
-                    className={`agnes-reading-panel-action rounded p-1 disabled:opacity-40 ${isConversationHistoryOpen ? "text-stone-700" : "text-stone-400 hover:text-stone-700"}`}
+                    className={`agnes-reading-panel-action grid h-7 w-7 place-items-center rounded-md transition-transform active:scale-90 disabled:opacity-40 ${isConversationHistoryOpen ? "text-stone-700" : "text-stone-400 hover:text-stone-700"}`}
                     title="讨论历史"
                     aria-pressed={isConversationHistoryOpen}
                   >
@@ -1286,18 +1321,29 @@ export const ReadingWorkspace: React.FC = () => {
                         .finally(() => setLoading(false));
                     }}
                     disabled={!conversationReady || isStreaming || loading}
-                    className="agnes-reading-panel-action rounded p-1 text-stone-400 hover:text-stone-700 disabled:opacity-40"
+                    className="agnes-reading-panel-action grid h-7 w-7 place-items-center rounded-md text-stone-400 transition-transform hover:text-stone-700 active:scale-90 disabled:opacity-40"
                     title="新建讨论"
                   >
                     <Plus className="h-4 w-4" />
                   </button>
-                  <button onClick={() => setIsDiscussionOptionsOpen((open) => !open)} className={`agnes-reading-panel-action rounded p-1 ${isDiscussionOptionsOpen ? "text-stone-700" : "text-stone-400 hover:text-stone-700"}`} title="讨论设置" aria-pressed={isDiscussionOptionsOpen}><SlidersHorizontal className="h-4 w-4" /></button>
-                  <button onClick={() => setIsDiscussionOpen(false)} className="agnes-reading-panel-action rounded p-1 text-stone-400 hover:text-stone-700" title="收起讨论" aria-expanded="true"><SidebarSimple className="h-4 w-4" /></button>
+                  <button onClick={() => setIsDiscussionOptionsOpen((open) => !open)} className={`agnes-reading-panel-action grid h-7 w-7 place-items-center rounded-md transition-transform active:scale-90 ${isDiscussionOptionsOpen ? "text-stone-700" : "text-stone-400 hover:text-stone-700"}`} title="讨论设置" aria-pressed={isDiscussionOptionsOpen}><SlidersHorizontal className="h-4 w-4" /></button>
+                  <button onClick={() => setIsDiscussionOpen(false)} className="agnes-reading-panel-action grid h-7 w-7 place-items-center rounded-md text-stone-400 transition-transform hover:text-stone-700 active:scale-90" title="收起讨论" aria-expanded="true"><SidebarSimple className="h-4 w-4" /></button>
                 </div>
+                <AnimatePresence>
                 {isConversationHistoryOpen && (
                   <>
-                    <div className="fixed inset-0 z-20" onClick={() => setIsConversationHistoryOpen(false)} />
-                    <div className="absolute right-12 top-10 z-30 w-64 overflow-hidden rounded-md border border-stone-200 bg-white shadow-xl">
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.12 }}
+                      className="fixed inset-0 z-20"
+                      onClick={() => setIsConversationHistoryOpen(false)}
+                    />
+                    <motion.div
+                      {...PANEL_MOTION}
+                      className="absolute right-12 top-10 z-30 w-64 origin-top-right overflow-hidden rounded-md border border-stone-200 bg-white shadow-xl"
+                    >
                       <div className="border-b border-stone-100 px-3 py-2 text-[11px] font-semibold text-stone-500">讨论历史</div>
                       <div className="max-h-64 overflow-y-auto py-1">
                         {readingConversations.map((conversation, index) => (
@@ -1317,13 +1363,25 @@ export const ReadingWorkspace: React.FC = () => {
                           </button>
                         ))}
                       </div>
-                    </div>
+                    </motion.div>
                   </>
                 )}
+                </AnimatePresence>
+                <AnimatePresence>
                 {isDiscussionOptionsOpen && (
                   <>
-                    <div className="fixed inset-0 z-20" onClick={() => setIsDiscussionOptionsOpen(false)} />
-                    <div className="claude-popover agnes-reading-model-popup absolute right-2 top-11 z-30 flex max-h-[min(78vh,560px)] w-[min(348px,calc(100vw-24px))] flex-col overflow-hidden rounded-md border border-stone-200 bg-white shadow-2xl">
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.12 }}
+                      className="fixed inset-0 z-20"
+                      onClick={() => setIsDiscussionOptionsOpen(false)}
+                    />
+                    <motion.div
+                      {...PANEL_MOTION}
+                      className="claude-popover agnes-reading-model-popup absolute right-2 top-11 z-30 flex max-h-[min(78vh,560px)] w-[min(348px,calc(100vw-24px))] origin-top-right flex-col overflow-hidden rounded-md border border-stone-200 bg-white shadow-2xl"
+                    >
                       <div className="flex shrink-0 items-center gap-2 border-b border-stone-100 px-3 py-2.5">
                         <SlidersHorizontal className="h-3.5 w-3.5 text-stone-500" />
                         <span className="min-w-0 flex-1 text-xs font-semibold text-stone-700">讨论设置</span>
@@ -1343,7 +1401,7 @@ export const ReadingWorkspace: React.FC = () => {
                           ) : (
                             providers.map((provider) => (
                               <div key={provider.id}>
-                                <div className="flex items-center gap-1.5 px-1.5 pb-1 pt-1 text-[9px] font-semibold uppercase tracking-wide text-stone-400">
+                                <div className="flex items-center gap-1.5 px-1.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-stone-400">
                                   <HardDrives className="h-3 w-3" />
                                   <span className="min-w-0 truncate">{provider.name}</span>
                                   {provider.is_default && <span className="text-emerald-700">默认</span>}
@@ -1363,7 +1421,7 @@ export const ReadingWorkspace: React.FC = () => {
                                         className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left font-mono text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${active ? "agnes-reading-model-selected bg-emerald-100/70 text-emerald-800" : "text-stone-600 hover:bg-white"}`}
                                       >
                                         <span className="min-w-0 flex-1 truncate">{model.id}</span>
-                                        {model.capabilities.input_modalities.includes("image") && <span className="font-sans text-[9px] text-stone-400">视觉</span>}
+                                        {model.capabilities.input_modalities.includes("image") && <span className="font-sans text-[10px] text-stone-400">视觉</span>}
                                         {active && <Check className="h-3 w-3 shrink-0" />}
                                       </button>
                                     );
@@ -1378,7 +1436,7 @@ export const ReadingWorkspace: React.FC = () => {
                           <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-stone-500">
                             <Cpu className="h-3.5 w-3.5" />
                             <span>思考模式</span>
-                            <span className="ml-auto text-[9px] font-normal text-stone-400">{READING_THINKING_LABEL[readingThinkingMode] ?? readingThinkingMode}</span>
+                            <span className="ml-auto text-[10px] font-normal text-stone-400">{READING_THINKING_LABEL[readingThinkingMode] ?? readingThinkingMode}</span>
                           </div>
                           <div className="grid grid-cols-5 gap-1">
                             {READING_THINKING_OPTIONS.map((option) => (
@@ -1437,7 +1495,7 @@ export const ReadingWorkspace: React.FC = () => {
                               className="h-7 w-20 rounded border border-stone-200 bg-stone-50 px-2 text-right font-mono text-[10px] text-stone-700 outline-none focus:border-emerald-400"
                               aria-label="自动总结阈值"
                             />
-                            <span className="shrink-0 text-[9px] text-stone-400">触发 {readingSummaryTrigger.toLocaleString()}</span>
+                            <span className="shrink-0 text-[10px] text-stone-400">触发 {readingSummaryTrigger.toLocaleString()}</span>
                           </label>
                         </div>
 
@@ -1455,85 +1513,178 @@ export const ReadingWorkspace: React.FC = () => {
                           )}
                         </div>
                       </div>
-                    </div>
+                    </motion.div>
                   </>
                 )}
+                </AnimatePresence>
               </header>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5">
-                {conversationReady && messages.map((message, messageIndex) => (
-                  <div key={message.id} className={message.role === "user" ? "ml-6" : "mr-3"}>
-                    <div className={`rounded-md px-3 py-2 text-sm ${message.role === "user" ? "bg-emerald-50 text-stone-800" : "border border-stone-200 bg-white text-stone-700"}`}>
-                      <div className="space-y-2.5">
-                        {message.parts.map((part) => {
-                          if (part.kind === "model_fallback") {
-                            return (
-                              <div key={part._renderKey ?? part.id} className="flex items-center gap-2 border-y border-amber-200 bg-amber-50/60 px-2.5 py-2 text-[10px] text-amber-800">
-                                <ArrowsClockwise className="h-3.5 w-3.5 shrink-0" />
-                                <span>{part.content}</span>
-                              </div>
-                            );
-                          }
-                          if (part.kind === "thought") {
-                            const isLiveThought = isStreaming
-                              && messageIndex === messages.length - 1
-                              && message.status !== "complete"
-                              && message._streamingInThought === true;
-                            return (
-                              <AnimatedDisclosure
-                                key={part._renderKey ?? part.id}
-                                defaultOpen={autoExpandThoughts}
-                                className="agnes-thought-details group"
-                                summaryClassName="agnes-thought-summary"
-                                summary={(
-                                  <>
-                                    <span>Agent思维过程</span>
-                                    <CaretDown className="agnes-collapse-chevron h-3 w-3" />
-                                  </>
-                                )}
-                              >
-                                <div className="agnes-thought-content">
-                                  <span
-                                    className={`agnes-thought-status-icon ${isLiveThought ? "animate-pulse" : ""}`}
-                                    aria-hidden="true"
-                                  >
-                                    <Cpu className="h-3 w-3" />
-                                  </span>
-                                  <p className="whitespace-pre-wrap">{part.content}</p>
-                                </div>
-                              </AnimatedDisclosure>
-                            );
-                          }
-                          if (part.kind !== "text") return null;
-                          return (
-                            <MarkdownMessage
-                              key={part._renderKey ?? part.id}
-                              content={part.content}
-                              streaming={isStreaming && message.status !== "complete"}
+                {conversationReady && messages.map((message, messageIndex) => {
+                  const isUser = message.role === "user";
+                  const awaitingFirstToken = !isUser
+                    && message.status !== "complete"
+                    && !message.parts.some((part) => part.kind === "text" || part.kind === "thought" || part.kind === "model_fallback");
+                  return (
+                    <motion.div
+                      key={message._renderKey ?? message.id}
+                      initial={prefersReducedMotion ? false : { opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.24, ease: EASE_OUT }}
+                      className={`flex gap-2.5 ${isUser ? "justify-end" : ""}`}
+                    >
+                      {!isUser && (
+                        <span
+                          className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-emerald-50 text-emerald-700"
+                          title={`输入 ${message.input_tokens ?? 0} · 缓存 ${message.cached_tokens ?? 0} · 输出 ${message.output_tokens ?? 0} Token`}
+                        >
+                          <Sparkle className="h-3 w-3" />
+                        </span>
+                      )}
+                      {awaitingFirstToken ? (
+                        <span className="flex items-center gap-1 py-1.5" role="status" aria-label="正在生成回复">
+                          {[0, 1, 2].map((dot) => (
+                            <motion.span
+                              key={dot}
+                              className="h-1.5 w-1.5 rounded-full bg-stone-300"
+                              animate={prefersReducedMotion ? undefined : { opacity: [0.25, 1, 0.25] }}
+                              transition={{ duration: 1.1, repeat: Infinity, delay: dot * 0.16, ease: "easeInOut" }}
                             />
-                          );
-                        })}
-                      </div>
-                      {message.role === "assistant" && (
-                        <div className="mt-2 border-t border-stone-100 pt-1.5 text-right font-mono text-[9px] tabular-nums text-stone-400">
-                          输入 {message.input_tokens ?? 0} · 缓存 {message.cached_tokens ?? 0} · 输出 {message.output_tokens ?? 0}
+                          ))}
+                        </span>
+                      ) : (
+                        <div className={isUser
+                          ? "max-w-[85%] rounded-2xl rounded-br-md bg-emerald-50 px-3.5 py-2.5 text-sm text-stone-800"
+                          : "min-w-0 flex-1 text-sm text-stone-700"}
+                        >
+                          <div className="space-y-2.5">
+                            {message.parts.map((part) => {
+                              if (part.kind === "model_fallback") {
+                                return (
+                                  <div key={part._renderKey ?? part.id} className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50/60 px-2.5 py-2 text-[10px] text-amber-800">
+                                    <ArrowsClockwise className="h-3.5 w-3.5 shrink-0" />
+                                    <span>{part.content}</span>
+                                  </div>
+                                );
+                              }
+                              if (part.kind === "thought") {
+                                const isLiveThought = isStreaming
+                                  && messageIndex === messages.length - 1
+                                  && message.status !== "complete"
+                                  && message._streamingInThought === true;
+                                return (
+                                  <AnimatedDisclosure
+                                    key={part._renderKey ?? part.id}
+                                    defaultOpen={autoExpandThoughts}
+                                    className="agnes-thought-details group"
+                                    summaryClassName="agnes-thought-summary"
+                                    summary={(
+                                      <>
+                                        <span>Agent思维过程</span>
+                                        <CaretDown className="agnes-collapse-chevron h-3 w-3" />
+                                      </>
+                                    )}
+                                  >
+                                    <div className="agnes-thought-content">
+                                      <span
+                                        className={`agnes-thought-status-icon ${isLiveThought ? "animate-pulse" : ""}`}
+                                        aria-hidden="true"
+                                      >
+                                        <Cpu className="h-3 w-3" />
+                                      </span>
+                                      <p className="whitespace-pre-wrap">{part.content}</p>
+                                    </div>
+                                  </AnimatedDisclosure>
+                                );
+                              }
+                              if (part.kind !== "text") return null;
+                              return (
+                                <MarkdownMessage
+                                  key={part._renderKey ?? part.id}
+                                  content={part.content}
+                                  streaming={isStreaming && message.status !== "complete"}
+                                />
+                              );
+                            })}
+                          </div>
+                          {!isUser && messageIndex === lastAssistantIndex && (
+                            <div className="mt-2 font-mono text-[10px] tabular-nums text-stone-400">
+                              输入 {message.input_tokens ?? 0} · 缓存 {message.cached_tokens ?? 0} · 输出 {message.output_tokens ?? 0}
+                            </div>
+                          )}
                         </div>
                       )}
+                    </motion.div>
+                  );
+                })}
+                {!conversationReady && (
+                  <p className="py-12 text-center text-xs text-stone-400">暂无讨论</p>
+                )}
+                {conversationReady && !messages.length && (
+                  <div className="flex flex-col items-center px-1 py-10 text-center">
+                    <span className="mb-3 grid h-9 w-9 place-items-center rounded-full bg-stone-100 text-stone-400">
+                      <ChatCircleDots className="h-4 w-4" />
+                    </span>
+                    <p className="text-xs font-medium text-stone-500">还没有讨论</p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-stone-400">
+                      选中正文可以直接引用提问，或从下面挑一个开始
+                    </p>
+                    <div className="mt-4 flex w-full flex-col gap-1.5">
+                      {READING_STARTER_PROMPTS.map((prompt) => (
+                        <button
+                          key={prompt}
+                          type="button"
+                          onClick={() => {
+                            setQuestion(prompt);
+                            composerRef.current?.focus();
+                          }}
+                          className="rounded-lg border border-stone-200 px-3 py-2 text-left text-[11px] text-stone-600 transition-colors hover:border-emerald-300 hover:bg-emerald-50/60 hover:text-stone-800"
+                        >
+                          {prompt}
+                        </button>
+                      ))}
                     </div>
                   </div>
-                ))}
-                {(!conversationReady || !messages.length) && <p className="py-12 text-center text-xs text-stone-400">暂无讨论</p>}
+                )}
                 <div ref={messageEndRef} />
               </div>
               <div className="border-t border-stone-200 p-3">
-                {quotedSelection && (
-                  <div className="mb-2 flex items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-2.5 py-2 text-[11px] text-stone-600">
-                    <Quotes className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
-                    <span className="min-w-0 flex-1 truncate">{quotedSelection.quote}</span>
-                    <button onClick={() => setQuotedSelection(null)} className="rounded p-0.5 text-stone-400 hover:bg-stone-200 hover:text-stone-700" title="移除引用"><X className="h-3.5 w-3.5" /></button>
+                <AnimatePresence initial={false}>
+                  {quotedSelection && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0, marginBottom: 0 }}
+                      animate={{ opacity: 1, height: "auto", marginBottom: 8 }}
+                      exit={{ opacity: 0, height: 0, marginBottom: 0 }}
+                      transition={{ duration: 0.18, ease: EASE_OUT }}
+                      className="flex items-center gap-2 overflow-hidden rounded-lg border border-emerald-200 bg-emerald-50/50 px-2.5 py-2 text-[11px] text-stone-600"
+                    >
+                      <Quotes className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
+                      <span className="min-w-0 flex-1 truncate">{quotedSelection.quote}</span>
+                      <button onClick={() => setQuotedSelection(null)} className="rounded p-0.5 text-stone-400 transition-colors hover:bg-emerald-100 hover:text-stone-700" title="移除引用"><X className="h-3.5 w-3.5" /></button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+                <div className="rounded-lg border border-stone-200 bg-white transition-colors focus-within:border-emerald-400">
+                  <textarea
+                    ref={composerRef}
+                    value={question}
+                    onChange={(event) => setQuestion(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); ask(); } }}
+                    placeholder={isStreaming ? "正在生成回复…" : "问问这本书..."}
+                    className="block max-h-40 min-h-[56px] w-full resize-none overflow-y-auto bg-transparent px-3 pt-2.5 text-sm leading-relaxed text-stone-800 outline-none placeholder:text-stone-400"
+                  />
+                  <div className="flex items-center justify-between gap-2 px-2.5 pb-2 pt-1">
+                    <span className="text-[10px] text-stone-400">Enter 发送，Shift+Enter 换行</span>
+                    <button
+                      type="button"
+                      onClick={ask}
+                      disabled={!question.trim() || isStreaming || !conversationReady}
+                      className="flex h-7 items-center gap-1.5 rounded-md bg-emerald-700 px-2.5 text-[11px] font-semibold text-white transition-all hover:bg-emerald-800 active:scale-[0.97] disabled:cursor-not-allowed disabled:bg-stone-300 disabled:active:scale-100"
+                    >
+                      {isStreaming ? <CircleNotch className="h-3.5 w-3.5 animate-spin" /> : <PaperPlaneRight className="h-3.5 w-3.5" />}
+                      {isStreaming ? "生成中" : "发送"}
+                    </button>
                   </div>
-                )}
-                <textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); ask(); } }} placeholder="问问这本书..." className="h-20 w-full resize-none rounded-md border border-stone-200 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500" />
-                <button onClick={ask} disabled={!question.trim() || isStreaming || !conversationReady} className="mt-2 flex w-full items-center justify-center gap-2 rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"><PaperPlaneRight className="h-3.5 w-3.5" />发送</button>
+                </div>
               </div>
               </>
             ) : (
