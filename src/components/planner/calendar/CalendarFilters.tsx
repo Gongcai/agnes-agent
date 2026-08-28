@@ -41,7 +41,7 @@ export function CalendarFilters({
 
   return (
     <>
-      <aside className="flex w-56 shrink-0 flex-col border-r border-stone-200 bg-white/45 px-3 py-4">
+      <aside className="flex w-56 shrink-0 flex-col border-r border-stone-200 bg-white px-3 py-4">
         <div className="mb-2 flex h-8 items-center justify-between px-2">
           <span className="text-[11px] font-semibold text-stone-500">我的日历</span>
           <button
@@ -100,7 +100,7 @@ export function CalendarFilters({
       </aside>
 
       {isCreating && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/25 p-4" role="presentation">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-900 p-4" role="presentation">
           <form
             onSubmit={submit}
             className="w-full max-w-sm rounded-lg border border-stone-200 bg-white p-5 shadow-xl"

@@ -54,7 +54,7 @@ export const Modal: React.FC<ModalProps> = ({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/30 dark:bg-black/60 backdrop-blur-sm animate-fade-in"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink dark:bg-black animate-fade-in"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -65,7 +65,7 @@ export const Modal: React.FC<ModalProps> = ({
         role="dialog"
         aria-modal="true"
         className={cn(
-          "relative flex flex-col w-full overflow-hidden rounded-xl border border-hairline bg-canvas-surface backdrop-blur-xl text-ink shadow-modal animate-scale-in",
+          "relative flex flex-col w-full overflow-hidden rounded-xl border border-hairline bg-canvas-surface text-ink shadow-modal animate-scale-in",
           maxWidthMap[maxWidth],
           className
         )}

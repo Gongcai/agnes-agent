@@ -1556,7 +1556,7 @@ export function DriveWorkspace() {
 
   return (
     <main className="agnes-feature-workspace agnes-drive-workspace flex h-full min-w-0 flex-1 flex-col bg-[#FAF9F5]">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white/40 px-5 backdrop-blur-md">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white px-5">
         <div className="flex items-center gap-2 text-sm font-semibold text-stone-800">
           <HardDrive className="h-4 w-4 text-[#8CA38A]" />
           网盘
@@ -1604,7 +1604,7 @@ export function DriveWorkspace() {
       )}
 
       <div className="flex min-h-0 flex-1">
-        <aside className="agnes-subnav flex w-64 shrink-0 flex-col border-r border-stone-200 bg-white/30 p-3">
+        <aside className="agnes-subnav flex w-64 shrink-0 flex-col border-r border-stone-200 bg-white p-3">
           <div className="mb-2 px-2 text-[10px] font-bold uppercase tracking-wider text-stone-400">
             账户
           </div>
@@ -1662,7 +1662,7 @@ export function DriveWorkspace() {
               {backupSources.map((source) => {
                 const account = accounts.find((item) => item.id === source.account_id);
                 return (
-                  <div key={source.id} className={`group rounded-md px-2 py-2 ${source.enabled ? "bg-stone-50" : "bg-stone-100/60 opacity-60"}`}>
+                  <div key={source.id} className={`group rounded-md px-2 py-2 ${source.enabled ? "bg-stone-50" : "bg-stone-100 opacity-60"}`}>
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => void updateBackupSource(source, "toggle")}
@@ -1817,10 +1817,10 @@ export function DriveWorkspace() {
                     </div>
                   </div>
                   <div
-                    className="min-h-0 flex-1 overflow-auto border-y border-stone-200 bg-white/40"
+                    className="min-h-0 flex-1 overflow-auto border-y border-stone-200 bg-white"
                     onContextMenu={(event) => event.preventDefault()}
                   >
-                    <div className="sticky top-0 z-10 grid grid-cols-[28px_minmax(0,1fr)_74px_56px] items-center gap-3 border-b border-stone-200 bg-[#FAF9F5]/95 px-3 py-2 text-[11px] font-medium text-stone-400 backdrop-blur-sm sm:grid-cols-[28px_minmax(0,1fr)_90px_130px_56px] sm:gap-4">
+                    <div className="sticky top-0 z-10 grid grid-cols-[28px_minmax(0,1fr)_74px_56px] items-center gap-3 border-b border-stone-200 bg-[#FAF9F5] px-3 py-2 text-[11px] font-medium text-stone-400 sm:grid-cols-[28px_minmax(0,1fr)_90px_130px_56px] sm:gap-4">
                       <input
                         type="checkbox"
                         aria-label={normalizedSearchQuery ? "全选搜索结果" : "全选当前目录"}
@@ -1954,7 +1954,7 @@ export function DriveWorkspace() {
                 </div>
               ) : (
                 <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
-                  <div className="border-y border-stone-200 bg-white/40">
+                  <div className="border-y border-stone-200 bg-white">
                     {transfers.filter((job) => job.account_id === selectedAccount.id).map((job) => {
                       const progress = storageProgress(job.bytes_transferred, job.bytes_total);
                       const speed = transferSpeeds[job.id];
@@ -2149,7 +2149,7 @@ export function DriveWorkspace() {
 
       {mediaPlayback && (
         <div
-          className="fixed inset-0 z-[70] grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[70] grid place-items-center bg-black p-4"
           onClick={() => setMediaPlayback(null)}
         >
           <div
@@ -2176,7 +2176,7 @@ export function DriveWorkspace() {
 
       {imagePreview && (
         <div
-          className="fixed inset-0 z-[70] grid place-items-center bg-black/70 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[70] grid place-items-center bg-black p-4"
           onClick={closeImagePreview}
         >
           <div
@@ -2205,7 +2205,7 @@ export function DriveWorkspace() {
                 <CircleNotch className="h-8 w-8 animate-spin text-stone-400" />
               )}
               {imagePreviewLoading && imagePreview.src && (
-                <div className="absolute inset-0 grid place-items-center bg-black/35">
+                <div className="absolute inset-0 grid place-items-center bg-black">
                   <CircleNotch className="h-8 w-8 animate-spin text-white" />
                 </div>
               )}
@@ -2216,7 +2216,7 @@ export function DriveWorkspace() {
 
       {moveDialog && (
         <div
-          className="fixed inset-0 z-[60] grid place-items-center bg-black/20 p-4 backdrop-blur-[1px]"
+          className="fixed inset-0 z-[60] grid place-items-center bg-black p-4"
           onClick={closeMoveDialog}
         >
           <div
@@ -2348,7 +2348,7 @@ export function DriveWorkspace() {
 
       {knowledgeImportItem && (
         <div
-          className="fixed inset-0 z-[60] grid place-items-center bg-black/20 p-4 backdrop-blur-[1px]"
+          className="fixed inset-0 z-[60] grid place-items-center bg-black p-4"
           onClick={() => setKnowledgeImportItem(null)}
         >
           <div
@@ -2387,7 +2387,7 @@ export function DriveWorkspace() {
       )}
 
       {showQuarkAuthorization && (
-        <div className="fixed inset-0 z-[80] grid place-items-center bg-stone-950/30 p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[80] grid place-items-center bg-stone-900 p-4">
           <div className="w-full max-w-lg rounded-lg border border-stone-200 bg-[#FAF9F5] shadow-2xl">
             <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3">
               <div>

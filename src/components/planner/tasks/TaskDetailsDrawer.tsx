@@ -111,14 +111,14 @@ export function TaskDetailsDrawer({
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-stone-950/20" role="presentation">
+    <div className="fixed inset-0 z-40 flex justify-end bg-stone-900" role="presentation">
       <aside
         className="flex h-full w-full max-w-md flex-col border-l border-stone-200 bg-[#FAF9F5] shadow-2xl"
         role="dialog"
         aria-modal="true"
         aria-label="任务详情"
       >
-        <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white/70 px-4">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white px-4">
           <span className="text-xs font-medium text-stone-500">{list?.name ?? "任务"}</span>
           <button
             type="button"

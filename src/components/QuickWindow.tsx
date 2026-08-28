@@ -238,7 +238,7 @@ export const QuickWindow: React.FC = () => {
     <div className="quick-window-shell flex h-screen w-screen flex-col overflow-hidden text-stone-800 antialiased">
       <header
         data-tauri-drag-region
-        className="flex h-[62px] shrink-0 items-center gap-3 border-b border-stone-200/80 bg-white/95 px-4"
+        className="flex h-[62px] shrink-0 items-center gap-3 border-b border-stone-200/80 bg-white px-4"
       >
         {activeAgent ? (
           <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={30} />
@@ -280,7 +280,7 @@ export const QuickWindow: React.FC = () => {
         </button>
       </header>
 
-      <section className="min-h-0 flex-1 overflow-y-auto bg-[#fbfaf7]/95">
+      <section className="min-h-0 flex-1 overflow-y-auto bg-[#fbfaf7]">
         {!hasConversation ? (
           <div className="p-3">
             {QUICK_ACTIONS.map((action) => {
@@ -408,7 +408,7 @@ export const QuickWindow: React.FC = () => {
         </div>
       )}
 
-      <footer className="shrink-0 border-t border-stone-200 bg-white/95 px-3 pb-2.5 pt-2">
+      <footer className="shrink-0 border-t border-stone-200 bg-white px-3 pb-2.5 pt-2">
         <div className="flex min-h-11 items-end gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 focus-within:border-stone-400">
           <textarea
             ref={inputRef}

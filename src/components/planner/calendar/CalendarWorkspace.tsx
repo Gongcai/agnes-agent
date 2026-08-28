@@ -408,7 +408,7 @@ export function CalendarWorkspace({
       />
 
       <section className="min-w-0 flex-1 overflow-y-auto bg-[#FAF9F5]">
-        <div className="sticky top-0 z-20 flex min-h-14 items-center justify-between border-b border-stone-200 bg-[#FAF9F5]/95 px-5 backdrop-blur">
+        <div className="sticky top-0 z-20 flex min-h-14 items-center justify-between border-b border-stone-200 bg-[#FAF9F5] px-5">
           <div className="flex min-w-0 items-center gap-2">
             <button
               type="button"
@@ -473,7 +473,7 @@ export function CalendarWorkspace({
 
         <div className="relative px-5 py-4">
           {loading && (
-            <div className="absolute inset-0 z-10 grid place-items-center bg-[#FAF9F5]/70">
+            <div className="absolute inset-0 z-10 grid place-items-center bg-[#FAF9F5]">
               <CircleNotch className="h-5 w-5 animate-spin text-stone-400" />
             </div>
           )}

@@ -436,7 +436,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside
       ref={sidebarRef}
       data-open={isOpen}
-      className={`agnes-sidebar ${isOpen ? "agnes-sidebar--open" : "agnes-sidebar--collapsed"} flex h-full shrink-0 flex-col overflow-hidden border-r border-stone-200/80 bg-stone-100/60 backdrop-blur-md transition-[width] duration-300 ${
+      className={`agnes-sidebar ${isOpen ? "agnes-sidebar--open" : "agnes-sidebar--collapsed"} flex h-full shrink-0 flex-col overflow-hidden border-r border-stone-200/80 bg-stone-100 transition-[width] duration-300 ${
         isOpen ? "w-72" : "w-12"
       }`}
     >
@@ -666,7 +666,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {sessionSearchOpen && createPortal(
         <div
-          className="fixed inset-0 z-[100] grid place-items-start bg-stone-950/25 p-4 pt-[min(14vh,7rem)] backdrop-blur-[1px]"
+          className="fixed inset-0 z-[100] grid place-items-start bg-stone-900 p-4 pt-[min(14vh,7rem)]"
           role="presentation"
           onMouseDown={closeSessionSearch}
         >

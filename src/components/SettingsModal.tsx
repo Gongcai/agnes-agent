@@ -2218,7 +2218,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   return (
-    <div className="agnes-settings-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+    <div className="agnes-settings-overlay fixed inset-0 z-50 flex items-center justify-center bg-black">
       <div className="agnes-settings-modal w-[960px] h-[640px] border border-stone-200 bg-white rounded-2xl overflow-hidden shadow-2xl flex flex-col">
         {/* Header */}
         <header className="px-5 py-4 border-b border-stone-200 bg-stone-50 flex justify-between items-center shrink-0">
@@ -2609,7 +2609,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                 {/* 编辑表单 或 只读信息 */}
                 {editingAgentId !== null ? (
-                  <div className="border border-stone-200 bg-[#FAF9F5]/20 rounded-xl p-5 space-y-4 shadow-sm">
+                  <div className="border border-stone-200 bg-[#FAF9F5] rounded-xl p-5 space-y-4 shadow-sm">
                     <div className="flex items-center justify-between pb-3 border-b border-stone-200">
                       <h4 className="font-semibold text-xs text-stone-800">
                         {editingAgentId === "new" ? "新建角色卡" : "编辑角色卡"}
@@ -2993,7 +2993,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                   </div>
                 ) : activeAgent ? (
-                  <div className="border border-stone-200 bg-[#FAF9F5]/20 rounded-xl p-5 space-y-4 shadow-sm">
+                  <div className="border border-stone-200 bg-[#FAF9F5] rounded-xl p-5 space-y-4 shadow-sm">
                     <div className="flex items-center gap-3 pb-3 border-b border-stone-200">
                       <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={40} />
                       <div>
@@ -3222,7 +3222,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {activeTab === "models" && (
               <div className="space-y-5">
                 {/* Local document models */}
-                <div className="rounded-xl border border-stone-200 bg-[#FAF9F5]/30 p-5 shadow-sm">
+                <div className="rounded-xl border border-stone-200 bg-[#FAF9F5] p-5 shadow-sm">
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
@@ -3284,7 +3284,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
 
                 {/* Model role routing */}
-                <div className="border border-stone-200 bg-[#FAF9F5]/30 rounded-xl p-5 space-y-4 shadow-sm">
+                <div className="border border-stone-200 bg-[#FAF9F5] rounded-xl p-5 space-y-4 shadow-sm">
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <h3 className="text-sm font-semibold text-stone-850">模型分工</h3>
@@ -3493,8 +3493,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       style={{ order: providerIndex * 2 }}
                       className={`border rounded-xl p-4 shadow-sm transition-all duration-200 hover:shadow-md ${
                         editingProviderId === provider.id
-                          ? "border-[#8CA38A]/50 bg-[#FAF9F5]/40 ring-1 ring-[#8CA38A]/20"
-                          : "border-stone-200 bg-[#FAF9F5]/20 hover:border-stone-300"
+                          ? "border-[#8CA38A]/50 bg-[#FAF9F5] ring-1 ring-[#8CA38A]/20"
+                          : "border-stone-200 bg-[#FAF9F5] hover:border-stone-300"
                       }`}
                     >
                       <div className="flex items-center justify-between">
@@ -3626,7 +3626,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         ? providers.length * 2
                         : Math.max(0, providers.findIndex((provider) => provider.id === editingProviderId) * 2 + 1),
                     }}
-                    className="border border-[#8CA38A]/30 bg-[#FAF9F5]/40 rounded-xl p-5 space-y-4 shadow-sm ring-1 ring-[#8CA38A]/10"
+                    className="border border-[#8CA38A]/30 bg-[#FAF9F5] rounded-xl p-5 space-y-4 shadow-sm ring-1 ring-[#8CA38A]/10"
                   >
                     <div className="flex items-center justify-between pb-3 border-b border-stone-200/60">
                       <h4 className="text-xs font-semibold text-stone-700">
@@ -3914,7 +3914,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 {!editingProviderId && (
                   <button
                     onClick={openAddProvider}
-                    className="w-full border border-dashed border-stone-300 hover:border-[#8CA38A] rounded-xl p-3 text-xs font-semibold text-stone-400 hover:text-[#6C806A] hover:bg-[#FAF9F5]/30 transition-all flex items-center justify-center gap-1.5"
+                    className="w-full border border-dashed border-stone-300 hover:border-[#8CA38A] rounded-xl p-3 text-xs font-semibold text-stone-400 hover:text-[#6C806A] hover:bg-[#FAF9F5] transition-all flex items-center justify-center gap-1.5"
                   >
                     <Plus className="h-3.5 w-3.5" />
                     添加服务商
@@ -5319,7 +5319,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               key={i}
                               className={`rounded-xl border p-3 text-xs ${
                                 isUser
-                                  ? "bg-[#F1F5F0]/70 border-[#DFE7DD]"
+                                  ? "bg-[#F1F5F0] border-[#DFE7DD]"
                                   : isSystem
                                   ? "bg-stone-50 border-stone-200"
                                   : "bg-white border-stone-200 shadow-sm"
@@ -5361,7 +5361,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       
       {/* Model Selection Modal */}
       {isModelSelectOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-[2px]">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black">
           <div className="agnes-model-select-modal w-[480px] max-h-[500px] bg-white border border-stone-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             <div className="px-5 py-3.5 border-b border-stone-200 bg-stone-50 flex justify-between items-center shrink-0">
               <h4 className="text-sm font-semibold text-stone-800">选择要导入的模型</h4>
@@ -5373,7 +5373,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </button>
             </div>
             
-            <div className="flex-1 overflow-y-auto p-2 bg-[#FAF9F5]/30">
+            <div className="flex-1 overflow-y-auto p-2 bg-[#FAF9F5]">
               <div className="space-y-1">
                 {availableModels.map(model => (
                   <label
@@ -5429,7 +5429,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       {/* 头像圆形裁剪浮层 */}
       {cropSrc && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black">
           <div className="w-[360px] bg-white border border-stone-200 rounded-2xl shadow-2xl p-5 flex flex-col items-center gap-4">
             <h4 className="text-sm font-semibold text-stone-800 self-start">裁剪圆形头像</h4>
             <canvas

@@ -267,13 +267,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[300] flex items-start justify-center pt-[14vh] px-4 bg-ink/30 dark:bg-black/60 backdrop-blur-sm animate-fade-in"
+      className="fixed inset-0 z-[300] flex items-start justify-center pt-[14vh] px-4 bg-ink dark:bg-black animate-fade-in"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div
-        className="w-full max-w-xl overflow-hidden rounded-xl border border-hairline bg-canvas-surface backdrop-blur-xl text-ink shadow-modal animate-scale-in flex flex-col max-h-[70vh]"
+        className="w-full max-w-xl overflow-hidden rounded-xl border border-hairline bg-canvas-surface text-ink shadow-modal animate-scale-in flex flex-col max-h-[70vh]"
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* MagnifyingGlass Input Bar */}

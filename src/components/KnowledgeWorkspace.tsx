@@ -407,7 +407,7 @@ export const KnowledgeWorkspace: React.FC = () => {
 
   return (
     <main className="agnes-feature-workspace agnes-knowledge-workspace flex h-full min-w-0 flex-1 flex-col bg-[#FAF9F5]">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white/40 px-6 backdrop-blur-md">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white px-6">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-sm font-semibold text-stone-800">
             <BookOpen className="h-4 w-4 text-[#8CA38A]" />
@@ -418,7 +418,7 @@ export const KnowledgeWorkspace: React.FC = () => {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <section className="agnes-subnav flex w-60 shrink-0 flex-col border-r border-stone-200 bg-white/30 p-3">
+        <section className="agnes-subnav flex w-60 shrink-0 flex-col border-r border-stone-200 bg-white p-3">
           <div className="mb-2 flex items-center justify-between px-1">
             <span className="text-[10px] font-bold uppercase tracking-wider text-stone-400">
               Collections

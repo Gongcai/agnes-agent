@@ -62,7 +62,7 @@ export const ModifyMemoryModal: React.FC<Props> = ({ message, onClose }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
       <div className="w-[640px] max-h-[80vh] border border-stone-200 bg-white rounded-2xl overflow-hidden shadow-2xl flex flex-col">
         <header className="px-5 py-3.5 border-b border-stone-200 bg-stone-50 flex justify-between items-center shrink-0">
           <div className="flex items-center gap-2">

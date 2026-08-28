@@ -350,7 +350,7 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
 
   return (
     <div className="flex min-h-0 flex-1">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-stone-200 bg-white/45 px-3 py-4">
+      <aside className="flex w-56 shrink-0 flex-col border-r border-stone-200 bg-white px-3 py-4">
         <nav className="space-y-0.5">
           {smartViews.map((item) => {
             const Icon = item.icon;
@@ -511,7 +511,7 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
       )}
 
       {createListOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/25 p-4" role="presentation">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-stone-900 p-4" role="presentation">
           <form
             onSubmit={createList}
             className="w-full max-w-sm rounded-lg border border-stone-200 bg-white p-5 shadow-xl"

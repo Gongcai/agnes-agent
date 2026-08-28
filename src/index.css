@@ -49,7 +49,7 @@ body.quick-window-body #root {
 .quick-window-shell {
   border: 1px solid rgba(120, 113, 108, 0.3);
   border-radius: 10px;
-  background: rgba(251, 250, 247, 0.98);
+  background: #fbfaf7;
   box-shadow: 0 18px 50px rgba(28, 25, 23, 0.2), 0 2px 8px rgba(28, 25, 23, 0.08);
 }
 
@@ -74,9 +74,7 @@ body.quick-window-body #root {
 
 /* Smooth clean styling classes */
 .clean-panel {
-  background: rgba(255, 255, 255, 0.75);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: #ffffff;
   border: 1px solid rgba(228, 228, 231, 0.6);
 }
 
@@ -133,7 +131,7 @@ body.quick-window-body #root {
 .fc .fc-scrollgrid {
   overflow: hidden;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.78);
+  background: #ffffff;
 }
 
 .fc .fc-col-header-cell-cushion,
@@ -354,8 +352,8 @@ body.quick-window-body #root {
 :root {
   --claude-canvas: #faf9f5;
   --claude-sidebar: #f5f0e8;
-  --claude-surface: rgba(250, 249, 245, 0.85); /* added translucency for glassmorphism */
-  --claude-surface-soft: rgba(245, 240, 232, 0.85);
+  --claude-surface: #faf9f5;
+  --claude-surface-soft: #f5f0e8;
   --claude-surface-card: #efe9de;
   --claude-surface-strong: #e8e0d2;
   --claude-sidebar-highlight: #efe9de;
@@ -375,9 +373,9 @@ body.quick-window-body #root {
   --claude-warning: #a96919;
   --claude-danger: #b84343;
   --claude-danger-hover: #963535;
-  --claude-header: rgba(250, 249, 245, 0.96);
-  --claude-header-soft: rgba(245, 240, 232, 0.96);
-  --claude-overlay: rgba(31, 30, 27, 0.34);
+  --claude-header: #faf9f5;
+  --claude-header-soft: #f5f0e8;
+  --claude-overlay: #1f1e1b;
   --claude-ui-font: "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "PingFang SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
   --claude-display-font: "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "PingFang SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
   --claude-mono-font: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
@@ -406,8 +404,8 @@ body.quick-window-body #root {
   --ring: 14 72% 66%;
   --claude-canvas: #1f1f1d;
   --claude-sidebar: #1f1f1d;
-  --claude-surface: rgba(31, 31, 29, 0.75);
-  --claude-surface-soft: rgba(45, 44, 41, 0.75);
+  --claude-surface: #1f1f1d;
+  --claude-surface-soft: #2d2c29;
   --claude-surface-card: #252320;
   --claude-surface-strong: #383631;
   --claude-sidebar-highlight: #3b3935;
@@ -427,9 +425,9 @@ body.quick-window-body #root {
   --claude-warning: #d9a557;
   --claude-danger: #df7b79;
   --claude-danger-hover: #c66160;
-  --claude-header: rgba(31, 31, 29, 0.94);
-  --claude-header-soft: rgba(31, 31, 29, 0.96);
-  --claude-overlay: rgba(0, 0, 0, 0.58);
+  --claude-header: #1f1f1d;
+  --claude-header-soft: #1f1f1d;
+  --claude-overlay: #000000;
   --claude-shadow: rgba(0, 0, 0, 0.42);
 }
 
@@ -516,8 +514,6 @@ pre,
   z-index: 60;
   min-height: 40px;
   background: var(--claude-header) !important;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   border-color: var(--claude-border) !important;
   color: var(--claude-muted);
 }
@@ -546,7 +542,6 @@ pre,
   width: 260px !important;
   background: var(--claude-sidebar) !important;
   border-color: var(--claude-border) !important;
-  backdrop-filter: none !important;
   box-shadow: none;
 }
 
@@ -885,7 +880,6 @@ pre,
   padding-inline: 24px !important;
   background: var(--claude-header) !important;
   border-color: var(--claude-border) !important;
-  backdrop-filter: blur(12px);
 }
 
 .agnes-chat-header > div:first-child span:first-child {
@@ -1499,8 +1493,8 @@ pre,
   background-color: var(--claude-clay-soft) !important;
 }
 
-.agnes-app [class~="bg-[#F1F5F0]/70"] {
-  background-color: rgba(240, 237, 230, 0.72) !important;
+.agnes-app [class~="bg-[#F1F5F0]"] {
+  background-color: #f0ede6 !important;
 }
 
 .agnes-app [class~="text-[#8CA38A]"],
@@ -1595,7 +1589,6 @@ pre,
 
 .agnes-settings-overlay {
   background: var(--claude-overlay) !important;
-  backdrop-filter: blur(6px);
 }
 
 .agnes-settings-modal {
@@ -1666,14 +1659,10 @@ pre,
 
 .agnes-rename-overlay {
   background: var(--claude-overlay);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
 }
 
 .agnes-confirm-overlay {
   background: var(--claude-overlay);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
 }
 
 .agnes-confirm-dialog {
@@ -1787,8 +1776,6 @@ pre,
 
 .agnes-context-menu {
   background: var(--claude-surface);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
   border-color: var(--claude-border-strong);
   color: var(--claude-body);
   font-family: var(--claude-ui-font);
@@ -1962,7 +1949,6 @@ pre,
   height: 58px !important;
   background: var(--claude-header) !important;
   border-color: var(--claude-border) !important;
-  backdrop-filter: blur(12px);
 }
 
 .agnes-feature-workspace > header svg[class*="text-\[#8CA38A\]"] {
@@ -2154,7 +2140,7 @@ pre,
 }
 
 :root[data-agnes-theme="dark"] .clean-panel {
-  background: rgba(43, 42, 39, 0.82);
+  background: #2b2a27;
   border-color: var(--claude-border);
 }
 
@@ -2261,7 +2247,7 @@ pre,
   background-color: var(--claude-canvas) !important;
 }
 
-:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#F1F5F0]/70"] {
+:root[data-agnes-theme="dark"] .agnes-app [class~="bg-[#F1F5F0]"] {
   background-color: var(--claude-surface-soft) !important;
 }
 
@@ -2363,7 +2349,7 @@ pre,
 }
 
 :root[data-agnes-theme="dark"] .fc .fc-scrollgrid {
-  background: rgba(43, 42, 39, 0.82);
+  background: #2b2a27;
 }
 
 :root[data-agnes-theme="dark"] .fc .fc-col-header-cell-cushion,
@@ -2462,28 +2448,3 @@ pre,
   }
 }
 
-/* Fix for WebKitGTK missing backdrop-filter prefix */
-.backdrop-blur-sm {
-  -webkit-backdrop-filter: blur(4px);
-  backdrop-filter: blur(4px);
-}
-.backdrop-blur-md {
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-}
-.backdrop-blur-lg {
-  -webkit-backdrop-filter: blur(16px);
-  backdrop-filter: blur(16px);
-}
-.backdrop-blur-xl {
-  -webkit-backdrop-filter: blur(24px);
-  backdrop-filter: blur(24px);
-}
-.backdrop-blur-2xl {
-  -webkit-backdrop-filter: blur(40px);
-  backdrop-filter: blur(40px);
-}
-.backdrop-blur-3xl {
-  -webkit-backdrop-filter: blur(64px);
-  backdrop-filter: blur(64px);
-}

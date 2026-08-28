@@ -1115,7 +1115,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
       {/* Input box */}
       <div
-        className={`agnes-chat-composer absolute inset-x-0 z-20 border-t border-stone-200 bg-[#FAF9F5]/40 p-4 transition-[bottom,transform,background-color] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+        className={`agnes-chat-composer absolute inset-x-0 z-20 border-t border-stone-200 bg-[#FAF9F5] p-4 transition-[bottom,transform,background-color] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
           isEmptyConversation
             ? "agnes-chat-composer--empty bottom-1/2 translate-y-1/2"
             : "bottom-0 translate-y-0"

@@ -49,7 +49,7 @@ export function DayAgenda({
     : [];
 
   return (
-    <section className="border-t border-stone-200 bg-white/55 px-5 py-4">
+    <section className="border-t border-stone-200 bg-white px-5 py-4">
       <div className="mb-3 flex items-baseline justify-between">
         <h2 className="text-sm font-semibold text-stone-900">{formatDateKey(date)}</h2>
         <span className="text-[11px] text-stone-400">{dayEvents.length + dayTasks.length} 项安排</span>
