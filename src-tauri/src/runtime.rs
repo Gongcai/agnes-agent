@@ -24,7 +24,15 @@ use uuid::Uuid;
 use zip::ZipArchive;
 
 use crate::agent::AgentManager;
+#[cfg(target_os = "android")]
+use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
+#[cfg(target_os = "android")]
+use crate::mcp::McpManager;
+#[cfg(target_os = "android")]
+use crate::secrets::SharedSecretStore;
+#[cfg(target_os = "android")]
+use crate::storage::StorageService;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,19 +144,57 @@ struct RuntimeSnapshot {
 pub struct AndroidLinuxRuntime {
     root_dir: PathBuf,
     native_plugin: PluginHandle<Wry>,
+    agent: Arc<AgentManager>,
+    db: DbActorHandle,
+    app_handle: tauri::AppHandle,
+    mcp: Arc<McpManager>,
+    secrets: SharedSecretStore,
+    home_workspace_dir: PathBuf,
+    storage: Arc<StorageService>,
     snapshot: Mutex<RuntimeSnapshot>,
 }
 
 #[cfg(target_os = "android")]
 impl AndroidLinuxRuntime {
-    pub fn new(data_dir: &Path, native_plugin: PluginHandle<Wry>) -> Self {
+    pub fn new(
+        data_dir: &Path,
+        native_plugin: PluginHandle<Wry>,
+        agent: Arc<AgentManager>,
+        db: DbActorHandle,
+        app_handle: tauri::AppHandle,
+        mcp: Arc<McpManager>,
+        secrets: SharedSecretStore,
+        home_workspace_dir: PathBuf,
+        storage: Arc<StorageService>,
+    ) -> Self {
         let root_dir = data_dir.join("android-runtime");
         let snapshot = load_snapshot(&root_dir);
         Self {
             root_dir,
             native_plugin,
+            agent,
+            db,
+            app_handle,
+            mcp,
+            secrets,
+            home_workspace_dir,
+            storage,
             snapshot: Mutex::new(snapshot),
         }
+    }
+
+    fn current_rootfs(&self) -> AppResult<PathBuf> {
+        let version = std::fs::read_to_string(self.root_dir.join("current"))
+            .map_err(|_| AppError::Other("请先安装 Android Linux Runtime".into()))?;
+        let version = version.trim();
+        if !valid_version(version) {
+            return Err(AppError::Other("当前 Runtime 版本记录无效".into()));
+        }
+        let rootfs_dir = self.root_dir.join("versions").join(version).join("rootfs");
+        if !rootfs_dir.is_dir() {
+            return Err(AppError::Other("当前 Runtime rootfs 不存在".into()));
+        }
+        Ok(rootfs_dir)
     }
 
     fn native_service_status(&self) -> AppResult<bool> {
@@ -178,6 +224,13 @@ impl AndroidLinuxRuntime {
         })?;
         let manifest = read_manifest(&mut archive)?;
         validate_manifest(&manifest)?;
+        if manifest.abi != target_android_abi() {
+            return Err(AppError::Other(format!(
+                "Runtime ABI 与当前设备不匹配: package={}, device={}",
+                manifest.abi,
+                target_android_abi()
+            )));
+        }
 
         std::fs::create_dir_all(self.root_dir.join("versions"))?;
         let staging = self
@@ -248,15 +301,19 @@ impl AndroidLinuxRuntime {
 impl AgentRuntime for AndroidLinuxRuntime {
     fn status(&self) -> AgentRuntimeStatus {
         let service_running = self.native_service_status().unwrap_or(false);
+        let agent_running = self.agent.is_running();
         let mut snapshot = self
             .snapshot
             .lock()
             .expect("runtime snapshot lock poisoned");
         if snapshot.runtime_version.is_some() {
-            if service_running {
+            if service_running && agent_running {
+                snapshot.state = "ready".into();
+                snapshot.detail = "Android Linux Runtime 与 Agent 已就绪".into();
+            } else if service_running {
                 snapshot.state = "service-running".into();
-                snapshot.detail = "Android Runtime 前台服务正在运行，等待 PRoot runner".into();
-            } else if snapshot.state == "service-running" {
+                snapshot.detail = "Android Runtime 前台服务正在运行，等待 Agent".into();
+            } else if matches!(snapshot.state.as_str(), "service-running" | "ready") {
                 snapshot.state = "installed".into();
                 snapshot.detail = format!(
                     "Android Linux Runtime {} 已安装，前台服务未运行",
@@ -293,11 +350,25 @@ impl AgentRuntime for AndroidLinuxRuntime {
         if status.state == "not-installed" {
             return Err(AppError::Other("请先安装 Android Linux Runtime".into()));
         }
+        let rootfs_dir = self.current_rootfs()?;
         let _: serde_json::Value = self.run_native_command("start")?;
+        if let Err(error) = self.agent.start_android(
+            self.db.clone(),
+            self.app_handle.clone(),
+            self.mcp.clone(),
+            self.secrets.clone(),
+            self.home_workspace_dir.clone(),
+            self.storage.clone(),
+            rootfs_dir,
+        ) {
+            let _ = self.run_native_command::<serde_json::Value>("stop");
+            return Err(error);
+        }
         Ok(self.status())
     }
 
     fn stop(&self) -> AppResult<AgentRuntimeStatus> {
+        self.agent.shutdown();
         let _: serde_json::Value = self.run_native_command("stop")?;
         Ok(self.status())
     }
@@ -349,6 +420,15 @@ fn validate_manifest(manifest: &RuntimeManifest) -> AppResult<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn target_android_abi() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64-v8a",
+        "x86_64" => "x86_64",
+        _ => "unsupported",
+    }
 }
 
 #[cfg(any(target_os = "android", test))]

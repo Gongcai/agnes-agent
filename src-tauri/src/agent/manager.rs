@@ -1,5 +1,5 @@
 use std::net::TcpListener;
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, target_os = "android"))]
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +21,8 @@ struct AgentRuntime {
 }
 
 enum AgentChild {
+    #[cfg(target_os = "android")]
+    Android(std::process::Child),
     #[cfg(debug_assertions)]
     Dev(std::process::Child),
     #[cfg(not(debug_assertions))]
@@ -30,6 +32,11 @@ enum AgentChild {
 impl AgentChild {
     fn terminate(self) {
         match self {
+            #[cfg(target_os = "android")]
+            Self::Android(mut child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             #[cfg(debug_assertions)]
             Self::Dev(mut child) => {
                 let _ = child.kill();
@@ -55,8 +62,15 @@ impl Drop for AgentRuntime {
 struct DevUvLauncher;
 #[cfg(not(debug_assertions))]
 struct BundledBinLauncher;
+#[cfg(target_os = "android")]
+struct AndroidLinuxLauncher {
+    rootfs_dir: std::path::PathBuf,
+    workspace_dir: std::path::PathBuf,
+}
 
 enum AgentLauncher {
+    #[cfg(target_os = "android")]
+    AndroidLinux(AndroidLinuxLauncher),
     #[cfg(debug_assertions)]
     DevUv(DevUvLauncher),
     #[cfg(not(debug_assertions))]
@@ -85,6 +99,52 @@ impl AgentLauncher {
         #[cfg(debug_assertions)]
         let _ = app_handle;
         match self {
+            #[cfg(target_os = "android")]
+            Self::AndroidLinux(config) => {
+                let proot = config.rootfs_dir.join("usr/bin/proot");
+                if !proot.is_file() {
+                    return Err(AppError::Agent(format!(
+                        "Android Runtime 缺少 PRoot: {}",
+                        proot.display()
+                    )));
+                }
+                if !config.rootfs_dir.join("usr/bin/python3").is_file() {
+                    return Err(AppError::Agent(
+                        "Android Runtime 缺少 /usr/bin/python3".into(),
+                    ));
+                }
+                if !config
+                    .rootfs_dir
+                    .join("opt/agnes-agent/app/main.py")
+                    .is_file()
+                {
+                    return Err(AppError::Agent(
+                        "Android Runtime 缺少 /opt/agnes-agent/app/main.py".into(),
+                    ));
+                }
+                if !config.workspace_dir.is_dir() {
+                    return Err(AppError::Agent("Android Agent 工作区不存在".into()));
+                }
+
+                let child = Command::new(&proot)
+                    .args(["-0", "-r"])
+                    .arg(&config.rootfs_dir)
+                    .args(["-b", "/dev", "-b", "/proc"])
+                    .args(["-b"])
+                    .arg(format!("{}:/workspace", config.workspace_dir.display()))
+                    .args(["-w", "/workspace", "/usr/bin/python3", "-m", "app.main"])
+                    .env("AGENT_WS_URL", ws_url)
+                    .env("AGENT_PROTOCOL_TOKEN", token)
+                    .env("HOME", "/root")
+                    .env("PYTHONPATH", "/opt/agnes-agent")
+                    .env(
+                        "PATH",
+                        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                    )
+                    .spawn()
+                    .map_err(|e| AppError::Agent(format!("启动 Android PRoot Agent 失败：{e}")))?;
+                Ok(AgentChild::Android(child))
+            }
             #[cfg(debug_assertions)]
             Self::DevUv(_) => {
                 let child = Command::new("uv")
@@ -199,6 +259,52 @@ impl AgentManager {
         home_workspace_dir: std::path::PathBuf,
         storage: Arc<crate::storage::StorageService>,
     ) -> AppResult<()> {
+        self.start_with_launcher(
+            db,
+            app_handle,
+            mcp,
+            secrets,
+            home_workspace_dir,
+            storage,
+            AgentLauncher::current(),
+        )
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn start_android(
+        self: &Arc<Self>,
+        db: DbActorHandle,
+        app_handle: tauri::AppHandle,
+        mcp: Arc<McpManager>,
+        secrets: SharedSecretStore,
+        home_workspace_dir: std::path::PathBuf,
+        storage: Arc<crate::storage::StorageService>,
+        rootfs_dir: std::path::PathBuf,
+    ) -> AppResult<()> {
+        self.start_with_launcher(
+            db,
+            app_handle,
+            mcp,
+            secrets,
+            home_workspace_dir.clone(),
+            storage,
+            AgentLauncher::AndroidLinux(AndroidLinuxLauncher {
+                rootfs_dir,
+                workspace_dir: home_workspace_dir,
+            }),
+        )
+    }
+
+    fn start_with_launcher(
+        self: &Arc<Self>,
+        db: DbActorHandle,
+        app_handle: tauri::AppHandle,
+        mcp: Arc<McpManager>,
+        secrets: SharedSecretStore,
+        home_workspace_dir: std::path::PathBuf,
+        storage: Arc<crate::storage::StorageService>,
+        launcher: AgentLauncher,
+    ) -> AppResult<()> {
         if self.running.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
@@ -211,12 +317,10 @@ impl AgentManager {
             .map(|a| a.port())
             .map_err(|e| AppError::Agent(format!("取端口失败：{e}")))?;
 
-        let child = AgentLauncher::current()
-            .spawn(&app_handle, port, &token)
-            .map_err(|error| {
-                self.running.store(false, Ordering::SeqCst);
-                error
-            })?;
+        let child = launcher.spawn(&app_handle, port, &token).map_err(|error| {
+            self.running.store(false, Ordering::SeqCst);
+            error
+        })?;
 
         // 绑定 WS Server 运行到 Tauri 异步运行时
         let token_for_ws = token.clone();

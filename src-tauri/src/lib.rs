@@ -407,7 +407,7 @@ pub fn run() {
             backup.clone().start_background();
 
             // 2) Desktop owns the Python sidecar. Android owns an app-private Linux
-            // Runtime lifecycle; the PRoot runner is added in the next runtime slice.
+            // Runtime and starts the same Agent Protocol through PRoot.
             let agent = Arc::new(agent::AgentManager::new());
             #[cfg(not(target_os = "android"))]
             if let Err(e) = agent.start(
@@ -425,7 +425,17 @@ pub fn run() {
             let runtime_plugin = app.state::<runtime::AndroidRuntimePlugin>().0.clone();
             #[cfg(target_os = "android")]
             let runtime: Arc<dyn runtime::AgentRuntime> =
-                Arc::new(runtime::AndroidLinuxRuntime::new(&data_dir, runtime_plugin));
+                Arc::new(runtime::AndroidLinuxRuntime::new(
+                    &data_dir,
+                    runtime_plugin,
+                    agent.clone(),
+                    db.clone(),
+                    app.handle().clone(),
+                    mcp.clone(),
+                    secrets.clone(),
+                    home_workspace_dir.clone(),
+                    storage.clone(),
+                ));
             #[cfg(not(target_os = "android"))]
             let runtime: Arc<dyn runtime::AgentRuntime> =
                 Arc::new(runtime::DesktopSidecarRuntime::new(agent.clone()));

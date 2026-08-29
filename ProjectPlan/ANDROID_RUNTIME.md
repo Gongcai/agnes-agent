@@ -1,6 +1,6 @@
 # Android 本地 Agent 与 Linux Runtime 设计
 
-> 状态：A1 开发中；Runtime 安装管理基础已完成，PRoot runner 待接入
+> 状态：A1 开发中；Runtime 安装管理和 PRoot runner 启动接线已完成，Ubuntu rootfs 制品待提供
 > 更新时间：2026-08-29
 > 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`
 
@@ -118,6 +118,17 @@ Android Runtime Service 负责跨 Activity 生命周期维护运行时：
 版本，摘要和大小通过后再原子切换 `current` 指针，旧版本保留在 `versions/`，上一版本
 记录在 `previous`。
 
+PRoot runner 目前约定以下文件由 rootfs 制品提供：
+
+- `usr/bin/proot`：与设备 ABI 匹配的 PRoot 可执行文件；
+- `usr/bin/python3`：Linux 用户空间内的 Python 解释器；
+- `opt/agnes-agent/app/main.py`：与桌面端同源的 Python Agent；
+- Agent 依赖、证书和启动配置也必须位于 rootfs 内，不写入 Android 私有目录中的明文配置。
+
+Rust 会把应用私有工作区绑定为 Linux 的 `/workspace`，通过一次性 token 和本地回环
+WS 连接 Agent Protocol。Android Runtime 不向其他应用暴露 Service，停止 Runtime 时会
+先回收 Agent 子进程，再移除前台通知。
+
 开发调试可以先使用预置 rootfs 或本机生成的测试 rootfs；发布渠道再确定内置、首次下载或应用内更新的最终策略。
 
 ### 4.2 工具与依赖
@@ -184,12 +195,12 @@ Android 有两种执行模式：
 
 ### A1：Linux Runtime 原型
 
-- [x] Android Foreground Service 和 Runtime supervisor（基础生命周期与通知已接入，进程 supervisor 待补充）；
-- [ ] PRoot 与最小 Ubuntu ARM64 rootfs；
+- [x] Android Foreground Service 基础生命周期与通知（独立进程 supervisor 待补充）；
+- [x] PRoot runner 启动路径与最小 Ubuntu rootfs 文件契约；
 - [x] rootfs manifest、Hash 校验、路径/资源限制、原子安装；
 - [ ] 安装失败回滚和当前版本恢复；
-- 启动/停止/重启 Python Agent；
-- Rust Core 与 Runtime 的本地认证 IPC；
+- [x] 启动/停止 Python Agent 的 PRoot 接线；
+- [x] Rust Core 与 Agent 的本地认证 WS IPC 接线；
 - 完成现有 Agent Protocol 握手、流式回复和取消。
 
 ### A2：Android 本地完整 Agent
