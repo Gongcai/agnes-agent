@@ -290,12 +290,13 @@ async fn handle_conn<R: tauri::Runtime>(
         }
     });
 
-    let tool_executor = ToolExecutor::new(
+    let tool_executor = ToolExecutor::new_with_process_runtime(
         db.clone(),
         mcp,
         secrets,
         home_workspace_dir.clone(),
         storage,
+        manager.process_runtime(),
     );
     let mut tool_tasks: HashMap<String, Vec<tokio::task::JoinHandle<()>>> = HashMap::new();
 

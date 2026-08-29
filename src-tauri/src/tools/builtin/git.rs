@@ -109,18 +109,18 @@ impl BuiltinTool for GitTool {
             "tag.gpgSign=false".to_string(),
         ];
         execution_args.extend(args.iter().cloned());
-        let mut child =
-            match ctx
-                .sandbox
-                .git_command("git", &execution_args, &ctx.policy.shell.env_allowlist)
-            {
-                Ok(command) => command,
-                Err(error) => {
-                    ctx.record_failure(&error.to_string()).await?;
-                    return Err(error);
-                }
-            };
-        child.current_dir(&cwd_absolute);
+        let mut child = match ctx.sandbox.git_command_at(
+            "git",
+            &execution_args,
+            &ctx.policy.shell.env_allowlist,
+            &cwd_absolute,
+        ) {
+            Ok(command) => command,
+            Err(error) => {
+                ctx.record_failure(&error.to_string()).await?;
+                return Err(error);
+            }
+        };
         child.env("GIT_TERMINAL_PROMPT", "0");
         child.env("GIT_EDITOR", "true");
         child.env("GIT_SEQUENCE_EDITOR", "true");

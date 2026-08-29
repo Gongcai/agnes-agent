@@ -125,6 +125,7 @@ PRoot runner 当前约定以下文件由 Android 包和 rootfs 制品共同提�
 - `libagnes_proot_loader.so`：同 ABI 的静态 PRoot ELF loader；通过 `PROOT_LOADER` 直接使用，避免 PRoot 在 Android 应用私有目录临时提取 loader；
 - `usr/bin/python3`：Linux 用户空间内的 Python 解释器；
 - `opt/agnes-agent/app/main.py`：与桌面端同源的 Python Agent；
+- `usr/bin/bash`、`usr/bin/git`、Python 和 SSH 等 Agent 工具依赖也必须位于 rootfs；
 - Agent 依赖、证书和启动配置也必须位于 rootfs 内，不写入 Android 私有目录中的明文配置。
 
 Rust 的公网 HTTPS 请求使用 Rustls，同时加载系统根证书和内置 Mozilla WebPKI 根证书。
@@ -136,6 +137,13 @@ DNS、TLS、连接拒绝和超时。
 Rust 会把应用私有工作区绑定为 Linux 的 `/workspace`，通过一次性 token 和本地回环
 WS 连接 Agent Protocol。Android Runtime 不向其他应用暴露 Service，停止 Runtime 时会
 先回收 Agent 子进程，再移除前台通知。
+
+Shell 和 Git 工具在 Android 上也通过同一个 PRoot rootfs 执行。Rust 先按现有工具策略检查
+宿主工作区、cwd、写入边界、审批、超时和输出上限，再将当前工作区只读/读写边界映射为
+Linux 的 `/workspace`，并把宿主 cwd 转换为 `/workspace` 下的相对路径。工具进程使用 APK
+内置的 `libagnes_proot.so` 和静态 `libagnes_proot_loader.so`，不把应用数据库、其他会话目录
+或未授权 Android 路径挂载进 Linux。文件、记忆和数据库工具仍由 Rust 直接执行，避免 Linux
+进程绕过 Rust 的权限审计。
 
 开发调试可以使用预置 rootfs 或本机生成的测试 rootfs。正式 APK/AAB 默认内置对应 ABI 的 Runtime；应用内更新或远端制品下载作为后续升级通道，不能成为首次使用的必要步骤。
 
@@ -248,7 +256,8 @@ Android 有两种执行模式：
 
 ### A2：Android 本地完整 Agent
 
-- Shell、文件读写、Git、Python、SSH 和记忆工具；
+- [x] Android Shell/Git 进程通过 PRoot Ubuntu rootfs 执行，并将会话工作区映射为 `/workspace`；
+- Shell、文件读写、Git、Python、SSH 和记忆工具的完整功能与权限验收；
 - 工具审批、sandbox、审计、超时、并发和输出上限；
 - 应用私有工作区和 SAF 工作区；
 - Android Bridge 的最小系统能力；

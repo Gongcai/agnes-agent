@@ -36,10 +36,130 @@ struct ProcessSandboxSpec {
 /// Fully resolved launch specification shared by pipe-backed and PTY-backed
 /// runners. Sandbox wrapping and environment filtering must stay identical for
 /// both execution paths.
+#[derive(Debug)]
 pub struct SandboxCommand {
     program: OsString,
     args: Vec<OsString>,
     env: Vec<(OsString, OsString)>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum ToolProcessRuntime {
+    #[default]
+    Host,
+    AndroidProot(AndroidProotProcessRuntime),
+}
+
+#[derive(Clone, Debug)]
+pub struct AndroidProotProcessRuntime {
+    proot_path: PathBuf,
+    proot_loader_path: PathBuf,
+    proot_tmp_dir: PathBuf,
+    rootfs_dir: PathBuf,
+}
+
+impl AndroidProotProcessRuntime {
+    pub fn new(
+        proot_path: PathBuf,
+        proot_loader_path: PathBuf,
+        proot_tmp_dir: PathBuf,
+        rootfs_dir: PathBuf,
+    ) -> Self {
+        Self {
+            proot_path,
+            proot_loader_path,
+            proot_tmp_dir,
+            rootfs_dir,
+        }
+    }
+
+    fn command_spec(
+        &self,
+        program: &str,
+        args: &[String],
+        env_allowlist: &[String],
+        workspace_root: Option<&Path>,
+        cwd: Option<&Path>,
+    ) -> AppResult<SandboxCommand> {
+        for (path, label) in [
+            (&self.proot_path, "PRoot"),
+            (&self.proot_loader_path, "PRoot loader"),
+        ] {
+            if !path.is_absolute() || !path.is_file() {
+                return Err(AppError::Other(format!(
+                    "Android {label} path is invalid: {}",
+                    path.display()
+                )));
+            }
+        }
+        if !self.proot_tmp_dir.is_absolute() || !self.proot_tmp_dir.is_dir() {
+            return Err(AppError::Other(format!(
+                "Android PRoot temporary directory is invalid: {}",
+                self.proot_tmp_dir.display()
+            )));
+        }
+        if !self.rootfs_dir.is_absolute()
+            || !self.rootfs_dir.is_dir()
+            || !self.rootfs_dir.join("usr/bin/env").is_file()
+        {
+            return Err(AppError::Other(format!(
+                "Android Linux rootfs is invalid: {}",
+                self.rootfs_dir.display()
+            )));
+        }
+
+        let workspace_root = workspace_root
+            .map(normalize_root)
+            .filter(|path| path.is_absolute() && path.is_dir())
+            .ok_or_else(|| {
+                AppError::Other("Android Linux tools require a valid workspace".into())
+            })?;
+        let cwd = cwd
+            .map(normalize_root)
+            .unwrap_or_else(|| workspace_root.clone());
+        let relative_cwd = cwd.strip_prefix(&workspace_root).map_err(|_| {
+            AppError::Other(format!(
+                "Android Linux tool cwd escapes the workspace: {}",
+                cwd.display()
+            ))
+        })?;
+        let guest_cwd = Path::new("/workspace").join(relative_cwd);
+
+        let mut proot_args = vec![
+            OsString::from("-0"),
+            OsString::from("-r"),
+            self.rootfs_dir.clone().into_os_string(),
+            OsString::from("-b"),
+            OsString::from("/dev"),
+            OsString::from("-b"),
+            OsString::from("/proc"),
+            OsString::from("-b"),
+            OsString::from(format!("{}:/workspace", workspace_root.display())),
+            OsString::from("-w"),
+            guest_cwd.into_os_string(),
+            OsString::from("/usr/bin/env"),
+            OsString::from(program),
+        ];
+        proot_args.extend(args.iter().map(OsString::from));
+
+        let mut env = filtered_environment(env_allowlist);
+        set_environment(&mut env, "HOME", "/root");
+        set_environment(
+            &mut env,
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        );
+        set_environment(&mut env, "TMPDIR", "/tmp");
+        set_environment(&mut env, "LD_LIBRARY_PATH", "");
+        set_environment(&mut env, "PROOT_TMP_DIR", self.proot_tmp_dir.as_os_str());
+        set_environment(&mut env, "PROOT_LOADER", self.proot_loader_path.as_os_str());
+
+        Ok(SandboxCommand {
+            program: self.proot_path.clone().into_os_string(),
+            args: proot_args,
+            env,
+        })
+    }
 }
 
 impl SandboxCommand {
@@ -111,6 +231,15 @@ pub trait SandboxGuard: Send + Sync {
         args: &[String],
         env_allowlist: &[String],
     ) -> AppResult<SandboxCommand>;
+    fn command_spec_at(
+        &self,
+        program: &str,
+        args: &[String],
+        env_allowlist: &[String],
+        _cwd: &Path,
+    ) -> AppResult<SandboxCommand> {
+        self.command_spec(program, args, env_allowlist)
+    }
     /// Git is the one built-in tool allowed to update repository metadata.
     fn git_command(
         &self,
@@ -122,6 +251,17 @@ pub trait SandboxGuard: Send + Sync {
             .command_spec(program, args, env_allowlist)?
             .into_tokio())
     }
+    fn git_command_at(
+        &self,
+        program: &str,
+        args: &[String],
+        env_allowlist: &[String],
+        cwd: &Path,
+    ) -> AppResult<Command> {
+        let mut command = self.git_command(program, args, env_allowlist)?;
+        command.current_dir(cwd);
+        Ok(command)
+    }
 }
 
 pub struct PolicySandbox {
@@ -131,10 +271,20 @@ pub struct PolicySandbox {
     process_spec: ProcessSandboxSpec,
     process_isolation: ProcessIsolation,
     protected_paths: Vec<PathBuf>,
+    process_runtime: ToolProcessRuntime,
+    workspace_root: Option<PathBuf>,
 }
 
 impl PolicySandbox {
     pub fn new(policy: &ToolPolicy, workspace_cwd: Option<&Path>) -> Self {
+        Self::new_with_process_runtime(policy, workspace_cwd, ToolProcessRuntime::Host)
+    }
+
+    pub fn new_with_process_runtime(
+        policy: &ToolPolicy,
+        workspace_cwd: Option<&Path>,
+        process_runtime: ToolProcessRuntime,
+    ) -> Self {
         let mut configured_write_roots = policy
             .sandbox
             .writable_roots
@@ -248,6 +398,8 @@ impl PolicySandbox {
             },
             process_isolation,
             protected_paths,
+            process_runtime,
+            workspace_root: workspace_cwd.map(normalize_root),
         }
     }
 }
@@ -282,7 +434,17 @@ impl SandboxGuard for PolicySandbox {
         args: &[String],
         env_allowlist: &[String],
     ) -> AppResult<SandboxCommand> {
-        self.command_spec_internal(program, args, env_allowlist, false)
+        self.command_spec_internal(program, args, env_allowlist, false, None)
+    }
+
+    fn command_spec_at(
+        &self,
+        program: &str,
+        args: &[String],
+        env_allowlist: &[String],
+        cwd: &Path,
+    ) -> AppResult<SandboxCommand> {
+        self.command_spec_internal(program, args, env_allowlist, false, Some(cwd))
     }
 
     fn git_command(
@@ -292,8 +454,22 @@ impl SandboxGuard for PolicySandbox {
         env_allowlist: &[String],
     ) -> AppResult<Command> {
         Ok(self
-            .command_spec_internal(program, args, env_allowlist, true)?
+            .command_spec_internal(program, args, env_allowlist, true, None)?
             .into_tokio())
+    }
+
+    fn git_command_at(
+        &self,
+        program: &str,
+        args: &[String],
+        env_allowlist: &[String],
+        cwd: &Path,
+    ) -> AppResult<Command> {
+        let mut command = self
+            .command_spec_internal(program, args, env_allowlist, true, Some(cwd))?
+            .into_tokio();
+        command.current_dir(cwd);
+        Ok(command)
     }
 }
 
@@ -304,6 +480,7 @@ impl PolicySandbox {
         args: &[String],
         env_allowlist: &[String],
         allow_protected_metadata: bool,
+        cwd: Option<&Path>,
     ) -> AppResult<SandboxCommand> {
         match &self.process_isolation {
             ProcessIsolation::RequiredUnavailable => {
@@ -317,6 +494,16 @@ impl PolicySandbox {
                 ));
             }
             _ => {}
+        }
+
+        if let ToolProcessRuntime::AndroidProot(runtime) = &self.process_runtime {
+            return runtime.command_spec(
+                program,
+                args,
+                env_allowlist,
+                self.workspace_root.as_deref(),
+                cwd,
+            );
         }
 
         let use_helper = !cfg!(test)
@@ -404,22 +591,7 @@ impl PolicySandbox {
             (target, target_args)
         };
 
-        let mut env = Vec::new();
-        if env_allowlist.is_empty() {
-            for (name, value) in std::env::vars_os() {
-                if safe_environment_name(&name) {
-                    env.push((name, value));
-                }
-            }
-        } else {
-            for name in env_allowlist {
-                if safe_environment_name(std::ffi::OsStr::new(name)) {
-                    if let Some(value) = std::env::var_os(name) {
-                        env.push((OsString::from(name), value));
-                    }
-                }
-            }
-        }
+        let mut env = filtered_environment(env_allowlist);
         if let Some(config) = config {
             env.push((OsString::from(SANDBOX_CONFIG_ENV), OsString::from(config)));
         }
@@ -429,6 +601,36 @@ impl PolicySandbox {
             env,
         })
     }
+}
+
+fn filtered_environment(env_allowlist: &[String]) -> Vec<(OsString, OsString)> {
+    let mut env = Vec::new();
+    if env_allowlist.is_empty() {
+        for (name, value) in std::env::vars_os() {
+            if safe_environment_name(&name) {
+                env.push((name, value));
+            }
+        }
+    } else {
+        for name in env_allowlist {
+            if safe_environment_name(std::ffi::OsStr::new(name)) {
+                if let Some(value) = std::env::var_os(name) {
+                    env.push((OsString::from(name), value));
+                }
+            }
+        }
+    }
+    env
+}
+
+fn set_environment(
+    env: &mut Vec<(OsString, OsString)>,
+    name: impl Into<OsString>,
+    value: impl Into<OsString>,
+) {
+    let name = name.into();
+    env.retain(|(existing, _)| existing != &name);
+    env.push((name, value.into()));
 }
 
 fn safe_environment_name(name: &std::ffi::OsStr) -> bool {
@@ -954,6 +1156,105 @@ mod tests {
             .env
             .iter()
             .all(|(name, _)| safe_environment_name(name)));
+    }
+
+    #[test]
+    fn android_proot_maps_workspace_cwd_into_linux_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        let workspace = temp.path().join("workspace");
+        let nested = workspace.join("src");
+        let proot = temp.path().join("proot");
+        let loader = temp.path().join("loader");
+        let proot_tmp = temp.path().join("proot-tmp");
+        std::fs::create_dir_all(rootfs.join("usr/bin")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&proot_tmp).unwrap();
+        for path in [&rootfs.join("usr/bin/env"), &proot, &loader] {
+            std::fs::write(path, "test").unwrap();
+        }
+
+        let runtime = AndroidProotProcessRuntime::new(
+            proot,
+            loader.clone(),
+            proot_tmp.clone(),
+            rootfs.clone(),
+        );
+        let command = runtime
+            .command_spec(
+                "bash",
+                &["-c".into(), "pwd".into()],
+                &[],
+                Some(&workspace),
+                Some(&nested),
+            )
+            .unwrap();
+        let args = command
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let expected_prefix = vec![
+            "-0".into(),
+            "-r".into(),
+            rootfs.to_string_lossy().to_string(),
+            "-b".into(),
+            "/dev".into(),
+            "-b".into(),
+            "/proc".into(),
+            "-b".into(),
+            format!("{}:/workspace", workspace.display()),
+            "-w".into(),
+            "/workspace/src".into(),
+            "/usr/bin/env".into(),
+        ];
+        assert_eq!(args[0..12], expected_prefix);
+        assert_eq!(args[12], "bash");
+        assert_eq!(args[13], "-c");
+        assert!(command
+            .env
+            .iter()
+            .any(|(name, value)| { name == "PROOT_LOADER" && value == loader.as_os_str() }));
+        assert!(command
+            .env
+            .iter()
+            .any(|(name, value)| { name == "PROOT_TMP_DIR" && value == proot_tmp.as_os_str() }));
+        assert!(command
+            .env
+            .iter()
+            .all(|(name, _)| safe_environment_name(name)));
+    }
+
+    #[test]
+    fn android_proot_rejects_cwd_outside_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside");
+        let proot_tmp = temp.path().join("proot-tmp");
+        std::fs::create_dir_all(rootfs.join("usr/bin")).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&proot_tmp).unwrap();
+        for name in ["env", "proot", "loader"] {
+            let path = if name == "env" {
+                rootfs.join("usr/bin").join(name)
+            } else {
+                temp.path().join(name)
+            };
+            std::fs::write(path, "test").unwrap();
+        }
+
+        let runtime = AndroidProotProcessRuntime::new(
+            temp.path().join("proot"),
+            temp.path().join("loader"),
+            proot_tmp,
+            rootfs,
+        );
+        let error = runtime
+            .command_spec("bash", &[], &[], Some(&workspace), Some(&outside))
+            .unwrap_err();
+        assert!(error.to_string().contains("escapes the workspace"));
     }
 
     #[cfg(unix)]

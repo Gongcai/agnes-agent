@@ -12,6 +12,9 @@ use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::mcp::McpManager;
 use crate::secrets::SharedSecretStore;
+#[cfg(target_os = "android")]
+use crate::tools::sandbox::AndroidProotProcessRuntime;
+use crate::tools::sandbox::ToolProcessRuntime;
 
 /// Agent 运行时：拥有 Python sidecar 子进程与 WS Server 端口/token。
 struct AgentRuntime {
@@ -240,6 +243,7 @@ pub struct AgentManager {
     // Cancellation is sticky for the lifetime of a run so a late tool request
     // cannot miss the one-shot signal and start after the user pressed stop.
     cancelled_runs: Mutex<std::collections::HashSet<String>>,
+    process_runtime: Mutex<ToolProcessRuntime>,
 }
 
 impl AgentManager {
@@ -256,6 +260,7 @@ impl AgentManager {
             run_approval_tc: Mutex::new(std::collections::HashMap::new()),
             run_cancel_signals: Mutex::new(std::collections::HashMap::new()),
             cancelled_runs: Mutex::new(std::collections::HashSet::new()),
+            process_runtime: Mutex::new(ToolProcessRuntime::Host),
         }
     }
 
@@ -295,6 +300,13 @@ impl AgentManager {
         self.active_sender.lock().unwrap().is_some()
     }
 
+    pub(crate) fn process_runtime(&self) -> ToolProcessRuntime {
+        self.process_runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
     /// 启动：绑定 127.0.0.1 随机端口，生成一次性 token，拉起 Python sidecar。
     /// 并将 WS Server 任务提交到 Tauri 的异步运行时。
     pub fn start(
@@ -331,6 +343,16 @@ impl AgentManager {
         proot_loader_path: std::path::PathBuf,
         proot_tmp_dir: std::path::PathBuf,
     ) -> AppResult<()> {
+        *self
+            .process_runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            ToolProcessRuntime::AndroidProot(AndroidProotProcessRuntime::new(
+                proot_path.clone(),
+                proot_loader_path.clone(),
+                proot_tmp_dir.clone(),
+                rootfs_dir.clone(),
+            ));
         self.start_with_launcher(
             db,
             app_handle,

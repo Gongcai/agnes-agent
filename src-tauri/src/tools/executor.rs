@@ -14,6 +14,7 @@ use crate::storage::StorageService;
 use crate::tools::builtin::{builtin_tools, SearchSecretAccess, ToolCtx};
 use crate::tools::permissions::SandboxEscalation;
 use crate::tools::policy::ToolPolicy;
+use crate::tools::sandbox::ToolProcessRuntime;
 use crate::tools::terminal::TerminalManager;
 use crate::tools::PermissionMode;
 
@@ -25,6 +26,7 @@ pub struct ToolExecutor {
     terminals: Arc<TerminalManager>,
     home_workspace_dir: PathBuf,
     storage: Arc<StorageService>,
+    process_runtime: ToolProcessRuntime,
 }
 
 impl ToolExecutor {
@@ -35,6 +37,24 @@ impl ToolExecutor {
         home_workspace_dir: PathBuf,
         storage: Arc<StorageService>,
     ) -> Self {
+        Self::new_with_process_runtime(
+            db,
+            mcp,
+            secrets,
+            home_workspace_dir,
+            storage,
+            ToolProcessRuntime::Host,
+        )
+    }
+
+    pub fn new_with_process_runtime(
+        db: DbActorHandle,
+        mcp: Arc<McpManager>,
+        secrets: SharedSecretStore,
+        home_workspace_dir: PathBuf,
+        storage: Arc<StorageService>,
+        process_runtime: ToolProcessRuntime,
+    ) -> Self {
         Self {
             db,
             mcp,
@@ -42,6 +62,7 @@ impl ToolExecutor {
             terminals: Arc::new(TerminalManager::default()),
             home_workspace_dir,
             storage,
+            process_runtime,
         }
     }
 
@@ -126,8 +147,11 @@ impl ToolExecutor {
         };
         self.db.insert_tool_call(new_tc).await?;
 
-        let sandbox =
-            crate::tools::sandbox::PolicySandbox::new(&effective_policy, workspace_cwd.as_deref());
+        let sandbox = crate::tools::sandbox::PolicySandbox::new_with_process_runtime(
+            &effective_policy,
+            workspace_cwd.as_deref(),
+            self.process_runtime.clone(),
+        );
 
         // D. Dispatch MCP tools through the same effective boundary.
         if tool.starts_with("mcp__") {

@@ -112,17 +112,18 @@ impl BuiltinTool for ShellTool {
         ctx.update_running(&cwd_absolute.to_string_lossy()).await?;
 
         let command_args = vec!["-c".to_string(), command_str.to_string()];
-        let command =
-            match ctx
-                .sandbox
-                .command_spec("bash", &command_args, &ctx.policy.shell.env_allowlist)
-            {
-                Ok(command) => command,
-                Err(error) => {
-                    ctx.record_failure(&error.to_string()).await?;
-                    return Err(error);
-                }
-            };
+        let command = match ctx.sandbox.command_spec_at(
+            "bash",
+            &command_args,
+            &ctx.policy.shell.env_allowlist,
+            &cwd_absolute,
+        ) {
+            Ok(command) => command,
+            Err(error) => {
+                ctx.record_failure(&error.to_string()).await?;
+                return Err(error);
+            }
+        };
         let timeout_sec = ctx
             .args
             .get("timeout_sec")
