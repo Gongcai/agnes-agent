@@ -184,7 +184,7 @@ Android 有两种执行模式：
 
 ### A1：Linux Runtime 原型
 
-- [ ] Android Foreground Service 和 Runtime supervisor；
+- [x] Android Foreground Service 和 Runtime supervisor（基础生命周期与通知已接入，进程 supervisor 待补充）；
 - [ ] PRoot 与最小 Ubuntu ARM64 rootfs；
 - [x] rootfs manifest、Hash 校验、路径/资源限制、原子安装；
 - [ ] 安装失败回滚和当前版本恢复；

@@ -9,11 +9,15 @@ use std::sync::Arc;
 #[cfg(target_os = "android")]
 use std::sync::Mutex;
 
-#[cfg(target_os = "android")]
-use serde::Deserialize;
 use serde::Serialize;
 #[cfg(target_os = "android")]
+use serde::{de::DeserializeOwned, Deserialize};
+#[cfg(target_os = "android")]
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "android")]
+use tauri::plugin::{Builder as PluginBuilder, PluginApi, PluginHandle, TauriPlugin};
+#[cfg(target_os = "android")]
+use tauri::{Manager, Wry};
 #[cfg(target_os = "android")]
 use uuid::Uuid;
 #[cfg(target_os = "android")]
@@ -51,6 +55,24 @@ pub trait AgentRuntime: Send + Sync {
     fn stop(&self) -> AppResult<AgentRuntimeStatus> {
         Ok(self.status())
     }
+}
+
+#[cfg(target_os = "android")]
+const ANDROID_RUNTIME_PLUGIN_ID: &str = "com.agnes.agent.runtime";
+
+#[cfg(target_os = "android")]
+#[derive(Clone)]
+pub struct AndroidRuntimePlugin(pub PluginHandle<Wry>);
+
+#[cfg(target_os = "android")]
+pub fn android_plugin() -> TauriPlugin<Wry> {
+    PluginBuilder::new("android-runtime")
+        .setup(|app, api: PluginApi<Wry, ()>| {
+            let handle = api.register_android_plugin(ANDROID_RUNTIME_PLUGIN_ID, "RuntimePlugin")?;
+            app.manage(AndroidRuntimePlugin(handle));
+            Ok(())
+        })
+        .build()
 }
 
 pub struct DesktopSidecarRuntime {
@@ -104,7 +126,7 @@ struct RuntimeManifest {
 #[cfg(target_os = "android")]
 #[derive(Debug, Clone)]
 struct RuntimeSnapshot {
-    state: &'static str,
+    state: String,
     detail: String,
     runtime_version: Option<String>,
     abi: Option<String>,
@@ -113,18 +135,40 @@ struct RuntimeSnapshot {
 #[cfg(target_os = "android")]
 pub struct AndroidLinuxRuntime {
     root_dir: PathBuf,
+    native_plugin: PluginHandle<Wry>,
     snapshot: Mutex<RuntimeSnapshot>,
 }
 
 #[cfg(target_os = "android")]
 impl AndroidLinuxRuntime {
-    pub fn new(data_dir: &Path) -> Self {
+    pub fn new(data_dir: &Path, native_plugin: PluginHandle<Wry>) -> Self {
         let root_dir = data_dir.join("android-runtime");
         let snapshot = load_snapshot(&root_dir);
         Self {
             root_dir,
+            native_plugin,
             snapshot: Mutex::new(snapshot),
         }
+    }
+
+    fn native_service_status(&self) -> AppResult<bool> {
+        #[derive(Debug, Deserialize)]
+        struct NativeServiceStatus {
+            running: bool,
+        }
+
+        self.native_plugin
+            .run_mobile_plugin::<NativeServiceStatus>("getStatus", ())
+            .map(|status| status.running)
+            .map_err(|error| {
+                AppError::Other(format!("无法读取 Android Runtime Service 状态: {error}"))
+            })
+    }
+
+    fn run_native_command<T: DeserializeOwned>(&self, command: &str) -> AppResult<T> {
+        self.native_plugin
+            .run_mobile_plugin(command, ())
+            .map_err(|error| AppError::Other(format!("Android Runtime Service 调用失败: {error}")))
     }
 
     fn install_package_inner(&self, package_path: &Path) -> AppResult<RuntimeSnapshot> {
@@ -183,7 +227,7 @@ impl AndroidLinuxRuntime {
             )?;
 
             Ok(RuntimeSnapshot {
-                state: "installed",
+                state: "installed".into(),
                 detail: format!(
                     "Android Linux Runtime {} 已安装，等待 PRoot runner",
                     manifest.runtime_version
@@ -203,14 +247,27 @@ impl AndroidLinuxRuntime {
 #[cfg(target_os = "android")]
 impl AgentRuntime for AndroidLinuxRuntime {
     fn status(&self) -> AgentRuntimeStatus {
-        let snapshot = self
+        let service_running = self.native_service_status().unwrap_or(false);
+        let mut snapshot = self
             .snapshot
             .lock()
             .expect("runtime snapshot lock poisoned");
+        if snapshot.runtime_version.is_some() {
+            if service_running {
+                snapshot.state = "service-running".into();
+                snapshot.detail = "Android Runtime 前台服务正在运行，等待 PRoot runner".into();
+            } else if snapshot.state == "service-running" {
+                snapshot.state = "installed".into();
+                snapshot.detail = format!(
+                    "Android Linux Runtime {} 已安装，前台服务未运行",
+                    snapshot.runtime_version.as_deref().unwrap_or("unknown")
+                );
+            }
+        }
         AgentRuntimeStatus {
             platform: "android".into(),
             execution_mode: "linux-runtime".into(),
-            state: snapshot.state.into(),
+            state: snapshot.state.clone(),
             detail: snapshot.detail.clone(),
             runtime_version: snapshot.runtime_version.clone(),
             abi: snapshot.abi.clone(),
@@ -218,6 +275,11 @@ impl AgentRuntime for AndroidLinuxRuntime {
     }
 
     fn install_package(&self, package_path: &Path) -> AppResult<AgentRuntimeStatus> {
+        if self.native_service_status().unwrap_or(false) {
+            return Err(AppError::Other(
+                "Android Runtime Service 正在运行，请先停止后再安装新版本".into(),
+            ));
+        }
         let snapshot = self.install_package_inner(package_path)?;
         *self
             .snapshot
@@ -231,12 +293,12 @@ impl AgentRuntime for AndroidLinuxRuntime {
         if status.state == "not-installed" {
             return Err(AppError::Other("请先安装 Android Linux Runtime".into()));
         }
-        Err(AppError::Other(
-            "Android Linux Runtime 已准备好，但 PRoot runner 尚未集成".into(),
-        ))
+        let _: serde_json::Value = self.run_native_command("start")?;
+        Ok(self.status())
     }
 
     fn stop(&self) -> AppResult<AgentRuntimeStatus> {
+        let _: serde_json::Value = self.run_native_command("stop")?;
         Ok(self.status())
     }
 }
@@ -401,7 +463,7 @@ fn load_snapshot(root_dir: &Path) -> RuntimeSnapshot {
                 .and_then(|bytes| serde_json::from_str::<RuntimeManifest>(&bytes).ok())
                 .map(|manifest| manifest.abi);
             return RuntimeSnapshot {
-                state: "installed",
+                state: "installed".into(),
                 detail: format!("Android Linux Runtime {version} 已安装，等待 PRoot runner"),
                 runtime_version: Some(version),
                 abi,
@@ -409,7 +471,7 @@ fn load_snapshot(root_dir: &Path) -> RuntimeSnapshot {
         }
     }
     RuntimeSnapshot {
-        state: "not-installed",
+        state: "not-installed".into(),
         detail: "Android Linux Runtime 尚未安装".into(),
         runtime_version: None,
         abi: None,

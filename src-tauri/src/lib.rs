@@ -281,6 +281,11 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init());
 
+    #[cfg(target_os = "android")]
+    {
+        builder = builder.plugin(runtime::android_plugin());
+    }
+
     #[cfg(desktop)]
     {
         builder = builder
@@ -417,8 +422,10 @@ pub fn run() {
             }
 
             #[cfg(target_os = "android")]
+            let runtime_plugin = app.state::<runtime::AndroidRuntimePlugin>().0.clone();
+            #[cfg(target_os = "android")]
             let runtime: Arc<dyn runtime::AgentRuntime> =
-                Arc::new(runtime::AndroidLinuxRuntime::new(&data_dir));
+                Arc::new(runtime::AndroidLinuxRuntime::new(&data_dir, runtime_plugin));
             #[cfg(not(target_os = "android"))]
             let runtime: Arc<dyn runtime::AgentRuntime> =
                 Arc::new(runtime::DesktopSidecarRuntime::new(agent.clone()));
