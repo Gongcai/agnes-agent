@@ -4,6 +4,8 @@ node_modules
 
 # builds
 dist
+android-runtime/*
+!android-runtime/README.md
 src-tauri/target
 src-tauri/gen
 claude-extracted/

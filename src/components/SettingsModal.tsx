@@ -5894,6 +5894,8 @@ const GeneralTab: React.FC = () => {
 
 const RUNTIME_STATE_LABELS: Record<string, string> = {
   "not-installed": "未安装",
+  "bundled-available": "可自动安装",
+  installing: "正在安装",
   installed: "已安装",
   "service-running": "服务运行中",
   starting: "正在启动",
@@ -5972,7 +5974,9 @@ const RuntimeTab: React.FC = () => {
 
   const isAndroid = status?.platform === "android";
   const isRunning = ["service-running", "starting", "ready"].includes(status?.state ?? "");
-  const canStart = isAndroid && Boolean(status?.runtimeVersion) && !isRunning;
+  const canStart = isAndroid
+    && (Boolean(status?.runtimeVersion) || Boolean(status?.bundledRuntimeAvailable && status?.prootAvailable))
+    && !isRunning;
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -6013,6 +6017,12 @@ const RuntimeTab: React.FC = () => {
             <dt className="text-stone-400">上一版本</dt>
             <dd className="mt-1 truncate font-mono text-stone-700">{status?.previousRuntimeVersion ?? "-"}</dd>
           </div>
+          <div>
+            <dt className="text-stone-400">APK 内置</dt>
+            <dd className="mt-1 text-stone-700">
+              {status?.bundledRuntimeAvailable && status?.prootAvailable ? "完整 Runtime" : "未包含"}
+            </dd>
+          </div>
         </dl>
       </section>
 
@@ -6031,7 +6041,7 @@ const RuntimeTab: React.FC = () => {
             className="inline-flex h-9 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-xs font-semibold text-stone-700 hover:bg-stone-50 disabled:opacity-40"
           >
             <DownloadSimple className="h-4 w-4" />
-            {busyAction === "install" ? "安装中" : status?.runtimeVersion ? "安装新版本" : "安装 Runtime"}
+            {busyAction === "install" ? "安装中" : status?.runtimeVersion ? "从 ZIP 安装新版本" : "从 ZIP 安装"}
           </button>
           <button
             type="button"
@@ -6061,7 +6071,9 @@ const RuntimeTab: React.FC = () => {
               className="inline-flex h-9 items-center gap-2 rounded-md bg-stone-800 px-3 text-xs font-semibold text-white hover:bg-stone-700 disabled:opacity-40"
             >
               <Play className="h-4 w-4" weight="fill" />
-              {busyAction === "start" ? "启动中" : "启动"}
+              {busyAction === "start"
+                ? status?.runtimeVersion ? "启动中" : "安装并启动中"
+                : status?.runtimeVersion ? "启动" : "安装并启动"}
             </button>
           )}
         </div>

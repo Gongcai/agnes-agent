@@ -8,7 +8,6 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
-  chmodSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -100,14 +99,13 @@ function runZip(output, packageRoot) {
 }
 
 const rootfsInput = resolve(requiredArgument("--rootfs"));
-const prootInput = resolve(requiredArgument("--proot"));
 const abi = argumentValue("--abi", "arm64-v8a");
 const runtimeVersion = argumentValue("--runtime-version", "ubuntu-24.04.1");
 const agentVersion = argumentValue("--agent-version", packageJson.version);
 const output = resolve(
   argumentValue(
     "--output",
-    join(projectDir, "dist", `android-runtime-${runtimeVersion}-${abi}.zip`),
+    join(projectDir, "android-runtime", abi, "runtime.zip"),
   ),
 );
 
@@ -116,10 +114,6 @@ assertSafeVersion(runtimeVersion);
 if (!existsSync(rootfsInput) || !lstatSync(rootfsInput).isDirectory()) {
   throw new Error(`Rootfs directory does not exist: ${rootfsInput}`);
 }
-if (!existsSync(prootInput) || !lstatSync(prootInput).isFile()) {
-  throw new Error(`PRoot executable does not exist: ${prootInput}`);
-}
-
 for (const requiredPath of [
   join(rootfsInput, "usr", "bin", "python3"),
 ]) {
@@ -134,11 +128,6 @@ try {
   const rootfs = join(packageRoot, "rootfs");
   mkdirSync(rootfs, { recursive: true });
   copyTree(rootfsInput, rootfs);
-
-  const prootDestination = join(rootfs, "usr", "bin", "proot");
-  mkdirSync(dirname(prootDestination), { recursive: true });
-  cpSync(prootInput, prootDestination, { dereference: true });
-  chmodSync(prootDestination, 0o755);
 
   const agentDestination = join(rootfs, "opt", "agnes-agent", "app");
   mkdirSync(dirname(agentDestination), { recursive: true });

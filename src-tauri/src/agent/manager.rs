@@ -64,6 +64,7 @@ struct DevUvLauncher;
 struct BundledBinLauncher;
 #[cfg(target_os = "android")]
 struct AndroidLinuxLauncher {
+    proot_path: std::path::PathBuf,
     rootfs_dir: std::path::PathBuf,
     workspace_dir: std::path::PathBuf,
 }
@@ -101,11 +102,10 @@ impl AgentLauncher {
         match self {
             #[cfg(target_os = "android")]
             Self::AndroidLinux(config) => {
-                let proot = config.rootfs_dir.join("usr/bin/proot");
-                if !proot.is_file() {
+                if !config.proot_path.is_file() {
                     return Err(AppError::Agent(format!(
                         "Android Runtime 缺少 PRoot: {}",
-                        proot.display()
+                        config.proot_path.display()
                     )));
                 }
                 if !config.rootfs_dir.join("usr/bin/python3").is_file() {
@@ -126,7 +126,7 @@ impl AgentLauncher {
                     return Err(AppError::Agent("Android Agent 工作区不存在".into()));
                 }
 
-                let child = Command::new(&proot)
+                let child = Command::new(&config.proot_path)
                     .args(["-0", "-r"])
                     .arg(&config.rootfs_dir)
                     .args(["-b", "/dev", "-b", "/proc"])
@@ -316,6 +316,7 @@ impl AgentManager {
         home_workspace_dir: std::path::PathBuf,
         storage: Arc<crate::storage::StorageService>,
         rootfs_dir: std::path::PathBuf,
+        proot_path: std::path::PathBuf,
     ) -> AppResult<()> {
         self.start_with_launcher(
             db,
@@ -325,6 +326,7 @@ impl AgentManager {
             home_workspace_dir.clone(),
             storage,
             AgentLauncher::AndroidLinux(AndroidLinuxLauncher {
+                proot_path,
                 rootfs_dir,
                 workspace_dir: home_workspace_dir,
             }),

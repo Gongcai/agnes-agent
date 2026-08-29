@@ -1,9 +1,11 @@
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const sdkRoot = process.env.ANDROID_SDK_ROOT || process.env.ANDROID_HOME || join(homedir(), "Android", "Sdk");
+const scriptDir = dirname(fileURLToPath(import.meta.url));
 
 function findNdk() {
   const configured = [process.env.ANDROID_NDK_HOME, process.env.NDK_HOME].filter(Boolean);
@@ -53,7 +55,42 @@ for (const [target, [cargoTarget, compiler]] of Object.entries(toolchains)) {
 }
 
 const args = process.argv.slice(2).filter((value, index) => !(index === 0 && value === "--"));
-const buildArgs = args.length === 0 ? ["--debug", "--apk", "--target", "aarch64"] : args;
+const buildArgs = args.length === 0 ? ["--debug", "--apk", "--target", "aarch64"] : [...args];
+const informational = buildArgs.some((value) => value === "--help" || value === "-h" || value === "--version" || value === "-V");
+if (!informational && !buildArgs.some((value) => value === "--target" || value === "-t" || value.startsWith("--target=") || value.startsWith("-t="))) {
+  buildArgs.push("--target", "aarch64");
+}
+
+function targetArgument(values) {
+  const inline = values.find((value) => value.startsWith("--target=") || value.startsWith("-t="));
+  if (inline) return inline.slice(inline.indexOf("=") + 1);
+  const index = Math.max(values.lastIndexOf("--target"), values.lastIndexOf("-t"));
+  if (index < 0) return "aarch64";
+  const targets = [];
+  for (let cursor = index + 1; cursor < values.length && !values[cursor].startsWith("-"); cursor += 1) {
+    targets.push(values[cursor]);
+  }
+  if (targets.length !== 1) {
+    throw new Error("Android Runtime builds require exactly one --target ABI");
+  }
+  return targets[0];
+}
+
+const prepareArgs = [
+  join(scriptDir, "prepare-android-runtime-assets.mjs"),
+  "--target",
+  targetArgument(buildArgs),
+];
+if (!informational) {
+  if (process.env.AGNES_ANDROID_RUNTIME_OPTIONAL === "1") prepareArgs.push("--optional");
+  const prepared = spawnSync(process.execPath, prepareArgs, {
+    env,
+    stdio: "inherit",
+  });
+  if (prepared.error) throw prepared.error;
+  if (prepared.status !== 0) process.exit(prepared.status ?? 1);
+}
+
 const result = spawnSync("pnpm", ["tauri", "android", "build", ...buildArgs], {
   env,
   stdio: "inherit",

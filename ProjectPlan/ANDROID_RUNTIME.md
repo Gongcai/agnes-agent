@@ -1,6 +1,6 @@
 # Android 本地 Agent 与 Linux Runtime 设计
 
-> 状态：A1 开发中；Runtime 安装管理、版本回滚和 PRoot runner 启动接线已完成，Ubuntu rootfs 制品待提供
+> 状态：A1 开发中；内置 Runtime 安装链路、版本回滚和宿主 PRoot runner 接线已完成，Ubuntu/PRoot 可发布制品待构建
 > 更新时间：2026-08-29
 > 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`、`OPERIT_ANDROID_RUNTIME_REFERENCE.md`
 
@@ -119,9 +119,9 @@ Android Runtime Service 负责跨 Activity 生命周期维护运行时：
 版本，摘要和大小通过后再原子切换 `current` 指针，旧版本保留在 `versions/`，上一版本
 记录在 `previous`。
 
-PRoot runner 当前原型约定以下文件由 rootfs 制品提供：
+PRoot runner 当前约定以下文件由 Android 包和 rootfs 制品共同提供：
 
-- `usr/bin/proot`：当前原型使用的 PRoot 可执行文件；正式内置 Runtime 必须改为从 Android `nativeLibraryDir` 执行宿主 PRoot，不能依赖执行应用可写 rootfs 中的二进制；
+- `libagnes_proot.so`：由目标 ABI 的 `jniLibs` 打入 APK，安装后从 Android `nativeLibraryDir` 执行；不从应用可写 rootfs 执行 ELF；
 - `usr/bin/python3`：Linux 用户空间内的 Python 解释器；
 - `opt/agnes-agent/app/main.py`：与桌面端同源的 Python Agent；
 - Agent 依赖、证书和启动配置也必须位于 rootfs 内，不写入 Android 私有目录中的明文配置。
@@ -132,10 +132,23 @@ WS 连接 Agent Protocol。Android Runtime 不向其他应用暴露 Service，�
 
 开发调试可以使用预置 rootfs 或本机生成的测试 rootfs。正式 APK/AAB 默认内置对应 ABI 的 Runtime；应用内更新或远端制品下载作为后续升级通道，不能成为首次使用的必要步骤。
 
-Runtime 制品可使用 `pnpm build:android-runtime -- --rootfs <Ubuntu-rootfs> --proot <PRoot>`
+Runtime ZIP 可使用 `pnpm build:android-runtime -- --rootfs <Ubuntu-rootfs> --abi <arm64-v8a|x86_64>`
 生成。脚本会复制 rootfs 到临时目录，注入 `agent/app` 和记忆提示词，保留安全软链接并按
 安装器相同的规则生成 SHA-256，并输出带 `manifest.json` 的 ZIP。依赖包、Python 和
 系统库必须预先安装到输入 rootfs；脚本不会联网安装依赖，也不会读取宿主密钥。
+
+Android 构建从仓库根目录下未纳入 Git 的 `android-runtime/<abi>/` 读取两个制品：
+`runtime.zip` 和 `libagnes_proot.so`。`scripts/prepare-android-runtime-assets.mjs` 在构建前只把
+目标 ABI 暂存到生成的 Android 工程，防止 universal APK 意外带入两套大体积 rootfs。
+`pnpm android:build -- --target <aarch64|x86_64>` 默认要求制品完整；仅开发无 Runtime 的
+界面调试可显式设置 `AGNES_ANDROID_RUNTIME_OPTIONAL=1`。直接运行 Tauri Android 命令时，
+可用 `AGNES_ANDROID_TARGET=x86_64 AGNES_ANDROID_RUNTIME_OPTIONAL=1 pnpm tauri android dev`
+明确目标并允许本地缺少制品；未显式允许时，构建 hook 会因制品缺失而终止构建。
+
+应用通过 Android plugin 检查内置资产和宿主 PRoot。首次点击启动时，plugin 先把压缩包
+安全复制到应用私有目录，Rust 再复用与外部 ZIP 相同的 manifest、ABI、摘要、大小和路径
+校验进行安装；已安装版本不会因 APK 内置资产存在而被重复覆盖。外部 ZIP 安装和上一版本
+回滚继续作为开发、升级与恢复通道。
 
 ### 4.2 工具与依赖
 
@@ -206,6 +219,8 @@ Android 有两种执行模式：
 - [x] rootfs manifest、Hash 校验、路径/资源限制、原子安装；
 - [x] 安装失败回滚和当前版本恢复；
 - [x] 启动/停止 Python Agent 的 PRoot 接线；
+- [x] 按 ABI 暂存 APK 内置 Runtime、首次自动安装和 `nativeLibraryDir` PRoot 执行路径；
+- [ ] 从 Ubuntu、PRoot 上游构建并签署 ARM64/x86_64 可发布制品、许可证清单与 SBOM；
 - [x] Rust Core 与 Agent 的本地认证 WS IPC 接线；
 - 完成现有 Agent Protocol 握手、流式回复和取消。
 

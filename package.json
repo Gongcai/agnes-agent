@@ -10,6 +10,7 @@
     "build:sidecar": "node scripts/build-sidecar.mjs",
     "build:pdf-package": "node scripts/build-pdf-model-package.mjs",
     "build:android-runtime": "node scripts/build-android-runtime.mjs",
+    "prepare:android-runtime": "node scripts/prepare-android-runtime-assets.mjs",
     "preview": "vite preview",
     "android:build": "node scripts/android-build.mjs",
     "test": "vitest run src",

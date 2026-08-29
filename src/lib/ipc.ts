@@ -8,6 +8,8 @@ export interface AgentRuntimeStatus {
   runtimeVersion: string | null;
   previousRuntimeVersion: string | null;
   abi: string | null;
+  bundledRuntimeAvailable: boolean;
+  prootAvailable: boolean;
 }
 
 export async function getRuntimeStatus(): Promise<AgentRuntimeStatus> {

@@ -48,6 +48,8 @@ pub struct AgentRuntimeStatus {
     pub runtime_version: Option<String>,
     pub previous_runtime_version: Option<String>,
     pub abi: Option<String>,
+    pub bundled_runtime_available: bool,
+    pub proot_available: bool,
 }
 
 pub trait AgentRuntime: Send + Sync {
@@ -119,6 +121,8 @@ impl AgentRuntime for DesktopSidecarRuntime {
             runtime_version: None,
             previous_runtime_version: None,
             abi: None,
+            bundled_runtime_available: false,
+            proot_available: false,
         }
     }
 }
@@ -151,6 +155,25 @@ struct RuntimeSnapshot {
     runtime_version: Option<String>,
     previous_runtime_version: Option<String>,
     abi: Option<String>,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeRuntimeEnvironment {
+    abi: String,
+    bundled_runtime_available: bool,
+    proot_available: bool,
+    proot_path: String,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PreparedBundledRuntime {
+    abi: String,
+    package_path: String,
+    package_size: u64,
 }
 
 #[cfg(target_os = "android")]
@@ -228,6 +251,45 @@ impl AndroidLinuxRuntime {
         self.native_plugin
             .run_mobile_plugin(command, ())
             .map_err(|error| AppError::Other(format!("Android Runtime Service 调用失败: {error}")))
+    }
+
+    fn runtime_environment(&self) -> AppResult<NativeRuntimeEnvironment> {
+        let environment: NativeRuntimeEnvironment =
+            self.run_native_command("getRuntimeEnvironment")?;
+        if environment.abi != target_android_abi() {
+            return Err(AppError::Other(format!(
+                "Android 原生 Runtime ABI 与 Rust 目标不匹配: native={}, rust={}",
+                environment.abi,
+                target_android_abi()
+            )));
+        }
+        Ok(environment)
+    }
+
+    fn install_bundled_runtime(&self) -> AppResult<()> {
+        let prepared: PreparedBundledRuntime = self.run_native_command("prepareBundledRuntime")?;
+        if prepared.abi != target_android_abi() {
+            return Err(AppError::Other(format!(
+                "内置 Runtime ABI 与当前设备不匹配: package={}, device={}",
+                prepared.abi,
+                target_android_abi()
+            )));
+        }
+        if prepared.package_size == 0 {
+            return Err(AppError::Other("内置 Runtime 安装包为空".into()));
+        }
+        let package_path = PathBuf::from(prepared.package_path);
+        if !package_path.is_absolute() || !package_path.is_file() {
+            return Err(AppError::Other("内置 Runtime 安装包路径无效".into()));
+        }
+        let result = self.install_package_inner(&package_path);
+        let _ = std::fs::remove_file(&package_path);
+        let snapshot = result?;
+        *self
+            .snapshot
+            .lock()
+            .expect("runtime snapshot lock poisoned") = snapshot;
+        Ok(())
     }
 
     fn install_package_inner(&self, package_path: &Path) -> AppResult<RuntimeSnapshot> {
@@ -335,6 +397,7 @@ impl AndroidLinuxRuntime {
 #[cfg(target_os = "android")]
 impl AgentRuntime for AndroidLinuxRuntime {
     fn status(&self) -> AgentRuntimeStatus {
+        let environment = self.runtime_environment().ok();
         let service_running = self.native_service_status().unwrap_or(false);
         let agent_running = self.agent.is_running();
         let agent_connected = self.agent.is_connected();
@@ -362,6 +425,14 @@ impl AgentRuntime for AndroidLinuxRuntime {
                     snapshot.runtime_version.as_deref().unwrap_or("unknown")
                 );
             }
+        } else if snapshot.state != "installing"
+            && environment
+                .as_ref()
+                .is_some_and(|value| value.bundled_runtime_available && value.proot_available)
+        {
+            snapshot.state = "bundled-available".into();
+            snapshot.detail = "应用已内置 Android Linux Runtime，首次启动时将自动安装".into();
+            snapshot.abi = environment.as_ref().map(|value| value.abi.clone());
         }
         AgentRuntimeStatus {
             platform: "android".into(),
@@ -371,6 +442,12 @@ impl AgentRuntime for AndroidLinuxRuntime {
             runtime_version: snapshot.runtime_version.clone(),
             previous_runtime_version: snapshot.previous_runtime_version.clone(),
             abi: snapshot.abi.clone(),
+            bundled_runtime_available: environment
+                .as_ref()
+                .is_some_and(|value| value.bundled_runtime_available),
+            proot_available: environment
+                .as_ref()
+                .is_some_and(|value| value.proot_available),
         }
     }
 
@@ -404,10 +481,37 @@ impl AgentRuntime for AndroidLinuxRuntime {
 
     fn start(&self) -> AppResult<AgentRuntimeStatus> {
         let status = self.status();
-        if status.state == "not-installed" {
-            return Err(AppError::Other("请先安装 Android Linux Runtime".into()));
+        if status.runtime_version.is_none() {
+            if !status.bundled_runtime_available || !status.proot_available {
+                return Err(AppError::Other(
+                    "当前 APK 未包含适配本设备 ABI 的完整 Android Linux Runtime".into(),
+                ));
+            }
+            {
+                let mut snapshot = self
+                    .snapshot
+                    .lock()
+                    .expect("runtime snapshot lock poisoned");
+                snapshot.state = "installing".into();
+                snapshot.detail = "正在安装内置 Android Linux Runtime".into();
+            }
+            if let Err(error) = self.install_bundled_runtime() {
+                *self
+                    .snapshot
+                    .lock()
+                    .expect("runtime snapshot lock poisoned") = load_snapshot(&self.root_dir);
+                return Err(error);
+            }
         }
         let rootfs_dir = self.current_rootfs()?;
+        let environment = self.runtime_environment()?;
+        if !environment.proot_available {
+            return Err(AppError::Other("当前 APK 未包含 PRoot 原生库".into()));
+        }
+        let proot_path = PathBuf::from(environment.proot_path);
+        if !proot_path.is_absolute() || !proot_path.is_file() {
+            return Err(AppError::Other("Android PRoot 原生库路径无效".into()));
+        }
         let _: serde_json::Value = self.run_native_command("start")?;
         if let Err(error) = self.agent.start_android(
             self.db.clone(),
@@ -417,6 +521,7 @@ impl AgentRuntime for AndroidLinuxRuntime {
             self.home_workspace_dir.clone(),
             self.storage.clone(),
             rootfs_dir,
+            proot_path,
         ) {
             let _ = self.run_native_command::<serde_json::Value>("stop");
             return Err(error);
