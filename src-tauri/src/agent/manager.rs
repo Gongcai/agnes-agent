@@ -156,7 +156,10 @@ impl AgentLauncher {
                     .env("PROOT_LOADER", &config.proot_loader_path)
                     .env("LD_LIBRARY_PATH", "")
                     .env("HOME", "/root")
-                    .env("PYTHONPATH", "/opt/agnes-agent")
+                    .env(
+                        "PYTHONPATH",
+                        "/opt/agnes-agent:/opt/agnes-agent/site-packages",
+                    )
                     .env(
                         "AGNES_MEMORY_PROMPT_PATH",
                         "/opt/agnes-agent/ProjectPlan/MEMORY_FILESYSTEM_PROMPT.md",
