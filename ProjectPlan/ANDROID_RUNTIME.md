@@ -2,7 +2,7 @@
 
 > 状态：A1 开发中；Runtime 安装管理、版本回滚和 PRoot runner 启动接线已完成，Ubuntu rootfs 制品待提供
 > 更新时间：2026-08-29
-> 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`
+> 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`、`OPERIT_ANDROID_RUNTIME_REFERENCE.md`
 
 ## 1. 目标
 
@@ -17,7 +17,7 @@ Android 与桌面端共享 Agent Protocol、数据模型、工具策略和同步
 
 ## 2. 参考方案与选型
 
-Operit 的公开实现提供了有价值的架构参考：Android 主应用与独立 terminal core 分离，通过 Service/AIDL 管理终端会话和后台进程，并在 Android 上运行 Ubuntu 24.04 ARM64 用户空间。其主仓库和终端核心的许可证、依赖打包方式和功能范围不适合直接复制到 Agnes；Agnes 只参考运行时隔离、生命周期管理和 IPC 边界。
+Operit 的公开实现提供了有价值的架构参考：Android 主应用与独立 terminal core 模块分离，通过 Service/AIDL 管理终端会话和后台任务，并在 Android 上运行 Ubuntu 24.04 ARM64 用户空间；其当前公开 Service 默认仍与主应用同进程。主仓库和终端核心的许可证、依赖打包方式和功能范围不适合直接复制到 Agnes；Agnes 只参考运行时隔离、生命周期管理和 IPC 边界。公开实现、资产布局、初始化流程、差异和复用边界详见 `OPERIT_ANDROID_RUNTIME_REFERENCE.md`。
 
 候选方案比较：
 
@@ -87,7 +87,7 @@ Android Runtime Service 负责跨 Activity 生命周期维护运行时：
 
 ### 4.1 Rootfs
 
-首个目标平台为 `arm64-v8a`。Ubuntu 24.04 ARM64 作为默认用户空间，首版不把完整 rootfs 无条件膨胀进 APK，而是采用可验证的安装包或 OCI/rootfs 制品：
+首个正式发布目标平台为 `arm64-v8a`，开发模拟器另维护 `x86_64`。Ubuntu 24.04 作为默认用户空间，面向普通用户的正式构建按目标 ABI 内置一份可验证 Runtime 安装包，首次使用时自动安装；开发构建可以显式关闭内置 Runtime 并保留手动安装通道：
 
 - 安装包带版本、架构、压缩格式和 SHA-256 manifest；
 - 下载或内置资源安装到应用私有目录；
@@ -119,9 +119,9 @@ Android Runtime Service 负责跨 Activity 生命周期维护运行时：
 版本，摘要和大小通过后再原子切换 `current` 指针，旧版本保留在 `versions/`，上一版本
 记录在 `previous`。
 
-PRoot runner 目前约定以下文件由 rootfs 制品提供：
+PRoot runner 当前原型约定以下文件由 rootfs 制品提供：
 
-- `usr/bin/proot`：与设备 ABI 匹配的 PRoot 可执行文件；
+- `usr/bin/proot`：当前原型使用的 PRoot 可执行文件；正式内置 Runtime 必须改为从 Android `nativeLibraryDir` 执行宿主 PRoot，不能依赖执行应用可写 rootfs 中的二进制；
 - `usr/bin/python3`：Linux 用户空间内的 Python 解释器；
 - `opt/agnes-agent/app/main.py`：与桌面端同源的 Python Agent；
 - Agent 依赖、证书和启动配置也必须位于 rootfs 内，不写入 Android 私有目录中的明文配置。
@@ -130,7 +130,7 @@ Rust 会把应用私有工作区绑定为 Linux 的 `/workspace`，通过一次�
 WS 连接 Agent Protocol。Android Runtime 不向其他应用暴露 Service，停止 Runtime 时会
 先回收 Agent 子进程，再移除前台通知。
 
-开发调试可以先使用预置 rootfs 或本机生成的测试 rootfs；发布渠道再确定内置、首次下载或应用内更新的最终策略。
+开发调试可以使用预置 rootfs 或本机生成的测试 rootfs。正式 APK/AAB 默认内置对应 ABI 的 Runtime；应用内更新或远端制品下载作为后续升级通道，不能成为首次使用的必要步骤。
 
 Runtime 制品可使用 `pnpm build:android-runtime -- --rootfs <Ubuntu-rootfs> --proot <PRoot>`
 生成。脚本会复制 rootfs 到临时目录，注入 `agent/app` 和记忆提示词，保留安全软链接并按

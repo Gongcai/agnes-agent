@@ -22,6 +22,8 @@ Linux 桌面端的标准发行构建、Arch Linux AppImage 兼容处理与产物
 
 Android 本地完整 Agent、PRoot/Ubuntu Runtime、Android Service、工作区互通与分阶段验收详见 `ProjectPlan/ANDROID_RUNTIME.md`。
 
+Operit Android 内置 Ubuntu 的公开实现、资产布局、首次安装、PRoot 交付方式及 Agnes 复用边界详见 `ProjectPlan/OPERIT_ANDROID_RUNTIME_REFERENCE.md`。
+
 # 项目定位
 
 `agnes-agent` 是一个**带 Agent 能力的酒馆式多角色聊天应用**（更接近 SillyTavern + Agents，而非纯 Agent 工具）。核心是可创建/管理多个 **AGENTS（角色卡）**，每个 Agent 有独立人设、系统提示词、工具权限与长期记忆；用户与某个 Agent 在 session 中对话，Agent 背后挂 Python LangGraph 运行时执行工具。**桌面端和安卓端都是执行器**：桌面端在宿主操作系统运行 Agent，安卓端通过独立 Linux Runtime 在本地运行完整 Agent。SSH 作为连接桌面 Agent 的兼容能力保留，但不是安卓端的唯一执行路径。
