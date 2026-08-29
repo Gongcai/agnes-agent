@@ -47,10 +47,10 @@ function validateZip(path) {
   }
 }
 
-function validateElf(path, abi) {
+function validateElf(path, abi, label, expectedType) {
   const header = readFileSync(path).subarray(0, 20);
   if (header.length < 20) {
-    throw new Error(`PRoot library has an incomplete ELF header: ${path}`);
+    throw new Error(`${label} has an incomplete ELF header: ${path}`);
   }
   const signature = header.subarray(0, 4);
   if (
@@ -60,13 +60,20 @@ function validateElf(path, abi) {
     signature[2] !== 0x4c ||
     signature[3] !== 0x46
   ) {
-    throw new Error(`PRoot library is not an ELF file: ${path}`);
+    throw new Error(`${label} is not an ELF file: ${path}`);
+  }
+  if (header[4] !== 2) {
+    throw new Error(`${label} is not an ELF64 file: ${path}`);
   }
   const littleEndian = header[5] === 1;
+  const type = littleEndian ? header.readUInt16LE(16) : header.readUInt16BE(16);
   const machine = littleEndian ? header.readUInt16LE(18) : header.readUInt16BE(18);
   const expectedMachine = abi === "arm64-v8a" ? 183 : 62;
   if (machine !== expectedMachine) {
-    throw new Error(`PRoot ELF ABI does not match ${abi}: ${path}`);
+    throw new Error(`${label} ABI does not match ${abi}: ${path}`);
+  }
+  if (type !== expectedType) {
+    throw new Error(`${label} has unexpected ELF type ${type}: ${path}`);
   }
 }
 
@@ -74,6 +81,7 @@ function cleanGeneratedArtifacts(targetAbi) {
   rmSync(join(generatedMain, "assets", "agnes-runtime"), { recursive: true, force: true });
   for (const generatedAbi of generatedAbis) {
     rmSync(join(generatedMain, "jniLibs", generatedAbi, "libagnes_proot.so"), { force: true });
+    rmSync(join(generatedMain, "jniLibs", generatedAbi, "libagnes_proot_loader.so"), { force: true });
     if (generatedAbi !== targetAbi) {
       rmSync(join(generatedMain, "jniLibs", generatedAbi, "libagnes_agent_lib.so"), { force: true });
     }
@@ -95,12 +103,13 @@ if (!abi) {
 
 const runtimePackage = join(sourceRoot, abi, "runtime.zip");
 const prootLibrary = join(sourceRoot, abi, "libagnes_proot.so");
-const artifactsAvailable = existsSync(runtimePackage) && existsSync(prootLibrary);
+const prootLoader = join(sourceRoot, abi, "libagnes_proot_loader.so");
+const artifactsAvailable = existsSync(runtimePackage) && existsSync(prootLibrary) && existsSync(prootLoader);
 
 if (!artifactsAvailable) {
   if (!optional) {
     throw new Error(
-      `Bundled Android Runtime artifacts are incomplete for ${abi}. Expected ${runtimePackage} and ${prootLibrary}`,
+      `Bundled Android Runtime artifacts are incomplete for ${abi}. Expected ${runtimePackage}, ${prootLibrary}, and ${prootLoader}`,
     );
   }
   if (!dryRun) {
@@ -112,17 +121,21 @@ if (!artifactsAvailable) {
 
 assertFile(runtimePackage, "Runtime package");
 assertFile(prootLibrary, "PRoot library");
+assertFile(prootLoader, "PRoot loader");
 validateZip(runtimePackage);
-validateElf(prootLibrary, abi);
+validateElf(prootLibrary, abi, "PRoot library", 3);
+validateElf(prootLoader, abi, "PRoot loader", 2);
 
 if (!dryRun) {
   cleanGeneratedArtifacts(abi);
   const assetDestination = join(generatedMain, "assets", "agnes-runtime", abi, "runtime.zip");
   const prootDestination = join(generatedMain, "jniLibs", abi, "libagnes_proot.so");
+  const loaderDestination = join(generatedMain, "jniLibs", abi, "libagnes_proot_loader.so");
   mkdirSync(dirname(assetDestination), { recursive: true });
   mkdirSync(dirname(prootDestination), { recursive: true });
   cpSync(runtimePackage, assetDestination);
   cpSync(prootLibrary, prootDestination);
+  cpSync(prootLoader, loaderDestination);
 }
 
 console.log(`${dryRun ? "Validated" : "Staged"} bundled Android Runtime for ${abi}`);

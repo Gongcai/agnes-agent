@@ -65,8 +65,10 @@ struct BundledBinLauncher;
 #[cfg(target_os = "android")]
 struct AndroidLinuxLauncher {
     proot_path: std::path::PathBuf,
+    proot_loader_path: std::path::PathBuf,
     rootfs_dir: std::path::PathBuf,
     workspace_dir: std::path::PathBuf,
+    proot_tmp_dir: std::path::PathBuf,
 }
 
 enum AgentLauncher {
@@ -125,6 +127,12 @@ impl AgentLauncher {
                 if !config.workspace_dir.is_dir() {
                     return Err(AppError::Agent("Android Agent 工作区不存在".into()));
                 }
+                if !config.proot_tmp_dir.is_dir() {
+                    return Err(AppError::Agent("Android PRoot 临时目录不存在".into()));
+                }
+                if !config.proot_loader_path.is_file() {
+                    return Err(AppError::Agent("Android PRoot loader 不存在".into()));
+                }
 
                 let child = Command::new(&config.proot_path)
                     .args(["-0", "-r"])
@@ -135,6 +143,9 @@ impl AgentLauncher {
                     .args(["-w", "/workspace", "/usr/bin/python3", "-m", "app.main"])
                     .env("AGENT_WS_URL", ws_url)
                     .env("AGENT_PROTOCOL_TOKEN", token)
+                    .env("PROOT_TMP_DIR", &config.proot_tmp_dir)
+                    .env("PROOT_LOADER", &config.proot_loader_path)
+                    .env("LD_LIBRARY_PATH", "")
                     .env("HOME", "/root")
                     .env("PYTHONPATH", "/opt/agnes-agent")
                     .env(
@@ -317,6 +328,8 @@ impl AgentManager {
         storage: Arc<crate::storage::StorageService>,
         rootfs_dir: std::path::PathBuf,
         proot_path: std::path::PathBuf,
+        proot_loader_path: std::path::PathBuf,
+        proot_tmp_dir: std::path::PathBuf,
     ) -> AppResult<()> {
         self.start_with_launcher(
             db,
@@ -327,8 +340,10 @@ impl AgentManager {
             storage,
             AgentLauncher::AndroidLinux(AndroidLinuxLauncher {
                 proot_path,
+                proot_loader_path,
                 rootfs_dir,
                 workspace_dir: home_workspace_dir,
+                proot_tmp_dir,
             }),
         )
     }

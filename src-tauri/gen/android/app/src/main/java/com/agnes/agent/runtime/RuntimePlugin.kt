@@ -55,12 +55,17 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
     val abi = runtimeAbi()
     val assetPath = bundledRuntimeAsset(abi)
     val proot = prootLibrary()
+    val prootLoader = prootLoader()
     if (!assetExists(assetPath)) {
       invoke.reject("Bundled Android Runtime is not available for $abi")
       return
     }
     if (!proot.isFile) {
       invoke.reject("Bundled PRoot library is not available for $abi")
+      return
+    }
+    if (!prootLoader.isFile) {
+      invoke.reject("Bundled PRoot loader is not available for $abi")
       return
     }
 
@@ -99,16 +104,19 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
   private fun runtimeEnvironment(): JSObject {
     val abi = runtimeAbi()
     val proot = prootLibrary()
+    val prootLoader = prootLoader()
     val bundledRuntimeAvailable = assetExists(bundledRuntimeAsset(abi))
     Log.i(
       "AgnesRuntime",
-      "environment abi=$abi bundled=$bundledRuntimeAvailable proot=${proot.isFile}"
+      "environment abi=$abi bundled=$bundledRuntimeAvailable proot=${proot.isFile} loader=${prootLoader.isFile}"
     )
     val result = JSObject()
     result.put("abi", abi)
     result.put("bundledRuntimeAvailable", bundledRuntimeAvailable)
     result.put("prootAvailable", proot.isFile)
     result.put("prootPath", proot.absolutePath)
+    result.put("prootLoaderAvailable", prootLoader.isFile)
+    result.put("prootLoaderPath", prootLoader.absolutePath)
     return result
   }
 
@@ -125,6 +133,10 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
 
   private fun prootLibrary(): File {
     return File(activity.applicationInfo.nativeLibraryDir, "libagnes_proot.so")
+  }
+
+  private fun prootLoader(): File {
+    return File(activity.applicationInfo.nativeLibraryDir, "libagnes_proot_loader.so")
   }
 
   private fun assetExists(path: String): Boolean {

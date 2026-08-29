@@ -2,7 +2,7 @@ diff --git a/src/extension/ashmem_memfd/ashmem_memfd.c b/src/extension/ashmem_me
 index 17768ac..ae4793d 100644
 --- a/src/extension/ashmem_memfd/ashmem_memfd.c
 +++ b/src/extension/ashmem_memfd/ashmem_memfd.c
-@@ -3,6 +3,7 @@
+@@ -3,5 +3,6 @@
  #include <stdlib.h>
  #include <signal.h>
 +#include <string.h>

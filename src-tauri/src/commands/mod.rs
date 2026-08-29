@@ -2008,6 +2008,7 @@ async fn start_agent_run(
     include_reading_context: bool,
     session_title_request: Option<serde_json::Value>,
 ) -> AppResult<()> {
+    ensure_agent_runtime(state).await?;
     eprintln!("[agent][run] Preparing run for session={session_id} assistant={assistant_msg_id}");
     let memory_filesystem =
         crate::memory::load_filesystem_snapshot(&state.db, &cfg.agent.id).await?;
@@ -2217,6 +2218,42 @@ async fn start_agent_run(
     }
     eprintln!("[agent][run] RUN_REQUEST queued run={run_id}");
     Ok(())
+}
+
+async fn ensure_agent_runtime(state: &AppState) -> AppResult<()> {
+    #[cfg(target_os = "android")]
+    {
+        let runtime = state.runtime.clone();
+        tauri::async_runtime::spawn_blocking(move || runtime.start())
+            .await
+            .map_err(|error| {
+                AppError::Other(format!("Agent Runtime 启动任务异常退出: {error}"))
+            })??;
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            if state.agent.is_connected() {
+                return Ok(());
+            }
+            if !state.agent.is_running() {
+                return Err(AppError::Agent(
+                    "Android Linux Runtime 已退出，未能连接 Agent Protocol".into(),
+                ));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(AppError::Agent(
+                    "Android Linux Runtime 启动超时，Agent Protocol 未连接".into(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = state;
+        Ok(())
+    }
 }
 
 async fn start_agent_run_or_mark_failed(

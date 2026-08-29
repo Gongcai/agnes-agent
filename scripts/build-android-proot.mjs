@@ -110,9 +110,29 @@ function inspectElf(path, expectedMachine, readelf) {
   return dependencies;
 }
 
-function writeSbom(outputDir, abi, binaryPath, dependencies) {
+function inspectLoaderElf(path, expectedMachine, readelf) {
+  const header = run(readelf, ["-h", path], { capture: true });
+  const programHeaders = run(readelf, ["-l", path], { capture: true });
+  const dynamic = run(readelf, ["-d", path], { capture: true });
+  if (
+    !header.includes("ELF64")
+    || !header.includes("Type:")
+    || !header.includes("EXEC")
+    || /Entry point address:\s+0x0(?:\s|$)/.test(header)
+  ) {
+    throw new Error("PRoot loader output is not a 64-bit executable");
+  }
+  if (!header.includes(expectedMachine)) {
+    throw new Error(`PRoot loader output has the wrong machine type; expected ${expectedMachine}`);
+  }
+  if (programHeaders.includes("INTERP") || dynamic.includes("(NEEDED)")) {
+    throw new Error("PRoot loader output is not statically linked");
+  }
+}
+
+function writeSbom(outputDir, abi, binaryPath, loaderPath, dependencies) {
   const created = new Date(sourceLock.sourceDateEpoch * 1000).toISOString().replace(".000Z", "Z");
-  const namespaceSeed = `${sourceLock.proot.commit}:${sourceLock.talloc.commit}:${abi}:${sha256(binaryPath)}`;
+  const namespaceSeed = `${sourceLock.proot.commit}:${sourceLock.talloc.commit}:${abi}:${sha256(binaryPath)}:${sha256(loaderPath)}`;
   const namespace = createHash("sha256").update(namespaceSeed).digest("hex");
   const packages = [sourceLock.proot, sourceLock.talloc].map((source, index) => ({
     SPDXID: index === 0 ? "SPDXRef-Package-PRoot" : "SPDXRef-Package-talloc",
@@ -137,19 +157,31 @@ function writeSbom(outputDir, abi, binaryPath, dependencies) {
     documentNamespace: `https://agnes.local/spdx/android-proot/${namespace}`,
     creationInfo: { created, creators: ["Tool: scripts/build-android-proot.mjs"] },
     packages,
-    files: [{
-      SPDXID: "SPDXRef-File-libagnes-proot",
-      fileName: "libagnes_proot.so",
-      checksums: [{ algorithm: "SHA256", checksumValue: sha256(binaryPath) }],
-      licenseConcluded: "GPL-2.0-only AND LGPL-3.0-or-later",
-      licenseInfoInFiles: ["NOASSERTION"],
-      copyrightText: "NOASSERTION",
-      comment: `Android system dependencies: ${dependencies.join(", ")}`,
-    }],
+    files: [
+      {
+        SPDXID: "SPDXRef-File-libagnes-proot",
+        fileName: "libagnes_proot.so",
+        checksums: [{ algorithm: "SHA256", checksumValue: sha256(binaryPath) }],
+        licenseConcluded: "GPL-2.0-only AND LGPL-3.0-or-later",
+        licenseInfoInFiles: ["NOASSERTION"],
+        copyrightText: "NOASSERTION",
+        comment: `Android system dependencies: ${dependencies.join(", ")}`,
+      },
+      {
+        SPDXID: "SPDXRef-File-libagnes-proot-loader",
+        fileName: "libagnes_proot_loader.so",
+        checksums: [{ algorithm: "SHA256", checksumValue: sha256(loaderPath) }],
+        licenseConcluded: "GPL-2.0-only",
+        licenseInfoInFiles: ["NOASSERTION"],
+        copyrightText: "NOASSERTION",
+        comment: "Statically linked PRoot ELF loader",
+      },
+    ],
     relationships: [
       { spdxElementId: "SPDXRef-DOCUMENT", relationshipType: "DESCRIBES", relatedSpdxElement: "SPDXRef-Package-PRoot" },
       { spdxElementId: "SPDXRef-Package-PRoot", relationshipType: "STATIC_LINK", relatedSpdxElement: "SPDXRef-Package-talloc" },
       { spdxElementId: "SPDXRef-Package-PRoot", relationshipType: "CONTAINS", relatedSpdxElement: "SPDXRef-File-libagnes-proot" },
+      { spdxElementId: "SPDXRef-Package-PRoot", relationshipType: "CONTAINS", relatedSpdxElement: "SPDXRef-File-libagnes-proot-loader" },
     ],
   };
   writeFileSync(join(outputDir, "proot.spdx.json"), `${JSON.stringify(document, null, 2)}\n`);
@@ -279,20 +311,27 @@ Checking getconf large file support flags work: OK
   });
 
   const unstripped = join(prootSourceDir, "proot");
+  const unstrippedLoader = join(prootSourceDir, "loader", "loader");
   const binaryPath = join(outputDir, "libagnes_proot.so");
+  const loaderPath = join(outputDir, "libagnes_proot_loader.so");
   copyFileSync(unstripped, binaryPath);
+  copyFileSync(unstrippedLoader, loaderPath);
   run(strip, ["--strip-unneeded", binaryPath]);
+  run(strip, ["--strip-unneeded", loaderPath]);
   const dependencies = inspectElf(binaryPath, target.machine, readelf);
+  inspectLoaderElf(loaderPath, target.machine, readelf);
 
   const licensesDir = join(outputDir, "licenses");
   mkdirSync(licensesDir, { recursive: true });
   copyFileSync(join(prootDir, "COPYING"), join(licensesDir, "PRoot-GPL-2.0.txt"));
   copyFileSync(join(tallocDir, "LICENSE"), join(licensesDir, "talloc-LGPL-3.0.txt"));
   copyFileSync(sourceLockPath, join(outputDir, "sources.lock.json"));
-  writeSbom(outputDir, abi, binaryPath, dependencies);
+  writeSbom(outputDir, abi, binaryPath, loaderPath, dependencies);
 
   console.log(`Built Android PRoot: ${binaryPath}`);
   console.log(`SHA-256: ${sha256(binaryPath)}`);
+  console.log(`Built Android PRoot loader: ${loaderPath}`);
+  console.log(`Loader SHA-256: ${sha256(loaderPath)}`);
   console.log(`Dynamic dependencies: ${dependencies.join(", ")}`);
 } finally {
   if (!configuredWorkDir) rmSync(workDir, { recursive: true, force: true });

@@ -165,6 +165,8 @@ struct NativeRuntimeEnvironment {
     bundled_runtime_available: bool,
     proot_available: bool,
     proot_path: String,
+    proot_loader_available: bool,
+    proot_loader_path: String,
 }
 
 #[cfg(target_os = "android")]
@@ -555,6 +557,17 @@ impl AgentRuntime for AndroidLinuxRuntime {
         if !proot_path.is_absolute() || !proot_path.is_file() {
             return Err(AppError::Other("Android PRoot 原生库路径无效".into()));
         }
+        if !environment.proot_loader_available {
+            return Err(AppError::Other("当前 APK 未包含 PRoot loader".into()));
+        }
+        let proot_loader_path = PathBuf::from(environment.proot_loader_path);
+        if !proot_loader_path.is_absolute() || !proot_loader_path.is_file() {
+            return Err(AppError::Other("Android PRoot loader 路径无效".into()));
+        }
+        let proot_tmp_dir = self.root_dir.join("tmp");
+        std::fs::create_dir_all(&proot_tmp_dir).map_err(|error| {
+            AppError::Other(format!("无法创建 Android PRoot 临时目录: {error}"))
+        })?;
         let _: serde_json::Value = self.run_native_command("start")?;
         if let Err(error) = self.agent.start_android(
             self.db.clone(),
@@ -565,6 +578,8 @@ impl AgentRuntime for AndroidLinuxRuntime {
             self.storage.clone(),
             rootfs_dir,
             proot_path,
+            proot_loader_path,
+            proot_tmp_dir,
         ) {
             let _ = self.run_native_command::<serde_json::Value>("stop");
             return Err(error);

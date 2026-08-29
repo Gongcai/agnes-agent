@@ -1,6 +1,6 @@
 # Android 本地 Agent 与 Linux Runtime 设计
 
-> 状态：A1 开发中；x86_64 Ubuntu 24.04.4 完整 Runtime 已在模拟器完成内置安装与启动验证，PRoot 源码构建已自动化；ARM64 实机制品与 Ubuntu rootfs 全自动构建流水线待完成
+> 状态：A1 开发中；x86_64 Ubuntu 24.04.4 完整 Runtime 已在模拟器完成内置安装、Agent Protocol 握手和模型流式回复验证，PRoot 源码构建已自动化；ARM64 实机制品与 Ubuntu rootfs 全自动构建流水线待完成
 > 更新时间：2026-08-29
 > 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`、`OPERIT_ANDROID_RUNTIME_REFERENCE.md`
 
@@ -122,6 +122,7 @@ Android Runtime Service 负责跨 Activity 生命周期维护运行时：
 PRoot runner 当前约定以下文件由 Android 包和 rootfs 制品共同提供：
 
 - `libagnes_proot.so`：由目标 ABI 的 `jniLibs` 打入 APK，安装后从 Android `nativeLibraryDir` 执行；不从应用可写 rootfs 执行 ELF；
+- `libagnes_proot_loader.so`：同 ABI 的静态 PRoot ELF loader；通过 `PROOT_LOADER` 直接使用，避免 PRoot 在 Android 应用私有目录临时提取 loader；
 - `usr/bin/python3`：Linux 用户空间内的 Python 解释器；
 - `opt/agnes-agent/app/main.py`：与桌面端同源的 Python Agent；
 - Agent 依赖、证书和启动配置也必须位于 rootfs 内，不写入 Android 私有目录中的明文配置。
@@ -146,11 +147,11 @@ Runtime ZIP 可使用 `pnpm build:android-runtime -- --rootfs <Ubuntu-rootfs> --
 宿主 PRoot 可使用 `pnpm build:android-proot -- --abi <arm64-v8a|x86_64>` 从锁定的 Termux
 PRoot 与 Samba talloc commit 构建。版本、commit、Ubuntu Base URL 和 SHA-256 记录在
 `android-runtime/sources.lock.json`；构建会检查 ELF ABI、PIE、Android linker 和动态依赖，
-并生成许可证副本及 SPDX SBOM。当前 Ubuntu rootfs 的 apt 与 Python 锁定依赖安装仍需人工
+同时检查静态 loader 的 ABI、ELF 类型和入口点，并生成许可证副本及 SPDX SBOM。当前 Ubuntu rootfs 的 apt 与 Python 锁定依赖安装仍需人工
 执行，后续需要补齐无特权、可复现的 rootfs 构建脚本。
 
-Android 构建从仓库根目录下未纳入 Git 的 `android-runtime/<abi>/` 读取两个制品：
-`runtime.zip` 和 `libagnes_proot.so`。`scripts/prepare-android-runtime-assets.mjs` 在构建前只把
+Android 构建从仓库根目录下未纳入 Git 的 `android-runtime/<abi>/` 读取三个制品：
+`runtime.zip`、`libagnes_proot.so` 和 `libagnes_proot_loader.so`。`scripts/prepare-android-runtime-assets.mjs` 在构建前只把
 目标 ABI 暂存到生成的 Android 工程，防止 universal APK 意外带入两套大体积 rootfs。
 `pnpm android:build -- --target <aarch64|x86_64>` 默认要求制品完整；仅开发无 Runtime 的
 界面调试可显式设置 `AGNES_ANDROID_RUNTIME_OPTIONAL=1`。直接运行 Tauri Android 命令时，
@@ -243,7 +244,7 @@ Android 有两种执行模式：
 - [ ] 自动化 Ubuntu rootfs、apt 和 Python 锁定依赖的可复现构建；
 - [ ] 构建并在 ARM64 设备验收完整 Runtime 制品，完成发布签署；
 - [x] Rust Core 与 Agent 的本地认证 WS IPC 接线；
-- 完成现有 Agent Protocol 握手、流式回复和取消。
+- [x] 完成现有 Agent Protocol 握手和模型流式回复；取消流程待单独验收。
 
 ### A2：Android 本地完整 Agent
 

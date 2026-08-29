@@ -13,15 +13,18 @@ Ubuntu、PRoot 等上游源码独立构建。
 android-runtime/
 ├── arm64-v8a/
 │   ├── runtime.zip
-│   └── libagnes_proot.so
+│   ├── libagnes_proot.so
+│   └── libagnes_proot_loader.so
 └── x86_64/
     ├── runtime.zip
-    └── libagnes_proot.so
+    ├── libagnes_proot.so
+    └── libagnes_proot_loader.so
 ```
 
 `runtime.zip` 包含 Ubuntu 用户空间和 Agnes Python Agent。`libagnes_proot.so` 是 Android
 宿主侧的 PRoot 可执行文件；使用原生库命名后，Android 会把它安装到应用只读、可执行的
-原生库目录。
+原生库目录。`libagnes_proot_loader.so` 是同 ABI 的静态 ELF loader，运行时通过
+`PROOT_LOADER` 直接使用，避免 PRoot 从应用私有临时目录提取 loader。
 
 ## 构建 PRoot
 
@@ -36,6 +39,7 @@ pnpm build:android-proot -- --abi x86_64
 Android linker 和动态依赖，并在目标 ABI 目录生成：
 
 - `libagnes_proot.so`；
+- `libagnes_proot_loader.so`；
 - `licenses/`；
 - `sources.lock.json`；
 - `proot.spdx.json`。
@@ -52,6 +56,7 @@ pnpm build:android-runtime -- --rootfs <rootfs-path> --abi <arm64-v8a|x86_64>
 ```
 
 脚本会注入 Agnes Agent，生成 manifest，校验 rootfs 后输出 `runtime.zip`。当前 x86_64
-Ubuntu 24.04.4 完整制品已在 Android 模拟器通过首次安装、PRoot 启动和 Agent 导入验证；
+Ubuntu 24.04.4 完整制品已在 Android 模拟器通过首次安装、PRoot 启动、Agent Protocol 握手和
+模型流式回复验证；
 Ubuntu rootfs 的下载、apt 安装和锁定 Python 依赖安装目前仍是人工制备流程，不能视为完整的
 可复现发布流水线。
