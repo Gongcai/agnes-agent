@@ -1,7 +1,7 @@
 # Android 本地 Agent 与 Linux Runtime 设计
 
-> 状态：A0 开发中；Android scaffold 与可运行客户端基础已完成
-> 更新时间：2026-08-28
+> 状态：A1 开发中；Runtime 安装管理基础已完成，PRoot runner 待接入
+> 更新时间：2026-08-29
 > 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`
 
 ## 1. 目标
@@ -97,6 +97,27 @@ Android Runtime Service 负责跨 Activity 生命周期维护运行时：
 - rootfs 版本与 Python Agent 运行时版本明确绑定；
 - 不允许从未校验的远端地址直接执行安装脚本。
 
+当前开发版安装包契约为 ZIP：根目录必须包含 `manifest.json`，Linux 用户空间文件放在
+`rootfs/` 下。manifest 使用 schema version 1，字段如下：
+
+```json
+{
+  "schemaVersion": 1,
+  "runtimeVersion": "ubuntu-24.04.1",
+  "platform": "android",
+  "abi": "arm64-v8a",
+  "rootfsSha256": "<按相对路径排序后的 rootfs 文件摘要>",
+  "rootfsSize": 123456789,
+  "agentVersion": "0.1.0"
+}
+```
+
+摘要按 `相对路径 + NUL + 文件内容` 的顺序计算，路径按字典序排列；目录不参与摘要。
+安装器会拒绝绝对路径、`..` 路径、符号链接、超过 200,000 个文件、单文件超过
+512 MiB 或 rootfs 总文件内容超过 2 GiB 的制品。文件先写入应用私有目录下的 staging
+版本，摘要和大小通过后再原子切换 `current` 指针，旧版本保留在 `versions/`，上一版本
+记录在 `previous`。
+
 开发调试可以先使用预置 rootfs 或本机生成的测试 rootfs；发布渠道再确定内置、首次下载或应用内更新的最终策略。
 
 ### 4.2 工具与依赖
@@ -163,9 +184,10 @@ Android 有两种执行模式：
 
 ### A1：Linux Runtime 原型
 
-- Android Foreground Service 和 Runtime supervisor；
-- PRoot 与最小 Ubuntu ARM64 rootfs；
-- rootfs manifest、Hash 校验、原子安装、升级和回滚；
+- [ ] Android Foreground Service 和 Runtime supervisor；
+- [ ] PRoot 与最小 Ubuntu ARM64 rootfs；
+- [x] rootfs manifest、Hash 校验、路径/资源限制、原子安装；
+- [ ] 安装失败回滚和当前版本恢复；
 - 启动/停止/重启 Python Agent；
 - Rust Core 与 Runtime 的本地认证 IPC；
 - 完成现有 Agent Protocol 握手、流式回复和取消。

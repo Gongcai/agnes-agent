@@ -247,6 +247,33 @@ pub fn get_runtime_status(state: tauri::State<'_, AppState>) -> crate::runtime::
     state.runtime.status()
 }
 
+/// Installs a validated Android Linux Runtime package into the app-private directory.
+#[tauri::command]
+pub fn install_android_runtime(
+    package_path: String,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::runtime::AgentRuntimeStatus> {
+    state
+        .runtime
+        .install_package(std::path::Path::new(&package_path))
+}
+
+/// Starts the platform Agent Runtime. Android will only report ready after the PRoot runner is alive.
+#[tauri::command]
+pub fn start_agent_runtime(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::runtime::AgentRuntimeStatus> {
+    state.runtime.start()
+}
+
+/// Stops the platform Agent Runtime and any managed child processes.
+#[tauri::command]
+pub fn stop_agent_runtime(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::runtime::AgentRuntimeStatus> {
+    state.runtime.stop()
+}
+
 /// Opens the webview inspector in development builds.
 #[tauri::command]
 pub fn open_webview_devtools(window: tauri::WebviewWindow) {

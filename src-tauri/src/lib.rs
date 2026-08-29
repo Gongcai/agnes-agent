@@ -401,8 +401,8 @@ pub fn run() {
             storage::artifact_cache::start_background(db.clone(), data_dir.join("artifacts"));
             backup.clone().start_background();
 
-            // 2) Desktop owns the Python sidecar. Android gets a runtime status
-            // placeholder until the Linux Runtime Service is installed.
+            // 2) Desktop owns the Python sidecar. Android owns an app-private Linux
+            // Runtime lifecycle; the PRoot runner is added in the next runtime slice.
             let agent = Arc::new(agent::AgentManager::new());
             #[cfg(not(target_os = "android"))]
             if let Err(e) = agent.start(
@@ -418,7 +418,7 @@ pub fn run() {
 
             #[cfg(target_os = "android")]
             let runtime: Arc<dyn runtime::AgentRuntime> =
-                Arc::new(runtime::AndroidLinuxRuntime::new());
+                Arc::new(runtime::AndroidLinuxRuntime::new(&data_dir));
             #[cfg(not(target_os = "android"))]
             let runtime: Arc<dyn runtime::AgentRuntime> =
                 Arc::new(runtime::DesktopSidecarRuntime::new(agent.clone()));
@@ -462,6 +462,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::ping,
             commands::get_runtime_status,
+            commands::install_android_runtime,
+            commands::start_agent_runtime,
+            commands::stop_agent_runtime,
             commands::open_webview_devtools,
             commands::list_agents,
             commands::update_agent_model,

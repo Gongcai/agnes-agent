@@ -1,5 +1,30 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export interface AgentRuntimeStatus {
+  platform: string;
+  executionMode: string;
+  state: string;
+  detail: string;
+  runtimeVersion: string | null;
+  abi: string | null;
+}
+
+export async function getRuntimeStatus(): Promise<AgentRuntimeStatus> {
+  return invoke<AgentRuntimeStatus>("get_runtime_status");
+}
+
+export async function installAndroidRuntime(packagePath: string): Promise<AgentRuntimeStatus> {
+  return invoke<AgentRuntimeStatus>("install_android_runtime", { packagePath });
+}
+
+export async function startAgentRuntime(): Promise<AgentRuntimeStatus> {
+  return invoke<AgentRuntimeStatus>("start_agent_runtime");
+}
+
+export async function stopAgentRuntime(): Promise<AgentRuntimeStatus> {
+  return invoke<AgentRuntimeStatus>("stop_agent_runtime");
+}
+
 export interface AgentSummary {
   id: string;
   name: string;
