@@ -25,6 +25,19 @@ const MAX_OUTPUT_TOKENS: i64 = 1_048_576;
 const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 131_072;
 const DEFAULT_MAX_OUTPUT_TOKENS_SETTING: &str = "ui:default_max_output_tokens";
 
+fn format_reqwest_error(error: &reqwest::Error) -> String {
+    let mut details = vec![error.to_string()];
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        let detail = cause.to_string();
+        if !details.iter().any(|existing| existing == &detail) {
+            details.push(detail);
+        }
+        source = cause.source();
+    }
+    details.join(": ")
+}
+
 fn normalize_default_max_output_tokens(value: Option<&str>) -> i64 {
     value
         .and_then(|raw| raw.parse::<i64>().ok())
@@ -5643,7 +5656,11 @@ pub async fn test_provider(
                 }),
                 Err(error) => Ok(TestProviderResult {
                     success: false,
-                    message: format!("Provider `{}` connection failed: {error}", p.name),
+                    message: format!(
+                        "Provider `{}` connection failed: {}",
+                        p.name,
+                        format_reqwest_error(&error)
+                    ),
                 }),
             }
         }
@@ -5705,10 +5722,9 @@ pub async fn fetch_provider_models(
             }
         }
 
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| AppError::Other(format!("请求失败: {}", e)))?;
+        let resp = req.send().await.map_err(|error| {
+            AppError::Other(format!("请求失败: {}", format_reqwest_error(&error)))
+        })?;
         let json: serde_json::Value = resp
             .json()
             .await
@@ -5727,11 +5743,9 @@ pub async fn fetch_provider_models(
         let base = api_base.unwrap_or_else(|| "http://localhost:11434".to_string());
         let url = format!("{}/api/tags", base.trim_end_matches('/'));
 
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| AppError::Other(format!("请求失败: {}", e)))?;
+        let resp = client.get(&url).send().await.map_err(|error| {
+            AppError::Other(format!("请求失败: {}", format_reqwest_error(&error)))
+        })?;
         let json: serde_json::Value = resp
             .json()
             .await

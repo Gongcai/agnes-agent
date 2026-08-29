@@ -28,7 +28,7 @@ rand = "0.8"
 anyhow = "1"
 thiserror = "1"
 sqlite-vec = "0.1.9"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "gzip", "brotli", "deflate", "rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "gzip", "brotli", "deflate", "rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-global-shortcut = "2"

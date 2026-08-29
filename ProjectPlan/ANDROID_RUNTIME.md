@@ -126,6 +126,12 @@ PRoot runner 当前约定以下文件由 Android 包和 rootfs 制品共同提�
 - `opt/agnes-agent/app/main.py`：与桌面端同源的 Python Agent；
 - Agent 依赖、证书和启动配置也必须位于 rootfs 内，不写入 Android 私有目录中的明文配置。
 
+Rust 的公网 HTTPS 请求使用 Rustls，同时加载系统根证书和内置 Mozilla WebPKI 根证书。
+Android 应用沙箱通常没有桌面 Linux 的 OpenSSL CA 文件路径，只依赖 native roots 会导致
+所有模型服务商的 TLS 握手失败；WebPKI roots 作为跨 Android 版本的基础信任集合，系统根
+证书仍保留用于企业网络或用户安装的 CA。连接错误会保留 reqwest 的底层错误链，便于区分
+DNS、TLS、连接拒绝和超时。
+
 Rust 会把应用私有工作区绑定为 Linux 的 `/workspace`，通过一次性 token 和本地回环
 WS 连接 Agent Protocol。Android Runtime 不向其他应用暴露 Service，停止 Runtime 时会
 先回收 Agent 子进程，再移除前台通知。
