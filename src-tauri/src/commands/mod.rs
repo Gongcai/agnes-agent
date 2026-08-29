@@ -249,37 +249,49 @@ pub fn get_runtime_status(state: tauri::State<'_, AppState>) -> crate::runtime::
 
 /// Installs a validated Android Linux Runtime package into the app-private directory.
 #[tauri::command]
-pub fn install_android_runtime(
+pub async fn install_android_runtime(
     package_path: String,
     state: tauri::State<'_, AppState>,
 ) -> AppResult<crate::runtime::AgentRuntimeStatus> {
-    state
-        .runtime
-        .install_package(std::path::Path::new(&package_path))
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.install_package(std::path::Path::new(&package_path))
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("Android Runtime 安装任务异常退出: {error}")))?
 }
 
 /// Rolls back to the previously installed Android Linux Runtime package.
 #[tauri::command]
-pub fn rollback_android_runtime(
+pub async fn rollback_android_runtime(
     state: tauri::State<'_, AppState>,
 ) -> AppResult<crate::runtime::AgentRuntimeStatus> {
-    state.runtime.rollback_package()
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.rollback_package())
+        .await
+        .map_err(|error| AppError::Other(format!("Android Runtime 回滚任务异常退出: {error}")))?
 }
 
 /// Starts the platform Agent Runtime. Android will only report ready after the PRoot runner is alive.
 #[tauri::command]
-pub fn start_agent_runtime(
+pub async fn start_agent_runtime(
     state: tauri::State<'_, AppState>,
 ) -> AppResult<crate::runtime::AgentRuntimeStatus> {
-    state.runtime.start()
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.start())
+        .await
+        .map_err(|error| AppError::Other(format!("Agent Runtime 启动任务异常退出: {error}")))?
 }
 
 /// Stops the platform Agent Runtime and any managed child processes.
 #[tauri::command]
-pub fn stop_agent_runtime(
+pub async fn stop_agent_runtime(
     state: tauri::State<'_, AppState>,
 ) -> AppResult<crate::runtime::AgentRuntimeStatus> {
-    state.runtime.stop()
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.stop())
+        .await
+        .map_err(|error| AppError::Other(format!("Agent Runtime 停止任务异常退出: {error}")))?
 }
 
 /// Opens the webview inspector in development builds.

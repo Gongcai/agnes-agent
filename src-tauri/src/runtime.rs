@@ -233,6 +233,15 @@ impl AndroidLinuxRuntime {
         Ok(rootfs_dir)
     }
 
+    fn update_install_progress(&self, detail: impl Into<String>) {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .expect("runtime snapshot lock poisoned");
+        snapshot.state = "installing".into();
+        snapshot.detail = detail.into();
+    }
+
     fn native_service_status(&self) -> AppResult<bool> {
         #[derive(Debug, Deserialize)]
         struct NativeServiceStatus {
@@ -267,6 +276,7 @@ impl AndroidLinuxRuntime {
     }
 
     fn install_bundled_runtime(&self) -> AppResult<()> {
+        self.update_install_progress("正在从 APK 复制内置 Runtime 安装包");
         let prepared: PreparedBundledRuntime = self.run_native_command("prepareBundledRuntime")?;
         if prepared.abi != target_android_abi() {
             return Err(AppError::Other(format!(
@@ -282,6 +292,7 @@ impl AndroidLinuxRuntime {
         if !package_path.is_absolute() || !package_path.is_file() {
             return Err(AppError::Other("内置 Runtime 安装包路径无效".into()));
         }
+        self.update_install_progress("内置 Runtime 安装包已准备，正在读取清单");
         let result = self.install_package_inner(&package_path);
         let _ = std::fs::remove_file(&package_path);
         let snapshot = result?;
@@ -307,6 +318,10 @@ impl AndroidLinuxRuntime {
             )));
         }
 
+        self.update_install_progress(format!(
+            "正在解压 Android Linux Runtime {}",
+            manifest.runtime_version
+        ));
         std::fs::create_dir_all(self.root_dir.join("versions"))?;
         let staging = self
             .root_dir
@@ -317,12 +332,14 @@ impl AndroidLinuxRuntime {
             std::fs::create_dir_all(&rootfs_dir)?;
             extract_rootfs(&mut archive, &rootfs_dir)?;
 
+            self.update_install_progress("Runtime 已解压，正在校验文件完整性");
             let (digest, size) = digest_rootfs(&rootfs_dir)?;
             if digest != manifest.rootfs_sha256 || size != manifest.rootfs_size {
                 return Err(AppError::Other(format!(
                     "Android Runtime rootfs 校验失败: sha256={digest}, size={size}"
                 )));
             }
+            self.update_install_progress("Runtime 校验通过，正在写入版本信息");
             std::fs::write(
                 staging.join("manifest.json"),
                 serde_json::to_vec_pretty(&manifest)?,
@@ -397,7 +414,9 @@ impl AndroidLinuxRuntime {
 #[cfg(target_os = "android")]
 impl AgentRuntime for AndroidLinuxRuntime {
     fn status(&self) -> AgentRuntimeStatus {
-        let environment = self.runtime_environment().ok();
+        let environment_result = self.runtime_environment();
+        let environment_error = environment_result.as_ref().err().map(ToString::to_string);
+        let environment = environment_result.ok();
         let service_running = self.native_service_status().unwrap_or(false);
         let agent_running = self.agent.is_running();
         let agent_connected = self.agent.is_connected();
@@ -433,6 +452,12 @@ impl AgentRuntime for AndroidLinuxRuntime {
             snapshot.state = "bundled-available".into();
             snapshot.detail = "应用已内置 Android Linux Runtime，首次启动时将自动安装".into();
             snapshot.abi = environment.as_ref().map(|value| value.abi.clone());
+        } else if snapshot.state != "installing" && environment_error.is_some() {
+            snapshot.state = "error".into();
+            snapshot.detail = format!(
+                "无法读取 Android Runtime 环境：{}",
+                environment_error.as_deref().unwrap_or("unknown error")
+            );
         }
         AgentRuntimeStatus {
             platform: "android".into(),
@@ -457,7 +482,17 @@ impl AgentRuntime for AndroidLinuxRuntime {
                 "Android Runtime Service 正在运行，请先停止后再安装新版本".into(),
             ));
         }
-        let snapshot = self.install_package_inner(package_path)?;
+        self.update_install_progress("正在读取 Android Runtime 安装包");
+        let snapshot = match self.install_package_inner(package_path) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                *self
+                    .snapshot
+                    .lock()
+                    .expect("runtime snapshot lock poisoned") = load_snapshot(&self.root_dir);
+                return Err(error);
+            }
+        };
         *self
             .snapshot
             .lock()
@@ -502,6 +537,14 @@ impl AgentRuntime for AndroidLinuxRuntime {
                     .expect("runtime snapshot lock poisoned") = load_snapshot(&self.root_dir);
                 return Err(error);
             }
+        }
+        {
+            let mut snapshot = self
+                .snapshot
+                .lock()
+                .expect("runtime snapshot lock poisoned");
+            snapshot.state = "starting".into();
+            snapshot.detail = "Runtime 已安装，正在启动 PRoot 与 Agent".into();
         }
         let rootfs_dir = self.current_rootfs()?;
         let environment = self.runtime_environment()?;

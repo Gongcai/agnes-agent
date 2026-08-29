@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Build
 import android.system.Os
+import android.util.Log
 import androidx.core.content.ContextCompat
 import app.tauri.annotation.Command
 import app.tauri.annotation.TauriPlugin
@@ -21,7 +22,7 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
       RuntimeService.markStartRequested()
       val intent = Intent(activity, RuntimeService::class.java)
       ContextCompat.startForegroundService(activity, intent)
-      invoke.resolveObject(status())
+      invoke.resolve(status())
     } catch (exception: Exception) {
       RuntimeService.markStopped()
       invoke.reject(exception.message ?: "Unable to start runtime service")
@@ -33,7 +34,7 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
     try {
       activity.stopService(Intent(activity, RuntimeService::class.java))
       RuntimeService.markStopped()
-      invoke.resolveObject(status())
+      invoke.resolve(status())
     } catch (exception: Exception) {
       invoke.reject(exception.message ?: "Unable to stop runtime service")
     }
@@ -41,12 +42,12 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun getStatus(invoke: Invoke) {
-    invoke.resolveObject(status())
+    invoke.resolve(status())
   }
 
   @Command
   fun getRuntimeEnvironment(invoke: Invoke) {
-    invoke.resolveObject(runtimeEnvironment())
+    invoke.resolve(runtimeEnvironment())
   }
 
   @Command
@@ -78,12 +79,11 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
         }
       }
       Os.rename(temporary.absolutePath, destination.absolutePath)
-      invoke.resolveObject(
-        JSObject()
-          .put("abi", abi)
-          .put("packagePath", destination.absolutePath)
-          .put("packageSize", destination.length())
-      )
+      val result = JSObject()
+      result.put("abi", abi)
+      result.put("packagePath", destination.absolutePath)
+      result.put("packageSize", destination.length())
+      invoke.resolve(result)
     } catch (exception: Exception) {
       temporary.delete()
       invoke.reject(exception.message ?: "Unable to prepare bundled Android Runtime")
@@ -91,17 +91,25 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   private fun status(): JSObject {
-    return JSObject().put("running", RuntimeService.isRunning())
+    val result = JSObject()
+    result.put("running", RuntimeService.isRunning())
+    return result
   }
 
   private fun runtimeEnvironment(): JSObject {
     val abi = runtimeAbi()
     val proot = prootLibrary()
-    return JSObject()
-      .put("abi", abi)
-      .put("bundledRuntimeAvailable", assetExists(bundledRuntimeAsset(abi)))
-      .put("prootAvailable", proot.isFile)
-      .put("prootPath", proot.absolutePath)
+    val bundledRuntimeAvailable = assetExists(bundledRuntimeAsset(abi))
+    Log.i(
+      "AgnesRuntime",
+      "environment abi=$abi bundled=$bundledRuntimeAvailable proot=${proot.isFile}"
+    )
+    val result = JSObject()
+    result.put("abi", abi)
+    result.put("bundledRuntimeAvailable", bundledRuntimeAvailable)
+    result.put("prootAvailable", proot.isFile)
+    result.put("prootPath", proot.absolutePath)
+    return result
   }
 
   private fun runtimeAbi(): String {

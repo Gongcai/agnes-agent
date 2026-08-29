@@ -1,6 +1,6 @@
 # Android 本地 Agent 与 Linux Runtime 设计
 
-> 状态：A1 开发中；内置 Runtime 安装链路、版本回滚和宿主 PRoot runner 接线已完成，Ubuntu/PRoot 可发布制品待构建
+> 状态：A1 开发中；x86_64 Ubuntu 24.04.4 完整 Runtime 已在模拟器完成内置安装与启动验证，PRoot 源码构建已自动化；ARM64 实机制品与 Ubuntu rootfs 全自动构建流水线待完成
 > 更新时间：2026-08-29
 > 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`、`OPERIT_ANDROID_RUNTIME_REFERENCE.md`
 
@@ -137,6 +137,12 @@ Runtime ZIP 可使用 `pnpm build:android-runtime -- --rootfs <Ubuntu-rootfs> --
 安装器相同的规则生成 SHA-256，并输出带 `manifest.json` 的 ZIP。依赖包、Python 和
 系统库必须预先安装到输入 rootfs；脚本不会联网安装依赖，也不会读取宿主密钥。
 
+宿主 PRoot 可使用 `pnpm build:android-proot -- --abi <arm64-v8a|x86_64>` 从锁定的 Termux
+PRoot 与 Samba talloc commit 构建。版本、commit、Ubuntu Base URL 和 SHA-256 记录在
+`android-runtime/sources.lock.json`；构建会检查 ELF ABI、PIE、Android linker 和动态依赖，
+并生成许可证副本及 SPDX SBOM。当前 Ubuntu rootfs 的 apt 与 Python 锁定依赖安装仍需人工
+执行，后续需要补齐无特权、可复现的 rootfs 构建脚本。
+
 Android 构建从仓库根目录下未纳入 Git 的 `android-runtime/<abi>/` 读取两个制品：
 `runtime.zip` 和 `libagnes_proot.so`。`scripts/prepare-android-runtime-assets.mjs` 在构建前只把
 目标 ABI 暂存到生成的 Android 工程，防止 universal APK 意外带入两套大体积 rootfs。
@@ -220,7 +226,10 @@ Android 有两种执行模式：
 - [x] 安装失败回滚和当前版本恢复；
 - [x] 启动/停止 Python Agent 的 PRoot 接线；
 - [x] 按 ABI 暂存 APK 内置 Runtime、首次自动安装和 `nativeLibraryDir` PRoot 执行路径；
-- [ ] 从 Ubuntu、PRoot 上游构建并签署 ARM64/x86_64 可发布制品、许可证清单与 SBOM；
+- [x] 从锁定上游源码自动构建 ARM64/x86_64 PRoot，生成许可证清单与 SPDX SBOM；
+- [x] 构建 x86_64 Ubuntu 24.04.4 完整 Runtime，并在模拟器验证首次安装与启动；
+- [ ] 自动化 Ubuntu rootfs、apt 和 Python 锁定依赖的可复现构建；
+- [ ] 构建并在 ARM64 设备验收完整 Runtime 制品，完成发布签署；
 - [x] Rust Core 与 Agent 的本地认证 WS IPC 接线；
 - 完成现有 Agent Protocol 握手、流式回复和取消。
 

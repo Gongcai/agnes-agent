@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { X, ArrowLeft, User, UserCircle, Camera, Database, Sliders, ShieldCheck, ShieldSlash, Key, Plus, Trash, PencilSimple, Check, Lightning, HardDrives, DownloadSimple, Eye, EyeSlash, Terminal, Gear, MagnifyingGlass, ArrowsClockwise, GitDiff, Laptop, Cloud, LockKey, Copy, FileLock, ArrowUp, ArrowDown, GlobeHemisphereWest, ChartBar, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, PuzzlePiece, Play, Stop } from "@phosphor-icons/react";
+import { X, ArrowLeft, User, UserCircle, Camera, Database, Sliders, ShieldCheck, ShieldSlash, Key, Plus, Trash, PencilSimple, Check, Lightning, HardDrives, DownloadSimple, Eye, EyeSlash, Terminal, Gear, MagnifyingGlass, ArrowsClockwise, GitDiff, Laptop, Cloud, LockKey, Copy, FileLock, ArrowUp, ArrowDown, GlobeHemisphereWest, ChartBar, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, PuzzlePiece, Play, Stop, CircleNotch } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAgentStore } from "../store/useAgentStore";
@@ -5903,6 +5903,10 @@ const RUNTIME_STATE_LABELS: Record<string, string> = {
   stopped: "已停止",
 };
 
+const waitForRuntimeActionPaint = () => new Promise<void>((resolve) => {
+  window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+});
+
 const RuntimeTab: React.FC = () => {
   const [status, setStatus] = useState<AgentRuntimeStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -5937,6 +5941,7 @@ const RuntimeTab: React.FC = () => {
     setBusyAction("install");
     setError(null);
     try {
+      await waitForRuntimeActionPaint();
       setStatus(await installAndroidRuntime(selected));
     } catch (reason) {
       setError(String(reason));
@@ -5950,6 +5955,14 @@ const RuntimeTab: React.FC = () => {
     setBusyAction(action);
     setError(null);
     try {
+      if (action === "start" && !status?.runtimeVersion) {
+        setStatus((current) => current ? {
+          ...current,
+          state: "installing",
+          detail: "正在准备内置 Android Linux Runtime",
+        } : current);
+      }
+      await waitForRuntimeActionPaint();
       setStatus(action === "start" ? await startAgentRuntime() : await stopAgentRuntime());
     } catch (reason) {
       setError(String(reason));
@@ -5963,6 +5976,7 @@ const RuntimeTab: React.FC = () => {
     setBusyAction("rollback");
     setError(null);
     try {
+      await waitForRuntimeActionPaint();
       setStatus(await rollbackAndroidRuntime());
     } catch (reason) {
       setError(String(reason));
@@ -5977,6 +5991,14 @@ const RuntimeTab: React.FC = () => {
   const canStart = isAndroid
     && (Boolean(status?.runtimeVersion) || Boolean(status?.bundledRuntimeAvailable && status?.prootAvailable))
     && !isRunning;
+  const showProgress = busyAction !== null || ["installing", "starting"].includes(status?.state ?? "");
+  const progressTitle = busyAction === "stop"
+    ? "正在停止 Runtime"
+    : busyAction === "rollback"
+      ? "正在回滚 Runtime"
+      : status?.state === "starting" || (busyAction === "start" && Boolean(status?.runtimeVersion))
+        ? "正在启动 Agent"
+        : "正在安装 Runtime";
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -6025,6 +6047,26 @@ const RuntimeTab: React.FC = () => {
           </div>
         </dl>
       </section>
+
+      {showProgress && (
+        <section className="rounded-lg border border-stone-300 bg-white px-4 py-3" aria-live="polite" aria-busy="true">
+          <div className="flex items-start gap-3">
+            <CircleNotch className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-stone-700" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-stone-800">{progressTitle}</p>
+              <p className="mt-1 text-[11px] leading-5 text-stone-500">
+                {status?.detail ?? "正在处理，请稍候"}
+              </p>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-stone-100">
+                <div className="h-full w-2/3 animate-pulse rounded-full bg-stone-700" />
+              </div>
+              {status?.state === "installing" && (
+                <p className="mt-2 text-[10px] text-stone-400">首次安装需要解压完整 Linux 环境，请保持应用在前台。</p>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
 
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-xs leading-5 text-red-700">
