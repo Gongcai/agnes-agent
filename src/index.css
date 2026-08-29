@@ -2109,6 +2109,42 @@ pre,
 }
 
 @media (max-width: 640px) {
+  .agnes-drive-workspace .agnes-drive-content {
+    position: relative;
+  }
+
+  .agnes-drive-workspace .agnes-drive-account-pane,
+  .agnes-drive-workspace .agnes-drive-detail-pane {
+    width: 100% !important;
+    min-width: 0 !important;
+    border-right: 0 !important;
+  }
+
+  .agnes-drive-workspace .agnes-drive-mobile-list .agnes-drive-detail-pane,
+  .agnes-drive-workspace .agnes-drive-mobile-detail .agnes-drive-account-pane {
+    display: none !important;
+  }
+
+  .agnes-drive-workspace .agnes-drive-mobile-detail .agnes-drive-detail-pane {
+    display: flex !important;
+  }
+
+  .agnes-drive-workspace .agnes-drive-mobile-list .agnes-drive-account-pane {
+    display: flex !important;
+  }
+
+  .agnes-drive-mobile-back {
+    display: grid !important;
+  }
+
+  .agnes-drive-workspace .agnes-drive-detail-pane > * {
+    min-width: 0;
+  }
+
+  .agnes-drive-workspace .agnes-drive-detail-pane > div:first-child {
+    padding-inline: 12px !important;
+  }
+
   .agnes-settings-overlay {
     align-items: stretch !important;
     justify-content: stretch !important;

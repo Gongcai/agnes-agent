@@ -5,7 +5,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import * as QRCode from "qrcode";
 import Artplayer from "artplayer";
 import Hls from "hls.js";
-import { WarningCircle, ArrowDown, ArrowUp, CaretRight, Cloud, DownloadSimple, Eye, EyeSlash, File, Folder, FolderMinus, FolderPlus, FolderOpen, HardDrive, CircleNotch, DotsThree, Play, Plus, ArrowsClockwise, MagnifyingGlass, ShieldWarning, Trash, UploadSimple, ArrowsDownUp, X } from "@phosphor-icons/react";
+import { WarningCircle, ArrowDown, ArrowUp, ArrowLeft, CaretRight, Cloud, DownloadSimple, Eye, EyeSlash, File, Folder, FolderMinus, FolderPlus, FolderOpen, HardDrive, CircleNotch, DotsThree, Play, Plus, ArrowsClockwise, MagnifyingGlass, ShieldWarning, Trash, UploadSimple, ArrowsDownUp, X } from "@phosphor-icons/react";
 import {
   remoteTimestampMillis,
   sortDriveItems,
@@ -294,6 +294,7 @@ export function DriveWorkspace() {
   const [catalog, setCatalog] = useState<ProviderDescriptor[]>([]);
   const [accounts, setAccounts] = useState<StorageAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [mobileAccountDetailOpen, setMobileAccountDetailOpen] = useState(false);
   const [files, setFiles] = useState<RemoteFileItem[]>([]);
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [folderPath, setFolderPath] = useState<FolderLevel[]>([{ id: null, name: "根目录" }]);
@@ -466,6 +467,51 @@ export function DriveWorkspace() {
   const selectedProvider = catalog.find(
     (provider) => provider.id === selectedAccount?.provider_id,
   );
+  const mobileDriveHistory = useRef(false);
+
+  useEffect(() => {
+    if (selectedAccount || !mobileAccountDetailOpen) return;
+    setMobileAccountDetailOpen(false);
+    if (mobileDriveHistory.current) {
+      mobileDriveHistory.current = false;
+      window.history.back();
+    }
+  }, [mobileAccountDetailOpen, selectedAccount]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handlePopState = () => {
+      if (!mobileDriveHistory.current) return;
+      mobileDriveHistory.current = false;
+      setMobileAccountDetailOpen(false);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  const openMobileAccountDetail = (accountId: string) => {
+    setSelectedAccountId(accountId);
+    const isMobile = typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches;
+    if (isMobile && !mobileDriveHistory.current) {
+      window.history.pushState(
+        {
+          ...(window.history.state && typeof window.history.state === "object" ? window.history.state : {}),
+          agnesDrive: true,
+        },
+        "",
+      );
+      mobileDriveHistory.current = true;
+    }
+    setMobileAccountDetailOpen(true);
+  };
+
+  const closeMobileAccountDetail = () => {
+    if (mobileDriveHistory.current) {
+      window.history.back();
+      return;
+    }
+    setMobileAccountDetailOpen(false);
+  };
   const currentFolder = folderPath[folderPath.length - 1];
   const moveTargetIsSource = moveDialog
     ? moveDialog.path[moveDialog.path.length - 1].id === moveDialog.sourceFolderId
@@ -1603,8 +1649,8 @@ export function DriveWorkspace() {
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="agnes-subnav flex w-64 shrink-0 flex-col border-r border-stone-200 bg-white p-3">
+      <div className={`agnes-drive-content flex min-h-0 flex-1 ${mobileAccountDetailOpen ? "agnes-drive-mobile-detail" : "agnes-drive-mobile-list"}`}>
+        <aside className="agnes-drive-account-pane agnes-subnav flex w-64 shrink-0 flex-col border-r border-stone-200 bg-white p-3">
           <div className="mb-2 px-2 text-[10px] font-bold uppercase tracking-wider text-stone-400">
             账户
           </div>
@@ -1612,7 +1658,7 @@ export function DriveWorkspace() {
             {accounts.map((account) => (
               <button
                 key={account.id}
-                onClick={() => setSelectedAccountId(account.id)}
+                onClick={() => openMobileAccountDetail(account.id)}
                 onContextMenu={(event) => openAccountContextMenu(event, account)}
                 className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left ${
                   account.id === selectedAccountId
@@ -1709,26 +1755,37 @@ export function DriveWorkspace() {
           </div>
         </aside>
 
-        <section className="flex min-w-0 flex-1 flex-col">
+        <section className="agnes-drive-detail-pane flex min-w-0 flex-1 flex-col">
           {selectedAccount ? (
             <>
               <div className="flex shrink-0 items-center justify-between border-b border-stone-200 px-5 py-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <h1 className="truncate text-sm font-semibold text-stone-900">{selectedAccount.display_name}</h1>
-                    <span className={`rounded-md px-1.5 py-0.5 text-[10px] ${
-                      selectedAccount.auth_state === "connected"
-                        ? "bg-emerald-50 text-emerald-700"
-                        : "bg-amber-50 text-amber-700"
-                    }`}>
-                      {STATUS_LABELS[selectedAccount.auth_state] ?? selectedAccount.auth_state}
-                    </span>
-                    {selectedProvider?.stability === "community" && (
-                      <span className="rounded-md bg-stone-100 px-1.5 py-0.5 text-[10px] text-stone-500">社区适配</span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-[11px] text-stone-400">
-                    {formatStorageBytes(selectedAccount.quota_used_bytes)} / {formatStorageBytes(selectedAccount.quota_total_bytes)}
+                <div className="flex min-w-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={closeMobileAccountDetail}
+                    className="agnes-drive-mobile-back hidden h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                    aria-label="返回网盘列表"
+                    title="返回网盘列表"
+                  >
+                    <ArrowLeft className="h-4 w-4" />
+                  </button>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h1 className="truncate text-sm font-semibold text-stone-900">{selectedAccount.display_name}</h1>
+                      <span className={`rounded-md px-1.5 py-0.5 text-[10px] ${
+                        selectedAccount.auth_state === "connected"
+                          ? "bg-emerald-50 text-emerald-700"
+                          : "bg-amber-50 text-amber-700"
+                      }`}>
+                        {STATUS_LABELS[selectedAccount.auth_state] ?? selectedAccount.auth_state}
+                      </span>
+                      {selectedProvider?.stability === "community" && (
+                        <span className="rounded-md bg-stone-100 px-1.5 py-0.5 text-[10px] text-stone-500">社区适配</span>
+                      )}
+                    </div>
+                    <div className="mt-1 text-[11px] text-stone-400">
+                      {formatStorageBytes(selectedAccount.quota_used_bytes)} / {formatStorageBytes(selectedAccount.quota_total_bytes)}
+                    </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
