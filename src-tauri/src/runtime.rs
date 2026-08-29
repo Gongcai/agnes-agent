@@ -1,5 +1,9 @@
 #[cfg(target_os = "android")]
+use std::collections::HashSet;
+#[cfg(target_os = "android")]
 use std::io::Read;
+#[cfg(target_os = "android")]
+use std::os::unix::fs::{symlink, PermissionsExt};
 #[cfg(any(target_os = "android", test))]
 use std::path::Component;
 use std::path::Path;
@@ -447,6 +451,8 @@ fn extract_rootfs<R: std::io::Read + std::io::Seek>(
 ) -> AppResult<()> {
     let mut file_count = 0usize;
     let mut total_bytes = 0u64;
+    let mut extracted_paths = HashSet::new();
+    let mut directory_modes = Vec::new();
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
@@ -455,24 +461,32 @@ fn extract_rootfs<R: std::io::Read + std::io::Seek>(
         let Some(relative_name) = name.strip_prefix("rootfs/") else {
             continue;
         };
-        if relative_name.is_empty() || !safe_relative_path(relative_name) {
+        if relative_name.is_empty() {
+            if entry.is_dir() {
+                continue;
+            }
+            return Err(AppError::Other("Runtime rootfs 根条目必须是目录".into()));
+        }
+        if !safe_relative_path(relative_name) {
             return Err(AppError::Other(format!(
                 "Runtime 安装包包含非法路径: {name}"
             )));
         }
-        let target = rootfs_dir.join(relative_name);
-        if entry.is_dir() {
-            std::fs::create_dir_all(target)?;
-            continue;
-        }
-        if entry
-            .unix_mode()
-            .is_some_and(|mode| mode & 0o170000 == 0o120000)
-        {
+        if !extracted_paths.insert(relative_name.to_owned()) {
             return Err(AppError::Other(format!(
-                "Runtime 安装包不允许符号链接: {name}"
+                "Runtime 安装包包含重复路径: {name}"
             )));
         }
+        let relative_path = Path::new(relative_name);
+        let target = rootfs_dir.join(relative_name);
+        if entry.is_dir() {
+            create_safe_directories(rootfs_dir, relative_path)?;
+            if let Some(mode) = entry.unix_mode() {
+                directory_modes.push((target, mode & 0o1777));
+            }
+            continue;
+        }
+        create_safe_parent(rootfs_dir, relative_path)?;
         file_count += 1;
         if file_count > MAX_RUNTIME_FILES {
             return Err(AppError::Other("Runtime 安装包文件数量超出限制".into()));
@@ -483,20 +497,82 @@ fn extract_rootfs<R: std::io::Read + std::io::Seek>(
         {
             return Err(AppError::Other("Runtime 安装包大小超出限制".into()));
         }
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
+        let unix_mode = entry.unix_mode().unwrap_or(0o100644);
+        let file_type = unix_mode & 0o170000;
+        if file_type == 0o120000 {
+            let mut link_bytes = Vec::new();
+            entry.read_to_end(&mut link_bytes)?;
+            let link_target = std::str::from_utf8(&link_bytes)
+                .map_err(|_| AppError::Other(format!("Runtime 软链接目标不是 UTF-8: {name}")))?;
+            if !safe_symlink_target(relative_path, link_target) {
+                return Err(AppError::Other(format!(
+                    "Runtime 软链接目标越出 rootfs: {name} -> {link_target}"
+                )));
+            }
+            symlink(link_target, &target)?;
+            total_bytes += link_bytes.len() as u64;
+            continue;
         }
-        let mut output = std::fs::File::create(target)?;
+        if file_type != 0 && file_type != 0o100000 {
+            return Err(AppError::Other(format!(
+                "Runtime 安装包包含不支持的文件类型: {name}"
+            )));
+        }
+        let mut output = std::fs::File::create(&target)?;
         let copied = std::io::copy(&mut entry, &mut output)?;
         if copied != declared_size {
             return Err(AppError::Other(format!(
                 "Runtime 安装包条目大小不一致: {name}"
             )));
         }
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(unix_mode & 0o777))?;
         total_bytes += copied;
+    }
+    directory_modes.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+    for (path, mode) in directory_modes {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
     }
     if file_count == 0 {
         return Err(AppError::Other("Runtime 安装包不包含 rootfs".into()));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn create_safe_parent(rootfs_dir: &Path, relative_path: &Path) -> AppResult<()> {
+    if let Some(parent) = relative_path.parent() {
+        create_safe_directories(rootfs_dir, parent)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn create_safe_directories(rootfs_dir: &Path, relative_path: &Path) -> AppResult<()> {
+    let mut current = rootfs_dir.to_path_buf();
+    for component in relative_path.components() {
+        let Component::Normal(name) = component else {
+            return Err(AppError::Other("Runtime 目录路径无效".into()));
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(AppError::Other(format!(
+                    "Runtime 条目不能写入软链接目录: {}",
+                    current.display()
+                )));
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(AppError::Other(format!(
+                    "Runtime 目录与文件冲突: {}",
+                    current.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&current)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
     Ok(())
 }
@@ -506,27 +582,63 @@ fn digest_rootfs(rootfs_dir: &Path) -> AppResult<(String, u64)> {
     let mut entries = Vec::new();
     for entry in walkdir::WalkDir::new(rootfs_dir) {
         let entry = entry.map_err(|error| AppError::Other(format!("扫描 rootfs 失败: {error}")))?;
-        if entry.file_type().is_file() {
+        if entry.file_type().is_file() || entry.file_type().is_symlink() {
             let relative = entry
                 .path()
                 .strip_prefix(rootfs_dir)
                 .map_err(|error| AppError::Other(format!("rootfs 路径无效: {error}")))?
                 .to_string_lossy()
                 .replace('\\', "/");
-            entries.push((relative, entry.path().to_path_buf()));
+            entries.push((
+                relative,
+                entry.path().to_path_buf(),
+                entry.file_type().is_symlink(),
+            ));
         }
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
     let mut hasher = Sha256::new();
     let mut total = 0u64;
-    for (relative, path) in entries {
+    for (relative, path, is_symlink) in entries {
         hasher.update(relative.as_bytes());
         hasher.update([0]);
-        let bytes = std::fs::read(path)?;
+        let bytes = if is_symlink {
+            std::fs::read_link(path)?
+                .to_string_lossy()
+                .as_bytes()
+                .to_vec()
+        } else {
+            std::fs::read(path)?
+        };
         total += bytes.len() as u64;
         hasher.update(&bytes);
     }
     Ok((format!("{:x}", hasher.finalize()), total))
+}
+
+#[cfg(any(target_os = "android", test))]
+fn safe_symlink_target(link_path: &Path, value: &str) -> bool {
+    if value.is_empty() || value.contains('\0') {
+        return false;
+    }
+    let target = Path::new(value);
+    let mut depth = if target.is_absolute() {
+        0
+    } else {
+        link_path
+            .parent()
+            .map(|parent| parent.components().count())
+            .unwrap_or(0)
+    };
+    for component in target.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(_) => depth += 1,
+            Component::ParentDir if depth > 0 => depth -= 1,
+            Component::ParentDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
 }
 
 #[cfg(target_os = "android")]
@@ -569,7 +681,9 @@ fn safe_relative_path(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{safe_relative_path, valid_version};
+    use std::path::Path;
+
+    use super::{safe_relative_path, safe_symlink_target, valid_version};
 
     #[test]
     fn runtime_versions_are_safe_directory_names() {
@@ -583,5 +697,18 @@ mod tests {
         assert!(safe_relative_path("usr/bin/python3"));
         assert!(!safe_relative_path("../outside"));
         assert!(!safe_relative_path("/etc/passwd"));
+    }
+
+    #[test]
+    fn rootfs_symlinks_stay_inside_linux_root() {
+        assert!(safe_symlink_target(Path::new("etc/mtab"), "/proc/mounts"));
+        assert!(safe_symlink_target(
+            Path::new("usr/bin/tool"),
+            "../lib/tool"
+        ));
+        assert!(!safe_symlink_target(
+            Path::new("usr/bin/tool"),
+            "../../../outside"
+        ));
     }
 }

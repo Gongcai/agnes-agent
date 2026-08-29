@@ -52,7 +52,7 @@ for (const [target, [cargoTarget, compiler]] of Object.entries(toolchains)) {
   env[`CARGO_TARGET_${cargoTarget.toUpperCase()}_LINKER`] = compilerPath;
 }
 
-const args = process.argv.slice(2);
+const args = process.argv.slice(2).filter((value, index) => !(index === 0 && value === "--"));
 const buildArgs = args.length === 0 ? ["--debug", "--apk", "--target", "aarch64"] : args;
 const result = spawnSync("pnpm", ["tauri", "android", "build", ...buildArgs], {
   env,

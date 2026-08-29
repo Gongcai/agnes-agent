@@ -138,6 +138,10 @@ impl AgentLauncher {
                     .env("HOME", "/root")
                     .env("PYTHONPATH", "/opt/agnes-agent")
                     .env(
+                        "AGNES_MEMORY_PROMPT_PATH",
+                        "/opt/agnes-agent/ProjectPlan/MEMORY_FILESYSTEM_PROMPT.md",
+                    )
+                    .env(
                         "PATH",
                         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                     )

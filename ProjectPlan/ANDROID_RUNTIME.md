@@ -112,7 +112,8 @@ Android Runtime Service 负责跨 Activity 生命周期维护运行时：
 }
 ```
 
-摘要按 `相对路径 + NUL + 文件内容` 的顺序计算，路径按字典序排列；目录不参与摘要。
+摘要按 `相对路径 + NUL + 文件内容` 的顺序计算，软链接的“文件内容”为链接目标文本，
+路径按字典序排列；目录不参与摘要。
 安装器会拒绝绝对路径、`..` 路径、符号链接、超过 200,000 个文件、单文件超过
 512 MiB 或 rootfs 总文件内容超过 2 GiB 的制品。文件先写入应用私有目录下的 staging
 版本，摘要和大小通过后再原子切换 `current` 指针，旧版本保留在 `versions/`，上一版本
@@ -130,6 +131,11 @@ WS 连接 Agent Protocol。Android Runtime 不向其他应用暴露 Service，�
 先回收 Agent 子进程，再移除前台通知。
 
 开发调试可以先使用预置 rootfs 或本机生成的测试 rootfs；发布渠道再确定内置、首次下载或应用内更新的最终策略。
+
+Runtime 制品可使用 `pnpm build:android-runtime -- --rootfs <Ubuntu-rootfs> --proot <PRoot>`
+生成。脚本会复制 rootfs 到临时目录，注入 `agent/app` 和记忆提示词，保留安全软链接并按
+安装器相同的规则生成 SHA-256，并输出带 `manifest.json` 的 ZIP。依赖包、Python 和
+系统库必须预先安装到输入 rootfs；脚本不会联网安装依赖，也不会读取宿主密钥。
 
 ### 4.2 工具与依赖
 

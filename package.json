@@ -9,6 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "build:sidecar": "node scripts/build-sidecar.mjs",
     "build:pdf-package": "node scripts/build-pdf-model-package.mjs",
+    "build:android-runtime": "node scripts/build-android-runtime.mjs",
     "preview": "vite preview",
     "android:build": "node scripts/android-build.mjs",
     "test": "vitest run src",
