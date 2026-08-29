@@ -46,6 +46,7 @@ pub struct AgentRuntimeStatus {
     pub state: String,
     pub detail: String,
     pub runtime_version: Option<String>,
+    pub previous_runtime_version: Option<String>,
     pub abi: Option<String>,
 }
 
@@ -55,6 +56,12 @@ pub trait AgentRuntime: Send + Sync {
     fn install_package(&self, _package_path: &Path) -> AppResult<AgentRuntimeStatus> {
         Err(AppError::Other(
             "当前平台不支持安装 Android Linux Runtime".into(),
+        ))
+    }
+
+    fn rollback_package(&self) -> AppResult<AgentRuntimeStatus> {
+        Err(AppError::Other(
+            "当前平台不支持回滚 Android Linux Runtime".into(),
         ))
     }
 
@@ -110,6 +117,7 @@ impl AgentRuntime for DesktopSidecarRuntime {
                 "桌面 Agent Runtime 未启动".into()
             },
             runtime_version: None,
+            previous_runtime_version: None,
             abi: None,
         }
     }
@@ -141,6 +149,7 @@ struct RuntimeSnapshot {
     state: String,
     detail: String,
     runtime_version: Option<String>,
+    previous_runtime_version: Option<String>,
     abi: Option<String>,
 }
 
@@ -269,8 +278,8 @@ impl AndroidLinuxRuntime {
             }
             std::fs::rename(&staging, &version_dir)?;
 
-            let current = std::fs::read_to_string(self.root_dir.join("current")).ok();
-            if let Some(previous) = current.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            let current = read_runtime_pointer(&self.root_dir.join("current"), "current").ok();
+            if let Some(previous) = current.as_deref() {
                 std::fs::write(self.root_dir.join("previous.tmp"), previous)?;
                 std::fs::rename(
                     self.root_dir.join("previous.tmp"),
@@ -290,6 +299,7 @@ impl AndroidLinuxRuntime {
                     manifest.runtime_version
                 ),
                 runtime_version: Some(manifest.runtime_version),
+                previous_runtime_version: current,
                 abi: Some(manifest.abi),
             })
         })();
@@ -298,6 +308,27 @@ impl AndroidLinuxRuntime {
             let _ = std::fs::remove_dir_all(&staging);
         }
         result
+    }
+
+    fn rollback_package_inner(&self) -> AppResult<RuntimeSnapshot> {
+        let current = read_runtime_pointer(&self.root_dir.join("current"), "current")?;
+        let previous = read_runtime_pointer(&self.root_dir.join("previous"), "previous")?;
+        if current == previous {
+            return Err(AppError::Other("Android Runtime 的上一版本记录无效".into()));
+        }
+
+        let previous_snapshot = installed_runtime_snapshot(&self.root_dir, &previous)?;
+        swap_runtime_pointers(&self.root_dir, &current, &previous)?;
+        Ok(RuntimeSnapshot {
+            state: "installed".into(),
+            detail: format!(
+                "Android Linux Runtime 已回滚到 {}，等待 PRoot runner",
+                previous
+            ),
+            runtime_version: Some(previous),
+            previous_runtime_version: Some(current),
+            abi: previous_snapshot.abi,
+        })
     }
 }
 
@@ -338,17 +369,32 @@ impl AgentRuntime for AndroidLinuxRuntime {
             state: snapshot.state.clone(),
             detail: snapshot.detail.clone(),
             runtime_version: snapshot.runtime_version.clone(),
+            previous_runtime_version: snapshot.previous_runtime_version.clone(),
             abi: snapshot.abi.clone(),
         }
     }
 
     fn install_package(&self, package_path: &Path) -> AppResult<AgentRuntimeStatus> {
-        if self.native_service_status().unwrap_or(false) {
+        if self.native_service_status()? {
             return Err(AppError::Other(
                 "Android Runtime Service 正在运行，请先停止后再安装新版本".into(),
             ));
         }
         let snapshot = self.install_package_inner(package_path)?;
+        *self
+            .snapshot
+            .lock()
+            .expect("runtime snapshot lock poisoned") = snapshot;
+        Ok(self.status())
+    }
+
+    fn rollback_package(&self) -> AppResult<AgentRuntimeStatus> {
+        if self.native_service_status()? {
+            return Err(AppError::Other(
+                "Android Runtime Service 正在运行，请先停止后再回滚版本".into(),
+            ));
+        }
+        let snapshot = self.rollback_package_inner()?;
         *self
             .snapshot
             .lock()
@@ -665,6 +711,12 @@ fn load_snapshot(root_dir: &Path) -> RuntimeSnapshot {
                 state: "installed".into(),
                 detail: format!("Android Linux Runtime {version} 已安装，等待 PRoot runner"),
                 runtime_version: Some(version),
+                previous_runtime_version: read_runtime_pointer(
+                    &root_dir.join("previous"),
+                    "previous",
+                )
+                .ok()
+                .filter(|previous| installed_runtime_snapshot(root_dir, previous).is_ok()),
                 abi,
             };
         }
@@ -673,8 +725,90 @@ fn load_snapshot(root_dir: &Path) -> RuntimeSnapshot {
         state: "not-installed".into(),
         detail: "Android Linux Runtime 尚未安装".into(),
         runtime_version: None,
+        previous_runtime_version: None,
         abi: None,
     }
+}
+
+#[cfg(any(target_os = "android", test))]
+fn read_runtime_pointer(path: &Path, name: &str) -> AppResult<String> {
+    let value = std::fs::read_to_string(path)
+        .map_err(|error| AppError::Other(format!("无法读取 Runtime {name} 版本记录: {error}")))?;
+    let value = value.trim();
+    if !valid_version(value) {
+        return Err(AppError::Other(format!("Runtime {name} 版本记录无效")));
+    }
+    Ok(value.to_owned())
+}
+
+#[cfg(target_os = "android")]
+fn installed_runtime_snapshot(root_dir: &Path, version: &str) -> AppResult<RuntimeSnapshot> {
+    let version_dir = root_dir.join("versions").join(version);
+    if !version_dir.join("rootfs").is_dir() || !version_dir.join("manifest.json").is_file() {
+        return Err(AppError::Other(format!(
+            "Android Runtime 版本 {version} 不完整"
+        )));
+    }
+    let manifest: RuntimeManifest =
+        serde_json::from_slice(&std::fs::read(version_dir.join("manifest.json"))?)?;
+    validate_manifest(&manifest)?;
+    if manifest.runtime_version != version || manifest.abi != target_android_abi() {
+        return Err(AppError::Other(format!(
+            "Android Runtime 版本 {version} 与当前设备不匹配"
+        )));
+    }
+    let (digest, size) = digest_rootfs(&version_dir.join("rootfs"))?;
+    if digest != manifest.rootfs_sha256 || size != manifest.rootfs_size {
+        return Err(AppError::Other(format!(
+            "Android Runtime 版本 {version} 的 rootfs 校验失败"
+        )));
+    }
+    Ok(RuntimeSnapshot {
+        state: "installed".into(),
+        detail: String::new(),
+        runtime_version: Some(version.to_owned()),
+        previous_runtime_version: None,
+        abi: Some(manifest.abi),
+    })
+}
+
+#[cfg(any(target_os = "android", test))]
+fn swap_runtime_pointers(root_dir: &Path, current: &str, previous: &str) -> AppResult<()> {
+    if !valid_version(current) || !valid_version(previous) || current == previous {
+        return Err(AppError::Other("Runtime 版本指针无效".into()));
+    }
+    let current_path = root_dir.join("current");
+    let previous_path = root_dir.join("previous");
+    let current_tmp = root_dir.join("current.rollback.tmp");
+    let previous_tmp = root_dir.join("previous.rollback.tmp");
+
+    std::fs::write(&current_tmp, previous)?;
+    std::fs::write(&previous_tmp, current)?;
+
+    let result = (|| {
+        std::fs::rename(&current_tmp, &current_path)?;
+        std::fs::rename(&previous_tmp, &previous_path)?;
+        Ok::<_, std::io::Error>(())
+    })();
+
+    if let Err(error) = result {
+        let restore_path = root_dir.join("current.rollback.restore");
+        let restore_result = (|| {
+            std::fs::write(&restore_path, current)?;
+            std::fs::rename(&restore_path, &current_path)?;
+            Ok::<_, std::io::Error>(())
+        })();
+        let _ = std::fs::remove_file(&current_tmp);
+        let _ = std::fs::remove_file(&previous_tmp);
+        let _ = std::fs::remove_file(&restore_path);
+        if let Err(restore_error) = restore_result {
+            return Err(AppError::Other(format!(
+                "Runtime 回滚失败，且无法恢复当前版本: {error}; {restore_error}"
+            )));
+        }
+        return Err(AppError::Other(format!("Runtime 回滚失败: {error}")));
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "android", test))]
@@ -690,7 +824,12 @@ fn safe_relative_path(value: &str) -> bool {
 mod tests {
     use std::path::Path;
 
-    use super::{safe_relative_path, safe_symlink_target, valid_version};
+    use super::{
+        read_runtime_pointer, safe_relative_path, safe_symlink_target, swap_runtime_pointers,
+        valid_version,
+    };
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn runtime_versions_are_safe_directory_names() {
@@ -717,5 +856,53 @@ mod tests {
             Path::new("usr/bin/tool"),
             "../../../outside"
         ));
+    }
+
+    #[test]
+    fn runtime_pointer_swap_exchanges_current_and_previous() {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("current"), "v2").unwrap();
+        fs::write(root.path().join("previous"), "v1").unwrap();
+
+        swap_runtime_pointers(root.path(), "v2", "v1").unwrap();
+
+        assert_eq!(
+            read_runtime_pointer(&root.path().join("current"), "current").unwrap(),
+            "v1"
+        );
+        assert_eq!(
+            read_runtime_pointer(&root.path().join("previous"), "previous").unwrap(),
+            "v2"
+        );
+    }
+
+    #[test]
+    fn runtime_pointer_swap_rejects_invalid_versions_without_changing_files() {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("current"), "v2").unwrap();
+        fs::write(root.path().join("previous"), "../outside").unwrap();
+
+        let result = read_runtime_pointer(&root.path().join("previous"), "previous");
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(root.path().join("current")).unwrap(),
+            "v2"
+        );
+    }
+
+    #[test]
+    fn runtime_pointer_swap_restores_current_when_previous_update_fails() {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("current"), "v2").unwrap();
+        fs::create_dir(root.path().join("previous")).unwrap();
+
+        let result = swap_runtime_pointers(root.path(), "v2", "v1");
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(root.path().join("current")).unwrap(),
+            "v2"
+        );
+        assert!(!root.path().join("current.rollback.tmp").exists());
     }
 }

@@ -480,6 +480,7 @@ pub fn run() {
             commands::ping,
             commands::get_runtime_status,
             commands::install_android_runtime,
+            commands::rollback_android_runtime,
             commands::start_agent_runtime,
             commands::stop_agent_runtime,
             commands::open_webview_devtools,

@@ -6,6 +6,7 @@ export interface AgentRuntimeStatus {
   state: string;
   detail: string;
   runtimeVersion: string | null;
+  previousRuntimeVersion: string | null;
   abi: string | null;
 }
 
@@ -15,6 +16,10 @@ export async function getRuntimeStatus(): Promise<AgentRuntimeStatus> {
 
 export async function installAndroidRuntime(packagePath: string): Promise<AgentRuntimeStatus> {
   return invoke<AgentRuntimeStatus>("install_android_runtime", { packagePath });
+}
+
+export async function rollbackAndroidRuntime(): Promise<AgentRuntimeStatus> {
+  return invoke<AgentRuntimeStatus>("rollback_android_runtime");
 }
 
 export async function startAgentRuntime(): Promise<AgentRuntimeStatus> {

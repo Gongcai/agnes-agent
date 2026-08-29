@@ -45,6 +45,7 @@ import {
   type AgentRuntimeStatus,
   getRuntimeStatus,
   installAndroidRuntime,
+  rollbackAndroidRuntime,
   startAgentRuntime,
   stopAgentRuntime,
 } from "../lib/ipc";
@@ -5903,7 +5904,7 @@ const RUNTIME_STATE_LABELS: Record<string, string> = {
 const RuntimeTab: React.FC = () => {
   const [status, setStatus] = useState<AgentRuntimeStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busyAction, setBusyAction] = useState<"install" | "start" | "stop" | null>(null);
+  const [busyAction, setBusyAction] = useState<"install" | "rollback" | "start" | "stop" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadStatus = React.useCallback(async (showLoading = false) => {
@@ -5956,6 +5957,19 @@ const RuntimeTab: React.FC = () => {
     }
   };
 
+  const rollbackPackage = async () => {
+    setBusyAction("rollback");
+    setError(null);
+    try {
+      setStatus(await rollbackAndroidRuntime());
+    } catch (reason) {
+      setError(String(reason));
+      await loadStatus();
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const isAndroid = status?.platform === "android";
   const isRunning = ["service-running", "starting", "ready"].includes(status?.state ?? "");
   const canStart = isAndroid && Boolean(status?.runtimeVersion) && !isRunning;
@@ -5995,6 +6009,10 @@ const RuntimeTab: React.FC = () => {
             <dt className="text-stone-400">ABI</dt>
             <dd className="mt-1 truncate font-mono text-stone-700">{status?.abi ?? "-"}</dd>
           </div>
+          <div>
+            <dt className="text-stone-400">上一版本</dt>
+            <dd className="mt-1 truncate font-mono text-stone-700">{status?.previousRuntimeVersion ?? "-"}</dd>
+          </div>
         </dl>
       </section>
 
@@ -6014,6 +6032,16 @@ const RuntimeTab: React.FC = () => {
           >
             <DownloadSimple className="h-4 w-4" />
             {busyAction === "install" ? "安装中" : status?.runtimeVersion ? "安装新版本" : "安装 Runtime"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void rollbackPackage()}
+            disabled={busyAction !== null || isRunning || !status?.previousRuntimeVersion}
+            className="inline-flex h-9 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-xs font-semibold text-stone-700 hover:bg-stone-50 disabled:opacity-40"
+            title="切换到上一版本"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {busyAction === "rollback" ? "回滚中" : "回滚到上一版本"}
           </button>
           {isRunning ? (
             <button

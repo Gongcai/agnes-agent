@@ -258,6 +258,14 @@ pub fn install_android_runtime(
         .install_package(std::path::Path::new(&package_path))
 }
 
+/// Rolls back to the previously installed Android Linux Runtime package.
+#[tauri::command]
+pub fn rollback_android_runtime(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::runtime::AgentRuntimeStatus> {
+    state.runtime.rollback_package()
+}
+
 /// Starts the platform Agent Runtime. Android will only report ready after the PRoot runner is alive.
 #[tauri::command]
 pub fn start_agent_runtime(

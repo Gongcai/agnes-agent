@@ -1,6 +1,6 @@
 # Android 本地 Agent 与 Linux Runtime 设计
 
-> 状态：A1 开发中；Runtime 安装管理和 PRoot runner 启动接线已完成，Ubuntu rootfs 制品待提供
+> 状态：A1 开发中；Runtime 安装管理、版本回滚和 PRoot runner 启动接线已完成，Ubuntu rootfs 制品待提供
 > 更新时间：2026-08-29
 > 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`
 
@@ -204,7 +204,7 @@ Android 有两种执行模式：
 - [x] Android Foreground Service 基础生命周期与通知（独立进程 supervisor 待补充）；
 - [x] PRoot runner 启动路径与最小 Ubuntu rootfs 文件契约；
 - [x] rootfs manifest、Hash 校验、路径/资源限制、原子安装；
-- [ ] 安装失败回滚和当前版本恢复；
+- [x] 安装失败回滚和当前版本恢复；
 - [x] 启动/停止 Python Agent 的 PRoot 接线；
 - [x] Rust Core 与 Agent 的本地认证 WS IPC 接线；
 - 完成现有 Agent Protocol 握手、流式回复和取消。
