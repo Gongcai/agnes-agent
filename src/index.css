@@ -1605,6 +1605,10 @@ pre,
   border-color: var(--claude-border) !important;
 }
 
+.agnes-settings-mobile-back {
+  display: none;
+}
+
 .agnes-settings-nav {
   width: 220px !important;
   background: var(--claude-sidebar) !important;
@@ -2105,17 +2109,62 @@ pre,
 }
 
 @media (max-width: 640px) {
+  .agnes-settings-overlay {
+    align-items: stretch !important;
+    justify-content: stretch !important;
+    z-index: 70 !important;
+  }
+
   .agnes-settings-modal {
-    width: calc(100vw - 16px) !important;
-    height: calc(100vh - 16px) !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    height: 100dvh !important;
+    max-height: none !important;
+    border-radius: 0 !important;
+    border-width: 0 !important;
+  }
+
+  .agnes-settings-modal > header {
+    padding-top: calc(12px + env(safe-area-inset-top)) !important;
+  }
+
+  .agnes-settings-mobile-back {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 2px;
   }
 
   .agnes-settings-nav {
-    width: 172px !important;
+    width: 100% !important;
+    border-right: 0 !important;
+    padding: 16px !important;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom)) !important;
+  }
+
+  .agnes-settings-modal[data-mobile-detail="false"] .agnes-settings-nav-item[aria-current="page"] {
+    background: transparent !important;
+    color: var(--claude-muted) !important;
+  }
+
+  .agnes-settings-modal[data-mobile-detail="false"] .agnes-settings-nav-item[aria-current="page"] > svg {
+    color: var(--claude-muted) !important;
   }
 
   .agnes-settings-content {
+    display: none;
+    min-width: 0;
+    width: 100%;
     padding: 16px !important;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom)) !important;
+  }
+
+  .agnes-settings-modal[data-mobile-detail="true"] .agnes-settings-nav {
+    display: none;
+  }
+
+  .agnes-settings-modal[data-mobile-detail="true"] .agnes-settings-content {
+    display: block;
   }
 
   .agnes-subnav {
@@ -2447,6 +2496,11 @@ pre,
   .agnes-sidebar {
     position: fixed !important;
     inset: 52px auto 0 0;
+    /* The desktop h-full utility resolves against the viewport for fixed
+       positioning, so it would place the account area below the mobile view. */
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
     z-index: 30;
     width: min(84vw, 304px) !important;
     border-right: 1px solid var(--claude-border) !important;
@@ -2458,6 +2512,10 @@ pre,
   .agnes-sidebar--open {
     width: min(84vw, 304px) !important;
     transform: translateX(0);
+  }
+
+  .agnes-sidebar-account {
+    padding-bottom: calc(4px + env(safe-area-inset-bottom)) !important;
   }
 
   .agnes-sidebar--collapsed {

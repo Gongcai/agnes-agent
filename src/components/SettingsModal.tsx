@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { X, User, UserCircle, Camera, Database, Sliders, ShieldCheck, ShieldSlash, Key, Plus, Trash, PencilSimple, Check, Lightning, HardDrives, DownloadSimple, Eye, EyeSlash, Terminal, Gear, MagnifyingGlass, ArrowsClockwise, GitDiff, Laptop, Cloud, LockKey, Copy, FileLock, ArrowUp, ArrowDown, GlobeHemisphereWest, ChartBar, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, PuzzlePiece, Play, Stop } from "@phosphor-icons/react";
+import React, { useState, useEffect, useRef } from "react";
+import { X, ArrowLeft, User, UserCircle, Camera, Database, Sliders, ShieldCheck, ShieldSlash, Key, Plus, Trash, PencilSimple, Check, Lightning, HardDrives, DownloadSimple, Eye, EyeSlash, Terminal, Gear, MagnifyingGlass, ArrowsClockwise, GitDiff, Laptop, Cloud, LockKey, Copy, FileLock, ArrowUp, ArrowDown, GlobeHemisphereWest, ChartBar, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, PuzzlePiece, Play, Stop } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAgentStore } from "../store/useAgentStore";
@@ -737,10 +737,61 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     deleteAgent,
   } = useAgentStore();
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
+  // Mobile settings use a two-level navigation: index first, detail second.
+  const [mobileDetailTab, setMobileDetailTab] = useState<SettingsTab | null>(null);
+  const mobileSettingsHistory = useRef(false);
 
   useEffect(() => {
-    if (isOpen) setActiveTab(initialTab);
+    if (isOpen) {
+      setActiveTab(initialTab);
+      setMobileDetailTab(null);
+    }
   }, [initialTab, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || typeof window === "undefined" || !window.matchMedia("(max-width: 640px)").matches) return;
+
+    if (!mobileSettingsHistory.current) {
+      window.history.pushState({
+        ...(window.history.state && typeof window.history.state === "object" ? window.history.state : {}),
+        agnesSettings: true,
+      }, "");
+      mobileSettingsHistory.current = true;
+    }
+
+    const handlePopState = () => {
+      if (!mobileSettingsHistory.current) return;
+      if (mobileDetailTab) {
+        setMobileDetailTab(null);
+      } else {
+        mobileSettingsHistory.current = false;
+        onClose();
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [isOpen, mobileDetailTab, onClose]);
+
+  const selectSettingsTab = (tab: SettingsTab) => {
+    setActiveTab(tab);
+    const isMobile = typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches;
+    if (isMobile) {
+      window.history.pushState({
+        ...(window.history.state && typeof window.history.state === "object" ? window.history.state : {}),
+        agnesSettings: true,
+        agnesSettingsTab: tab,
+      }, "");
+      setMobileDetailTab(tab);
+    }
+  };
+
+  const closeSettings = () => {
+    if (mobileSettingsHistory.current && typeof window !== "undefined") {
+      mobileSettingsHistory.current = false;
+      window.history.back();
+    }
+    onClose();
+  };
 
   // Global user profile state
   const [userProfile, setUserProfile] = useState<UserProfile>(EMPTY_USER_PROFILE);
@@ -2224,15 +2275,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   return (
     <div className="agnes-settings-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="agnes-settings-modal w-[960px] h-[640px] border border-stone-200 bg-white rounded-2xl overflow-hidden shadow-2xl flex flex-col">
+      <div
+        className="agnes-settings-modal w-[960px] h-[640px] border border-stone-200 bg-white rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+        data-mobile-detail={mobileDetailTab ? "true" : "false"}
+      >
         {/* Header */}
         <header className="px-5 py-4 border-b border-stone-200 bg-stone-50 flex justify-between items-center shrink-0">
           <div className="flex items-center gap-2">
+            {mobileDetailTab && (
+              <button
+                type="button"
+                onClick={() => setMobileDetailTab(null)}
+                className="agnes-settings-mobile-back rounded-md p-1 text-stone-500 hover:bg-stone-100 hover:text-stone-800"
+                aria-label="返回设置选项"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </button>
+            )}
             <Sliders className="h-4.5 w-4.5 text-[#8CA38A]" />
             <span className="font-semibold text-stone-800 text-sm">配置与管理中心</span>
           </div>
           <button
-            onClick={onClose}
+            onClick={closeSettings}
             className="text-stone-400 hover:text-stone-800 rounded p-1 hover:bg-stone-100 transition-colors"
           >
             <X className="h-4 w-4" />
@@ -2240,11 +2304,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </header>
 
         {/* Main Content Body */}
-        <div className="flex flex-1 overflow-hidden">
+        <div className="agnes-settings-body flex flex-1 overflow-hidden">
           {/* Navigation Sidebar */}
           <nav className="agnes-settings-nav w-56 overflow-y-auto border-r border-stone-200 bg-stone-50/50 p-3 flex flex-col gap-1 shrink-0">
             <button
-              onClick={() => setActiveTab("profile")}
+              onClick={() => selectSettingsTab("profile")}
               aria-current={activeTab === "profile" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "profile" ? "text-zinc-900" : "text-stone-500"
@@ -2254,7 +2318,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>用户信息</span>
             </button>
             <button
-              onClick={() => setActiveTab("general")}
+              onClick={() => selectSettingsTab("general")}
               aria-current={activeTab === "general" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "general"
@@ -2266,7 +2330,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>通用设置</span>
             </button>
             <button
-              onClick={() => setActiveTab("agents")}
+              onClick={() => selectSettingsTab("agents")}
               aria-current={activeTab === "agents" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "agents"
@@ -2278,7 +2342,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>智能体角色详情</span>
             </button>
             <button
-              onClick={() => setActiveTab("runtime")}
+              onClick={() => selectSettingsTab("runtime")}
               aria-current={activeTab === "runtime" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "runtime" ? "text-zinc-900" : "text-stone-500"
@@ -2288,7 +2352,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>运行时</span>
             </button>
             <button
-              onClick={() => setActiveTab("memory")}
+              onClick={() => selectSettingsTab("memory")}
               aria-current={activeTab === "memory" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "memory"
@@ -2300,7 +2364,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>记忆编辑器 (Memory)</span>
             </button>
             <button
-              onClick={() => setActiveTab("storage")}
+              onClick={() => selectSettingsTab("storage")}
               aria-current={activeTab === "storage" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "storage"
@@ -2312,7 +2376,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>本地存储</span>
             </button>
             <button
-              onClick={() => setActiveTab("models")}
+              onClick={() => selectSettingsTab("models")}
               aria-current={activeTab === "models" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "models"
@@ -2324,7 +2388,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>模型</span>
             </button>
             <button
-              onClick={() => setActiveTab("sync")}
+              onClick={() => selectSettingsTab("sync")}
               aria-current={activeTab === "sync" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "sync"
@@ -2336,7 +2400,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>同步</span>
             </button>
             <button
-              onClick={() => setActiveTab("tokens")}
+              onClick={() => selectSettingsTab("tokens")}
               aria-current={activeTab === "tokens" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "tokens"
@@ -2348,7 +2412,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>Token 统计</span>
             </button>
             <button
-              onClick={() => setActiveTab("web")}
+              onClick={() => selectSettingsTab("web")}
               aria-current={activeTab === "web" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "web"
@@ -2360,7 +2424,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>联网搜索</span>
             </button>
             <button
-              onClick={() => setActiveTab("mcp")}
+              onClick={() => selectSettingsTab("mcp")}
               aria-current={activeTab === "mcp" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "mcp"
@@ -2372,7 +2436,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>MCP 外部工具</span>
             </button>
             <button
-              onClick={() => setActiveTab("skills")}
+              onClick={() => selectSettingsTab("skills")}
               aria-current={activeTab === "skills" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "skills"
@@ -2384,7 +2448,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>Skills</span>
             </button>
             <button
-              onClick={() => setActiveTab("audit")}
+              onClick={() => selectSettingsTab("audit")}
               aria-current={activeTab === "audit" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "audit"
@@ -2396,7 +2460,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>工具执行审计</span>
             </button>
             <button
-              onClick={() => setActiveTab("debug")}
+              onClick={() => selectSettingsTab("debug")}
               aria-current={activeTab === "debug" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
                 activeTab === "debug"

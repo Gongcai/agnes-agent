@@ -172,9 +172,9 @@ export function applyFontScale(scale: FontScale): FontScale {
   const normalized = normalizeFontScale(scale);
   writeCache(FONT_SCALE_CACHE_KEY, normalized);
   if (typeof document !== "undefined") {
-    // CSS zoom scales the whole UI uniformly (px + rem + icons), unlike a rem-only base
-    // font-size, so the ~half of the interface that uses fixed px sizes scales too.
-    document.documentElement.style.zoom = String(FONT_SCALE_FACTORS[normalized]);
+    // Scale rem-based text without scaling viewport-sized containers or fixed controls.
+    document.documentElement.style.zoom = "";
+    document.documentElement.style.fontSize = `${FONT_SCALE_FACTORS[normalized] * 100}%`;
   }
   announceUIPreferenceChange({ fontScale: normalized });
   return normalized;
