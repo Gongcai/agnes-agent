@@ -1266,7 +1266,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       invoke<SecretStoreStatus>("get_secret_store_status")
         .then(setSecretStoreStatus)
         .catch((error) => {
-          setSecretStoreStatus({ available: false, backend: "OS Keyring", error: String(error) });
+          setSecretStoreStatus({ available: false, backend: "系统安全存储", error: String(error) });
         });
     }
   }, [activeTab, isOpen, loadProviders, loadModelRoles, loadPdfModelStatus]);
@@ -1303,7 +1303,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       invoke<SecretStoreStatus>("get_secret_store_status")
         .then(setSecretStoreStatus)
         .catch((error) => {
-          setSecretStoreStatus({ available: false, backend: "OS Keyring", error: String(error) });
+          setSecretStoreStatus({ available: false, backend: "系统安全存储", error: String(error) });
         });
     }
   }, [activeTab, isOpen, loadMcpServers]);
@@ -1315,7 +1315,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       invoke<SecretStoreStatus>("get_secret_store_status")
         .then(setSecretStoreStatus)
         .catch((error) => {
-          setSecretStoreStatus({ available: false, backend: "OS Keyring", error: String(error) });
+          setSecretStoreStatus({ available: false, backend: "系统安全存储", error: String(error) });
         });
     }
   }, [activeTab, isOpen, loadSearchProviderSettings]);
@@ -3562,10 +3562,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
                   <span className="min-w-0 break-words">
                     {!secretStoreStatus
-                      ? "正在检查系统密钥环"
+                      ? "正在检查系统安全存储"
                       : secretStoreStatus.available
                         ? `API Key 存储：${secretStoreStatus.backend}`
-                        : `系统密钥环异常：${secretStoreStatus.error || "未知错误"}`}
+                        : `系统安全存储异常：${secretStoreStatus.error || "未知错误"}`}
                   </span>
                 </div>
 
@@ -3779,7 +3779,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           onChange={(e) => updateForm("api_key", e.target.value)}
                           placeholder={
                             editingProviderId !== "new"
-                              ? (editingProvider?.has_api_key ? "已存入系统密钥环，留空保持不变" : "输入 API Key...")
+                              ? (editingProvider?.has_api_key ? "已存入系统安全存储，留空保持不变" : "输入 API Key...")
                               : "输入 API Key..."
                           }
                           className="w-full bg-white border border-stone-200 rounded-lg pl-3 pr-9 py-2 text-xs text-stone-800 font-mono focus:outline-none focus:ring-1 focus:ring-[#8CA38A]/40 focus:border-[#8CA38A] transition-shadow"
@@ -3796,7 +3796,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {editingProviderId !== "new" && editingProvider?.has_api_key && (
                         <p className="flex items-center gap-1 text-[10px] text-amber-600 mt-1">
                           <Key className="h-2.5 w-2.5" />
-                          已存入系统密钥环（重新输入将覆盖）
+                          已存入系统安全存储（重新输入将覆盖）
                         </p>
                       )}
                     </div>
@@ -4551,7 +4551,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <div className="flex h-9 items-center justify-between rounded-md border border-emerald-200 bg-emerald-50 px-3 text-xs text-emerald-700">
                         <span className="flex items-center gap-2">
                           <ShieldCheck className="h-3.5 w-3.5" />
-                          凭证已存入系统密钥环
+                          凭证已存入系统安全存储
                         </span>
                         <button
                           type="button"
@@ -4665,8 +4665,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 >
                   <Key className="h-3.5 w-3.5 shrink-0" />
                   {secretStoreStatus?.available
-                    ? "Brave API Key 仅保存在本机系统密钥环"
-                    : secretStoreStatus?.error || "正在检查系统密钥环"}
+                    ? "Brave API Key 仅保存在本机系统安全存储"
+                    : secretStoreStatus?.error || "正在检查系统安全存储"}
                 </div>
 
                 {searchProviderMessage && (
@@ -4757,7 +4757,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             braveApiKey: event.target.value,
                             clearBraveApiKey: false,
                           }))}
-                          placeholder={searchProviderForm.hasBraveApiKey ? "已保存在系统密钥环；留空保持不变" : "输入 Brave MagnifyingGlass API Key"}
+                          placeholder={searchProviderForm.hasBraveApiKey ? "已保存在系统安全存储；留空保持不变" : "输入 Brave MagnifyingGlass API Key"}
                           className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 pr-9 text-[11px] font-mono text-stone-700 outline-none focus:ring-1 focus:ring-indigo-200 disabled:bg-stone-50"
                         />
                         <button
@@ -4911,8 +4911,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 >
                   <Key className="h-3.5 w-3.5 shrink-0" />
                   {secretStoreStatus?.available
-                    ? "环境变量值与 Bearer Token 仅保存在本机系统密钥环"
-                    : secretStoreStatus?.error || "正在检查系统密钥环"}
+                    ? "环境变量值与 Bearer Token 仅保存在本机系统安全存储"
+                    : secretStoreStatus?.error || "正在检查系统安全存储"}
                 </div>
 
                 {mcpMessage && (

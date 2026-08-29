@@ -5572,7 +5572,11 @@ pub async fn get_secret_store_status(
     let error = state.secret_store_startup_error.clone().or(runtime_error);
     Ok(SecretStoreStatusDto {
         available: error.is_none(),
-        backend: "OS Keyring",
+        backend: if cfg!(target_os = "android") {
+            "Android Keystore"
+        } else {
+            "OS Keyring"
+        },
         error,
     })
 }

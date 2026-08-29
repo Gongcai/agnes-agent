@@ -7,9 +7,17 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
+#[cfg(target_os = "android")]
+use serde::{Deserialize, Serialize};
+#[cfg(target_os = "android")]
+use tauri::plugin::{Builder as PluginBuilder, PluginApi, PluginHandle, TauriPlugin};
+#[cfg(target_os = "android")]
+use tauri::{Manager, Wry};
+
 use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 
+#[cfg(not(target_os = "android"))]
 const KEYRING_SERVICE: &str = "com.agnes.agent";
 const HEALTHCHECK_SECRET_ID: &str = "internal:keyring-healthcheck";
 pub const SYNC_CREDENTIAL_SECRET_ID: &str = "sync:credentials";
@@ -26,19 +34,23 @@ pub trait SecretStore: Send + Sync {
     async fn delete(&self, secret_id: &str) -> AppResult<()>;
 }
 
+#[cfg(not(target_os = "android"))]
 #[derive(Debug, Default)]
 pub struct OsSecretStore;
 
+#[cfg(not(target_os = "android"))]
 impl OsSecretStore {
     pub fn new() -> Self {
         Self
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn keyring_error(operation: &str, error: keyring::Error) -> AppError {
     AppError::SecretStore(format!("{operation} failed: {error}"))
 }
 
+#[cfg(not(target_os = "android"))]
 #[async_trait]
 impl SecretStore for OsSecretStore {
     async fn get(&self, secret_id: &str) -> AppResult<Option<String>> {
@@ -82,6 +94,125 @@ impl SecretStore for OsSecretStore {
         })
         .await
         .map_err(|error| AppError::SecretStore(format!("keyring task failed: {error}")))?
+    }
+}
+
+#[cfg(target_os = "android")]
+const ANDROID_SECRET_PLUGIN_ID: &str = "com.agnes.agent.secrets";
+
+#[cfg(target_os = "android")]
+#[derive(Clone)]
+pub struct AndroidSecretPlugin(pub PluginHandle<Wry>);
+
+#[cfg(target_os = "android")]
+pub fn android_plugin() -> TauriPlugin<Wry> {
+    PluginBuilder::new("android-secrets")
+        .setup(|app, api: PluginApi<Wry, ()>| {
+            let handle =
+                api.register_android_plugin(ANDROID_SECRET_PLUGIN_ID, "SecretStorePlugin")?;
+            app.manage(AndroidSecretPlugin(handle));
+            Ok(())
+        })
+        .build()
+}
+
+#[cfg(target_os = "android")]
+pub struct AndroidSecretStore {
+    plugin: PluginHandle<Wry>,
+}
+
+#[cfg(target_os = "android")]
+impl AndroidSecretStore {
+    pub fn new(plugin: PluginHandle<Wry>) -> Self {
+        Self { plugin }
+    }
+
+    fn plugin_error(operation: &str, error: impl std::fmt::Display) -> AppError {
+        AppError::SecretStore(format!("Android Keystore {operation} failed: {error}"))
+    }
+}
+
+#[cfg(target_os = "android")]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SecretIdRequest {
+    secret_id: String,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SetSecretRequest {
+    secret_id: String,
+    value: String,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Deserialize)]
+struct GetSecretResponse {
+    value: Option<String>,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Deserialize)]
+struct SecretMutationResponse {
+    success: bool,
+}
+
+#[cfg(target_os = "android")]
+#[async_trait]
+impl SecretStore for AndroidSecretStore {
+    async fn get(&self, secret_id: &str) -> AppResult<Option<String>> {
+        let response = self
+            .plugin
+            .run_mobile_plugin_async::<GetSecretResponse>(
+                "getSecret",
+                SecretIdRequest {
+                    secret_id: secret_id.to_string(),
+                },
+            )
+            .await
+            .map_err(|error| Self::plugin_error("read", error))?;
+        Ok(response.value)
+    }
+
+    async fn set(&self, secret_id: &str, value: &str) -> AppResult<()> {
+        let response = self
+            .plugin
+            .run_mobile_plugin_async::<SecretMutationResponse>(
+                "setSecret",
+                SetSecretRequest {
+                    secret_id: secret_id.to_string(),
+                    value: value.to_string(),
+                },
+            )
+            .await
+            .map_err(|error| Self::plugin_error("write", error))?;
+        if !response.success {
+            return Err(AppError::SecretStore(
+                "Android Keystore write was not committed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, secret_id: &str) -> AppResult<()> {
+        let response = self
+            .plugin
+            .run_mobile_plugin_async::<SecretMutationResponse>(
+                "deleteSecret",
+                SecretIdRequest {
+                    secret_id: secret_id.to_string(),
+                },
+            )
+            .await
+            .map_err(|error| Self::plugin_error("delete", error))?;
+        if !response.success {
+            return Err(AppError::SecretStore(
+                "Android Keystore delete was not committed".into(),
+            ));
+        }
+        Ok(())
     }
 }
 

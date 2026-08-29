@@ -193,6 +193,12 @@ Android 不把整个 `/sdcard` 或 Android 私有目录默认暴露给 Linux。�
 - 本地模型要单独评估 APK/模型体积、内存、量化质量、发热、后台限制和多 ABI 分发；
 - 云端模型 API Key 只存 Android Keystore，不写入 SQLite、rootfs 或同步 payload。
 
+Android SecretStore 通过窄化 Tauri plugin 接入 `AndroidKeyStore`。Keystore 中只生成不可导出的
+AES-256-GCM 主密钥；secret ID 经 SHA-256 后作为应用私有 `SharedPreferences` 索引，secret
+值使用随机 nonce 加密，AAD 绑定原始 secret ID。密文偏好文件从云备份和设备迁移中排除，
+避免密文被恢复到没有原主密钥的设备。Renderer 仍只能读取“是否已配置”和 backend 状态，
+不能读取任何已保存 secret。
+
 ## 7. 与桌面端的互通
 
 Android 有两种执行模式：
@@ -214,7 +220,7 @@ Android 有两种执行模式：
 - [x] Android library target、桌面/Android 条件编译和 Rustls 网络栈；
 - [x] `AgentRuntime` 抽象，将桌面 sidecar 与 Android Runtime 解耦；
 - [ ] Android SQLite、E2EE、设备配对和同步 bootstrap 的真机验收；
-- [ ] Android Keystore 接入；
+- [x] Android Keystore 接入，完成密文备份排除及模拟器读写/覆盖/隔离/删除测试；
 - [ ] workspace binding 数据模型和 SAF 权限状态；
 - 可先使用测试数据，不把双设备完整验收作为 A0 阻塞条件。
 

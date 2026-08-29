@@ -283,7 +283,9 @@ pub fn run() {
 
     #[cfg(target_os = "android")]
     {
-        builder = builder.plugin(runtime::android_plugin());
+        builder = builder
+            .plugin(secrets::android_plugin())
+            .plugin(runtime::android_plugin());
     }
 
     #[cfg(desktop)]
@@ -338,7 +340,18 @@ pub fn run() {
                 Err(error) => eprintln!("[agent] Failed to recover interrupted responses: {error}"),
             }
 
+            #[cfg(target_os = "android")]
+            let secret_plugin = app.state::<secrets::AndroidSecretPlugin>().0.clone();
+            #[cfg(target_os = "android")]
+            let secrets: secrets::SharedSecretStore =
+                Arc::new(secrets::AndroidSecretStore::new(secret_plugin));
+            #[cfg(not(target_os = "android"))]
             let secrets: secrets::SharedSecretStore = Arc::new(secrets::OsSecretStore::new());
+            let secret_backend = if cfg!(target_os = "android") {
+                "Android Keystore"
+            } else {
+                "OS keyring"
+            };
             let secret_store_startup_error = match tauri::async_runtime::block_on(async {
                 secrets::verify_secret_store(secrets.as_ref()).await?;
                 secrets::migrate_legacy_provider_api_keys(&db, secrets.as_ref()).await
@@ -346,13 +359,13 @@ pub fn run() {
                 Ok(migrated) => {
                     if migrated > 0 {
                         println!(
-                            "[secrets] Migrated {migrated} provider credential(s) to OS keyring"
+                            "[secrets] Migrated {migrated} provider credential(s) to {secret_backend}"
                         );
                     }
                     None
                 }
                 Err(error) => {
-                    eprintln!("[secrets] OS keyring initialization failed: {error}");
+                    eprintln!("[secrets] {secret_backend} initialization failed: {error}");
                     Some(error.to_string())
                 }
             };
