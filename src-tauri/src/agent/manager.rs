@@ -359,6 +359,7 @@ impl AgentManager {
                 proot_loader_path.clone(),
                 proot_tmp_dir.clone(),
                 rootfs_dir.clone(),
+                android_workspace_root.clone(),
             ));
         self.start_with_launcher(
             db,

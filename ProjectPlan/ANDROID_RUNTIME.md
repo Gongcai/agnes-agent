@@ -140,7 +140,8 @@ WS 连接 Agent Protocol。Android Runtime 不向其他应用暴露 Service，�
 
 Shell 和 Git 工具在 Android 上也通过同一个 PRoot rootfs 执行。Rust 先按现有工具策略检查
 宿主工作区、cwd、写入边界、审批、超时和输出上限，再将当前工作区只读/读写边界映射为
-Linux 的 `/workspace`，并把宿主 cwd 转换为 `/workspace` 下的相对路径。工具进程使用 APK
+Linux 的 `/workspace`，并把持久项目根目录额外挂载为 `/root/workspace`，把宿主 cwd 转换为
+`/workspace` 下的相对路径。工具进程使用 APK
 内置的 `libagnes_proot.so` 和静态 `libagnes_proot_loader.so`，不把应用数据库、其他会话目录
 或未授权 Android 路径挂载进 Linux。文件、记忆和数据库工具仍由 Rust 直接执行，避免 Linux
 进程绕过 Rust 的权限审计。
@@ -211,7 +212,8 @@ Linux 用户目录：/root/workspace/<project-name>
 ```
 
 其中 `/root/workspace` 是 PRoot 对持久项目根目录的挂载，`/workspace` 是当前 Code 会话的工作区
-挂载。两者来自同一宿主目录，Shell、Git、文件工具和 Agent 对项目的修改保持一致。项目目录不在
+挂载；Agent 主进程和 Rust 发起的 Shell/Git/Python 工具进程都使用这两个挂载。两者来自同一宿主目录，
+Shell、Git、文件工具和 Agent 对项目的修改保持一致。项目目录不在
 rootfs 版本目录内，因此 Runtime 升级、回滚或重新安装不会删除用户项目。
 
 该入口不默认授权整个 Android 文件系统，也不替代后续 SAF 外部目录绑定；它是 Android 本地小型

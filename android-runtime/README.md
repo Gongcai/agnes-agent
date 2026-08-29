@@ -28,7 +28,8 @@ android-runtime/
 
 Android 的 Shell 和 Git 工具会复用 Agent 启动时的 PRoot rootfs。Rust 会先完成工作区、cwd、
 写入边界和审批检查，再将工作区映射为 Linux 内的 `/workspace`；工具不会获得其他 Android
-应用私有目录或未授权路径。文件和记忆工具仍由 Rust 执行，Linux 进程不能绕过 Rust 审计。
+应用私有目录或未授权路径。Agent 主进程和 Rust 发起的 Shell/Git/Python 工具进程都会将持久项目
+根目录挂载为 `/root/workspace`，文件和记忆工具仍由 Rust 执行，Linux 进程不能绕过 Rust 审计。
 
 ## Android 项目工作区
 

@@ -56,6 +56,7 @@ pub struct AndroidProotProcessRuntime {
     proot_loader_path: PathBuf,
     proot_tmp_dir: PathBuf,
     rootfs_dir: PathBuf,
+    android_workspace_root: PathBuf,
 }
 
 impl AndroidProotProcessRuntime {
@@ -64,12 +65,14 @@ impl AndroidProotProcessRuntime {
         proot_loader_path: PathBuf,
         proot_tmp_dir: PathBuf,
         rootfs_dir: PathBuf,
+        android_workspace_root: PathBuf,
     ) -> Self {
         Self {
             proot_path,
             proot_loader_path,
             proot_tmp_dir,
             rootfs_dir,
+            android_workspace_root,
         }
     }
 
@@ -107,6 +110,12 @@ impl AndroidProotProcessRuntime {
                 self.rootfs_dir.display()
             )));
         }
+        if !self.android_workspace_root.is_absolute() || !self.android_workspace_root.is_dir() {
+            return Err(AppError::Other(format!(
+                "Android Linux project workspace is invalid: {}",
+                self.android_workspace_root.display()
+            )));
+        }
 
         let workspace_root = workspace_root
             .map(normalize_root)
@@ -135,6 +144,11 @@ impl AndroidProotProcessRuntime {
             OsString::from("/proc"),
             OsString::from("-b"),
             OsString::from(format!("{}:/workspace", workspace_root.display())),
+            OsString::from("-b"),
+            OsString::from(format!(
+                "{}:/root/workspace",
+                self.android_workspace_root.display()
+            )),
             OsString::from("-w"),
             guest_cwd.into_os_string(),
             OsString::from("/usr/bin/env"),
@@ -1167,9 +1181,11 @@ mod tests {
         let proot = temp.path().join("proot");
         let loader = temp.path().join("loader");
         let proot_tmp = temp.path().join("proot-tmp");
+        let android_workspace_root = temp.path().join("user/workspace");
         std::fs::create_dir_all(rootfs.join("usr/bin")).unwrap();
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::create_dir_all(&proot_tmp).unwrap();
+        std::fs::create_dir_all(&android_workspace_root).unwrap();
         for path in [&rootfs.join("usr/bin/env"), &proot, &loader] {
             std::fs::write(path, "test").unwrap();
         }
@@ -1179,6 +1195,7 @@ mod tests {
             loader.clone(),
             proot_tmp.clone(),
             rootfs.clone(),
+            android_workspace_root.clone(),
         );
         let command = runtime
             .command_spec(
@@ -1204,13 +1221,15 @@ mod tests {
             "/proc".into(),
             "-b".into(),
             format!("{}:/workspace", workspace.display()),
+            "-b".into(),
+            format!("{}:/root/workspace", android_workspace_root.display()),
             "-w".into(),
             "/workspace/src".into(),
             "/usr/bin/env".into(),
         ];
-        assert_eq!(args[0..12], expected_prefix);
-        assert_eq!(args[12], "bash");
-        assert_eq!(args[13], "-c");
+        assert_eq!(args[0..14], expected_prefix);
+        assert_eq!(args[14], "bash");
+        assert_eq!(args[15], "-c");
         assert!(command
             .env
             .iter()
@@ -1231,10 +1250,12 @@ mod tests {
         let rootfs = temp.path().join("rootfs");
         let workspace = temp.path().join("workspace");
         let outside = temp.path().join("outside");
+        let android_workspace_root = temp.path().join("user/workspace");
         let proot_tmp = temp.path().join("proot-tmp");
         std::fs::create_dir_all(rootfs.join("usr/bin")).unwrap();
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&android_workspace_root).unwrap();
         std::fs::create_dir_all(&proot_tmp).unwrap();
         for name in ["env", "proot", "loader"] {
             let path = if name == "env" {
@@ -1250,6 +1271,7 @@ mod tests {
             temp.path().join("loader"),
             proot_tmp,
             rootfs,
+            android_workspace_root,
         );
         let error = runtime
             .command_spec("bash", &[], &[], Some(&workspace), Some(&outside))
