@@ -249,7 +249,39 @@ impl AgentManager {
     }
 
     pub fn is_running(&self) -> bool {
+        #[cfg(target_os = "android")]
+        {
+            let exited = {
+                let mut runtime = self.inner.lock().unwrap();
+                runtime
+                    .as_mut()
+                    .and_then(|runtime| runtime.child.as_mut())
+                    .is_some_and(|child| match child {
+                        AgentChild::Android(child) => match child.try_wait() {
+                            Ok(Some(status)) => {
+                                eprintln!("[agent][android] PRoot Agent exited: {status}");
+                                true
+                            }
+                            Ok(None) => false,
+                            Err(error) => {
+                                eprintln!("[agent][android] 无法读取 PRoot Agent 状态: {error}");
+                                false
+                            }
+                        },
+                        #[allow(unreachable_patterns)]
+                        _ => false,
+                    })
+            };
+            if exited {
+                self.shutdown();
+                return false;
+            }
+        }
         self.running.load(Ordering::SeqCst)
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.active_sender.lock().unwrap().is_some()
     }
 
     /// 启动：绑定 127.0.0.1 随机端口，生成一次性 token，拉起 Python sidecar。

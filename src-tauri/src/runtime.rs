@@ -306,18 +306,25 @@ impl AgentRuntime for AndroidLinuxRuntime {
     fn status(&self) -> AgentRuntimeStatus {
         let service_running = self.native_service_status().unwrap_or(false);
         let agent_running = self.agent.is_running();
+        let agent_connected = self.agent.is_connected();
         let mut snapshot = self
             .snapshot
             .lock()
             .expect("runtime snapshot lock poisoned");
         if snapshot.runtime_version.is_some() {
-            if service_running && agent_running {
+            if service_running && agent_running && agent_connected {
                 snapshot.state = "ready".into();
                 snapshot.detail = "Android Linux Runtime 与 Agent 已就绪".into();
+            } else if service_running && agent_running {
+                snapshot.state = "starting".into();
+                snapshot.detail = "Android Linux Runtime 正在等待 Agent Protocol 握手".into();
             } else if service_running {
                 snapshot.state = "service-running".into();
                 snapshot.detail = "Android Runtime 前台服务正在运行，等待 Agent".into();
-            } else if matches!(snapshot.state.as_str(), "service-running" | "ready") {
+            } else if matches!(
+                snapshot.state.as_str(),
+                "service-running" | "starting" | "ready"
+            ) {
                 snapshot.state = "installed".into();
                 snapshot.detail = format!(
                     "Android Linux Runtime {} 已安装，前台服务未运行",

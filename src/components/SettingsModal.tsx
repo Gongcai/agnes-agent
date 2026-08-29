@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, User, UserCircle, Camera, Database, Sliders, ShieldCheck, ShieldSlash, Key, Plus, Trash, PencilSimple, Check, Lightning, HardDrives, DownloadSimple, Eye, EyeSlash, Terminal, Gear, MagnifyingGlass, ArrowsClockwise, GitDiff, Laptop, Cloud, LockKey, Copy, FileLock, ArrowUp, ArrowDown, GlobeHemisphereWest, ChartBar, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, PuzzlePiece } from "@phosphor-icons/react";
+import { X, User, UserCircle, Camera, Database, Sliders, ShieldCheck, ShieldSlash, Key, Plus, Trash, PencilSimple, Check, Lightning, HardDrives, DownloadSimple, Eye, EyeSlash, Terminal, Gear, MagnifyingGlass, ArrowsClockwise, GitDiff, Laptop, Cloud, LockKey, Copy, FileLock, ArrowUp, ArrowDown, GlobeHemisphereWest, ChartBar, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, PuzzlePiece, Play, Stop } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAgentStore } from "../store/useAgentStore";
@@ -42,6 +42,11 @@ import {
   type SyncPairingInvite,
   type SyncPairingJoinStarted,
   type SyncStatus,
+  type AgentRuntimeStatus,
+  getRuntimeStatus,
+  installAndroidRuntime,
+  startAgentRuntime,
+  stopAgentRuntime,
 } from "../lib/ipc";
 import {
   announceUIPreferenceChange,
@@ -70,7 +75,7 @@ import {
 } from "../lib/uiPreferences";
 import { syncE2eeStatusMessage } from "../lib/syncStatus";
 
-type SettingsTab = "profile" | "general" | "agents" | "memory" | "storage" | "models" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
+type SettingsTab = "profile" | "general" | "runtime" | "agents" | "memory" | "storage" | "models" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -2273,6 +2278,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>智能体角色详情</span>
             </button>
             <button
+              onClick={() => setActiveTab("runtime")}
+              aria-current={activeTab === "runtime" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
+                activeTab === "runtime" ? "text-zinc-900" : "text-stone-500"
+              }`}
+            >
+              <Terminal className="h-4 w-4 text-stone-500" />
+              <span>运行时</span>
+            </button>
+            <button
               onClick={() => setActiveTab("memory")}
               aria-current={activeTab === "memory" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
@@ -2527,6 +2542,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* 0. GENERAL TAB */}
             {activeTab === "general" && (
               <GeneralTab />
+            )}
+
+            {activeTab === "runtime" && (
+              <RuntimeTab />
             )}
 
             {activeTab === "storage" && (
@@ -5804,6 +5823,159 @@ const GeneralTab: React.FC = () => {
           <option value="English">English</option>
         </select>
       </div>
+    </div>
+  );
+};
+
+const RUNTIME_STATE_LABELS: Record<string, string> = {
+  "not-installed": "未安装",
+  installed: "已安装",
+  "service-running": "服务运行中",
+  starting: "正在启动",
+  ready: "已就绪",
+  stopped: "已停止",
+};
+
+const RuntimeTab: React.FC = () => {
+  const [status, setStatus] = useState<AgentRuntimeStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busyAction, setBusyAction] = useState<"install" | "start" | "stop" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadStatus = React.useCallback(async (showLoading = false) => {
+    if (showLoading) setLoading(true);
+    try {
+      setStatus(await getRuntimeStatus());
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      if (showLoading) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadStatus(true);
+    const timer = window.setInterval(() => void loadStatus(), 2000);
+    return () => window.clearInterval(timer);
+  }, [loadStatus]);
+
+  const installPackage = async () => {
+    const selected = await open({
+      multiple: false,
+      title: "选择 Android Runtime 安装包",
+      filters: [{ name: "Agnes Runtime", extensions: ["zip"] }],
+    });
+    if (!selected || Array.isArray(selected)) return;
+    setBusyAction("install");
+    setError(null);
+    try {
+      setStatus(await installAndroidRuntime(selected));
+    } catch (reason) {
+      setError(String(reason));
+      await loadStatus();
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const runAction = async (action: "start" | "stop") => {
+    setBusyAction(action);
+    setError(null);
+    try {
+      setStatus(action === "start" ? await startAgentRuntime() : await stopAgentRuntime());
+    } catch (reason) {
+      setError(String(reason));
+      await loadStatus();
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const isAndroid = status?.platform === "android";
+  const isRunning = ["service-running", "starting", "ready"].includes(status?.state ?? "");
+  const canStart = isAndroid && Boolean(status?.runtimeVersion) && !isRunning;
+
+  return (
+    <div className="mx-auto max-w-2xl space-y-6">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-semibold text-stone-800">Agent Runtime</h2>
+          <p className="mt-1 text-[11px] text-stone-400">{status?.executionMode ?? "正在读取平台信息"}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadStatus(true)}
+          disabled={loading || busyAction !== null}
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-500 hover:bg-stone-100 disabled:opacity-40"
+          title="刷新运行时状态"
+        >
+          <ArrowsClockwise className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+
+      <section className="rounded-lg border border-stone-200 bg-stone-50 p-4">
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-xs font-semibold text-stone-500">状态</span>
+          <span className={`text-xs font-semibold ${status?.state === "ready" ? "text-emerald-700" : "text-stone-700"}`}>
+            {loading && !status ? "读取中" : RUNTIME_STATE_LABELS[status?.state ?? ""] ?? status?.state ?? "未知"}
+          </span>
+        </div>
+        <p className="mt-3 text-xs leading-5 text-stone-600">{status?.detail ?? "尚未读取 Runtime 状态"}</p>
+        <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-stone-200 pt-4 text-[11px]">
+          <div>
+            <dt className="text-stone-400">版本</dt>
+            <dd className="mt-1 truncate font-mono text-stone-700">{status?.runtimeVersion ?? "-"}</dd>
+          </div>
+          <div>
+            <dt className="text-stone-400">ABI</dt>
+            <dd className="mt-1 truncate font-mono text-stone-700">{status?.abi ?? "-"}</dd>
+          </div>
+        </dl>
+      </section>
+
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-xs leading-5 text-red-700">
+          {error}
+        </div>
+      )}
+
+      {isAndroid ? (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => void installPackage()}
+            disabled={busyAction !== null || isRunning}
+            className="inline-flex h-9 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-xs font-semibold text-stone-700 hover:bg-stone-50 disabled:opacity-40"
+          >
+            <DownloadSimple className="h-4 w-4" />
+            {busyAction === "install" ? "安装中" : status?.runtimeVersion ? "安装新版本" : "安装 Runtime"}
+          </button>
+          {isRunning ? (
+            <button
+              type="button"
+              onClick={() => void runAction("stop")}
+              disabled={busyAction !== null}
+              className="inline-flex h-9 items-center gap-2 rounded-md bg-stone-800 px-3 text-xs font-semibold text-white hover:bg-stone-700 disabled:opacity-40"
+            >
+              <Stop className="h-4 w-4" weight="fill" />
+              {busyAction === "stop" ? "停止中" : "停止"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void runAction("start")}
+              disabled={!canStart || busyAction !== null}
+              className="inline-flex h-9 items-center gap-2 rounded-md bg-stone-800 px-3 text-xs font-semibold text-white hover:bg-stone-700 disabled:opacity-40"
+            >
+              <Play className="h-4 w-4" weight="fill" />
+              {busyAction === "start" ? "启动中" : "启动"}
+            </button>
+          )}
+        </div>
+      ) : (
+        <p className="text-xs leading-5 text-stone-500">桌面 Agent Runtime 随应用进程自动管理。</p>
+      )}
     </div>
   );
 };
