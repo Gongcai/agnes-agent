@@ -3,6 +3,8 @@ use std::collections::HashSet;
 #[cfg(target_os = "android")]
 use std::io::Read;
 #[cfg(target_os = "android")]
+use std::net::IpAddr;
+#[cfg(target_os = "android")]
 use std::os::unix::fs::{symlink, PermissionsExt};
 #[cfg(any(target_os = "android", test))]
 use std::path::Component;
@@ -167,6 +169,7 @@ struct NativeRuntimeEnvironment {
     proot_path: String,
     proot_loader_available: bool,
     proot_loader_path: String,
+    dns_servers: Vec<String>,
 }
 
 #[cfg(target_os = "android")]
@@ -564,6 +567,7 @@ impl AgentRuntime for AndroidLinuxRuntime {
         if !proot_loader_path.is_absolute() || !proot_loader_path.is_file() {
             return Err(AppError::Other("Android PRoot loader 路径无效".into()));
         }
+        sync_android_resolv_conf(&rootfs_dir, &environment.dns_servers)?;
         let proot_tmp_dir = self.root_dir.join("tmp");
         std::fs::create_dir_all(&proot_tmp_dir).map_err(|error| {
             AppError::Other(format!("无法创建 Android PRoot 临时目录: {error}"))
@@ -601,6 +605,31 @@ impl AgentRuntime for AndroidLinuxRuntime {
         let _: serde_json::Value = self.run_native_command("stop")?;
         Ok(self.status())
     }
+}
+
+#[cfg(target_os = "android")]
+fn sync_android_resolv_conf(rootfs_dir: &Path, dns_servers: &[String]) -> AppResult<()> {
+    let servers = dns_servers
+        .iter()
+        .filter_map(|server| server.parse::<IpAddr>().ok())
+        .map(|server| format!("nameserver {server}"))
+        .collect::<Vec<_>>();
+    if servers.is_empty() {
+        return Err(AppError::Other(
+            "无法读取 Android 当前网络的 DNS 服务器".into(),
+        ));
+    }
+
+    let etc_dir = rootfs_dir.join("etc");
+    std::fs::create_dir_all(&etc_dir)?;
+    let temporary = etc_dir.join("resolv.conf.agnes.tmp");
+    let contents = format!(
+        "# Managed by Agnes from Android ConnectivityManager.\n{}\n",
+        servers.join("\n")
+    );
+    std::fs::write(&temporary, contents)?;
+    std::fs::rename(temporary, etc_dir.join("resolv.conf"))?;
+    Ok(())
 }
 
 #[cfg(target_os = "android")]

@@ -2264,7 +2264,7 @@ async fn ensure_agent_runtime(state: &AppState) -> AppResult<()> {
                 AppError::Other(format!("Agent Runtime 启动任务异常退出: {error}"))
             })??;
 
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
         loop {
             if state.agent.is_connected() {
                 return Ok(());

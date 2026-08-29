@@ -1,7 +1,9 @@
 package com.agnes.agent.runtime
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.os.Build
 import android.system.Os
 import android.util.Log
@@ -13,6 +15,7 @@ import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.io.File
 import java.io.FileOutputStream
+import org.json.JSONArray
 
 @TauriPlugin
 class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
@@ -117,7 +120,27 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
     result.put("prootPath", proot.absolutePath)
     result.put("prootLoaderAvailable", prootLoader.isFile)
     result.put("prootLoaderPath", prootLoader.absolutePath)
+    val dns = JSONArray()
+    dnsServers().forEach { dns.put(it) }
+    result.put("dnsServers", dns)
     return result
+  }
+
+  private fun dnsServers(): List<String> {
+    val connectivity = activity.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    val networks = buildList {
+      connectivity.activeNetwork?.let(::add)
+      addAll(connectivity.allNetworks.asList())
+    }
+    return networks
+      .distinct()
+      .asSequence()
+      .mapNotNull { connectivity.getLinkProperties(it) }
+      .flatMap { it.dnsServers.asSequence() }
+      .mapNotNull { it.hostAddress?.substringBefore('%') }
+      .filter { it.isNotBlank() }
+      .distinct()
+      .toList()
   }
 
   private fun runtimeAbi(): String {

@@ -98,6 +98,15 @@ function runZip(output, packageRoot) {
   if (result.status !== 0) throw new Error(`zip exited with status ${result.status}`);
 }
 
+function resetBuildHostResolver(rootfs) {
+  const resolver = join(rootfs, "etc", "resolv.conf");
+  mkdirSync(dirname(resolver), { recursive: true });
+  writeFileSync(
+    resolver,
+    "# Runtime resolver is supplied by Android ConnectivityManager at launch.\n",
+  );
+}
+
 const rootfsInput = resolve(requiredArgument("--rootfs"));
 const abi = argumentValue("--abi", "arm64-v8a");
 const runtimeVersion = argumentValue("--runtime-version", "ubuntu-24.04.1");
@@ -128,6 +137,7 @@ try {
   const rootfs = join(packageRoot, "rootfs");
   mkdirSync(rootfs, { recursive: true });
   copyTree(rootfsInput, rootfs);
+  resetBuildHostResolver(rootfs);
 
   const agentDestination = join(rootfs, "opt", "agnes-agent", "app");
   mkdirSync(dirname(agentDestination), { recursive: true });
