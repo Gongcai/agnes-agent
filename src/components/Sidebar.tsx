@@ -24,6 +24,11 @@ type RenameDialogState = {
   value: string;
 };
 
+type CreateWorkspaceDialogState = {
+  value: string;
+  error: string | null;
+};
+
 interface SidebarProps {
   isOpen: boolean;
   activeFeature: AppFeatureId;
@@ -66,6 +71,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     renameSession,
     deleteSession,
     createWorkspace,
+    createAndroidWorkspace,
     renameWorkspace,
     deleteWorkspace,
   } = useAgentStore();
@@ -95,8 +101,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
   const [renameSubmitting, setRenameSubmitting] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
+  const [createWorkspaceDialog, setCreateWorkspaceDialog] = useState<CreateWorkspaceDialogState | null>(null);
+  const [createWorkspaceSubmitting, setCreateWorkspaceSubmitting] = useState(false);
+  const [isAndroid, setIsAndroid] = useState(false);
   const sessionSearchInputRef = useRef<HTMLInputElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const createWorkspaceInputRef = useRef<HTMLInputElement>(null);
   const searchResultRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const sessionSearchResults = useMemo(
@@ -128,6 +138,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
       window.removeEventListener("agnes:user-profile-change", loadUserProfile);
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    invoke<{ platform: string }>("get_runtime_status")
+      .then((status) => {
+        if (active) setIsAndroid(status.platform === "android");
+      })
+      .catch(console.error);
+    return () => {
+      active = false;
+    };
+  }, []);
   const sidebarRef = useRef<HTMLElement>(null);
   const [featureHighlight, setFeatureHighlight] = useState<{
     x: number;
@@ -156,6 +178,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
     });
     return () => cancelAnimationFrame(frame);
   }, [renameDialog]);
+
+  useEffect(() => {
+    if (!createWorkspaceDialog) return;
+    const frame = requestAnimationFrame(() => {
+      createWorkspaceInputRef.current?.focus();
+      createWorkspaceInputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [createWorkspaceDialog]);
 
   useEffect(() => {
     if (!sessionSearchOpen) return;
@@ -312,6 +343,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const handleAddWorkspace = async () => {
     if (!activeAgentId) return;
+    if (isAndroid) {
+      setCreateWorkspaceDialog({ value: "", error: null });
+      return;
+    }
     try {
       const selected = await open({ directory: true, multiple: false, title: "选择工作区文件夹" });
       if (typeof selected !== "string" || !selected) return;
@@ -319,6 +354,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
       await createWorkspace(activeAgentId, name, selected);
     } catch (e) {
       console.error("添加工作区失败", e);
+    }
+  };
+
+  const closeCreateWorkspaceDialog = () => {
+    if (createWorkspaceSubmitting) return;
+    setCreateWorkspaceDialog(null);
+  };
+
+  const submitCreateWorkspace = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!createWorkspaceDialog || !activeAgentId || createWorkspaceSubmitting) return;
+    const name = createWorkspaceDialog.value;
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) {
+      setCreateWorkspaceDialog((current) => current ? {
+        ...current,
+        error: "项目名仅支持英文字母、数字、下划线和连字符，且必须以字母或数字开头（1-64 个字符）",
+      } : current);
+      createWorkspaceInputRef.current?.focus();
+      return;
+    }
+    setCreateWorkspaceSubmitting(true);
+    try {
+      await createAndroidWorkspace(activeAgentId, name);
+      setCreateWorkspaceDialog(null);
+    } catch (reason) {
+      setCreateWorkspaceDialog((current) => current ? { ...current, error: String(reason) } : current);
+    } finally {
+      setCreateWorkspaceSubmitting(false);
     }
   };
 
@@ -803,6 +866,94 @@ export const Sidebar: React.FC<SidebarProps> = ({
           document.body,
         );
       })()}
+
+      {createWorkspaceDialog && createPortal(
+        <div
+          className="agnes-rename-overlay fixed inset-0 z-[110] grid place-items-center p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeCreateWorkspaceDialog();
+          }}
+        >
+          <form
+            className="agnes-rename-dialog w-full max-w-md overflow-hidden rounded-lg border shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="agnes-create-workspace-dialog-title"
+            onSubmit={submitCreateWorkspace}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="agnes-rename-dialog-header flex items-center justify-between border-b px-5 py-4">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="agnes-rename-dialog-icon grid h-8 w-8 shrink-0 place-items-center rounded-md">
+                  <FolderPlus className="h-4 w-4" />
+                </span>
+                <div className="min-w-0">
+                  <h2 id="agnes-create-workspace-dialog-title" className="truncate text-sm font-semibold">添加项目</h2>
+                  <p className="agnes-rename-dialog-hint mt-0.5 text-[11px]">项目目录将创建在内置 Linux 用户目录中</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={closeCreateWorkspaceDialog}
+                disabled={createWorkspaceSubmitting}
+                className="agnes-rename-dialog-close grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors disabled:opacity-40"
+                title="关闭"
+                aria-label="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+
+            <div className="space-y-2.5 px-5 py-5">
+              <label htmlFor="agnes-create-workspace-dialog-input" className="agnes-rename-dialog-label block text-xs font-medium">项目名称</label>
+              <input
+                ref={createWorkspaceInputRef}
+                id="agnes-create-workspace-dialog-input"
+                value={createWorkspaceDialog.value}
+                onChange={(event) => setCreateWorkspaceDialog((current) => current ? {
+                  ...current,
+                  value: event.target.value,
+                  error: null,
+                } : current)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeCreateWorkspaceDialog();
+                  }
+                }}
+                placeholder="例如 tiny-tool"
+                maxLength={64}
+                autoComplete="off"
+                spellCheck={false}
+                className="agnes-rename-dialog-input h-11 w-full rounded-md border px-3 text-sm outline-none transition-colors"
+              />
+              <p className="agnes-rename-dialog-hint text-[11px]">仅允许英文字母、数字、下划线和连字符，且必须以字母或数字开头。</p>
+              {createWorkspaceDialog.error && <p className="agnes-rename-dialog-error text-xs">{createWorkspaceDialog.error}</p>}
+            </div>
+
+            <footer className="agnes-rename-dialog-footer flex justify-end gap-2 border-t px-5 py-3">
+              <button
+                type="button"
+                onClick={closeCreateWorkspaceDialog}
+                disabled={createWorkspaceSubmitting}
+                className="agnes-rename-dialog-cancel h-9 rounded-md px-3 text-xs font-medium transition-colors disabled:opacity-40"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                disabled={createWorkspaceSubmitting || !createWorkspaceDialog.value}
+                className="agnes-rename-dialog-submit flex h-9 items-center gap-1.5 rounded-md px-3.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Check className="h-3.5 w-3.5" />
+                {createWorkspaceSubmitting ? "创建中" : "创建项目"}
+              </button>
+            </footer>
+          </form>
+        </div>,
+        document.body,
+      )}
 
       {renameDialog && createPortal(
         <div

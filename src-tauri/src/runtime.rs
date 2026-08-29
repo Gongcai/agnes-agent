@@ -568,6 +568,14 @@ impl AgentRuntime for AndroidLinuxRuntime {
         std::fs::create_dir_all(&proot_tmp_dir).map_err(|error| {
             AppError::Other(format!("无法创建 Android PRoot 临时目录: {error}"))
         })?;
+        let android_workspace_root = crate::tools::workspace::android_workspace_root(
+            self.root_dir
+                .parent()
+                .ok_or_else(|| AppError::Other("Android Runtime 数据目录无效".into()))?,
+        );
+        std::fs::create_dir_all(&android_workspace_root).map_err(|error| {
+            AppError::Other(format!("无法创建 Android Linux 用户工作区: {error}"))
+        })?;
         let _: serde_json::Value = self.run_native_command("start")?;
         if let Err(error) = self.agent.start_android(
             self.db.clone(),
@@ -579,6 +587,7 @@ impl AgentRuntime for AndroidLinuxRuntime {
             rootfs_dir,
             proot_path,
             proot_loader_path,
+            android_workspace_root,
             proot_tmp_dir,
         ) {
             let _ = self.run_native_command::<serde_json::Value>("stop");

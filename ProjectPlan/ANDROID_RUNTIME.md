@@ -189,6 +189,34 @@ Android 不把整个 `/sdcard` 或 Android 私有目录默认暴露给 Linux。�
 1. **应用私有工作区**：默认绑定到 Agnes 私有目录，稳定、无需额外授权，适合 Agent 自己创建的文件。
 2. **用户授权工作区**：用户通过 Storage Access Framework 选择目录，Android 保存 persistable URI 权限，Runtime 将授权范围映射为 Linux 的 `/workspace`。
 
+### 5.1 Android 内置项目工作区
+
+Android Code 模式提供一个面向小工具开发的内置项目入口。Runtime 启动时会在应用私有数据目录中
+预先创建持久目录：
+
+```text
+<app-data>/android-runtime/user/workspace/
+```
+
+用户点击“添加项目”时输入项目名称，应用只接受 1-64 个 ASCII 字符，首字符必须是英文字母或
+数字，其余字符只能是英文字母、数字、`_` 和 `-`。名称会直接作为目录名使用；中文、空格、点号、
+路径分隔符、以连字符开头的名称和同名项目都会被拒绝。
+
+创建的项目目录同时以两种路径提供给 Runtime：
+
+```text
+宿主持久目录：<app-data>/android-runtime/user/workspace/<project-name>
+Linux 用户目录：/root/workspace/<project-name>
+当前会话工作区：/workspace
+```
+
+其中 `/root/workspace` 是 PRoot 对持久项目根目录的挂载，`/workspace` 是当前 Code 会话的工作区
+挂载。两者来自同一宿主目录，Shell、Git、文件工具和 Agent 对项目的修改保持一致。项目目录不在
+rootfs 版本目录内，因此 Runtime 升级、回滚或重新安装不会删除用户项目。
+
+该入口不默认授权整个 Android 文件系统，也不替代后续 SAF 外部目录绑定；它是 Android 本地小型
+工具开发的低门槛默认路径。
+
 同步的 `workspace` 只保存逻辑 ID、名称和仓库身份等字段；本机绑定保存绑定类型、URI 或本地路径、权限状态和校验时间。任何 Android URI、Linux rootfs 路径和宿主绝对路径都不得进入同步 payload、Agent prompt 或云端日志。
 
 工具执行规则：
@@ -257,6 +285,7 @@ Android 有两种执行模式：
 ### A2：Android 本地完整 Agent
 
 - [x] Android Shell/Git 进程通过 PRoot Ubuntu rootfs 执行，并将会话工作区映射为 `/workspace`；
+- [x] Android Code 模式在持久 Linux 用户目录创建项目，并挂载为 `/root/workspace`；
 - Shell、文件读写、Git、Python、SSH 和记忆工具的完整功能与权限验收；
 - 工具审批、sandbox、审计、超时、并发和输出上限；
 - 应用私有工作区和 SAF 工作区；

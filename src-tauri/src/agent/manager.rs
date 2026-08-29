@@ -71,6 +71,7 @@ struct AndroidLinuxLauncher {
     proot_loader_path: std::path::PathBuf,
     rootfs_dir: std::path::PathBuf,
     workspace_dir: std::path::PathBuf,
+    android_workspace_root: std::path::PathBuf,
     proot_tmp_dir: std::path::PathBuf,
 }
 
@@ -143,6 +144,11 @@ impl AgentLauncher {
                     .args(["-b", "/dev", "-b", "/proc"])
                     .args(["-b"])
                     .arg(format!("{}:/workspace", config.workspace_dir.display()))
+                    .args(["-b"])
+                    .arg(format!(
+                        "{}:/root/workspace",
+                        config.android_workspace_root.display()
+                    ))
                     .args(["-w", "/workspace", "/usr/bin/python3", "-m", "app.main"])
                     .env("AGENT_WS_URL", ws_url)
                     .env("AGENT_PROTOCOL_TOKEN", token)
@@ -341,6 +347,7 @@ impl AgentManager {
         rootfs_dir: std::path::PathBuf,
         proot_path: std::path::PathBuf,
         proot_loader_path: std::path::PathBuf,
+        android_workspace_root: std::path::PathBuf,
         proot_tmp_dir: std::path::PathBuf,
     ) -> AppResult<()> {
         *self
@@ -365,6 +372,7 @@ impl AgentManager {
                 proot_loader_path,
                 rootfs_dir,
                 workspace_dir: home_workspace_dir,
+                android_workspace_root,
                 proot_tmp_dir,
             }),
         )

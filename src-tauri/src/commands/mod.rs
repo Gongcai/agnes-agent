@@ -550,6 +550,40 @@ pub async fn create_workspace(
     Ok(id)
 }
 
+/// Create a project inside the persistent workspace exposed by Android Linux.
+#[tauri::command]
+pub async fn create_android_workspace(
+    state: tauri::State<'_, AppState>,
+    agent_id: String,
+    name: String,
+) -> AppResult<String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (state, agent_id, name);
+        return Err(AppError::Other(
+            "只有 Android 本地 Linux Runtime 支持内置项目目录".into(),
+        ));
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let folder_path = crate::tools::workspace::create_android_project(&state.data_dir, &name)
+            .map_err(AppError::Other)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        state
+            .db
+            .insert_workspace(crate::db::repo::workspaces::NewWorkspace {
+                id: id.clone(),
+                agent_id,
+                name,
+                folder_path: folder_path.to_string_lossy().into_owned(),
+            })
+            .await?;
+        state.sync.schedule();
+        Ok(id)
+    }
+}
+
 /// 重命名工作区。
 #[tauri::command]
 pub async fn rename_workspace(

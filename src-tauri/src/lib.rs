@@ -510,6 +510,7 @@ pub fn run() {
             commands::set_session_permission_mode,
             commands::list_workspaces,
             commands::create_workspace,
+            commands::create_android_workspace,
             commands::rename_workspace,
             commands::delete_workspace,
             commands::rename_session,

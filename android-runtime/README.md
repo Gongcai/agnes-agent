@@ -30,6 +30,29 @@ Android 的 Shell 和 Git 工具会复用 Agent 启动时的 PRoot rootfs。Rust
 写入边界和审批检查，再将工作区映射为 Linux 内的 `/workspace`；工具不会获得其他 Android
 应用私有目录或未授权路径。文件和记忆工具仍由 Rust 执行，Linux 进程不能绕过 Rust 审计。
 
+## Android 项目工作区
+
+Runtime 启动时会在应用私有数据下创建持久项目根目录：
+
+```text
+<app-data>/android-runtime/user/workspace/
+```
+
+Android Code 模式的“添加项目”要求输入目录名。名称规则为 1-64 个 ASCII 字符，首字符必须是
+英文字母或数字，其余只能使用英文字母、数字、`_` 和 `-`。因此中文、空格、点号、路径分隔符、
+以连字符开头的名称和已存在的同名目录都会被拒绝。
+
+例如项目 `tiny-tool` 会得到：
+
+```text
+应用持久目录：<app-data>/android-runtime/user/workspace/tiny-tool
+Linux 用户目录：/root/workspace/tiny-tool
+```
+
+会话启动后，选中的项目还会被挂载到 `/workspace` 作为当前工作目录。`/root/workspace/tiny-tool`
+和 `/workspace` 来自同一份宿主目录，所以 Agent 的 Shell/Git 操作与 Rust 文件工具看到的是同一
+份文件。项目不存放在 rootfs 版本目录中，Runtime 更新、回滚和重新安装不会覆盖它。
+
 ## 构建 PRoot
 
 需要 Android NDK、Git、Make 和 POSIX shell。默认构建 `arm64-v8a`：

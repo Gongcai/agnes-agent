@@ -5,6 +5,7 @@ use crate::db::DbActorHandle;
 
 pub const HOME_WORKSPACE_DOCUMENTS_PATH: [&str; 2] = ["Agnes", "Home"];
 pub const HOME_WORKSPACE_FALLBACK_PATH: [&str; 2] = ["workspaces", "home"];
+pub const ANDROID_WORKSPACE_PATH: [&str; 2] = ["user", "workspace"];
 
 fn append_segments(root: &Path, segments: &[&str]) -> PathBuf {
     segments
@@ -39,6 +40,46 @@ pub fn prepare_home_workspace(
     let fallback = append_segments(app_local_data_dir, &HOME_WORKSPACE_FALLBACK_PATH);
     ensure_writable_directory(&fallback)?;
     Ok(fallback)
+}
+
+/// Return the persistent project root used by Android's bundled Linux runtime.
+pub fn android_workspace_root(data_dir: &Path) -> PathBuf {
+    append_segments(&data_dir.join("android-runtime"), &ANDROID_WORKSPACE_PATH)
+}
+
+/// Validate a project directory name before it is used as a filesystem path.
+pub fn validate_android_project_name(name: &str) -> Result<String, String> {
+    if name.is_empty() || name.len() > 64 || name.trim() != name {
+        return Err("项目名称必须为 1-64 个字符，且不能包含首尾空格".into());
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err("项目名称不能为空".into());
+    };
+    if !first.is_ascii_alphanumeric()
+        || !chars
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+    {
+        return Err("项目名称仅支持英文字母、数字、下划线和连字符，且必须以字母或数字开头".into());
+    }
+    Ok(name.to_string())
+}
+
+/// Create an Android project directory in the persistent Linux workspace root.
+pub fn create_android_project(data_dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let name = validate_android_project_name(name)?;
+    let root = android_workspace_root(data_dir);
+    std::fs::create_dir_all(&root)
+        .map_err(|error| format!("无法创建 Android 工作区目录: {error}"))?;
+    let project = root.join(name);
+    std::fs::create_dir(&project).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            "同名项目已存在".to_string()
+        } else {
+            format!("无法创建项目目录: {error}")
+        }
+    })?;
+    Ok(project)
 }
 
 /// Resolve the effective cwd. Code sessions use their binding; sessions without a
@@ -160,5 +201,28 @@ mod tests {
 
         assert_eq!(home, local_data.join("workspaces").join("home"));
         assert!(home.is_dir());
+    }
+
+    #[test]
+    fn android_project_names_are_safe_directory_names() {
+        assert_eq!(
+            validate_android_project_name("my-tool_2").unwrap(),
+            "my-tool_2"
+        );
+        for name in ["", "中文", "my tool", "../escape", "-project", "project."] {
+            assert!(validate_android_project_name(name).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn android_project_is_created_under_persistent_runtime_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = create_android_project(temp.path(), "tiny-tool").unwrap();
+        assert_eq!(
+            project,
+            temp.path().join("android-runtime/user/workspace/tiny-tool")
+        );
+        assert!(project.is_dir());
+        assert!(create_android_project(temp.path(), "tiny-tool").is_err());
     }
 }

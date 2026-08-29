@@ -496,6 +496,7 @@ interface AgentState {
   renameSession: (sessionId: string, title: string) => Promise<void>;
   loadWorkspaces: (agentId: string) => Promise<void>;
   createWorkspace: (agentId: string, name: string, folderPath: string) => Promise<string>;
+  createAndroidWorkspace: (agentId: string, name: string) => Promise<string>;
   renameWorkspace: (workspaceId: string, name: string) => Promise<void>;
   deleteWorkspace: (workspaceId: string) => Promise<void>;
   sendMessage: (
@@ -749,6 +750,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   createWorkspace: async (agentId: string, name: string, folderPath: string) => {
     const id = await invoke<string>("create_workspace", { agentId, name, folderPath });
+    await get().loadWorkspaces(agentId);
+    return id;
+  },
+
+  createAndroidWorkspace: async (agentId: string, name: string) => {
+    const id = await invoke<string>("create_android_workspace", { agentId, name });
     await get().loadWorkspaces(agentId);
     return id;
   },
