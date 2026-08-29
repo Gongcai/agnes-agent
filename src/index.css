@@ -2573,6 +2573,24 @@ pre,
     padding: 8px 10px 12px !important;
   }
 
+  .agnes-chat-composer-box .agnes-chat-send-button {
+    width: 36px !important;
+    min-width: 36px;
+    height: 36px !important;
+    padding: 0 !important;
+    border-radius: 50% !important;
+  }
+
+  .agnes-chat-composer-box .agnes-chat-send-button > span {
+    display: none;
+  }
+
+  .agnes-chat-composer-box .agnes-chat-send-button > svg {
+    width: 17px;
+    height: 17px;
+    margin: 0 !important;
+  }
+
   .agnes-chat-composer-box > div:last-child > span:first-child {
     display: none;
   }
