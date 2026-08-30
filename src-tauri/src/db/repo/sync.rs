@@ -6,6 +6,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::error::{AppError, AppResult};
+use crate::sync::crypto::EMPTY_PAYLOAD_HASH;
 use crate::sync::hlc::HybridTimestamp;
 use crate::sync::payload::{self, SyncEntityType};
 
@@ -484,10 +485,43 @@ pub fn reset_for_gateway_change(conn: &mut Connection) -> AppResult<()> {
     tx.execute("DELETE FROM sync_conflicts", [])?;
     tx.execute(
         "UPDATE sync_outbox SET status = 'pending', attempt_count = 0, next_retry_at = NULL, \
-         last_error_code = NULL, last_error_message = NULL \
+         last_error_code = NULL, last_error_message = NULL, synced_at = NULL \
          WHERE status IN ('pending', 'in_flight', 'dead_letter')",
         [],
     )?;
+    // Existing encrypted rows contain the old revision in their AAD. Convert them back to
+    // their local source payload so the next sync can encrypt them with the new revision.
+    let queued_payloads = {
+        let mut statement = tx.prepare(
+            "SELECT change_id, operation, source_payload FROM sync_outbox WHERE status = 'pending'",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    for (change_id, operation, source_payload) in queued_payloads {
+        let (payload, payload_hash) = if operation == "upsert" {
+            let source_payload = source_payload.unwrap_or_default();
+            (
+                Some(source_payload.clone()),
+                sha256_hex(source_payload.as_bytes()),
+            )
+        } else {
+            (None, EMPTY_PAYLOAD_HASH.to_string())
+        };
+        tx.execute(
+            "UPDATE sync_outbox SET payload_encoding = 'json', payload = ?1, payload_hash = ?2, \
+             key_version = NULL WHERE change_id = ?3 AND status = 'pending'",
+            params![payload, payload_hash, change_id],
+        )?;
+    }
     tx.execute(
         "WITH ranked AS ( \
            SELECT change_id, \
@@ -4003,16 +4037,19 @@ mod tests {
         ] {
             conn.execute(
                 "INSERT INTO sync_outbox (change_id, device_id, entity_type, entity_id, operation, \
-                 base_revision, local_version, hlc, payload_hash, status, attempt_count, \
-                 last_error_code, last_error_message, created_at) \
-                 VALUES (?1, ?2, 'agent', ?3, 'upsert', ?4, 1, ?5, ?6, ?7, 4, \
-                         'INVALID_REQUEST', 'old failure', ?8)",
+                 base_revision, local_version, hlc, payload_encoding, payload, source_payload, \
+                 payload_hash, key_version, status, attempt_count, last_error_code, \
+                 last_error_message, created_at) \
+                 VALUES (?1, ?2, 'agent', ?3, 'upsert', ?4, 1, ?5, \
+                         'xchacha20poly1305-v1', 'old-ciphertext', ?6, ?7, 1, ?8, 4, \
+                         'INVALID_REQUEST', 'old failure', ?9)",
                 rusqlite::params![
                     change_id,
                     LOCAL_DEVICE,
                     entity_id,
                     base_revision,
                     format!("{}-0000-test", created_at),
+                    json!({"id": entity_id}).to_string(),
                     "a".repeat(64),
                     status,
                     created_at,
@@ -4054,9 +4091,19 @@ mod tests {
             0
         );
 
-        let rows: Vec<(String, Option<i64>, String, i64, Option<String>)> = conn
+        let rows: Vec<(
+            String,
+            Option<i64>,
+            String,
+            String,
+            String,
+            Option<i64>,
+            i64,
+            Option<String>,
+        )> = conn
             .prepare(
-                "SELECT change_id, base_revision, status, attempt_count, last_error_code \
+                "SELECT change_id, base_revision, status, payload_encoding, payload, key_version, \
+                 attempt_count, last_error_code \
                  FROM sync_outbox ORDER BY created_at",
             )
             .unwrap()
@@ -4067,6 +4114,9 @@ mod tests {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
                 ))
             })
             .unwrap()
@@ -4075,9 +4125,36 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                ("change-1".into(), None, "pending".into(), 0, None),
-                ("change-2".into(), Some(1), "pending".into(), 0, None),
-                ("change-3".into(), None, "pending".into(), 0, None),
+                (
+                    "change-1".into(),
+                    None,
+                    "pending".into(),
+                    "json".into(),
+                    r#"{"id":"agent-1"}"#.into(),
+                    None,
+                    0,
+                    None
+                ),
+                (
+                    "change-2".into(),
+                    Some(1),
+                    "pending".into(),
+                    "json".into(),
+                    r#"{"id":"agent-1"}"#.into(),
+                    None,
+                    0,
+                    None
+                ),
+                (
+                    "change-3".into(),
+                    None,
+                    "pending".into(),
+                    "json".into(),
+                    r#"{"id":"agent-2"}"#.into(),
+                    None,
+                    0,
+                    None
+                ),
             ]
         );
     }
