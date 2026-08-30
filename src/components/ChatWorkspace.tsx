@@ -528,6 +528,15 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     window.setTimeout(() => node.scrollIntoView({ block: "nearest", behavior: "auto" }), 0);
   }, [mobileInputActive]);
 
+  useEffect(() => {
+    const handleNativeImeChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ visible?: boolean }>).detail;
+      if (detail?.visible === false) setMobileInputActive(false);
+    };
+    window.addEventListener("agnes:native-ime-change", handleNativeImeChange);
+    return () => window.removeEventListener("agnes:native-ime-change", handleNativeImeChange);
+  }, []);
+
   useEffect(() => () => {
     if (mobileInputBlurTimerRef.current !== null) {
       window.clearTimeout(mobileInputBlurTimerRef.current);

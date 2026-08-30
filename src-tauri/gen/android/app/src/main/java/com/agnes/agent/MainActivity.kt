@@ -46,9 +46,10 @@ class MainActivity : TauriActivity() {
       val imeHeight = if (insets.isVisible(WindowInsetsCompat.Type.ime())) ime.bottom else 0
       val density = resources.displayMetrics.density
       val cssHeight = imeHeight / density
+      val imeVisible = imeHeight > 0
       webView.post {
         webView.evaluateJavascript(
-          "document.documentElement.style.setProperty('--agnes-native-ime-height', '${cssHeight}px')",
+          "document.documentElement.style.setProperty('--agnes-native-ime-height', '${cssHeight}px'); window.dispatchEvent(new CustomEvent('agnes:native-ime-change', { detail: { visible: $imeVisible, height: $cssHeight } }))",
           null,
         )
       }
