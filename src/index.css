@@ -2723,10 +2723,7 @@ pre,
     top: auto;
     right: 0;
     left: 0;
-    bottom: max(
-      var(--agnes-native-ime-height, 0px),
-      var(--agnes-keyboard-height, 0px)
-    );
+    bottom: var(--agnes-native-ime-height, var(--agnes-keyboard-height, 0px));
     z-index: 100;
     display: block;
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
