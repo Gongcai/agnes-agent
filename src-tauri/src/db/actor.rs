@@ -61,6 +61,13 @@ pub enum DbCommand {
         value: String,
         resp: oneshot::Sender<AppResult<()>>,
     },
+    SaveUserProfile {
+        profile: crate::user_profile::UserProfile,
+        resp: oneshot::Sender<AppResult<()>>,
+    },
+    EnsureUserProfileSync {
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     DeleteSetting {
         key: String,
         resp: oneshot::Sender<AppResult<()>>,
@@ -853,6 +860,23 @@ impl DbActorHandle {
     pub async fn set_setting(&self, key: String, value: String) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::SetSetting { key, value, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn save_user_profile(
+        &self,
+        profile: crate::user_profile::UserProfile,
+    ) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SaveUserProfile { profile, resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn ensure_user_profile_sync(&self) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::EnsureUserProfileSync { resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -2554,6 +2578,12 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::SetSetting { key, value, resp } => {
                     let _ = resp.send(repo::settings::set(&conn, &key, &value));
+                }
+                DbCommand::SaveUserProfile { profile, resp } => {
+                    let _ = resp.send(repo::user_profile::save(&mut conn, &profile));
+                }
+                DbCommand::EnsureUserProfileSync { resp } => {
+                    let _ = resp.send(repo::user_profile::enqueue_existing(&mut conn));
                 }
                 DbCommand::DeleteSetting { key, resp } => {
                     let _ = resp.send(repo::settings::delete(&conn, &key));

@@ -151,6 +151,28 @@ struct AgentPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct UserProfilePayload {
+    id: String,
+    name: String,
+    gender: String,
+    occupation: String,
+    custom_occupation: String,
+    base_style: String,
+    warmth: String,
+    enthusiasm: String,
+    headings_lists: String,
+    emoji: String,
+    verbosity: String,
+    #[serde(rename = "updated_at")]
+    _updated_at: String,
+    version: i64,
+    deleted_at: Option<String>,
+    #[serde(rename = "origin_device_id")]
+    _origin_device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WorkspacePayload {
     id: String,
     agent_id: String,
@@ -977,7 +999,8 @@ fn validate_remote_entity(entity: &RemoteEntityInput) -> AppResult<()> {
         || entity.key_version.is_some()
         || !matches!(
             entity.entity_type.as_str(),
-            "agent"
+            "user_profile"
+                | "agent"
                 | "workspace"
                 | "session"
                 | "message"
@@ -1134,6 +1157,7 @@ fn apply_remote_business_row(tx: &Transaction<'_>, entity: &RemoteEntityInput) -
         .clone()
         .ok_or_else(|| AppError::Other("remote upsert payload is missing".into()))?;
     match entity.entity_type.as_str() {
+        "user_profile" => apply_remote_user_profile(tx, entity, serde_json::from_value(payload)?),
         "agent" => apply_remote_agent(tx, entity, serde_json::from_value(payload)?),
         "workspace" => apply_remote_workspace(tx, entity, serde_json::from_value(payload)?),
         "session" => apply_remote_session(tx, entity, serde_json::from_value(payload)?),
@@ -1156,6 +1180,33 @@ fn apply_remote_business_row(tx: &Transaction<'_>, entity: &RemoteEntityInput) -
             "remote entity type `{other}` is not enabled yet"
         ))),
     }
+}
+
+fn apply_remote_user_profile(
+    tx: &Transaction<'_>,
+    entity: &RemoteEntityInput,
+    payload: UserProfilePayload,
+) -> AppResult<()> {
+    validate_payload_identity(
+        entity,
+        &payload.id,
+        payload.version,
+        payload.deleted_at.as_deref(),
+    )?;
+    let profile = crate::user_profile::UserProfile {
+        avatar: String::new(),
+        name: payload.name,
+        gender: payload.gender,
+        occupation: payload.occupation,
+        custom_occupation: payload.custom_occupation,
+        base_style: payload.base_style,
+        warmth: payload.warmth,
+        enthusiasm: payload.enthusiasm,
+        headings_lists: payload.headings_lists,
+        emoji: payload.emoji,
+        verbosity: payload.verbosity,
+    };
+    crate::db::repo::user_profile::apply_remote(tx, &profile, payload.version)
 }
 
 fn apply_remote_agent(
@@ -1875,6 +1926,16 @@ fn is_sha256_hex(value: &str) -> bool {
 fn apply_remote_delete(tx: &Transaction<'_>, entity: &RemoteEntityInput) -> AppResult<()> {
     let deleted_at = entity.updated_at.to_string();
     match entity.entity_type.as_str() {
+        "user_profile" => {
+            if entity.entity_id != crate::db::repo::user_profile::SYNC_ENTITY_ID {
+                return Err(AppError::Other("invalid user profile entity id".into()));
+            }
+            crate::db::repo::user_profile::apply_remote(
+                tx,
+                &crate::user_profile::UserProfile::default(),
+                entity.revision,
+            )?;
+        }
         "agent" => {
             tx.execute(
                 "UPDATE agents SET deleted_at = ?1, updated_at = ?1, \
@@ -2279,7 +2340,8 @@ fn try_auto_resolve_conflict(
         || conflict.remote_deleted
         || !matches!(
             conflict.entity_type.as_str(),
-            "agent"
+            "user_profile"
+                | "agent"
                 | "session"
                 | "workspace"
                 | "message"
@@ -2662,6 +2724,7 @@ fn parse_optional_json(raw: Option<String>) -> AppResult<Option<Value>> {
 
 fn parse_sync_entity_type(value: &str) -> AppResult<SyncEntityType> {
     match value {
+        "user_profile" => Ok(SyncEntityType::UserProfile),
         "agent" => Ok(SyncEntityType::Agent),
         "workspace" => Ok(SyncEntityType::Workspace),
         "session" => Ok(SyncEntityType::Session),
@@ -2839,6 +2902,26 @@ mod tests {
             "thinking_mode": "off",
             "thinking_budget": 0,
             "created_at": "1",
+            "updated_at": version.to_string(),
+            "version": version,
+            "deleted_at": null,
+            "origin_device_id": REMOTE_DEVICE
+        })
+    }
+
+    fn user_profile_payload(version: i64) -> Value {
+        json!({
+            "id": crate::db::repo::user_profile::SYNC_ENTITY_ID,
+            "name": "远端用户",
+            "gender": "prefer_not_to_say",
+            "occupation": "software_it",
+            "custom_occupation": "",
+            "base_style": "professional",
+            "warmth": "more",
+            "enthusiasm": "default",
+            "headings_lists": "default",
+            "emoji": "less",
+            "verbosity": "concise",
             "updated_at": version.to_string(),
             "version": version,
             "deleted_at": null,
@@ -3594,6 +3677,35 @@ mod tests {
             .unwrap();
         assert!(memory.contains("Uses pnpm workspaces"));
         assert_eq!(status(&conn).unwrap().last_pull_cursor, 6);
+        assert_eq!(status(&conn).unwrap().pending_count, 0);
+    }
+
+    #[test]
+    fn remote_user_profile_bootstrap_updates_local_settings_without_echo() {
+        let mut conn = setup();
+        apply_bootstrap_page(
+            &mut conn,
+            "required",
+            &[remote(
+                "user_profile",
+                crate::db::repo::user_profile::SYNC_ENTITY_ID,
+                1,
+                1,
+                user_profile_payload(1),
+            )],
+            1,
+            None,
+            false,
+            2_000,
+        )
+        .unwrap();
+
+        let raw = crate::db::repo::settings::get(&conn, crate::user_profile::USER_PROFILE_SETTING)
+            .unwrap()
+            .unwrap();
+        let profile: crate::user_profile::UserProfile = serde_json::from_str(&raw).unwrap();
+        assert_eq!(profile.name, "远端用户");
+        assert_eq!(profile.occupation, "software_it");
         assert_eq!(status(&conn).unwrap().pending_count, 0);
     }
 

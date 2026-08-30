@@ -85,7 +85,7 @@ Operit Android 内置 Ubuntu 的公开实现、资产布局、首次安装、PRo
 - `sessions.agent_id` → `agents.id`（多对一：一个 Agent 可有多个 session，但每个 session 只属于一个 Agent）。
 - `memory_files.agent_id`：长期记忆虚拟文件系统按 Agent 隔离；SQLite 是唯一真相源。
 
-**同步策略**：云端只同步白名单内的结构化用户实体（agents/sessions/messages/memory_files/workspaces/calendars/calendar_events/event_exceptions/task_lists/tasks，文件清单后续扩展）；通用 settings 和本地记忆修订保持设备本地。**原始向量行和 sqlite-vec 表不进 D1**：每台设备可本地重建，也可在 embedding/parser/chunker 指纹完全一致时从 R2/Google Drive 下载客户端加密的便携 RAG 向量制品。D1 只保存最新版本、密文 Hash、Provider 副本和设备落地状态。事务性 outbox 使用 revision CAS、`device_id + HLC` 做增量 push/pull；聊天消息正文完成后不可变，记忆文件并发修改不静默 LWW，而是保留 base/local/remote 后合并。
+**同步策略**：云端只同步白名单内的结构化用户实体（user_profile/agents/sessions/messages/memory_files/workspaces/calendars/calendar_events/event_exceptions/task_lists/tasks，文件清单后续扩展）；通用 settings 和本地记忆修订保持设备本地。**原始向量行和 sqlite-vec 表不进 D1**：每台设备可本地重建，也可在 embedding/parser/chunker 指纹完全一致时从 R2/Google Drive 下载客户端加密的便携 RAG 向量制品。D1 只保存最新版本、密文 Hash、Provider 副本和设备落地状态。事务性 outbox 使用 revision CAS、`device_id + HLC` 做增量 push/pull；聊天消息正文完成后不可变，记忆文件并发修改不静默 LWW，而是保留 base/local/remote 后合并。
 
 # AGENTS / 角色卡
 

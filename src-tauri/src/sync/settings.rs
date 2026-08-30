@@ -12,8 +12,10 @@ pub fn classify(key: &str) -> SettingClass {
     if key.starts_with("provider:") && key.ends_with(":api_key") {
         return SettingClass::Secret;
     }
+    if key == crate::user_profile::USER_PROFILE_SETTING {
+        return SettingClass::Syncable;
+    }
     if key.starts_with("ui:")
-        || key == crate::user_profile::USER_PROFILE_SETTING
         || key == "models:role_assignments"
         || key == "mcp:servers:v1"
         || key == "web:search_providers:v1"
@@ -41,7 +43,7 @@ mod tests {
         assert_eq!(classify("ui:last_agent_id"), SettingClass::DeviceLocal);
         assert_eq!(
             classify(crate::user_profile::USER_PROFILE_SETTING),
-            SettingClass::DeviceLocal
+            SettingClass::Syncable
         );
         assert_eq!(
             classify("models:role_assignments"),

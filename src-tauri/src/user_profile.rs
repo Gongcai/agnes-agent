@@ -306,10 +306,7 @@ pub async fn load_user_profile(db: &DbActorHandle) -> AppResult<UserProfile> {
 }
 
 pub async fn save_user_profile(db: &DbActorHandle, profile: &UserProfile) -> AppResult<()> {
-    profile.validate()?;
-    let raw = serde_json::to_string(profile)
-        .map_err(|error| AppError::Other(format!("用户资料无法序列化：{error}")))?;
-    db.set_setting(USER_PROFILE_SETTING.to_string(), raw).await
+    db.save_user_profile(profile.clone()).await
 }
 
 #[cfg(test)]

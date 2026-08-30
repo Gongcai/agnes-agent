@@ -121,7 +121,7 @@ sqlite-vec 索引，不与持久记忆文件混用。
 - `USER.md` 可在运行时继承应用“用户信息”页生成的基础资料，不把继承结果写回文件；
 - 继承策略为 `auto / inherit / isolated`：自动模式仅在 Agent 的 `USER.md` 正文为空时继承，用户
   可显式选择始终继承或不继承；
-- `USER.md` 与继承策略随 `memory_file` 实体加密同步，应用级基础资料本身仍是设备本地设置。
+- `USER.md` 与继承策略随 `memory_file` 实体加密同步；应用级基础资料作为单例 `user_profile` 实体加密同步，头像等大对象后续走 blob。
 
 ---
 

@@ -158,6 +158,7 @@ D1 的云端 schema 不复用 `src-tauri/src/db/schema.rs`。本地库包含 `sq
 | 本地数据 | 是否同步 | 云端实体 | 说明 |
 |---|---:|---|---|
 | Agent 角色卡 | 是 | `agent` | persona、scenario、system prompt、模型偏好、工具策略等；文本建议加密 |
+| 用户基础资料 | 是 | `user_profile` | 姓名、性别、职业和风格偏好等基础字段 E2EE；头像因大小限制后续走 R2/blob |
 | Session | 是 | `session` | 标题、摘要、上下文设置、分支视图状态和逻辑 workspace 归属；不携带设备路径 |
 | 完成的 user/assistant message | 是 | `message` | 按 revision CAS；`pending/streaming` 不推送，并发回复使用不同 message ID |
 | message text parts | 是 | 包含于 `message` payload | 小实体整体同步，避免 parts 到达早于 message |
@@ -202,14 +203,14 @@ Android 可以看到某个 session 属于哪个逻辑 workspace；有有效的�
 Phase 3A 已将逻辑 `workspace_id` 纳入 Session payload，同时继续排除
 `workspace_bindings.folder_path / last_validated_at`。Workspace 创建、重命名、删除与 outbox
 在同一事务提交；远端 Workspace 只创建逻辑行，不会在新设备伪造路径绑定。bootstrap 按
-`agent -> workspace -> session -> message -> memory_file` 排序，确保分页应用时
+`user_profile -> agent -> workspace -> session -> message -> memory_file` 排序，确保分页应用时
 本地 SQLite 外键依赖先到达。
 
 ### 5.3 Settings 分类
 
 `settings(key, value)` 目前混合了三类完全不同的数据，必须显式拆分或分类：
 
-1. **可同步业务数据**：例如每个 Agent 的 `memory_file` 虚拟 Markdown 文档实体；
+1. **可同步业务数据**：例如 `user_profile` 和每个 Agent 的 `memory_file` 虚拟 Markdown 文档实体；
 2. **设备本地设置**：`ui:last_agent_id`、`ui:last_session_id`、窗口状态、本地模型端点；
 3. **秘密**：`provider:{id}:api_key`、同步认证凭证、加密密钥。
 
@@ -999,7 +1000,7 @@ D1 Time Travel 在免费层保留 7 天，默认启用且可按时间点恢复�
 ### Phase M：持久记忆同步破坏式替换
 
 - [x] 新增 E2EE `memory_file` payload 与严格字段白名单；
-- [x] bootstrap 改为 `agent -> workspace -> session -> message -> memory_file`；
+- [x] bootstrap 改为 `user_profile -> agent -> workspace -> session -> message -> memory_file`；
 - [x] 增加 memory file revision CAS 与本地 base/local/remote 冲突记录；
 - [x] 删除 `explicit_memory / memory` Worker、Rust repository、MergeEngine 分支和 D1 开发数据；
 - [x] 不迁移旧 USER.md、MEMORY.md 或 memory_store 文本；

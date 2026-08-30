@@ -1620,6 +1620,7 @@ impl SyncService {
         {
             return Ok(());
         }
+        self.db.ensure_user_profile_sync().await?;
         if !self.run_bootstrap(transport, keyset).await? {
             return Ok(());
         }

@@ -48,6 +48,7 @@ interface TestChangeOptions {
   changeId?: string;
   entityId?: string;
   entityType?:
+    | "user_profile"
     | "agent"
     | "session"
     | "message"

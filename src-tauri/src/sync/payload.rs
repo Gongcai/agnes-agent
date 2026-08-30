@@ -4,6 +4,7 @@ use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncEntityType {
+    UserProfile,
     Agent,
     Session,
     Message,
@@ -21,6 +22,7 @@ pub enum SyncEntityType {
 impl SyncEntityType {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::UserProfile => "user_profile",
             Self::Agent => "agent",
             Self::Session => "session",
             Self::Message => "message",
@@ -42,6 +44,22 @@ pub fn project(entity_type: SyncEntityType, source: &Value) -> AppResult<Value> 
         .as_object()
         .ok_or_else(|| AppError::Other("Sync payload source must be an object".into()))?;
     let allowed = match entity_type {
+        SyncEntityType::UserProfile => &[
+            "id",
+            "name",
+            "gender",
+            "occupation",
+            "custom_occupation",
+            "base_style",
+            "warmth",
+            "enthusiasm",
+            "headings_lists",
+            "emoji",
+            "verbosity",
+            "updated_at",
+            "version",
+            "origin_device_id",
+        ][..],
         SyncEntityType::Agent => &[
             "id",
             "name",
@@ -325,6 +343,7 @@ mod tests {
             "embedding_id": "embedding-1"
         });
         for entity_type in [
+            SyncEntityType::UserProfile,
             SyncEntityType::Agent,
             SyncEntityType::Session,
             SyncEntityType::Message,
@@ -343,6 +362,44 @@ mod tests {
             assert!(!encoded.contains("/tmp/private"));
             assert!(!encoded.contains("embedding-1"));
         }
+    }
+
+    #[test]
+    fn user_profile_projection_keeps_basic_fields_but_drops_avatar_and_unknown_values() {
+        let source = json!({
+            "id": "user-profile-v1",
+            "avatar": "data:image/png;base64,large-local-avatar",
+            "name": "小安",
+            "gender": "prefer_not_to_say",
+            "occupation": "software_it",
+            "custom_occupation": "",
+            "base_style": "professional",
+            "warmth": "more",
+            "enthusiasm": "default",
+            "headings_lists": "default",
+            "emoji": "less",
+            "verbosity": "concise",
+            "api_key": "must-not-sync",
+            "version": 2
+        });
+
+        assert_eq!(
+            project(SyncEntityType::UserProfile, &source).unwrap(),
+            json!({
+                "id": "user-profile-v1",
+                "name": "小安",
+                "gender": "prefer_not_to_say",
+                "occupation": "software_it",
+                "custom_occupation": "",
+                "base_style": "professional",
+                "warmth": "more",
+                "enthusiasm": "default",
+                "headings_lists": "default",
+                "emoji": "less",
+                "verbosity": "concise",
+                "version": 2
+            })
+        );
     }
 
     #[test]

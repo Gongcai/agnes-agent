@@ -85,46 +85,49 @@ interface BootstrapCursor {
 }
 
 const BOOTSTRAP_ENTITY_ORDER_SQL = `CASE entity_type
-  WHEN 'agent' THEN 0
-  WHEN 'workspace' THEN 1
-  WHEN 'session' THEN 2
-  WHEN 'message' THEN 3
-  WHEN 'memory_file' THEN 4
-  WHEN 'calendar' THEN 5
-  WHEN 'calendar_event' THEN 6
-  WHEN 'event_exception' THEN 7
-  WHEN 'task_list' THEN 8
-  WHEN 'task' THEN 9
-  WHEN 'reading_book' THEN 10
-  WHEN 'reading_highlight' THEN 11
+  WHEN 'user_profile' THEN 0
+  WHEN 'agent' THEN 1
+  WHEN 'workspace' THEN 2
+  WHEN 'session' THEN 3
+  WHEN 'message' THEN 4
+  WHEN 'memory_file' THEN 5
+  WHEN 'calendar' THEN 6
+  WHEN 'calendar_event' THEN 7
+  WHEN 'event_exception' THEN 8
+  WHEN 'task_list' THEN 9
+  WHEN 'task' THEN 10
+  WHEN 'reading_book' THEN 11
+  WHEN 'reading_highlight' THEN 12
   ELSE 99 END`;
 
 function bootstrapEntityOrder(entityType: string): number {
   switch (entityType) {
-    case "agent":
+    case "user_profile":
       return 0;
-    case "workspace":
+    case "agent":
       return 1;
-    case "session":
+    case "workspace":
       return 2;
-    case "message":
+    case "session":
       return 3;
-    case "memory_file":
+    case "message":
       return 4;
-    case "calendar":
+    case "memory_file":
       return 5;
-    case "calendar_event":
+    case "calendar":
       return 6;
-    case "event_exception":
+    case "calendar_event":
       return 7;
-    case "task_list":
+    case "event_exception":
       return 8;
-    case "task":
+    case "task_list":
       return 9;
-    case "reading_book":
+    case "task":
       return 10;
-    case "reading_highlight":
+    case "reading_book":
       return 11;
+    case "reading_highlight":
+      return 12;
     default:
       return -1;
   }

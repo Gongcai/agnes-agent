@@ -304,7 +304,7 @@ settings(key PK, value TEXT)
 
 **向量制品边界**：原始向量行、sqlite-vec 虚拟表和运行中 SQLite 文件不进 D1。大型 RAG 可按 document version + embedding/parser/chunker fingerprint 导出便携分片，客户端压缩、E2EE 后存入 R2/Google Drive；其他设备验证指纹与 Hash 后导入本地 sqlite-vec。
 
-**可同步实体的版本/墓碑**：`agents/sessions/messages/memory_files/workspaces` 均具备 `updated_at`、`deleted_at`、`version`、`origin_device_id`，配合事务性 outbox、revision CAS 与 HLC 支撑离线同步与冲突解决。聊天消息正文完成后不可变；记忆文件、workspace 逻辑信息和 Agent 配置必须有版本。通用 settings、记忆本地修订与 workspace 本地路径不作为同步实体。
+**可同步实体的版本/墓碑**：`user_profile/agents/sessions/messages/memory_files/workspaces` 均具备同步版本元数据，配合事务性 outbox、revision CAS 与 HLC 支撑离线同步与冲突解决。聊天消息正文完成后不可变；用户资料、记忆文件、workspace 逻辑信息和 Agent 配置必须有版本。通用 settings、记忆本地修订与 workspace 本地路径不作为同步实体。
 
 迁移用 `rusqlite` + 自维护 `migrations/`（或 refinery）。
 
@@ -316,7 +316,7 @@ settings(key PK, value TEXT)
 |----|----------|------|
 | ① Recent Context | Python `prompt.py`（用 ContextSnapshot.recentMessages） | SQLite `messages` |
 | ② Conversation Summary | Python `prompt.py`（滚动压缩）→ Rust 写 `sessions.summary` | SQLite `sessions.summary` |
-| ③ Always-on User And Memory Index | Rust `memory/` 生成 USER/profile/preferences/listing snapshot；Python `prompt.py` 组装 | SQLite `memory_files` + 设备本地基础资料 |
+| ③ Always-on User And Memory Index | Rust `memory/` 生成 USER/profile/preferences/listing snapshot；Python `prompt.py` 组装 | SQLite `memory_files` + `user_profile` |
 | ④ On-demand Memory Files | Rust 六个 memory tools + Markdown validator + CAS | SQLite `memory_files` + 本地 revisions/conflicts |
 
 **记忆导航规则**：每轮固定注入用户管理、AI 只读的 `USER.md` 有效视图；同时注入当前 Agent 的完整轻量 listing，以及 `/profile.md`、

@@ -13,4 +13,5 @@ pub mod settings;
 pub mod storage;
 pub mod sync;
 pub mod tools;
+pub mod user_profile;
 pub mod workspaces;
