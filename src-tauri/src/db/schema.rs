@@ -261,7 +261,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent
 -- The Planner payload is encrypted, so bootstrap cannot sort task rows by it.
 CREATE TABLE IF NOT EXISTS task_sync_parents (
   task_id TEXT PRIMARY KEY,
-  parent_id TEXT
+  parent_id TEXT,
+  recurrence_source_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tool_calls (

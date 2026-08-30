@@ -1695,11 +1695,19 @@ fn task_parent_exists(tx: &Transaction<'_>, parent_id: &str) -> AppResult<bool> 
     .map_err(Into::into)
 }
 
-fn reconcile_remote_task_parents(tx: &Transaction<'_>) -> AppResult<()> {
+fn reconcile_remote_task_dependencies(tx: &Transaction<'_>) -> AppResult<()> {
     tx.execute(
-        "UPDATE tasks SET parent_id=(SELECT parent_id FROM task_sync_parents p WHERE p.task_id=tasks.id) \
-         WHERE EXISTS (SELECT 1 FROM task_sync_parents p JOIN tasks parent ON parent.id=p.parent_id \
-                       WHERE p.task_id=tasks.id)",
+        "UPDATE tasks SET parent_id=(SELECT p.parent_id FROM task_sync_parents p \
+         WHERE p.task_id=tasks.id AND (p.parent_id IS NULL OR EXISTS \
+           (SELECT 1 FROM tasks parent WHERE parent.id=p.parent_id))) \
+         WHERE id IN (SELECT task_id FROM task_sync_parents)",
+        [],
+    )?;
+    tx.execute(
+        "UPDATE tasks SET recurrence_source_id=(SELECT p.recurrence_source_id FROM task_sync_parents p \
+         WHERE p.task_id=tasks.id AND (p.recurrence_source_id IS NULL OR EXISTS \
+           (SELECT 1 FROM tasks source WHERE source.id=p.recurrence_source_id))) \
+         WHERE id IN (SELECT task_id FROM task_sync_parents)",
         [],
     )?;
     Ok(())
@@ -1763,6 +1771,10 @@ fn apply_remote_task(
         Some(parent_id) if task_parent_exists(tx, parent_id)? => Some(parent_id),
         _ => None,
     };
+    let persisted_recurrence_source = match payload.recurrence_source_id.as_deref() {
+        Some(source_id) if task_parent_exists(tx, source_id)? => Some(source_id),
+        _ => None,
+    };
     tx.execute(
         "INSERT INTO tasks (id,task_list_id,parent_id,title,description,status,priority,starts_at,due_date,due_at, \
          due_timezone,is_important,my_day_date,completed_at,recurrence_rule,recurrence_anchor,recurrence_source_id, \
@@ -1778,15 +1790,20 @@ fn apply_remote_task(
         params![payload.id, payload.task_list_id, persisted_parent, payload.title, payload.description, payload.status,
                 payload.priority, payload.starts_at, payload.due_date, payload.due_at, payload.due_timezone,
                 payload.is_important, payload.my_day_date, payload.completed_at, payload.recurrence_rule,
-                payload.recurrence_anchor, payload.recurrence_source_id, payload.sort_order, payload.created_at,
+                payload.recurrence_anchor, persisted_recurrence_source, payload.sort_order, payload.created_at,
                 payload.updated_at, payload.version, entity.origin_device_id],
     )?;
     tx.execute(
-        "INSERT INTO task_sync_parents (task_id,parent_id) VALUES (?1,?2) \
-         ON CONFLICT(task_id) DO UPDATE SET parent_id=excluded.parent_id",
-        params![entity.entity_id, payload.parent_id],
+        "INSERT INTO task_sync_parents (task_id,parent_id,recurrence_source_id) VALUES (?1,?2,?3) \
+         ON CONFLICT(task_id) DO UPDATE SET parent_id=excluded.parent_id, \
+           recurrence_source_id=excluded.recurrence_source_id",
+        params![
+            entity.entity_id,
+            payload.parent_id,
+            payload.recurrence_source_id
+        ],
     )?;
-    reconcile_remote_task_parents(tx)?;
+    reconcile_remote_task_dependencies(tx)?;
     Ok(())
 }
 
@@ -2879,6 +2896,7 @@ mod tests {
     fn setup() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(crate::db::schema::SCHEMA).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute(
             "INSERT INTO sync_runtime_state (singleton, device_id) VALUES (1, ?1)",
             [LOCAL_DEVICE],
@@ -3366,6 +3384,51 @@ mod tests {
             )
             .unwrap();
         assert!(deleted);
+    }
+
+    #[test]
+    fn planner_bootstrap_defers_recurrence_source_until_source_task_arrives() {
+        let mut conn = setup();
+        let mut recurring_task = task_payload("task-generated-1", "task-list-1", None);
+        recurring_task
+            .as_object_mut()
+            .unwrap()
+            .insert("recurrence_source_id".into(), json!("task-source-1"));
+        apply_bootstrap_page(
+            &mut conn,
+            "required",
+            &[
+                remote(
+                    "task_list",
+                    "task-list-1",
+                    1,
+                    1,
+                    task_list_payload("task-list-1"),
+                ),
+                remote("task", "task-generated-1", 1, 2, recurring_task),
+                remote(
+                    "task",
+                    "task-source-1",
+                    1,
+                    3,
+                    task_payload("task-source-1", "task-list-1", None),
+                ),
+            ],
+            3,
+            None,
+            false,
+            2_000,
+        )
+        .unwrap();
+
+        let source_id: String = conn
+            .query_row(
+                "SELECT recurrence_source_id FROM tasks WHERE id='task-generated-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_id, "task-source-1");
     }
 
     #[test]

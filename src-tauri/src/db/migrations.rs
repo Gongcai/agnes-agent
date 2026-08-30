@@ -296,12 +296,14 @@ fn ensure_planner_sync_metadata(conn: &Connection) -> AppResult<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS task_sync_parents (
            task_id TEXT PRIMARY KEY,
-           parent_id TEXT
+           parent_id TEXT,
+           recurrence_source_id TEXT
          );",
     )?;
+    ensure_column(conn, "task_sync_parents", "recurrence_source_id", "TEXT")?;
     conn.execute(
-        "INSERT OR IGNORE INTO task_sync_parents (task_id, parent_id) \
-         SELECT id, parent_id FROM tasks",
+        "INSERT OR IGNORE INTO task_sync_parents (task_id, parent_id, recurrence_source_id) \
+         SELECT id, parent_id, recurrence_source_id FROM tasks",
         [],
     )?;
     Ok(())
