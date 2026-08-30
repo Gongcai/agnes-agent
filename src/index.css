@@ -215,7 +215,7 @@ body.quick-window-body #root {
 
 /* ============ Markdown 渲染（中文优化） ============ */
 .markdown-body {
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.75;
   color: #292524; /* stone-800 */
   /* 中文换行优化：允许在任意字符间断行，避免长英文/URL/代码撑破布局 */
@@ -993,7 +993,7 @@ pre,
   color: var(--claude-ink) !important;
   box-shadow: none !important;
   padding: 11px 17px !important;
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.7;
 }
 
@@ -1052,7 +1052,7 @@ pre,
 
 .agnes-chat-messages .agnes-assistant-body {
   color: var(--claude-body);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.78;
 }
 
@@ -1111,9 +1111,9 @@ pre,
   background: transparent;
   padding: 0;
   color: var(--claude-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 400;
-  line-height: 20px;
+  line-height: 1.667;
   transition: color 140ms ease;
 }
 
@@ -1128,7 +1128,7 @@ pre,
   border-left: 1px solid var(--claude-border-strong);
   padding: 0 0 2px 24px;
   color: var(--claude-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 400;
   line-height: 1.7;
 }
@@ -1169,9 +1169,9 @@ pre,
   background: transparent;
   padding: 0;
   color: var(--claude-muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 400;
-  line-height: 20px;
+  line-height: 1.818;
   transition: color 140ms ease;
 }
 
@@ -1187,12 +1187,12 @@ pre,
 }
 
 .agnes-tool-title {
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .agnes-tool-name {
   color: var(--claude-body);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .agnes-tool-preview {
@@ -1200,7 +1200,7 @@ pre,
   max-width: min(240px, 30vw);
   overflow: hidden;
   color: var(--claude-muted-soft);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1211,7 +1211,7 @@ pre,
   align-items: center;
   gap: 4px;
   color: var(--claude-muted);
-  font-size: 10px;
+  font-size: 0.625rem;
 }
 
 .agnes-tool-status-dot {
@@ -1243,7 +1243,7 @@ pre,
   border-left: 1px solid var(--claude-border-strong);
   padding: 0 0 2px 24px;
   color: var(--claude-body);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .agnes-tool-rail-icon {
@@ -1400,7 +1400,7 @@ pre,
 .agnes-app .markdown-body {
   color: var(--claude-body);
   font-family: var(--claude-ui-font);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.78;
 }
 
