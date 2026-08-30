@@ -1510,19 +1510,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const refresh = () => {
       void getSyncStatus()
         .then(async (status) => {
-          const [conflicts, devices] = await Promise.all([
-            listSyncConflicts(),
-            status.credentialConfigured ? listSyncDevices() : Promise.resolve([]),
-          ]);
           if (!active) return;
           setSyncStatus(status);
           if (!syncGatewayDraftInitialized.current) {
             setSyncGatewayDraft(status.gatewayUrl);
             syncGatewayDraftInitialized.current = true;
           }
-          setSyncConflicts(conflicts);
-          setSyncDevices(devices);
           setSyncStatusError(null);
+
+          const [conflictsResult, devicesResult] = await Promise.allSettled([
+            listSyncConflicts(),
+            status.credentialConfigured ? listSyncDevices() : Promise.resolve([]),
+          ]);
+          if (!active) return;
+          if (conflictsResult.status === "fulfilled") {
+            setSyncConflicts(conflictsResult.value);
+          }
+          if (devicesResult.status === "fulfilled") {
+            setSyncDevices(devicesResult.value);
+          }
+          const auxiliaryError = [conflictsResult, devicesResult].find(
+            (result): result is PromiseRejectedResult => result.status === "rejected",
+          );
+          if (auxiliaryError) {
+            setSyncStatusError(String(auxiliaryError.reason));
+          }
         })
         .catch((error) => {
           if (active) setSyncStatusError(String(error));
