@@ -994,7 +994,8 @@ pre,
 
 .agnes-chat-messages {
   width: 100%;
-  max-width: 768px !important;
+  /* Keep the chat column aligned with the rem-based font scale. */
+  max-width: 48rem !important;
   padding: 36px 32px 170px !important;
   contain: layout paint;
   overscroll-behavior: contain;
