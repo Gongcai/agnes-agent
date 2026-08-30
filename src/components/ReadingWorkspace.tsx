@@ -392,6 +392,8 @@ const EpubPane: React.FC<{
   const fontScaleRef = useRef(getCachedFontScale());
   const highlightsRef = useRef(highlights);
   const appliedHighlightsRef = useRef(new Map<string, { cfiRange: string; color: string }>());
+  const pendingProgressRef = useRef<string | null>(null);
+  const progressReportTimerRef = useRef<number | null>(null);
   const [toc, setToc] = useState<NavItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -580,16 +582,26 @@ const EpubPane: React.FC<{
         rendered.on("relocated", (location: Location) => {
           const cfi = location?.start?.cfi;
           if (!cfi) return;
-          onProgress(cfi);
+          pendingProgressRef.current = cfi;
+          if (progressReportTimerRef.current === null) {
+            progressReportTimerRef.current = window.setTimeout(() => {
+              progressReportTimerRef.current = null;
+              const pending = pendingProgressRef.current;
+              pendingProgressRef.current = null;
+              if (pending) onProgress(pending);
+            }, 250);
+          }
           const percentage = epub.locations.length() > 0
             ? epub.locations.percentageFromCfi(cfi)
             : location.start.percentage;
           if (Number.isFinite(percentage)) {
-            setReadingProgress(Math.min(1, Math.max(0, percentage)));
+            const nextProgress = Math.min(1, Math.max(0, percentage));
+            setReadingProgress((current) => current === nextProgress ? current : nextProgress);
           }
           const href = location.start.href?.split("#")[0];
           const chapter = flattenToc(navigation.toc).find((item) => item.href.split("#")[0] === href);
-          setCurrentChapter(chapter?.label?.trim() ?? "");
+          const nextChapter = chapter?.label?.trim() ?? "";
+          setCurrentChapter((current) => current === nextChapter ? current : nextChapter);
         });
         const attachContextMenu = (target: Contents | { contents?: Contents }) => {
           // EPUB.js runs this hook twice: first with an IframeView and later
@@ -762,6 +774,13 @@ const EpubPane: React.FC<{
       resizeObserver?.disconnect();
       resizeObserver = null;
       if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+      if (progressReportTimerRef.current !== null) {
+        window.clearTimeout(progressReportTimerRef.current);
+        progressReportTimerRef.current = null;
+      }
+      const pendingProgress = pendingProgressRef.current;
+      pendingProgressRef.current = null;
+      if (pendingProgress) onProgress(pendingProgress);
       renditionRef.current?.destroy();
       bookRef.current?.destroy();
       renditionRef.current = null;
@@ -1055,6 +1074,7 @@ export const ReadingWorkspace: React.FC = () => {
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const preferenceSaveTimerRef = useRef<number | null>(null);
   const pendingReadingPreferencesRef = useRef<ReadingPreferences | null>(null);
+  const persistedProgressRef = useRef(new Map<string, string>());
   const prefersReducedMotion = useReducedMotion();
 
   const selectedBook = useMemo(
@@ -1403,6 +1423,20 @@ export const ReadingWorkspace: React.FC = () => {
     setIsConversationHistoryOpen(false);
   };
 
+  const handleReadingProgress = (bookId: string, cfi: string) => {
+    setBooks((current) => {
+      const next = current.map((book) => {
+        if (book.id !== bookId || book.progress_cfi === cfi) return book;
+        return { ...book, progress_cfi: cfi };
+      });
+      return next.some((book, index) => book !== current[index]) ? next : current;
+    });
+    if (persistedProgressRef.current.get(bookId) !== cfi) {
+      persistedProgressRef.current.set(bookId, cfi);
+      void invoke("update_reading_book_progress", { bookId, cfi }).catch(console.error);
+    }
+  };
+
   return (
     <main className="agnes-feature-workspace agnes-reading-workspace flex min-w-0 flex-1 flex-col bg-canvas lg:flex-row">
       {selectedBook ? (
@@ -1418,10 +1452,7 @@ export const ReadingWorkspace: React.FC = () => {
             onBackToShelf={returnToShelf}
             onToggleHighlightMode={() => setHighlightMode((enabled) => !enabled)}
             onHighlightColorChange={setHighlightColor}
-            onProgress={(cfi) => {
-              setBooks((current) => current.map((book) => book.id === selectedBook.id ? { ...book, progress_cfi: cfi } : book));
-              void invoke("update_reading_book_progress", { bookId: selectedBook.id, cfi }).catch(console.error);
-            }}
+            onProgress={(cfi) => handleReadingProgress(selectedBook.id, cfi)}
             onCreateHighlight={(selection) => void createHighlight(selection)}
             onUpdateHighlight={updateHighlight}
             onDeleteHighlight={deleteHighlight}
