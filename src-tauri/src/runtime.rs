@@ -502,7 +502,8 @@ impl AgentRuntime for AndroidLinuxRuntime {
             .snapshot
             .lock()
             .expect("runtime snapshot lock poisoned") = snapshot;
-        Ok(self.status())
+        // A successful manual install should leave the Runtime usable immediately.
+        self.start()
     }
 
     fn rollback_package(&self) -> AppResult<AgentRuntimeStatus> {
@@ -520,6 +521,9 @@ impl AgentRuntime for AndroidLinuxRuntime {
     }
 
     fn start(&self) -> AppResult<AgentRuntimeStatus> {
+        if self.agent.is_running() {
+            return Ok(self.status());
+        }
         let status = self.status();
         if status.runtime_version.is_none() {
             if !status.bundled_runtime_available || !status.proot_available {

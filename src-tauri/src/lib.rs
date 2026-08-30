@@ -483,6 +483,36 @@ pub fn run() {
                 secret_store_startup_error,
             });
 
+            #[cfg(target_os = "android")]
+            {
+                // Keep first installation explicit; every later app launch warms the
+                // installed Runtime in the background before the first user request.
+                let runtime = app.state::<AppState>().runtime.clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        if runtime.status().runtime_version.is_none() {
+                            return Ok(None);
+                        }
+                        runtime.start().map(Some)
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(Some(status))) => {
+                            eprintln!("[runtime][android] 自动启动完成: {}", status.detail);
+                        }
+                        Ok(Ok(None)) => {
+                            eprintln!("[runtime][android] 尚未安装，等待用户首次安装");
+                        }
+                        Ok(Err(error)) => {
+                            eprintln!("[runtime][android] 自动启动失败: {error}");
+                        }
+                        Err(error) => {
+                            eprintln!("[runtime][android] 自动启动任务异常退出: {error}");
+                        }
+                    }
+                });
+            }
+
             #[cfg(desktop)]
             setup_system_tray(app.handle())?;
 
