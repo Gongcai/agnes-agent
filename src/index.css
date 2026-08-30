@@ -2109,6 +2109,68 @@ pre,
 }
 
 @media (max-width: 640px) {
+  .agnes-calendar-workspace,
+  .agnes-todo-workspace,
+  .agnes-knowledge-workspace > div {
+    position: relative;
+  }
+
+  .agnes-calendar-workspace[data-mobile-detail="false"] .agnes-calendar-detail,
+  .agnes-todo-workspace[data-mobile-detail="false"] .agnes-todo-detail,
+  .agnes-knowledge-workspace[data-mobile-detail="false"] .agnes-knowledge-detail {
+    display: none !important;
+  }
+
+  .agnes-calendar-workspace[data-mobile-detail="true"] .agnes-calendar-sidebar,
+  .agnes-todo-workspace[data-mobile-detail="true"] .agnes-todo-sidebar,
+  .agnes-knowledge-workspace[data-mobile-detail="true"] .agnes-knowledge-sidebar {
+    display: none !important;
+  }
+
+  .agnes-calendar-sidebar,
+  .agnes-todo-sidebar,
+  .agnes-knowledge-sidebar,
+  .agnes-calendar-detail,
+  .agnes-todo-detail,
+  .agnes-knowledge-detail {
+    width: 100% !important;
+    min-width: 0 !important;
+    border-right: 0 !important;
+  }
+
+  .agnes-calendar-sidebar,
+  .agnes-todo-sidebar {
+    padding: 16px !important;
+  }
+
+  .agnes-knowledge-sidebar {
+    padding: 16px !important;
+  }
+
+  .agnes-mobile-detail-back {
+    display: grid !important;
+  }
+
+  .agnes-calendar-detail > .sticky {
+    padding-inline: 12px !important;
+  }
+
+  .agnes-todo-detail > header {
+    padding-inline: 16px !important;
+  }
+
+  .agnes-knowledge-detail {
+    padding: 16px !important;
+  }
+
+  .agnes-knowledge-detail > div > div:first-child {
+    align-items: flex-start;
+  }
+
+  .agnes-knowledge-detail > div > div:first-child > div:last-child {
+    flex-wrap: wrap;
+  }
+
   .agnes-drive-workspace .agnes-drive-content {
     position: relative;
   }

@@ -10,7 +10,7 @@ import interactionPlugin from "@fullcalendar/interaction";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { DateTime } from "luxon";
-import { CalendarPlus, CheckSquare, CaretLeft, CaretRight, CircleNotch } from "@phosphor-icons/react";
+import { ArrowLeft, CalendarPlus, CheckSquare, CaretLeft, CaretRight, CircleNotch } from "@phosphor-icons/react";
 import { CalendarFilters } from "./CalendarFilters";
 import { DayAgenda } from "./DayAgenda";
 import { EventEditorDialog } from "./EventEditorDialog";
@@ -72,6 +72,7 @@ export function CalendarWorkspace({
   const [viewTitle, setViewTitle] = useState("");
   const [viewType, setViewType] = useState("dayGridMonth");
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -253,6 +254,7 @@ export function CalendarWorkspace({
 
   useEffect(() => {
     if (!requestedEventId) return;
+    setMobileDetailOpen(true);
     let active = true;
     invoke<CalendarEvent>("get_calendar_event", { eventId: requestedEventId })
       .then(async (event) => {
@@ -380,6 +382,7 @@ export function CalendarWorkspace({
       const rows = await invoke<PlannerCalendar[]>("list_calendars");
       setCalendars(rows);
       setVisibleCalendarIds((current) => new Set([...current, id]));
+      setMobileDetailOpen(true);
     } catch (reason) {
       setError(String(reason));
       throw reason;
@@ -389,7 +392,10 @@ export function CalendarWorkspace({
   };
 
   return (
-    <div className="flex min-h-0 flex-1">
+    <div
+      className="agnes-calendar-workspace flex min-h-0 flex-1"
+      data-mobile-detail={mobileDetailOpen ? "true" : "false"}
+    >
       <CalendarFilters
         calendars={calendars}
         visibleIds={visibleCalendarIds}
@@ -405,11 +411,21 @@ export function CalendarWorkspace({
         }
         onToggleTaskLayer={() => setTaskLayerVisible((visible) => !visible)}
         onCreateCalendar={createCalendar}
+        onOpenCalendar={() => setMobileDetailOpen(true)}
       />
 
-      <section className="min-w-0 flex-1 overflow-y-auto bg-[#FAF9F5]">
+      <section className="agnes-calendar-detail min-w-0 flex-1 overflow-y-auto bg-[#FAF9F5]">
         <div className="sticky top-0 z-20 flex min-h-14 items-center justify-between border-b border-stone-200 bg-[#FAF9F5] px-5">
           <div className="flex min-w-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setMobileDetailOpen(false)}
+              className="agnes-mobile-detail-back grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-600 hover:bg-stone-100"
+              title="返回日历列表"
+              aria-label="返回日历列表"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
             <button
               type="button"
               onClick={() => calendarRef.current?.getApi().prev()}

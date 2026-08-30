@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { CalendarBlank, Check, CheckCircle, CaretDown, CaretRight, PlusCircle, Tray, ListChecks, ListPlus, CircleNotch, MagnifyingGlass, Star, Sun, X } from "@phosphor-icons/react";
+import { ArrowLeft, CalendarBlank, Check, CheckCircle, CaretDown, CaretRight, PlusCircle, Tray, ListChecks, ListPlus, CircleNotch, MagnifyingGlass, Star, Sun, X } from "@phosphor-icons/react";
 import type {
   SmartTaskView,
   Task,
@@ -66,6 +66,7 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
   const [tasks, setTasks] = useState<Task[]>([]);
   const [view, setView] = useState<TaskView>({ kind: "smart", id: "my-day" });
   const [openTaskId, setOpenTaskId] = useState<string | null>(requestedTaskId);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(Boolean(requestedTaskId));
   const [query, setQuery] = useState("");
   const [showCompleted, setShowCompleted] = useState(true);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
@@ -96,7 +97,10 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
   }, [loadData]);
 
   useEffect(() => {
-    if (requestedTaskId) setOpenTaskId(requestedTaskId);
+    if (requestedTaskId) {
+      setOpenTaskId(requestedTaskId);
+      setMobileDetailOpen(true);
+    }
   }, [requestedTaskId]);
 
   const currentView = useMemo(() => {
@@ -274,6 +278,7 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
       setCreateListOpen(false);
       await loadData();
       setView({ kind: "list", id });
+      setMobileDetailOpen(true);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -349,8 +354,11 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
   };
 
   return (
-    <div className="flex min-h-0 flex-1">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-stone-200 bg-white px-3 py-4">
+    <div
+      className="agnes-todo-workspace flex min-h-0 flex-1"
+      data-mobile-detail={mobileDetailOpen ? "true" : "false"}
+    >
+      <aside className="agnes-todo-sidebar flex w-56 shrink-0 flex-col border-r border-stone-200 bg-white px-3 py-4">
         <nav className="space-y-0.5">
           {smartViews.map((item) => {
             const Icon = item.icon;
@@ -360,7 +368,10 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setView({ kind: "smart", id: item.id })}
+                onClick={() => {
+                  setView({ kind: "smart", id: item.id });
+                  setMobileDetailOpen(true);
+                }}
                 className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-xs ${
                   active ? "bg-white font-semibold text-stone-900 shadow-sm" : "text-stone-600 hover:bg-stone-100"
                 }`}
@@ -395,7 +406,10 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
               <button
                 key={list.id}
                 type="button"
-                onClick={() => setView({ kind: "list", id: list.id })}
+                onClick={() => {
+                  setView({ kind: "list", id: list.id });
+                  setMobileDetailOpen(true);
+                }}
                 className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-xs ${
                   active ? "bg-white font-semibold text-stone-900 shadow-sm" : "text-stone-600 hover:bg-stone-100"
                 }`}
@@ -412,9 +426,18 @@ export function TodoWorkspace({ requestedTaskId, onCloseRequestedTask }: TodoWor
         </nav>
       </aside>
 
-      <section className="flex min-w-0 flex-1 flex-col bg-[#FAF9F5]">
+      <section className="agnes-todo-detail flex min-w-0 flex-1 flex-col bg-[#FAF9F5]">
         <header className="flex min-h-20 shrink-0 items-center justify-between px-5 py-3">
           <div className="flex min-w-0 items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setMobileDetailOpen(false)}
+              className="agnes-mobile-detail-back grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-600 hover:bg-stone-100"
+              title="返回待办列表"
+              aria-label="返回待办列表"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
             <currentView.icon className="h-5 w-5 shrink-0 text-[#4f7f68]" />
             <div className="min-w-0">
               <h1 className="truncate text-lg font-semibold text-stone-900">{currentView.title}</h1>

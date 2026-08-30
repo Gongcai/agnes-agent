@@ -12,6 +12,7 @@ interface CalendarFiltersProps {
   onToggleCalendar: (calendarId: string) => void;
   onToggleTaskLayer: () => void;
   onCreateCalendar: (name: string, color: string) => Promise<void>;
+  onOpenCalendar: (calendarId: string) => void;
 }
 
 export function CalendarFilters({
@@ -22,6 +23,7 @@ export function CalendarFilters({
   onToggleCalendar,
   onToggleTaskLayer,
   onCreateCalendar,
+  onOpenCalendar,
 }: CalendarFiltersProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [name, setName] = useState("");
@@ -41,7 +43,7 @@ export function CalendarFilters({
 
   return (
     <>
-      <aside className="flex w-56 shrink-0 flex-col border-r border-stone-200 bg-white px-3 py-4">
+      <aside className="agnes-calendar-sidebar flex w-56 shrink-0 flex-col border-r border-stone-200 bg-white px-3 py-4">
         <div className="mb-2 flex h-8 items-center justify-between px-2">
           <span className="text-[11px] font-semibold text-stone-500">我的日历</span>
           <button
@@ -60,6 +62,10 @@ export function CalendarFilters({
             return (
               <label
                 key={calendar.id}
+                onClick={(event) => {
+                  if ((event.target as HTMLElement).tagName === "INPUT") return;
+                  onOpenCalendar(calendar.id);
+                }}
                 className="flex h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-xs text-stone-700 hover:bg-stone-100"
               >
                 <input

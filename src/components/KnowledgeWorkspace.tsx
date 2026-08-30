@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { BookOpen, CloudArrowUp, FilePlus, Files, FolderPlus, CircleNotch, Devices, MagnifyingGlass, Square } from "@phosphor-icons/react";
+import { ArrowLeft, BookOpen, CloudArrowUp, FilePlus, Files, FolderPlus, CircleNotch, Devices, MagnifyingGlass, Square } from "@phosphor-icons/react";
 import { useAgentStore } from "../store/useAgentStore";
 
 interface Collection {
@@ -103,6 +103,7 @@ export const KnowledgeWorkspace: React.FC = () => {
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(
     null,
   );
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -202,6 +203,7 @@ export const KnowledgeWorkspace: React.FC = () => {
       });
       await loadCollections();
       setSelectedCollectionId(id);
+      setMobileDetailOpen(true);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -406,7 +408,10 @@ export const KnowledgeWorkspace: React.FC = () => {
   );
 
   return (
-    <main className="agnes-feature-workspace agnes-knowledge-workspace flex h-full min-w-0 flex-1 flex-col bg-[#FAF9F5]">
+    <main
+      className="agnes-feature-workspace agnes-knowledge-workspace flex h-full min-w-0 flex-1 flex-col bg-[#FAF9F5]"
+      data-mobile-detail={mobileDetailOpen ? "true" : "false"}
+    >
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white px-6">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-sm font-semibold text-stone-800">
@@ -418,7 +423,7 @@ export const KnowledgeWorkspace: React.FC = () => {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <section className="agnes-subnav flex w-60 shrink-0 flex-col border-r border-stone-200 bg-white p-3">
+        <section className="agnes-subnav agnes-knowledge-sidebar flex w-60 shrink-0 flex-col border-r border-stone-200 bg-white p-3">
           <div className="mb-2 flex items-center justify-between px-1">
             <span className="text-[10px] font-bold uppercase tracking-wider text-stone-400">
               Collections
@@ -439,6 +444,7 @@ export const KnowledgeWorkspace: React.FC = () => {
                   setSelectedCollectionId(collection.id);
                   setResults([]);
                   setIndexStatus(null);
+                  setMobileDetailOpen(true);
                 }}
                 aria-current={collection.id === selectedCollectionId ? "true" : undefined}
                 className={`agnes-knowledge-collection flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs ${
@@ -462,16 +468,27 @@ export const KnowledgeWorkspace: React.FC = () => {
           </div>
         </section>
 
-        <section className="agnes-feature-content flex min-w-0 flex-1 flex-col p-6">
+        <section className="agnes-feature-content agnes-knowledge-detail flex min-w-0 flex-1 flex-col p-6">
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-5">
             <div className="flex items-center justify-between gap-4">
-              <div>
-                <h1 className="text-lg font-semibold text-stone-900">
-                  {selectedCollection?.name ?? "本地知识库"}
-                </h1>
-                <p className="mt-1 text-xs text-stone-500">
-                  本地检索；使用远程模型时，嵌入和召回内容会发送给该模型服务
-                </p>
+              <div className="flex min-w-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMobileDetailOpen(false)}
+                  className="agnes-mobile-detail-back grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-600 hover:bg-stone-100"
+                  title="返回知识库列表"
+                  aria-label="返回知识库列表"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </button>
+                <div className="min-w-0">
+                  <h1 className="text-lg font-semibold text-stone-900">
+                    {selectedCollection?.name ?? "本地知识库"}
+                  </h1>
+                  <p className="mt-1 text-xs text-stone-500">
+                    本地检索；使用远程模型时，嵌入和召回内容会发送给该模型服务
+                  </p>
+                </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <button
