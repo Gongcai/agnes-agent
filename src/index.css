@@ -2666,7 +2666,11 @@ pre,
   }
 
   .agnes-chat-messages {
-    padding: 20px 14px 154px !important;
+    padding: 20px 14px calc(154px + var(--agnes-keyboard-height, 0px)) !important;
+  }
+
+  .agnes-chat-composer:not(.agnes-chat-composer--empty) {
+    bottom: var(--agnes-keyboard-height, 0px) !important;
   }
 
   .agnes-chat-messages .agnes-message-row > div:last-child {

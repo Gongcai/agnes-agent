@@ -84,6 +84,40 @@ export default function App() {
     };
   }, [init]);
 
+  // Android WebView may keep the layout viewport full-height while the IME
+  // only reduces the visual viewport. Expose that difference to the composer.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+
+    let frame = 0;
+    const updateKeyboardHeight = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const keyboardHeight = Math.max(
+          0,
+          window.innerHeight - viewport.height - viewport.offsetTop,
+        );
+        document.documentElement.style.setProperty(
+          "--agnes-keyboard-height",
+          `${Math.round(keyboardHeight)}px`,
+        );
+      });
+    };
+
+    updateKeyboardHeight();
+    viewport.addEventListener("resize", updateKeyboardHeight);
+    viewport.addEventListener("scroll", updateKeyboardHeight);
+    window.addEventListener("resize", updateKeyboardHeight);
+    return () => {
+      cancelAnimationFrame(frame);
+      viewport.removeEventListener("resize", updateKeyboardHeight);
+      viewport.removeEventListener("scroll", updateKeyboardHeight);
+      window.removeEventListener("resize", updateKeyboardHeight);
+      document.documentElement.style.removeProperty("--agnes-keyboard-height");
+    };
+  }, []);
+
   useEffect(() => {
     let active = true;
     Promise.all([

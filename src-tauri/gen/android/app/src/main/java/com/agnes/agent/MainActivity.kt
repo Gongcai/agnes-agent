@@ -3,6 +3,7 @@ package com.agnes.agent
 import android.os.Bundle
 import android.graphics.Color
 import android.view.View
+import android.view.WindowManager
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -15,6 +16,7 @@ class MainActivity : TauriActivity() {
     super.onCreate(savedInstanceState)
 
     // Keep the webview below Android system bars while retaining edge-to-edge compatibility.
+    window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
     WindowCompat.setDecorFitsSystemWindows(window, false)
     window.statusBarColor = Color.rgb(245, 240, 232)
     window.navigationBarColor = Color.rgb(250, 249, 245)
