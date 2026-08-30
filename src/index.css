@@ -317,6 +317,27 @@ body.quick-window-body #root {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* Keep long code listings out of the CJK prose line-breaking path. */
+.markdown-code-block {
+  contain: layout style;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.markdown-code-block pre,
+.markdown-code-block code {
+  word-break: normal;
+  overflow-wrap: normal;
+  line-break: auto;
+  -webkit-line-break: auto;
+  text-rendering: auto;
+}
+
+.markdown-code-block pre {
+  margin: 0;
+  white-space: pre;
+}
+
 /* 表格 */
 .markdown-body table {
   border-collapse: collapse;

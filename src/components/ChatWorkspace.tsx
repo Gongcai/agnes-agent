@@ -922,7 +922,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 className={`space-y-1.5 ${
                   isUser && editingMsgId === message.id
                     ? "agnes-message-column--editing w-full max-w-[620px]"
-                    : "max-w-[85%]"
+                    : "max-w-[85%] min-w-0"
                 } ${isUser ? "order-1" : "order-2"}`}
               >
                 {isUser ? (

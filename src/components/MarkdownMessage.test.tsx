@@ -1,7 +1,44 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { MarkdownMessage, normalizeLatexDelimiters } from "./MarkdownMessage";
+import {
+  MarkdownMessage,
+  normalizeLatexDelimiters,
+  parseStandaloneFencedCodeBlock,
+} from "./MarkdownMessage";
+
+describe("MarkdownMessage fenced code", () => {
+  it("parses a standalone fenced block without the Markdown plugin pipeline", () => {
+    expect(parseStandaloneFencedCodeBlock([
+      "```tmux",
+      "set -g mouse on",
+      "set -sg escape-time 10",
+      "```",
+    ].join("\n"))).toEqual({
+      lang: "tmux",
+      text: "set -g mouse on\nset -sg escape-time 10\n",
+    });
+  });
+
+  it("keeps mixed Markdown content on the general parser path", () => {
+    expect(parseStandaloneFencedCodeBlock([
+      "配置如下：",
+      "",
+      "```sh",
+      "echo ready",
+      "```",
+    ].join("\n"))).toBeNull();
+  });
+
+  it("renders standalone code with the isolated code block class", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownMessage content={"```tmux\nset -g mouse on\n```"} />,
+    );
+
+    expect(html).toContain("markdown-code-block");
+    expect(html).toContain("set -g mouse on");
+  });
+});
 
 describe("MarkdownMessage LaTeX delimiters", () => {
   it("normalizes inline and display TeX delimiters before Markdown parsing", () => {

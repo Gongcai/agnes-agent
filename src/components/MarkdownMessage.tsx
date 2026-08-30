@@ -25,7 +25,7 @@ const CodeBlock: React.FC<{ lang: string; text: string; children: React.ReactNod
     );
   };
   return (
-    <div className="my-3 overflow-hidden rounded-lg border border-hairline bg-[#181715] shadow-card">
+    <div className="markdown-code-block my-3 overflow-hidden rounded-lg border border-hairline bg-[#181715] shadow-card">
       <div className="flex items-center justify-between border-b border-white/10 bg-[#1f1e1b] px-3.5 py-1.5 text-[0.6875rem] text-ink-muted">
         <div className="flex items-center gap-1.5">
           <span className="h-2 w-2 rounded-full bg-stone-600/60" />
@@ -46,6 +46,40 @@ const CodeBlock: React.FC<{ lang: string; text: string; children: React.ReactNod
     </div>
   );
 };
+
+interface StandaloneFencedCodeBlock {
+  lang: string;
+  text: string;
+}
+
+/** Parse a block containing only one fenced code section without a Markdown AST. */
+export function parseStandaloneFencedCodeBlock(source: string): StandaloneFencedCodeBlock | null {
+  const lines = source.split("\n");
+  while (lines.length > 0 && !lines[0].trim()) lines.shift();
+  while (lines.length > 0 && !lines[lines.length - 1].trim()) lines.pop();
+  if (lines.length < 2) return null;
+
+  const opening = /^( {0,3})(`{3,}|~{3,})([^\r]*)$/.exec(lines[0]);
+  if (!opening) return null;
+  const marker = opening[2];
+  const closing = /^( {0,3})(`{3,}|~{3,})[ \t]*\r?$/.exec(lines[lines.length - 1]);
+  if (
+    !closing
+    || closing[2][0] !== marker[0]
+    || closing[2].length < marker.length
+  ) return null;
+
+  const info = opening[3].trim();
+  const lang = info ? info.split(/\s+/, 1)[0].replace(/^language-/, "") : "";
+  const body = lines
+    .slice(1, -1)
+    .map((line) => line.replace(/\r$/, ""))
+    .join("\n");
+  return {
+    lang,
+    text: body ? `${body}\n` : "",
+  };
+}
 
 interface MarkdownMessageProps {
   content: string;
@@ -238,38 +272,49 @@ function splitMarkdownBlocks(content: string): string[] {
   return blocks;
 }
 
-const MarkdownBlock = React.memo<{ content: string }>(({ content }) => (
-  <ReactMarkdown
-    remarkPlugins={[remarkGfm, remarkMath]}
-    rehypePlugins={[rehypeKatex]}
-    components={{
-      // 去除 react-markdown 默认的 <pre> 包裹，改由 code 自行渲染代码块
-      pre: ({ children }) => <>{children}</>,
-      code({ node, className, children, ...props }) {
-        const text = String(children ?? "");
-        const match = /language-(\w+)/.exec(className || "");
-        const isBlock = !!match || text.includes("\n");
-        if (isBlock) {
+const MarkdownBlock = React.memo<{ content: string }>(({ content }) => {
+  const standaloneCode = parseStandaloneFencedCodeBlock(content);
+  if (standaloneCode) {
+    return (
+      <CodeBlock lang={standaloneCode.lang} text={standaloneCode.text}>
+        {standaloneCode.text}
+      </CodeBlock>
+    );
+  }
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex]}
+      components={{
+        // 去除 react-markdown 默认的 <pre> 包裹，改由 code 自行渲染代码块
+        pre: ({ children }) => <>{children}</>,
+        code({ node, className, children, ...props }) {
+          const text = String(children ?? "");
+          const match = /language-(\w+)/.exec(className || "");
+          const isBlock = !!match || text.includes("\n");
+          if (isBlock) {
+            return (
+              <CodeBlock lang={match ? match[1] : ""} text={text}>
+                {children}
+              </CodeBlock>
+            );
+          }
           return (
-            <CodeBlock lang={match ? match[1] : ""} text={text}>
+            <code
+              className="px-1.5 py-0.5 rounded-md bg-canvas-surface-card border border-hairline text-[0.88em] font-mono text-coral font-medium"
+              {...props}
+            >
               {children}
-            </CodeBlock>
+            </code>
           );
-        }
-        return (
-          <code
-            className="px-1.5 py-0.5 rounded-md bg-canvas-surface-card border border-hairline text-[0.88em] font-mono text-coral font-medium"
-            {...props}
-          >
-            {children}
-          </code>
-        );
-      },
-    }}
-  >
-    {content}
-  </ReactMarkdown>
-));
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+});
 
 /// Markdown + LaTeX 渲染（中文优化）。用于助手消息文本。
 const MarkdownMessageView: React.FC<MarkdownMessageProps> = ({ content, streaming = false }) => {
