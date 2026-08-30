@@ -1630,11 +1630,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleSaveSyncCredential = async () => {
-    if (!syncToken.trim()) return;
+    const token = syncToken.trim();
+    if (!token) return;
     setIsSavingSyncCredential(true);
     setSyncStatusError(null);
     try {
-      const status = await setSyncCredential({ kind: "bearer", token: syncToken });
+      const status = await setSyncCredential({ kind: "bearer", token });
       setSyncStatus(status);
       setSyncDevices(await listSyncDevices());
       setSyncToken("");
