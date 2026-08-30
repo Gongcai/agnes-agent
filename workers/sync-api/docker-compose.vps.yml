@@ -1,0 +1,16 @@
+services:
+  sync-api:
+    build:
+      context: ../..
+      dockerfile: workers/sync-api/Dockerfile
+    container_name: agnes-sync-api
+    restart: unless-stopped
+    init: true
+    mem_limit: 768m
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "${SYNC_API_PORT:-8787}:8787"
+    volumes:
+      - ./vps-data:/data
+      - ./.dev.vars:/app/workers/sync-api/.dev.vars:ro

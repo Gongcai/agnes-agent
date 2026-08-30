@@ -48,12 +48,39 @@ use crate::sync::replication::{
     ArtifactInstaller, ArtifactReplicationCoordinator, ReplicationReport,
 };
 
-pub const SYNC_GATEWAY_URL: &str = "https://agnes-sync-api.caiwengong136.workers.dev";
+pub const DEFAULT_SYNC_GATEWAY_URL: &str = "https://agnes-sync-api.caiwengong136.workers.dev";
 const MAX_BATCHES_PER_RUN: usize = 5;
 const MAX_PUSH_CHANGES: usize = 20;
 const MAX_REMOTE_PAGES_PER_RUN: usize = 5;
 const MAX_MANUAL_SYNC_RUNS: usize = 100;
 const E2EE_TRANSPORT_READY: bool = true;
+
+fn normalize_gateway_url(value: &str) -> AppResult<String> {
+    let value = value.trim();
+    let url = reqwest::Url::parse(value)
+        .map_err(|error| AppError::Other(format!("Invalid sync gateway URL: {error}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(AppError::Other(
+            "Sync gateway URL must use http or https".into(),
+        ));
+    }
+    if url.host_str().is_none() {
+        return Err(AppError::Other(
+            "Sync gateway URL must include a host".into(),
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(AppError::Other(
+            "Sync gateway URL must not include credentials".into(),
+        ));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(AppError::Other(
+            "Sync gateway URL must not include a query or fragment".into(),
+        ));
+    }
+    Ok(value.trim_end_matches('/').to_string())
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -174,6 +201,7 @@ impl SyncService {
     pub async fn status(&self) -> AppResult<SyncStatus> {
         self.cleanup_expired_pairings(unix_millis()).await;
         let database = self.db.get_sync_status().await?;
+        let gateway_url = self.gateway_url().await?;
         let credential_configured = match self.secrets.get(SYNC_CREDENTIAL_SECRET_ID).await? {
             Some(secret) => {
                 drop(Zeroizing::new(secret));
@@ -208,12 +236,31 @@ impl SyncService {
         };
         Ok(SyncStatus {
             state: state.into(),
-            gateway_url: SYNC_GATEWAY_URL.into(),
+            gateway_url,
             credential_configured,
             syncing,
             e2ee,
             database,
         })
+    }
+
+    pub async fn gateway_url(&self) -> AppResult<String> {
+        let configured = self
+            .db
+            .get_setting(crate::sync::settings::SYNC_GATEWAY_URL_SETTING.into())
+            .await?;
+        normalize_gateway_url(configured.as_deref().unwrap_or(DEFAULT_SYNC_GATEWAY_URL))
+    }
+
+    pub async fn set_gateway_url(&self, value: &str) -> AppResult<SyncStatus> {
+        let normalized = normalize_gateway_url(value)?;
+        self.db
+            .set_setting(
+                crate::sync::settings::SYNC_GATEWAY_URL_SETTING.into(),
+                normalized,
+            )
+            .await?;
+        self.status().await
     }
 
     pub async fn run_once(&self) -> AppResult<SyncStatus> {
@@ -1165,7 +1212,7 @@ impl SyncService {
         }
         let device_name = device_name.trim();
         let session_id = pairing::pairing_session_id(pairing_code)?;
-        let transport = self.public_pairing_transport();
+        let transport = self.public_pairing_transport().await?;
         let session = transport
             .get_public_pairing_session(&session_id)
             .await
@@ -1236,7 +1283,7 @@ impl SyncService {
             self.pairing_responders.lock().await.remove(&session_id);
             return Err(AppError::Other("Pairing session expired".into()));
         }
-        let public_transport = self.public_pairing_transport();
+        let public_transport = self.public_pairing_transport().await?;
         public_transport
             .join_pairing_session(&session_id, &join_request)
             .await
@@ -1285,8 +1332,8 @@ impl SyncService {
                 .insert(session_id.clone(), state);
             return Err(error);
         }
-        let authenticated =
-            HttpSyncTransport::new(self.client.clone(), SYNC_GATEWAY_URL, credential);
+        let gateway_url = self.gateway_url().await?;
+        let authenticated = HttpSyncTransport::new(self.client.clone(), &gateway_url, credential);
         if let Err(error) = authenticated.consume_pairing_session(&session_id).await {
             eprintln!("[sync] pairing package cleanup failed: {}", error.code);
         }
@@ -1353,8 +1400,12 @@ impl SyncService {
         Ok(())
     }
 
-    fn public_pairing_transport(&self) -> HttpSyncTransport {
-        HttpSyncTransport::new_public(self.client.clone(), SYNC_GATEWAY_URL)
+    async fn public_pairing_transport(&self) -> AppResult<HttpSyncTransport> {
+        let gateway_url = self.gateway_url().await?;
+        Ok(HttpSyncTransport::new_public(
+            self.client.clone(),
+            &gateway_url,
+        ))
     }
 
     async fn secret_configured(&self, secret_id: &str) -> AppResult<bool> {
@@ -1373,9 +1424,10 @@ impl SyncService {
         };
         let secret = Zeroizing::new(secret);
         let credential = SyncCredential::parse(secret.as_str())?;
+        let gateway_url = self.gateway_url().await?;
         Ok(Some(HttpSyncTransport::new(
             self.client.clone(),
-            SYNC_GATEWAY_URL,
+            &gateway_url,
             credential,
         )))
     }
@@ -2318,6 +2370,36 @@ fn unix_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod gateway_url_tests {
+    use super::normalize_gateway_url;
+
+    #[test]
+    fn normalizes_a_custom_gateway_without_trailing_slashes() {
+        assert_eq!(
+            normalize_gateway_url(" http://127.0.0.1:8787/// ").unwrap(),
+            "http://127.0.0.1:8787"
+        );
+        assert_eq!(
+            normalize_gateway_url("https://sync.example.test/api/").unwrap(),
+            "https://sync.example.test/api"
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_gateway_url_forms() {
+        for value in [
+            "sync.example.test",
+            "ftp://sync.example.test",
+            "https://user:password@sync.example.test",
+            "https://sync.example.test?token=secret",
+            "https://sync.example.test/#fragment",
+        ] {
+            assert!(normalize_gateway_url(value).is_err(), "accepted {value}");
+        }
+    }
 }
 
 #[cfg(test)]

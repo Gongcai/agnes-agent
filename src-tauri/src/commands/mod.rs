@@ -763,6 +763,7 @@ pub async fn set_sync_credential(
     state: tauri::State<'_, AppState>,
     credential: Option<SyncCredential>,
 ) -> AppResult<crate::sync::engine::SyncStatus> {
+    let gateway_url = state.sync.gateway_url().await?;
     let previous = state.secrets.get(SYNC_CREDENTIAL_SECRET_ID).await?;
     let replacement = credential.map(SyncCredential::into_secret).transpose()?;
     let write_result = match replacement.as_deref() {
@@ -805,11 +806,7 @@ pub async fn set_sync_credential(
                 .unwrap_or_default()
         )));
     }
-    if let Err(storage_error) = state
-        .storage
-        .ensure_managed_r2_account(crate::sync::engine::SYNC_GATEWAY_URL)
-        .await
-    {
+    if let Err(storage_error) = state.storage.ensure_managed_r2_account(&gateway_url).await {
         let credential_rollback_error = restore_secret(
             state.secrets.as_ref(),
             SYNC_CREDENTIAL_SECRET_ID,
@@ -819,7 +816,7 @@ pub async fn set_sync_credential(
         .err();
         let binding_rollback_error = state
             .storage
-            .ensure_managed_r2_account(crate::sync::engine::SYNC_GATEWAY_URL)
+            .ensure_managed_r2_account(&gateway_url)
             .await
             .err();
         return Err(AppError::Other(format!(
@@ -833,6 +830,39 @@ pub async fn set_sync_credential(
         )));
     }
     state.sync.status().await
+}
+
+#[tauri::command]
+pub async fn set_sync_gateway_url(
+    state: tauri::State<'_, AppState>,
+    gateway_url: String,
+) -> AppResult<crate::sync::engine::SyncStatus> {
+    let previous_url = state.sync.gateway_url().await?;
+    let status = state.sync.set_gateway_url(&gateway_url).await?;
+
+    if let Err(storage_error) = state
+        .storage
+        .ensure_managed_r2_account(&status.gateway_url)
+        .await
+    {
+        let gateway_rollback_error = state.sync.set_gateway_url(&previous_url).await.err();
+        let binding_rollback_error = state
+            .storage
+            .ensure_managed_r2_account(&previous_url)
+            .await
+            .err();
+        return Err(AppError::Other(format!(
+            "managed R2 account refresh failed: {storage_error}{}{}",
+            gateway_rollback_error
+                .map(|error| format!("; gateway rollback failed: {error}"))
+                .unwrap_or_default(),
+            binding_rollback_error
+                .map(|error| format!("; binding rollback failed: {error}"))
+                .unwrap_or_default()
+        )));
+    }
+
+    Ok(status)
 }
 
 #[tauri::command]

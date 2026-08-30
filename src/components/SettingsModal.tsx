@@ -33,6 +33,7 @@ import {
   revokeSyncDevice,
   restoreSyncE2ee,
   setSyncCredential,
+  setSyncGatewayUrl,
   startSyncPairing,
   syncNow,
   type SyncConflict,
@@ -854,6 +855,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncStatusError, setSyncStatusError] = useState<string | null>(null);
   const [isSyncingNow, setIsSyncingNow] = useState(false);
+  const [syncGatewayDraft, setSyncGatewayDraft] = useState("");
+  const [isSavingSyncGateway, setIsSavingSyncGateway] = useState(false);
+  const syncGatewayDraftInitialized = useRef(false);
   const [syncToken, setSyncToken] = useState("");
   const [showSyncToken, setShowSyncToken] = useState(false);
   const [isSavingSyncCredential, setIsSavingSyncCredential] = useState(false);
@@ -1498,7 +1502,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   useEffect(() => {
-    if (!isOpen || activeTab !== "sync") return;
+    if (!isOpen || activeTab !== "sync") {
+      syncGatewayDraftInitialized.current = false;
+      return;
+    }
     let active = true;
     const refresh = () => {
       void getSyncStatus()
@@ -1509,6 +1516,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           ]);
           if (!active) return;
           setSyncStatus(status);
+          if (!syncGatewayDraftInitialized.current) {
+            setSyncGatewayDraft(status.gatewayUrl);
+            syncGatewayDraftInitialized.current = true;
+          }
           setSyncConflicts(conflicts);
           setSyncDevices(devices);
           setSyncStatusError(null);
@@ -1554,6 +1565,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setSyncStatusError(String(error));
     } finally {
       setIsSyncingNow(false);
+    }
+  };
+
+  const handleSaveSyncGateway = async () => {
+    const gatewayUrl = syncGatewayDraft.trim();
+    if (!gatewayUrl) return;
+    setIsSavingSyncGateway(true);
+    setSyncStatusError(null);
+    try {
+      const status = await setSyncGatewayUrl(gatewayUrl);
+      setSyncStatus(status);
+      setSyncGatewayDraft(status.gatewayUrl);
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsSavingSyncGateway(false);
     }
   };
 
@@ -4049,11 +4076,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                     {syncStatus && (
                       <div className="grid grid-cols-2 gap-x-5 gap-y-3 text-xs">
-                        <div className="min-w-0">
-                          <span className="block text-stone-400 mb-1">同步网关</span>
-                          <span className="block truncate text-stone-600" title={syncStatus.gatewayUrl}>
-                            {syncStatus.gatewayUrl}
-                          </span>
+                        <div className="col-span-2 min-w-0">
+                          <label className="mb-1 block text-stone-400" htmlFor="sync-gateway-url">
+                            同步网关
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              id="sync-gateway-url"
+                              type="url"
+                              value={syncGatewayDraft}
+                              onChange={(event) => setSyncGatewayDraft(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  void handleSaveSyncGateway();
+                                }
+                              }}
+                              placeholder="https://your-sync-server.example"
+                              autoComplete="url"
+                              spellCheck={false}
+                              className="h-9 min-w-0 flex-1 rounded-md border border-stone-200 bg-white px-2.5 font-mono text-[11px] text-stone-700 outline-none focus:border-stone-400"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleSaveSyncGateway}
+                              disabled={!syncGatewayDraft.trim() || isSavingSyncGateway}
+                              className="h-9 shrink-0 rounded-md bg-stone-800 px-3 text-xs font-medium text-white hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {isSavingSyncGateway ? "保存中..." : "保存"}
+                            </button>
+                          </div>
+                          <p className="mt-1 text-[10px] text-stone-400">
+                            仅保存在本机；可填写自建服务器地址，例如包含端口的 http/https 地址。
+                          </p>
                         </div>
                         <div className="min-w-0">
                           <span className="block text-stone-400 mb-1">本机标识</span>

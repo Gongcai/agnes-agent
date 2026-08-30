@@ -41,6 +41,22 @@ pnpm sync:dev
 
 测试请求使用 `Authorization: Bearer <token>`。`ownerId` 和 `deviceId` 来自 Worker 端的凭证映射，客户端不能自行指定 owner；请求中的 `deviceId` 只用于与已认证设备交叉校验。
 
+## 自托管 Docker
+
+可以将同步 API 部署到自己的 VPS 或局域网服务器，不需要修改应用源码。Docker Compose
+默认使用宿主机端口 `8787`，也可以通过 `SYNC_API_PORT` 自定义：
+
+```bash
+cp workers/sync-api/.dev.vars.example workers/sync-api/.dev.vars
+SYNC_API_PORT=9000 docker compose -f workers/sync-api/docker-compose.vps.yml up -d --build
+```
+
+如果仓库中没有 `.dev.vars.example`，可以按照上面的本地验证示例创建未提交的
+`workers/sync-api/.dev.vars`，并为个人部署使用随机的测试令牌。服务器防火墙只需放行你选择的
+宿主机端口。应用设置页中的“同步网关”填写 `http://<your-server-ip>:<your-port>` 或 HTTPS
+地址；该配置只保存在当前设备，不会进入同步数据或开源仓库。正式使用前应在反向代理后启用 HTTPS，
+并使用生产认证配置。
+
 ## 远端资源
 
 ```bash

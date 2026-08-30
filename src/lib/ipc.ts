@@ -148,6 +148,10 @@ export async function setSyncCredential(
   return invoke<SyncStatus>("set_sync_credential", { credential });
 }
 
+export async function setSyncGatewayUrl(gatewayUrl: string): Promise<SyncStatus> {
+  return invoke<SyncStatus>("set_sync_gateway_url", { gatewayUrl });
+}
+
 export interface SyncRecoveryMaterial {
   recoveryKey: string;
   recoveryBundle: string;

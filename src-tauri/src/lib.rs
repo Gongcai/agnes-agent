@@ -409,8 +409,10 @@ pub fn run() {
             ));
             let storage_media_proxy = Arc::new(storage::StorageMediaProxy::new(storage.clone()));
             let backup = storage::LocalBackupService::new(db.clone(), storage.clone());
+            let gateway_url = tauri::async_runtime::block_on(sync.gateway_url())
+                .unwrap_or_else(|_| sync::engine::DEFAULT_SYNC_GATEWAY_URL.to_string());
             if let Err(error) = tauri::async_runtime::block_on(
-                storage.ensure_managed_r2_account(sync::engine::SYNC_GATEWAY_URL),
+                storage.ensure_managed_r2_account(&gateway_url),
             ) {
                 eprintln!("[storage] managed R2 account bootstrap failed: {error}");
             }
@@ -648,6 +650,7 @@ pub fn run() {
             commands::revoke_sync_device,
             commands::sync_now,
             commands::set_sync_credential,
+            commands::set_sync_gateway_url,
             commands::begin_sync_e2ee_setup,
             commands::begin_sync_e2ee_rotation,
             commands::confirm_sync_e2ee_setup,

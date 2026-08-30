@@ -6,6 +6,8 @@ pub enum SettingClass {
     Unknown,
 }
 
+pub const SYNC_GATEWAY_URL_SETTING: &str = "sync:gateway_url";
+
 pub fn classify(key: &str) -> SettingClass {
     if key.starts_with("provider:") && key.ends_with(":api_key") {
         return SettingClass::Secret;
@@ -15,6 +17,7 @@ pub fn classify(key: &str) -> SettingClass {
         || key == "models:role_assignments"
         || key == "mcp:servers:v1"
         || key == "web:search_providers:v1"
+        || key == SYNC_GATEWAY_URL_SETTING
         || key == crate::storage::artifact_cache::ARTIFACT_CACHE_QUOTA_SETTING
     {
         return SettingClass::DeviceLocal;
@@ -47,6 +50,10 @@ mod tests {
         assert_eq!(classify("agent:agnes:memory_md"), SettingClass::Unknown);
         assert_eq!(classify("provider:openai:api_key"), SettingClass::Secret);
         assert_eq!(classify("mcp:servers:v1"), SettingClass::DeviceLocal);
+        assert_eq!(
+            classify(SYNC_GATEWAY_URL_SETTING),
+            SettingClass::DeviceLocal
+        );
         assert_eq!(
             classify("web:search_providers:v1"),
             SettingClass::DeviceLocal
