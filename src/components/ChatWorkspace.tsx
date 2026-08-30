@@ -448,6 +448,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const mobileInputRef = useRef<HTMLTextAreaElement>(null);
   const mobileInputBlurTimerRef = useRef<number | null>(null);
   const messageEndRef = useRef<HTMLDivElement>(null);
+  const modelPickerRef = useRef<HTMLDivElement>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [attachmentPicker, setAttachmentPicker] = useState<"menu" | "knowledge" | "skill" | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -477,6 +478,27 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   useEffect(() => {
     loadProviders().catch(console.error);
   }, [loadProviders]);
+
+  useEffect(() => {
+    if (!modelPickerOpen) return;
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !modelPickerRef.current?.contains(target)) {
+        setModelPickerOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setModelPickerOpen(false);
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [modelPickerOpen]);
 
   useEffect(() => {
     let active = true;
@@ -1469,7 +1491,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             </div>
             <div className="flex items-center gap-2">
               {/* Model, thinking, and permission switcher */}
-              <div className="relative">
+              <div ref={modelPickerRef} className="relative">
                 <button
                   onClick={() => {
                     setModelPickerOpen((v) => !v);
@@ -1496,13 +1518,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 </button>
 
                 {modelPickerOpen && (
-                  <>
-                    {/* 点击空白关闭 */}
-                    <div
-                      className="fixed inset-0 z-40"
-                      onClick={() => setModelPickerOpen(false)}
-                    />
-                    <div className="absolute bottom-full right-0 mb-2 z-50 w-80 max-h-80 overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl p-2">
+                  <div className="absolute bottom-full right-0 mb-2 z-50 w-80 max-h-80 overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl p-2">
                       {providers.length === 0 ? (
                         <div className="px-3 py-6 text-center text-[11px] text-stone-400">
                           暂无服务商，请到设置 → 模型中添加
@@ -1669,8 +1685,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           触发 {summaryTriggerTokens.toLocaleString()}
                         </span>
                       </div>
-                    </div>
-                  </>
+                  </div>
                 )}
               </div>
 
