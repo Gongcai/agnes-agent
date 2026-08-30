@@ -319,6 +319,16 @@ pub fn delete(conn: &mut Connection, id: &str) -> AppResult<()> {
     let now_str = now();
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let device_id = super::sync::device_id(&tx)?;
+    let complete_message_ids = {
+        let mut statement = tx.prepare(
+            "SELECT id FROM messages WHERE session_id = ?1 AND deleted_at IS NULL \
+             AND status = 'complete' ORDER BY seq, id",
+        )?;
+        let ids = statement
+            .query_map([id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids
+    };
     let changed = tx.execute(
         "UPDATE sessions \
          SET deleted_at = ?1, updated_at = ?2, version = version + 1, origin_device_id = ?3 \
@@ -327,6 +337,14 @@ pub fn delete(conn: &mut Connection, id: &str) -> AppResult<()> {
     )?;
     if changed > 0 {
         enqueue_current(&tx, id)?;
+        tx.execute(
+            "UPDATE messages SET deleted_at = ?1, updated_at = ?1, version = version + 1, \
+             origin_device_id = ?2 WHERE session_id = ?3 AND deleted_at IS NULL",
+            params![now_str, device_id, id],
+        )?;
+        for message_id in complete_message_ids {
+            super::messages::enqueue_if_complete(&tx, &message_id)?;
+        }
     }
     tx.commit()?;
     Ok(())
@@ -440,6 +458,39 @@ mod tests {
         assert!(!initial_payload.contains("permission_mode"));
         assert!(initial_payload.contains("workspace_id"));
         assert!(initial_payload.contains("local-workspace"));
+    }
+
+    #[test]
+    fn deleting_session_tombstones_complete_messages_in_the_same_transaction() {
+        let mut conn = setup();
+        insert(&mut conn, &new_session(None)).unwrap();
+        conn.execute(
+            "INSERT INTO messages \
+             (id,session_id,role,seq,status,created_at,updated_at,version) \
+             VALUES ('message-1','session-1','user',1,'complete','1','1',1)",
+            [],
+        )
+        .unwrap();
+
+        delete(&mut conn, "session-1").unwrap();
+
+        let message_deleted: bool = conn
+            .query_row(
+                "SELECT deleted_at IS NOT NULL FROM messages WHERE id='message-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let message_operation: String = conn
+            .query_row(
+                "SELECT operation FROM sync_outbox WHERE entity_type='message' \
+                 AND entity_id='message-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(message_deleted);
+        assert_eq!(message_operation, "delete");
     }
 
     #[test]

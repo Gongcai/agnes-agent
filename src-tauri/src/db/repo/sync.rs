@@ -536,7 +536,7 @@ pub fn reset_for_gateway_change(conn: &mut Connection) -> AppResult<()> {
     tx.execute("DELETE FROM sync_conflicts", [])?;
     tx.execute("DELETE FROM sync_outbox", [])?;
     for (entity_type, entity_id, operation, local_version, source_payload) in baseline {
-        let deleted = match operation.as_str() {
+        let mut deleted = match operation.as_str() {
             "upsert" => false,
             "delete" => true,
             other => {
@@ -555,6 +555,9 @@ pub fn reset_for_gateway_change(conn: &mut Connection) -> AppResult<()> {
                 "baseline source payload is missing for {entity_type} `{entity_id}`"
             )));
         }
+        if !deleted && baseline_parent_is_missing_or_deleted(&tx, &entity_type, &source)? {
+            deleted = true;
+        }
         enqueue_projection(
             &tx,
             parse_sync_entity_type(&entity_type)?,
@@ -566,6 +569,105 @@ pub fn reset_for_gateway_change(conn: &mut Connection) -> AppResult<()> {
     }
     tx.commit()?;
     Ok(())
+}
+
+fn baseline_parent_is_missing_or_deleted(
+    tx: &Transaction<'_>,
+    entity_type: &str,
+    source: &Value,
+) -> AppResult<bool> {
+    let required = |key: &str| {
+        source
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| AppError::Other(format!("baseline `{entity_type}` is missing `{key}`")))
+    };
+    let optional = |key: &str| {
+        source
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+    };
+    let unavailable = |sql: &str, id: &str| -> AppResult<bool> {
+        Ok(tx
+            .query_row(sql, [id], |row| row.get::<_, bool>(0))
+            .optional()?
+            .unwrap_or(true))
+    };
+
+    match entity_type {
+        "workspace" | "memory_file" => unavailable(
+            "SELECT deleted_at IS NOT NULL FROM agents WHERE id = ?1",
+            required("agent_id")?,
+        ),
+        "session" => {
+            if unavailable(
+                "SELECT deleted_at IS NOT NULL FROM agents WHERE id = ?1",
+                required("agent_id")?,
+            )? {
+                return Ok(true);
+            }
+            optional("workspace_id")
+                .map(|id| {
+                    unavailable(
+                        "SELECT deleted_at IS NOT NULL FROM workspaces WHERE id = ?1",
+                        id,
+                    )
+                })
+                .transpose()
+                .map(|value| value.unwrap_or(false))
+        }
+        "message" => unavailable(
+            "SELECT deleted_at IS NOT NULL FROM sessions WHERE id = ?1",
+            required("session_id")?,
+        ),
+        "calendar_event" => unavailable(
+            "SELECT deleted_at IS NOT NULL FROM calendars WHERE id = ?1",
+            required("calendar_id")?,
+        ),
+        "event_exception" => {
+            if unavailable(
+                "SELECT deleted_at IS NOT NULL FROM calendar_events WHERE id = ?1",
+                required("event_id")?,
+            )? {
+                return Ok(true);
+            }
+            optional("replacement_event_id")
+                .map(|id| {
+                    unavailable(
+                        "SELECT deleted_at IS NOT NULL FROM calendar_events WHERE id = ?1",
+                        id,
+                    )
+                })
+                .transpose()
+                .map(|value| value.unwrap_or(false))
+        }
+        "task" => {
+            if unavailable(
+                "SELECT deleted_at IS NOT NULL FROM task_lists WHERE id = ?1",
+                required("task_list_id")?,
+            )? {
+                return Ok(true);
+            }
+            for key in ["parent_id", "recurrence_source_id"] {
+                if let Some(id) = optional(key) {
+                    if unavailable("SELECT deleted_at IS NOT NULL FROM tasks WHERE id = ?1", id)? {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        }
+        "reading_highlight" => unavailable(
+            "SELECT deleted_at IS NOT NULL FROM reading_books WHERE id = ?1",
+            required("book_id")?,
+        ),
+        "user_profile" | "agent" | "calendar" | "task_list" | "reading_book" => Ok(false),
+        other => Err(AppError::Other(format!(
+            "unsupported baseline entity type `{other}`"
+        ))),
+    }
 }
 
 pub fn set_e2ee_key_version(conn: &Connection, key_version: Option<i64>) -> AppResult<()> {
@@ -4363,6 +4465,60 @@ mod tests {
                     None,
                     true,
                 ),
+            ]
+        );
+    }
+
+    #[test]
+    fn gateway_baseline_tombstones_messages_whose_session_is_deleted() {
+        let mut conn = setup();
+        conn.execute(
+            "INSERT INTO agents (id,name) VALUES ('agent-1','Agent')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id,agent_id,title,version,deleted_at) \
+             VALUES ('session-1','agent-1','Deleted session',2,'2')",
+            [],
+        )
+        .unwrap();
+        enqueue_projection(
+            &conn,
+            SyncEntityType::Session,
+            "session-1",
+            2,
+            true,
+            &Value::Object(Default::default()),
+        )
+        .unwrap();
+        enqueue_projection(
+            &conn,
+            SyncEntityType::Message,
+            "message-1",
+            1,
+            false,
+            &message_payload("message-1", "session-1"),
+        )
+        .unwrap();
+
+        reset_for_gateway_change(&mut conn).unwrap();
+
+        let rows: Vec<(String, String, Option<i64>)> = conn
+            .prepare(
+                "SELECT entity_type,operation,base_revision FROM sync_outbox \
+                 ORDER BY created_at,rowid",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("session".into(), "delete".into(), None),
+                ("message".into(), "delete".into(), None),
             ]
         );
     }
