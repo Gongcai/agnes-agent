@@ -1,0 +1,9 @@
+.git
+.gitignore
+node_modules
+**/node_modules
+**/.wrangler
+**/.dev.vars
+**/vps-data
+src-tauri/target
+dist
