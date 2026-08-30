@@ -43,7 +43,14 @@ class MainActivity : TauriActivity() {
     // be positioned above the keyboard without relying on visualViewport.
     ViewCompat.setOnApplyWindowInsetsListener(webView) { _, insets ->
       val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-      val imeHeight = if (insets.isVisible(WindowInsetsCompat.Type.ime())) ime.bottom else 0
+      val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+      val imeHeight = if (insets.isVisible(WindowInsetsCompat.Type.ime())) {
+        // The content view already applies the navigation bar inset as bottom
+        // padding, so only expose the IME overlap inside the WebView viewport.
+        maxOf(0, ime.bottom - bars.bottom)
+      } else {
+        0
+      }
       val density = resources.displayMetrics.density
       val cssHeight = imeHeight / density
       val imeVisible = imeHeight > 0

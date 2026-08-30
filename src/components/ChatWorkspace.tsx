@@ -1708,9 +1708,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
       </div>
 
-      {/* Android uses a separate fixed composer while the IME is open. The
-          visual viewport variables place it above keyboards that do not resize
-          the layout viewport. */}
+      {/* Android uses a separate fixed composer while the IME is open. Native
+          insets place it above keyboards that do not resize the WebView. */}
       <div
         className="agnes-mobile-input-overlay"
         data-active={mobileInputActive}
