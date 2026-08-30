@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.graphics.Color
 import android.view.View
 import android.view.WindowManager
+import android.webkit.WebView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -32,5 +33,27 @@ class MainActivity : TauriActivity() {
       insets
     }
     ViewCompat.requestApplyInsets(content)
+  }
+
+  override fun onWebViewCreate(webView: WebView) {
+    super.onWebViewCreate(webView)
+
+    // Some Android WebViews keep the layout viewport at full height when the
+    // IME opens. Pass the native IME inset to the web UI so fixed composers can
+    // be positioned above the keyboard without relying on visualViewport.
+    ViewCompat.setOnApplyWindowInsetsListener(webView) { _, insets ->
+      val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+      val imeHeight = if (insets.isVisible(WindowInsetsCompat.Type.ime())) ime.bottom else 0
+      val density = resources.displayMetrics.density
+      val cssHeight = imeHeight / density
+      webView.post {
+        webView.evaluateJavascript(
+          "document.documentElement.style.setProperty('--agnes-native-ime-height', '${cssHeight}px')",
+          null,
+        )
+      }
+      insets
+    }
+    ViewCompat.requestApplyInsets(webView)
   }
 }

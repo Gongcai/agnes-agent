@@ -2720,12 +2720,13 @@ pre,
 
   .agnes-mobile-input-overlay {
     position: fixed;
-    top: calc(
-      var(--agnes-visual-viewport-height, 100vh)
-      + var(--agnes-visual-viewport-offset-top, 0px)
-    );
+    top: auto;
     right: 0;
     left: 0;
+    bottom: max(
+      var(--agnes-native-ime-height, 0px),
+      var(--agnes-keyboard-height, 0px)
+    );
     z-index: 100;
     display: block;
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
