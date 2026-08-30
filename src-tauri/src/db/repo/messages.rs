@@ -678,6 +678,27 @@ pub(crate) fn enqueue_if_complete(conn: &Connection, id: &str) -> AppResult<bool
     Ok(true)
 }
 
+pub(crate) fn enqueue_existing_sync_entities(conn: &Connection) -> AppResult<()> {
+    let ids = {
+        let mut statement = conn.prepare(
+            "SELECT id FROM messages m WHERE m.status='complete' AND NOT EXISTS (
+               SELECT 1 FROM sync_entity_state e WHERE e.entity_type='message' AND e.entity_id=m.id
+             ) AND NOT EXISTS (
+               SELECT 1 FROM sync_outbox o WHERE o.entity_type='message' AND o.entity_id=m.id
+                 AND o.status IN ('pending','in_flight','conflict','dead_letter')
+             ) ORDER BY session_id, seq, id",
+        )?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids
+    };
+    for id in ids {
+        enqueue_if_complete(conn, &id)?;
+    }
+    Ok(())
+}
+
 fn enqueue_complete_parents_selecting(conn: &Connection, child_id: &str) -> AppResult<()> {
     let parent_ids = {
         let mut statement = conn.prepare(

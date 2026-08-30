@@ -1621,6 +1621,9 @@ impl SyncService {
             return Ok(());
         }
         self.db.ensure_user_profile_sync().await?;
+        if initial_status.bootstrap_state == "complete" {
+            self.db.ensure_existing_sync_entities().await?;
+        }
         if !self.run_bootstrap(transport, keyset).await? {
             return Ok(());
         }

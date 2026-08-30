@@ -382,6 +382,27 @@ pub(crate) fn enqueue_current(conn: &Connection, id: &str) -> AppResult<()> {
     Ok(())
 }
 
+pub(crate) fn enqueue_existing_sync_entities(conn: &Connection) -> AppResult<()> {
+    let ids = {
+        let mut statement = conn.prepare(
+            "SELECT id FROM sessions s WHERE NOT EXISTS (
+               SELECT 1 FROM sync_entity_state e WHERE e.entity_type='session' AND e.entity_id=s.id
+             ) AND NOT EXISTS (
+               SELECT 1 FROM sync_outbox o WHERE o.entity_type='session' AND o.entity_id=s.id
+                 AND o.status IN ('pending','in_flight','conflict','dead_letter')
+             ) ORDER BY id",
+        )?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids
+    };
+    for id in ids {
+        enqueue_current(conn, &id)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

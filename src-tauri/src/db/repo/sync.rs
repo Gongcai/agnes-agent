@@ -403,6 +403,15 @@ pub fn device_id(conn: &Connection) -> AppResult<String> {
     .map_err(Into::into)
 }
 
+/// Register legacy local rows that predate sync metadata initialization.
+pub fn enqueue_existing_local_entities(conn: &mut Connection) -> AppResult<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    crate::db::repo::sessions::enqueue_existing_sync_entities(&tx)?;
+    crate::db::repo::messages::enqueue_existing_sync_entities(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn enqueue_projection(
     conn: &Connection,
     entity_type: SyncEntityType,

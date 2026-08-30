@@ -68,6 +68,9 @@ pub enum DbCommand {
     EnsureUserProfileSync {
         resp: oneshot::Sender<AppResult<()>>,
     },
+    EnsureExistingSyncEntities {
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     DeleteSetting {
         key: String,
         resp: oneshot::Sender<AppResult<()>>,
@@ -877,6 +880,13 @@ impl DbActorHandle {
     pub async fn ensure_user_profile_sync(&self) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::EnsureUserProfileSync { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn ensure_existing_sync_entities(&self) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::EnsureExistingSyncEntities { resp })?;
         rx.await
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
@@ -2584,6 +2594,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::EnsureUserProfileSync { resp } => {
                     let _ = resp.send(repo::user_profile::enqueue_existing(&mut conn));
+                }
+                DbCommand::EnsureExistingSyncEntities { resp } => {
+                    let _ = resp.send(repo::sync::enqueue_existing_local_entities(&mut conn));
                 }
                 DbCommand::DeleteSetting { key, resp } => {
                     let _ = resp.send(repo::settings::delete(&conn, &key));
