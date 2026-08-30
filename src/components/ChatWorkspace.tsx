@@ -885,10 +885,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       <div className="agnes-chat-stage relative min-h-0 flex-1 overflow-hidden">
       {/* Message Panel list */}
       <div
-        className={`agnes-chat-messages absolute inset-0 mx-auto w-full max-w-4xl space-y-6 overflow-y-auto p-6 transition-[opacity,transform] duration-500 ease-out motion-reduce:transition-none ${
+        className={`agnes-chat-messages absolute inset-0 mx-auto w-full max-w-4xl space-y-6 overflow-y-auto p-6 ${
           isEmptyConversation
-            ? "pointer-events-none translate-y-4 opacity-0"
-            : "translate-y-0 opacity-100"
+            ? "pointer-events-none transition-[opacity,transform] duration-500 ease-out motion-reduce:transition-none translate-y-4 opacity-0"
+            : "opacity-100"
         }`}
       >
         {messages.map((message, messageIndex) => {
