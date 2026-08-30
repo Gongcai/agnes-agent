@@ -2655,6 +2655,12 @@ pre,
     width: min(84vw, 304px) !important;
   }
 
+  /* Keep the selected feature visible inside the transformed mobile drawer. */
+  .agnes-sidebar .agnes-sidebar-primary-action[aria-current="page"] {
+    background: var(--claude-sidebar-highlight) !important;
+    color: var(--claude-ink) !important;
+  }
+
   .agnes-chat-header button span {
     display: none;
   }
