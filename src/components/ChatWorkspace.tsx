@@ -9,6 +9,7 @@ import type {
   ChatAttachment,
   ChatAttachmentMetadata,
   PermissionMode,
+  SandboxEscalationScope,
   ToolCall,
 } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
@@ -250,6 +251,16 @@ function savedMemoryPath(toolCall: ToolCall): string | null {
     : null;
 }
 
+function sandboxScopeText(scope: SandboxEscalationScope): string {
+  if (scope.kind === "process_filesystem") return "全文件系统（仅本次调用）";
+  if (scope.kind === "file_write_root") return `写入目录：${scope.root ?? "未指定"}`;
+  const parts = [
+    scope.cwd ? `工作目录：${scope.cwd}` : null,
+    ...(scope.writable_roots ?? []).map((root) => `写入目录：${root}`),
+  ].filter(Boolean);
+  return parts.join("；") || "仅当前进程范围";
+}
+
 const ToolCallCard: React.FC<{
   toolCall: ToolCall;
   onApprove: (toolCallId: string, approved: boolean) => Promise<void>;
@@ -332,6 +343,13 @@ const ToolCallCard: React.FC<{
                 {PERMISSION_LABEL[tc.permissionMode]}
               </span>
             )}
+          </div>
+        )}
+
+        {tc.sandboxEscalationScope && (
+          <div className="rounded-md border border-amber-300/70 bg-amber-50/50 px-2.5 py-2 text-[10px] text-ink-secondary dark:bg-amber-950/20">
+            <div className="font-medium text-ink">本次沙箱授权范围</div>
+            <div className="mt-0.5 break-all font-mono">{sandboxScopeText(tc.sandboxEscalationScope)}</div>
           </div>
         )}
 

@@ -632,6 +632,9 @@ def assemble_prompt(
                 + "Normal writes are limited to `$WORKSPACE`, configured "
                 "sandbox writable roots, and system temporary directories such as `$TMPDIR` or `/tmp`; "
                 "additional readable roots in the policy do not automatically grant write access."
+                " A `sandbox_permissions` value is only a request: the model cannot approve its own "
+                "escalation. Prefer workspace-relative commands; any external Shell/Git scope is "
+                "one-call and must be approved by the user."
                 f"{writable_summary}"
             )
         else:

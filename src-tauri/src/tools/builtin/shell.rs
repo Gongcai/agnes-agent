@@ -40,7 +40,7 @@ impl BuiltinTool for ShellTool {
                     "properties": {
                         "command": {"type": "string", "description": "Command to execute."},
                         "cwd": {"type": "string", "description": "Optional working directory; defaults to the workspace."},
-                        "sandbox_permissions": {"type": "string", "enum": ["require_escalated"], "description": "Request one-call filesystem escalation when the command must write outside normal writable roots. This always requires approval."},
+                        "sandbox_permissions": {"type": "string", "enum": ["require_escalated"], "description": "Request a one-call filesystem exception. Statically identified external writes are scoped to their parent directory; opaque side effects require explicit user approval for full process access."},
                         "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "How long to wait before returning a running terminal session."},
                         "timeout_sec": {"type": "integer", "minimum": 0, "maximum": 86400, "description": "Optional total command lifetime; zero means no hard deadline."}
                     },
@@ -344,6 +344,7 @@ pub(crate) fn validate_shell_write_scope(
         return Err("Nested shell command exceeds the safety inspection limit".to_string());
     }
     let tokens = shell_tokens(command)?;
+    validate_stateful_shell_tokens(&tokens)?;
     for (index, token) in tokens.iter().enumerate() {
         if token == ">" || token == ">>" {
             let target = tokens
@@ -466,8 +467,15 @@ fn validate_write_target(
     cwd: &Path,
     sandbox: &dyn crate::tools::sandbox::SandboxGuard,
 ) -> Result<(), String> {
+    match resolve_write_target(target, cwd)? {
+        Some(path) => sandbox.check_write(&path),
+        None => Ok(()),
+    }
+}
+
+fn resolve_write_target(target: &str, cwd: &Path) -> Result<Option<std::path::PathBuf>, String> {
     if target.starts_with('&') || target == "/dev/null" {
-        return Ok(());
+        return Ok(None);
     }
     if target.is_empty()
         || target
@@ -484,7 +492,128 @@ fn validate_write_target(
     } else {
         cwd.join(expanded)
     };
-    sandbox.check_write(&crate::tools::builtin::normalize_path(&path))
+    Ok(Some(crate::tools::builtin::normalize_path(&path)))
+}
+
+/// Return statically identifiable shell write targets for a one-call scoped
+/// sandbox escalation. Dynamic targets remain an error and require an explicit
+/// full-filesystem approval request.
+pub(crate) fn shell_write_targets(
+    command: &str,
+    cwd: &Path,
+    depth: usize,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    if depth > 3 {
+        return Err("Nested shell command exceeds the safety inspection limit".to_string());
+    }
+    let tokens = shell_tokens(command)?;
+    validate_stateful_shell_tokens(&tokens)?;
+    let mut targets = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if token == ">" || token == ">>" {
+            let target = tokens
+                .get(index + 1)
+                .ok_or_else(|| "Output redirection is missing a target".to_string())?;
+            if let Some(path) = resolve_write_target(target, cwd)? {
+                targets.push(path);
+            }
+        }
+    }
+
+    for segment in shell_segments(&tokens) {
+        let Some((command_index, program)) = segment_command(segment) else {
+            continue;
+        };
+        let arguments = &segment[command_index + 1..];
+        match program.as_str() {
+            "tee" | "touch" | "mkdir" | "rmdir" | "rm" | "truncate" | "ln" | "mv" => {
+                for target in arguments
+                    .iter()
+                    .filter(|argument| !argument.starts_with('-'))
+                {
+                    if let Some(path) = resolve_write_target(target, cwd)? {
+                        targets.push(path);
+                    }
+                }
+            }
+            "cp" | "install" => {
+                if let Some(target) = arguments
+                    .iter()
+                    .rev()
+                    .find(|argument| !argument.starts_with('-'))
+                {
+                    if let Some(path) = resolve_write_target(target, cwd)? {
+                        targets.push(path);
+                    }
+                }
+            }
+            "dd" => {
+                for argument in arguments {
+                    if let Some(target) = argument.strip_prefix("of=") {
+                        if let Some(path) = resolve_write_target(target, cwd)? {
+                            targets.push(path);
+                        }
+                    }
+                }
+            }
+            "sed" if arguments.iter().any(|argument| argument.starts_with("-i")) => {
+                for target in arguments
+                    .iter()
+                    .rev()
+                    .take_while(|argument| !argument.starts_with('-'))
+                {
+                    if let Some(path) = resolve_write_target(target, cwd)? {
+                        targets.push(path);
+                    }
+                }
+            }
+            "find" if arguments.iter().any(|argument| argument == "-delete") => {
+                if let Some(target) = arguments.first() {
+                    if let Some(path) = resolve_write_target(target, cwd)? {
+                        targets.push(path);
+                    }
+                }
+            }
+            "bash" | "sh" | "zsh" => {
+                if let Some(flag_index) = arguments.iter().position(|argument| argument == "-c") {
+                    let nested = arguments.get(flag_index + 1).ok_or_else(|| {
+                        "Nested shell `-c` invocation is missing its command".to_string()
+                    })?;
+                    targets.extend(shell_write_targets(nested, cwd, depth + 1)?);
+                }
+            }
+            _ => {}
+        }
+    }
+    targets.sort();
+    targets.dedup();
+    Ok(targets)
+}
+
+fn validate_stateful_shell_tokens(tokens: &[String]) -> Result<(), String> {
+    if tokens.iter().any(|token| {
+        (token.starts_with('~') && token != "~" && !token.starts_with("~/"))
+            || token.starts_with("HOME=")
+            || token.starts_with("PWD=")
+            || token == "export"
+            || token == "unset"
+    }) {
+        return Err("Shell path expansion depends on mutable environment state".to_string());
+    }
+    for segment in shell_segments(tokens) {
+        let Some((_, program)) = segment_command(segment) else {
+            continue;
+        };
+        if matches!(
+            program.as_str(),
+            "cd" | "pushd" | "popd" | "source" | "." | "eval" | "exec"
+        ) {
+            return Err(format!(
+                "Shell command `{program}` changes execution state and cannot be safely scoped"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn segment_command(segment: &[String]) -> Option<(usize, String)> {
@@ -649,5 +778,16 @@ mod tests {
         assert!(command_is_write("echo done\t>result.txt"));
         assert!(command_is_write("git commit -m test"));
         assert!(command_is_write("sed -i 's/a/b/' file.txt"));
+    }
+
+    #[test]
+    fn rejects_stateful_commands_from_static_scope_analysis() {
+        assert!(
+            shell_write_targets("cd /etc && touch marker", Path::new("/workspace"), 0).is_err()
+        );
+        assert!(
+            shell_write_targets("HOME=/etc touch ~/marker", Path::new("/workspace"), 0).is_err()
+        );
+        assert!(shell_write_targets("echo ok > ~root/marker", Path::new("/workspace"), 0).is_err());
     }
 }

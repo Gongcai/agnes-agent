@@ -27,6 +27,13 @@ export interface ModelRoleAssignments {
   fallback_models: string[];
 }
 
+export interface SandboxEscalationScope {
+  kind: "file_write_root" | "process_roots" | "process_filesystem";
+  root?: string;
+  cwd?: string | null;
+  writable_roots?: string[];
+}
+
 const EMPTY_MODEL_ROLES: ModelRoleAssignments = {
   main_model: null,
   image_model: null,
@@ -50,6 +57,7 @@ export interface ToolCall {
   permissionMode?: PermissionMode;
   approvalReason?: string;
   isSecondaryConfirmation?: boolean;
+  sandboxEscalationScope?: SandboxEscalationScope;
   diff?: string;
 }
 
@@ -66,6 +74,7 @@ interface ToolCallEventPayload {
   permission_mode: PermissionMode;
   approval_reason: string;
   is_secondary_confirmation: boolean;
+  sandbox_escalation_scope?: SandboxEscalationScope | null;
   diff?: string;
   status: ToolCall["status"];
 }
@@ -1455,6 +1464,7 @@ export function setupTauriEventListeners() {
       permissionMode: payload.permission_mode,
       approvalReason: payload.approval_reason,
       isSecondaryConfirmation: payload.is_secondary_confirmation,
+      sandboxEscalationScope: payload.sandbox_escalation_scope ?? undefined,
       diff: payload.diff,
       status: payload.status || fallbackStatus,
     });

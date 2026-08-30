@@ -178,6 +178,13 @@ Linux 且 bwrap 可用时，普通命令会在 workspace 可写绑定之后对�
 `deny_write_outside_workspace=true` 时：
 - Landlock 已限定 workspace 外不可写（主防线）。
 - 额外检测 `>`/`>>`/`tee` 目标路径，workspace 外拒绝。
+- 需要一次性越界审批时，静态可识别的目标只授予其最小现存父目录；外部 cwd 只加入该 cwd，不能借此获得写权限。
+- 无法静态限定副作用的 Shell 命令不会自动扩大到 `/`；只有显式 `sandbox_permissions=require_escalated` 且用户批准后，才允许一次性全进程文件系统例外。
+- `cd`/`pushd`/`source`/`eval`/`exec` 以及依赖可变 `HOME`/`PWD` 或用户级 tilde 展开的命令无法安全确定相对路径，未显式请求时拒绝执行。
+
+### 6.5.1 Git 外部仓库范围
+- Git 的 `cwd` 位于 workspace 外时，审批只把该仓库目录加入 Shell cwd 和可写根，不再把整个文件系统设为可写。
+- Git 禁止 `-C`、`--git-dir`、`--work-tree` 等改变仓库边界的参数；需要不可分析的外部副作用时，必须显式请求并由用户批准全进程例外。
 
 ### 6.6 Windows 沙箱策略（跨平台考量）
 Landlock 是 Linux 专属（内核 LSM）。Windows 采用分层降级方案：
@@ -268,7 +275,7 @@ pub struct NetworkPolicy { pub allow: bool }
 - **沙箱主防线**：Landlock（Linux）；Windows 用路径白名单降级，后续 Phase F 引入 Job Object + Restricted Token。
 - **开发工具状态目录**：采用与 Codex `workspace-write + writable_roots` 相同的边界模型；包管理器和测试运行器使用真实用户缓存/工具链目录，不重定向到项目专属缓存。
 - **读取边界**：默认允许 workspace 外只读访问；严格角色可关闭 `allow_read_outside_workspace`，恢复显式根目录白名单。
-- **单次越界授权**：文件、Shell 或 Git 的越界写入会触发 sandbox escalation 审批；批准仅扩展当前工具调用，不修改会话或 Agent 的持久策略。文件工具按目标父目录授权，Shell/Git 按已展示的单条命令授权；无法静态识别副作用的命令可显式传 `sandbox_permissions=require_escalated` 请求审批。
+- **单次越界授权**：文件、Shell 或 Git 的越界写入会触发 sandbox escalation 审批；批准仅扩展当前工具调用，不修改会话或 Agent 的持久策略。文件工具按目标父目录授权，Shell/Git 对静态目标按最小外部根目录授权；外部 cwd 只授予该 cwd。无法静态识别副作用的命令不会自动提权，只有显式传 `sandbox_permissions=require_escalated` 并经用户批准才可获得一次性全进程例外。
 - **网络默认**：默认开（`allow=true`）；用户可在工作区策略关闭，关闭后用 bwrap `--unshare-net` 或启发式拦截。
 - **新工具范围**：file_edit + list_files + grep + apply_patch（codex 风格统一补丁）。
 

@@ -66,7 +66,38 @@ pub struct ApprovalDecision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SandboxEscalation {
     FileWriteRoot(PathBuf),
+    /// Extend a process only to the requested cwd and statically identified
+    /// write roots. Normal on-request approvals stay within this scope.
+    ProcessRoots {
+        cwd: Option<PathBuf>,
+        writable_roots: Vec<PathBuf>,
+    },
+    /// Explicit approval for an opaque command whose filesystem effects cannot
+    /// be bounded before execution.
     ProcessFilesystem,
+}
+
+impl SandboxEscalation {
+    /// Public, path-aware scope rendered in approval cards and audit events.
+    pub fn scope_summary(&self) -> serde_json::Value {
+        match self {
+            Self::FileWriteRoot(root) => serde_json::json!({
+                "kind": "file_write_root",
+                "root": root,
+            }),
+            Self::ProcessRoots {
+                cwd,
+                writable_roots,
+            } => serde_json::json!({
+                "kind": "process_roots",
+                "cwd": cwd,
+                "writable_roots": writable_roots,
+            }),
+            Self::ProcessFilesystem => serde_json::json!({
+                "kind": "process_filesystem",
+            }),
+        }
+    }
 }
 
 /// Determine whether one tool call needs a temporary filesystem exception.
@@ -115,13 +146,47 @@ pub fn sandbox_escalation_for_tool_call(
                 .unwrap_or("");
             let outside_cwd = policy.check_shell(&cwd.to_string_lossy()).is_err()
                 || sandbox.check_cwd(&cwd).is_err();
-            let outside_write = policy.shell.deny_write_outside_workspace
-                && crate::tools::builtin::shell::validate_shell_write_scope(
-                    command, &cwd, &sandbox, 0,
-                )
-                .is_err();
-            (explicitly_requested || outside_cwd || outside_write)
-                .then_some(SandboxEscalation::ProcessFilesystem)
+            let mut writable_roots = Vec::new();
+            let write_targets = crate::tools::builtin::shell::shell_write_targets(command, &cwd, 0);
+            if policy.shell.deny_write_outside_workspace {
+                match &write_targets {
+                    Ok(targets) => {
+                        for target in targets {
+                            if sandbox.check_write(&target).is_ok() {
+                                continue;
+                            }
+                            let Some(root) = existing_write_root(&target) else {
+                                // A top-level path would require `/`; do not
+                                // infer a full-filesystem grant from it.
+                                return explicitly_requested
+                                    .then_some(SandboxEscalation::ProcessFilesystem);
+                            };
+                            writable_roots.push(root);
+                        }
+                    }
+                    Err(_) if explicitly_requested => {
+                        return Some(SandboxEscalation::ProcessFilesystem);
+                    }
+                    Err(_) => {
+                        // Opaque writes are denied by the executor's static
+                        // inspection unless the model explicitly requests a
+                        // user-approved exception.
+                        return None;
+                    }
+                }
+            }
+            writable_roots.sort();
+            writable_roots.dedup();
+            if explicitly_requested && writable_roots.is_empty() && !outside_cwd {
+                // An explicit request is the escape hatch for commands whose
+                // side effects cannot be bounded statically. It is always
+                // covered by the normal user approval gate.
+                return Some(SandboxEscalation::ProcessFilesystem);
+            }
+            (outside_cwd || !writable_roots.is_empty()).then_some(SandboxEscalation::ProcessRoots {
+                cwd: outside_cwd.then_some(cwd),
+                writable_roots,
+            })
         }
         "git" => {
             let explicitly_requested = args
@@ -135,8 +200,18 @@ pub fn sandbox_escalation_for_tool_call(
                 workspace_cwd,
                 policy,
             );
-            (explicitly_requested || sandbox.check_cwd(&cwd).is_err())
-                .then_some(SandboxEscalation::ProcessFilesystem)
+            let outside_cwd = sandbox.check_cwd(&cwd).is_err();
+            if outside_cwd {
+                let writable_roots = existing_git_root(&cwd)
+                    .or_else(|| existing_write_root(&cwd))
+                    .into_iter()
+                    .collect();
+                return Some(SandboxEscalation::ProcessRoots {
+                    cwd: Some(cwd),
+                    writable_roots,
+                });
+            }
+            explicitly_requested.then_some(SandboxEscalation::ProcessFilesystem)
         }
         _ => None,
     }
@@ -151,6 +226,23 @@ pub fn apply_sandbox_escalation(policy: &mut ToolPolicy, escalation: &SandboxEsc
                 policy.sandbox.writable_roots.push(root);
             }
         }
+        SandboxEscalation::ProcessRoots {
+            cwd,
+            writable_roots,
+        } => {
+            if let Some(cwd) = cwd {
+                let cwd = cwd.to_string_lossy().to_string();
+                if !policy.shell.allowed_cwd.contains(&cwd) {
+                    policy.shell.allowed_cwd.push(cwd);
+                }
+            }
+            for root in writable_roots {
+                let root = root.to_string_lossy().to_string();
+                if !policy.sandbox.writable_roots.contains(&root) {
+                    policy.sandbox.writable_roots.push(root);
+                }
+            }
+        }
         SandboxEscalation::ProcessFilesystem => {
             policy.shell.allowed_cwd = vec!["/".to_string()];
             policy.shell.deny_write_outside_workspace = false;
@@ -158,6 +250,47 @@ pub fn apply_sandbox_escalation(policy: &mut ToolPolicy, escalation: &SandboxEsc
                 policy.sandbox.writable_roots.push("/".to_string());
             }
         }
+    }
+}
+
+/// Return the smallest existing parent directory that can contain a target.
+/// Granting `/` remains reserved for an explicit opaque-command approval.
+fn existing_write_root(target: &Path) -> Option<PathBuf> {
+    let normalized = crate::tools::builtin::normalize_path(target);
+    let mut candidate = if normalized.is_dir() {
+        normalized
+    } else if normalized.exists() {
+        normalized.parent()?.to_path_buf()
+    } else {
+        normalized
+    };
+    while !candidate.exists() {
+        candidate = candidate.parent()?.to_path_buf();
+    }
+    let candidate = crate::tools::builtin::normalize_path(&candidate);
+    (candidate != Path::new("/")).then_some(candidate)
+}
+
+/// Find the repository root for an external Git cwd so repository metadata is
+/// writable without granting the whole filesystem. A non-repository cwd falls
+/// back to the cwd's existing parent in the caller.
+fn existing_git_root(cwd: &Path) -> Option<PathBuf> {
+    let normalized = crate::tools::builtin::normalize_path(cwd);
+    let mut candidate = if normalized.is_dir() {
+        normalized
+    } else {
+        normalized.parent()?.to_path_buf()
+    };
+    loop {
+        let git_dir = candidate.join(".git");
+        if git_dir.is_dir() || git_dir.is_file() {
+            return Some(candidate);
+        }
+        let parent = candidate.parent()?.to_path_buf();
+        if parent == candidate {
+            return None;
+        }
+        candidate = parent;
     }
 }
 
@@ -403,11 +536,63 @@ mod tests {
             &policy,
             Some(Path::new("/workspace")),
         );
-        assert_eq!(escalation, Some(SandboxEscalation::ProcessFilesystem));
+        assert_eq!(
+            escalation,
+            Some(SandboxEscalation::ProcessRoots {
+                cwd: None,
+                writable_roots: vec![PathBuf::from("/opt")],
+            })
+        );
 
         apply_sandbox_escalation(&mut policy, escalation.as_ref().unwrap());
         let sandbox = PolicySandbox::new(&policy, Some(Path::new("/workspace")));
         assert!(sandbox.check_write(Path::new("/opt/agnes-output")).is_ok());
+        assert!(sandbox.check_write(Path::new("/etc/agnes-output")).is_err());
+        assert!(policy.shell.deny_write_outside_workspace);
+    }
+
+    #[test]
+    fn shell_outside_cwd_gets_a_readable_but_not_writable_process_scope() {
+        let mut policy = ToolPolicy::default();
+        policy.shell.allowed_cwd = vec!["/workspace".into()];
+        let args = serde_json::json!({
+            "command": "printf ready",
+            "cwd": "/opt"
+        });
+        let escalation = sandbox_escalation_for_tool_call(
+            "shell",
+            &args,
+            &policy,
+            Some(Path::new("/workspace")),
+        );
+        assert_eq!(
+            escalation,
+            Some(SandboxEscalation::ProcessRoots {
+                cwd: Some(PathBuf::from("/opt")),
+                writable_roots: Vec::new(),
+            })
+        );
+
+        apply_sandbox_escalation(&mut policy, escalation.as_ref().unwrap());
+        let sandbox = PolicySandbox::new(&policy, Some(Path::new("/workspace")));
+        assert!(sandbox.check_cwd(Path::new("/opt")).is_ok());
+        assert!(sandbox.check_write(Path::new("/opt/agnes-output")).is_err());
+    }
+
+    #[test]
+    fn shell_top_level_write_is_not_automatically_granted() {
+        let mut policy = ToolPolicy::default();
+        policy.shell.allowed_cwd = vec!["/workspace".into()];
+        let args = serde_json::json!({"command": "touch /agnes-output"});
+        assert_eq!(
+            sandbox_escalation_for_tool_call(
+                "shell",
+                &args,
+                &policy,
+                Some(Path::new("/workspace"))
+            ),
+            None
+        );
     }
 
     #[test]
@@ -427,5 +612,67 @@ mod tests {
             ),
             Some(SandboxEscalation::ProcessFilesystem)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_outside_cwd_is_scoped_to_the_repository() {
+        let external_root = PathBuf::from(format!(
+            "/dev/shm/agnes-git-sandbox-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&external_root).unwrap();
+        let mut policy = ToolPolicy::default();
+        policy.shell.allowed_cwd = vec!["/workspace".into()];
+        let external_cwd = external_root.to_string_lossy().to_string();
+        let args = serde_json::json!({
+            "args": ["status"],
+            "cwd": external_cwd
+        });
+        let escalation =
+            sandbox_escalation_for_tool_call("git", &args, &policy, Some(Path::new("/workspace")));
+        assert_eq!(
+            escalation,
+            Some(SandboxEscalation::ProcessRoots {
+                cwd: Some(external_root.clone()),
+                writable_roots: vec![external_root.clone()],
+            })
+        );
+        apply_sandbox_escalation(&mut policy, escalation.as_ref().unwrap());
+        let sandbox = PolicySandbox::new(&policy, Some(Path::new("/workspace")));
+        assert!(sandbox
+            .check_write(&external_root.join(".git/index"))
+            .is_ok());
+        assert!(sandbox
+            .check_write(&external_root.join("../other/.git/index"))
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_nested_external_cwd_includes_repository_metadata_root() {
+        let external_root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("agnes-git-nested-sandbox-{}", uuid::Uuid::new_v4()));
+        let nested = external_root.join("src");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir(&external_root.join(".git")).unwrap();
+        let mut policy = ToolPolicy::default();
+        policy.shell.allowed_cwd = vec!["/workspace".into()];
+        let args = serde_json::json!({
+            "args": ["status"],
+            "cwd": nested.to_string_lossy()
+        });
+        let escalation =
+            sandbox_escalation_for_tool_call("git", &args, &policy, Some(Path::new("/workspace")));
+        assert_eq!(
+            escalation,
+            Some(SandboxEscalation::ProcessRoots {
+                cwd: Some(nested.clone()),
+                writable_roots: vec![external_root.clone()],
+            })
+        );
+        std::fs::remove_dir_all(external_root).unwrap();
     }
 }

@@ -631,12 +631,20 @@ async fn handle_conn<R: tauri::Runtime>(
                         .flatten();
                     let approval_required =
                         approval_decision.needs_approval || sandbox_escalation.is_some();
-                    let approval_reason =
-                        if sandbox_escalation.is_some() && !approval_decision.needs_approval {
-                            "本次调用需要临时越过 workspace 写边界；批准只对这一次调用生效。"
-                        } else {
-                            approval_decision.reason
-                        };
+                    let approval_reason = match sandbox_escalation.as_ref() {
+                        Some(crate::tools::permissions::SandboxEscalation::ProcessFilesystem) => {
+                            "本次 Shell/Git 命令的文件副作用无法静态限定，将获得一次性全文件系统访问；必须由你批准。"
+                        }
+                        Some(crate::tools::permissions::SandboxEscalation::ProcessRoots { .. }) => {
+                            "本次 Shell/Git 命令仅临时扩展到审批卡显示的外部目录；批准仅对这一次调用生效。"
+                        }
+                        Some(crate::tools::permissions::SandboxEscalation::FileWriteRoot(_))
+                            if !approval_decision.needs_approval =>
+                        {
+                            "本次调用仅临时扩展到目标文件父目录；批准仅对这一次调用生效。"
+                        }
+                        _ => approval_decision.reason,
+                    };
                     let role_policy_requires_approval =
                         crate::tools::builtin::needs_approval(&tool_name, &args, &policy);
                     let diff_preview = crate::tools::review::preview_tool_call(
@@ -672,6 +680,7 @@ async fn handle_conn<R: tauri::Runtime>(
                     "network_allowed": policy.network.allow,
                     "landlock": policy.sandbox.landlock,
                     "sandbox_escalation": sandbox_escalation.is_some(),
+                    "sandbox_escalation_scope": sandbox_escalation.as_ref().map(|value| value.scope_summary()),
                     "permission_mode": permission_mode.as_str(),
                     "approval_reason": approval_reason,
                     "is_secondary_confirmation": approval_decision.is_secondary_confirmation,

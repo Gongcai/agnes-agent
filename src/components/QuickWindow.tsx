@@ -16,8 +16,19 @@ import {
   subscribeUIPreferenceChanges,
 } from "../lib/uiPreferences";
 import { setupTauriEventListeners, useAgentStore } from "../store/useAgentStore";
+import type { SandboxEscalationScope } from "../store/useAgentStore";
 
 const QUICK_SESSION_SETTING = "ui:quick_session_id";
+
+function sandboxScopeText(scope: SandboxEscalationScope): string {
+  if (scope.kind === "process_filesystem") return "全文件系统（仅本次调用）";
+  if (scope.kind === "file_write_root") return `写入目录：${scope.root ?? "未指定"}`;
+  const parts = [
+    scope.cwd ? `工作目录：${scope.cwd}` : null,
+    ...(scope.writable_roots ?? []).map((root) => `写入目录：${root}`),
+  ].filter(Boolean);
+  return parts.join("；") || "仅当前进程范围";
+}
 
 type QuickActionId = "answer" | "translate" | "summarize" | "explain";
 
@@ -369,6 +380,12 @@ export const QuickWindow: React.FC = () => {
                           <span className="text-[10px] text-stone-400">{toolCall.status}</span>
                         </div>
                         {toolCall.status === "pending_approval" && (
+                          <>
+                            {toolCall.sandboxEscalationScope && (
+                              <div className="mt-1 break-all font-mono text-[10px] text-amber-700">
+                                范围：{sandboxScopeText(toolCall.sandboxEscalationScope)}
+                              </div>
+                            )}
                           <div className="mt-2 flex justify-end gap-2">
                             <button
                               type="button"
@@ -385,6 +402,7 @@ export const QuickWindow: React.FC = () => {
                               允许
                             </button>
                           </div>
+                          </>
                         )}
                       </div>
                     );

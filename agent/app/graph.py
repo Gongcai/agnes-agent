@@ -206,7 +206,7 @@ def get_available_tools(
                         "sandbox_permissions": {
                             "type": "string",
                             "enum": ["require_escalated"],
-                            "description": "Request one-call filesystem escalation when this command must write outside normal writable roots. This always requires approval."
+                            "description": "Request a one-call filesystem exception. Statically identified external writes are scoped to their parent directory; opaque side effects require explicit user approval for full process access."
                         },
                         "yield_time_ms": {
                             "type": "integer",
@@ -376,7 +376,7 @@ def get_available_tools(
                         "sandbox_permissions": {
                             "type": "string",
                             "enum": ["require_escalated"],
-                            "description": "Request one-call filesystem escalation for a repository outside normal writable roots. This always requires approval."
+                            "description": "Request a one-call exception for a repository outside normal writable roots. The approved process is scoped to that repository; opaque filesystem effects require explicit user approval."
                         }
                     },
                     "required": ["args"]

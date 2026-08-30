@@ -41,7 +41,7 @@ impl BuiltinTool for GitTool {
                             "description": "Arguments passed directly to git, for example ['status', '--short']."
                         },
                         "cwd": {"type": "string", "description": "Optional working directory; defaults to the workspace."},
-                        "sandbox_permissions": {"type": "string", "enum": ["require_escalated"], "description": "Request one-call filesystem escalation for a repository outside normal writable roots. This always requires approval."}
+                        "sandbox_permissions": {"type": "string", "enum": ["require_escalated"], "description": "Request a one-call exception for a repository outside normal writable roots. The approved process is scoped to that repository; opaque filesystem effects require explicit user approval."}
                     },
                     "required": ["args"]
                 }
@@ -246,6 +246,7 @@ fn validate_git_args(args: &[String]) -> Result<(), String> {
     }
     for (index, arg) in args.iter().enumerate() {
         if arg == "-C"
+            || (arg.starts_with("-C") && arg.len() > 2)
             || arg.starts_with("--git-dir")
             || arg.starts_with("--work-tree")
             || arg.starts_with("--exec-path")
@@ -261,6 +262,8 @@ fn validate_git_args(args: &[String]) -> Result<(), String> {
             let Some(value) = args.get(index + 1) else {
                 return Err("Git `-c` requires a key=value argument".to_string());
             };
+            validate_config_override(value)?;
+        } else if let Some(value) = arg.strip_prefix("-c") {
             validate_config_override(value)?;
         }
     }
@@ -425,8 +428,10 @@ mod tests {
     fn rejects_git_escape_hatches() {
         assert!(validate_git_args(&args(&["config", "--global", "user.name", "x"])).is_err());
         assert!(validate_git_args(&args(&["-C", "/tmp", "status"])).is_err());
+        assert!(validate_git_args(&args(&["-C/tmp", "status"])).is_err());
         assert!(validate_git_args(&args(&["filter-branch"])).is_err());
         assert!(validate_git_args(&args(&["-c", "alias.pwn=!sh", "pwn"])).is_err());
+        assert!(validate_git_args(&args(&["-calias.pwn=!sh", "pwn"])).is_err());
         assert!(validate_git_args(&args(&["rebase", "-x", "touch outside"])).is_err());
         assert!(validate_git_args(&args(&["bisect", "run", "sh", "test.sh"])).is_err());
         assert!(validate_git_args(&args(&["status", "--short"])).is_ok());
