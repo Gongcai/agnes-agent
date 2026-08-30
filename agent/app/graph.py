@@ -13,6 +13,87 @@ from .models import (
 )
 from .prompt import count_tokens
 
+
+_SHELL_CALLING_MARKER = "Calling shell with params:"
+
+
+class _ShellToolNarrationFilter:
+    """Remove provider text that repeats the shell tool call in the answer stream.
+
+    Some OpenAI-compatible providers send a human-readable ``Calling shell ...``
+    line in ``delta.content`` together with the native tool call. Keep that
+    protocol narration out of the assistant answer while preserving surrounding
+    text and supporting chunks split at arbitrary boundaries.
+    """
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._discarding = False
+
+    @staticmethod
+    def _trailing_marker_prefix_length(value: str) -> int:
+        for length in range(min(len(value), len(_SHELL_CALLING_MARKER) - 1), 0, -1):
+            if _SHELL_CALLING_MARKER.startswith(value[-length:]):
+                return length
+        return 0
+
+    def feed(self, content: str) -> str:
+        if not content:
+            return ""
+        remaining = f"{self._pending}{content}"
+        self._pending = ""
+        output: List[str] = []
+
+        while remaining:
+            if self._discarding:
+                newline = remaining.find("\n")
+                if newline >= 0:
+                    remaining = remaining[newline + 1 :]
+                    self._discarding = False
+                    continue
+
+                # Most providers put the JSON arguments on the same line and
+                # omit the final newline. Decode one complete JSON value to
+                # identify where the narration ends without swallowing the
+                # next answer fragment.
+                argument_text = remaining.lstrip()
+                try:
+                    _, end = json.JSONDecoder().raw_decode(argument_text)
+                except json.JSONDecodeError:
+                    # The JSON may itself be split across stream chunks.
+                    self._pending = remaining
+                    break
+                remaining = argument_text[end:]
+                self._discarding = False
+                continue
+
+            marker_index = remaining.find(_SHELL_CALLING_MARKER)
+            if marker_index >= 0:
+                output.append(remaining[:marker_index])
+                remaining = remaining[marker_index + len(_SHELL_CALLING_MARKER) :]
+                self._discarding = True
+                continue
+
+            pending_length = self._trailing_marker_prefix_length(remaining)
+            if pending_length:
+                output.append(remaining[:-pending_length])
+                self._pending = remaining[-pending_length:]
+            else:
+                output.append(remaining)
+            break
+
+        return "".join(output)
+
+    def finish(self) -> str:
+        """Flush ordinary trailing text, but never flush a partial narration."""
+        if self._discarding:
+            self._pending = ""
+            return ""
+        pending = self._pending
+        self._pending = ""
+        return pending
+
+
 class AgentState(TypedDict):
     messages: List[Dict[str, Any]]
     system_prompt: str
@@ -839,6 +920,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
         full_text = ""
         full_reasoning = ""
         tool_calls_accumulator: Dict[int, Dict[str, Any]] = {}
+        shell_narration_filter = _ShellToolNarrationFilter()
         reasoning_started = False
         reasoning_closed = False
         attempt_had_activity = False
@@ -878,8 +960,10 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
                     if reasoning_started and not reasoning_closed:
                         reasoning_closed = True
                         await emit("</thought>")
-                    full_text += delta.content
-                    await emit(delta.content)
+                    clean_content = shell_narration_filter.feed(delta.content)
+                    full_text += clean_content
+                    if clean_content:
+                        await emit(clean_content)
 
                 if delta.tool_calls:
                     attempt_had_activity = True
@@ -905,6 +989,11 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
             if reasoning_started and not reasoning_closed:
                 reasoning_closed = True
                 await emit("</thought>")
+
+            trailing_text = shell_narration_filter.finish()
+            if trailing_text:
+                full_text += trailing_text
+                await emit(trailing_text)
 
             pending_tool_calls = list(tool_calls_accumulator.values())
             if attempt_usage["input_tokens"] == 0:

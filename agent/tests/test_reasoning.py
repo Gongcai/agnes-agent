@@ -352,6 +352,95 @@ def _usage_chunk(usage):
     return SimpleNamespace(choices=[], usage=usage)
 
 
+def _tool_call_chunk(tool="shell", arguments='{"command":"echo hi"}', tool_id="tc-1"):
+    tool_delta = SimpleNamespace(
+        index=0,
+        id=tool_id,
+        function=SimpleNamespace(name=tool, arguments=arguments),
+    )
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                content=None,
+                reasoning_content=None,
+                reasoning=None,
+                tool_calls=[tool_delta],
+            )
+        )]
+    )
+
+
+def _tool_stream_state():
+    return {
+        "messages": [{"role": "user", "content": "Run the command"}],
+        "system_prompt": "",
+        "model": "test-model",
+        "tool_policy": {"shell": {"enabled": True}},
+        "dynamic_tools": [],
+        "pending_tool_calls": [],
+        "finished": False,
+        "llm_config": None,
+        "fallback_configs": [],
+        "active_llm_index": 0,
+        "active_llm_config": None,
+        "active_model": "test-model",
+        "fallback_locked": False,
+        "token_usage": {},
+    }
+
+
+def test_shell_tool_narration_is_removed_after_preceding_text(monkeypatch):
+    monkeypatch.setattr(
+        graph_module,
+        "completion",
+        lambda **_kwargs: iter([
+            _text_chunk('已完成检查。\nCalling shell with params: {"command":"echo hi"}'),
+            _tool_call_chunk(),
+        ]),
+    )
+    emitted = []
+
+    async def emit(value):
+        emitted.append(value)
+
+    result = asyncio.run(
+        graph_module.call_llm_node(
+            _tool_stream_state(),
+            {"configurable": {"send_delta_fn": emit}},
+        )
+    )
+
+    assert emitted == ["已完成检查。\n"]
+    assert result["messages"][-1]["content"] == "已完成检查。\n"
+    assert result["pending_tool_calls"][0]["function"]["name"] == "shell"
+
+
+def test_shell_tool_narration_filter_handles_split_arguments_and_followup_text(monkeypatch):
+    monkeypatch.setattr(
+        graph_module,
+        "completion",
+        lambda **_kwargs: iter([
+            _text_chunk('已完成检查。\nCalling shell with params: {"command":"echo hi"'),
+            _text_chunk("}\n接下来继续。"),
+            _tool_call_chunk(),
+        ]),
+    )
+    emitted = []
+
+    async def emit(value):
+        emitted.append(value)
+
+    result = asyncio.run(
+        graph_module.call_llm_node(
+            _tool_stream_state(),
+            {"configurable": {"send_delta_fn": emit}},
+        )
+    )
+
+    assert emitted == ["已完成检查。\n", "接下来继续。"]
+    assert result["messages"][-1]["content"] == "已完成检查。\n接下来继续。"
+
+
 def test_usage_normalization_supports_openai_and_anthropic_cache_fields():
     openai_usage = SimpleNamespace(
         prompt_tokens=120,
