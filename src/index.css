@@ -2693,6 +2693,24 @@ pre,
     display: none;
   }
 
+  .agnes-chat-composer-box .agnes-chat-stop-button {
+    width: 36px !important;
+    min-width: 36px;
+    height: 36px !important;
+    padding: 0 !important;
+    border-radius: 50% !important;
+  }
+
+  .agnes-chat-composer-box .agnes-chat-stop-button > span {
+    display: none;
+  }
+
+  .agnes-chat-composer-box .agnes-chat-stop-button > svg {
+    width: 17px;
+    height: 17px;
+    margin: 0 !important;
+  }
+
   .agnes-chat-composer-box .agnes-chat-send-button > svg {
     width: 17px;
     height: 17px;
