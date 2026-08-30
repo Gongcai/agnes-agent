@@ -1,5 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@phosphor-icons/react", () => ({
+  Check: () => null,
+  Copy: () => null,
+}));
 
 import {
   MarkdownMessage,
@@ -37,6 +42,8 @@ describe("MarkdownMessage fenced code", () => {
 
     expect(html).toContain("markdown-code-block");
     expect(html).toContain("set -g mouse on");
+    expect(html).toContain("overflow-y-hidden");
+    expect(html).not.toContain("overflow-hidden rounded-lg");
   });
 });
 

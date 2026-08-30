@@ -319,7 +319,7 @@ body.quick-window-body #root {
 
 /* Keep long code listings out of the CJK prose line-breaking path. */
 .markdown-code-block {
-  contain: layout paint style;
+  contain: layout style;
   max-width: 100%;
   min-width: 0;
 }
@@ -335,6 +335,7 @@ body.quick-window-body #root {
 
 .markdown-code-block pre {
   margin: 0;
+  overscroll-behavior-x: contain;
   white-space: pre;
 }
 
@@ -997,10 +998,8 @@ pre,
   /* Keep the chat column aligned with the rem-based font scale. */
   max-width: 48rem !important;
   padding: 36px 32px 170px !important;
-  contain: layout paint;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  will-change: scroll-position;
 }
 
 .agnes-chat-messages .agnes-message-row {
@@ -1332,6 +1331,10 @@ pre,
 .agnes-chat-messages .agnes-assistant-body pre {
   border-radius: 8px !important;
   background: var(--claude-dark) !important;
+}
+
+.agnes-chat-messages .agnes-assistant-body .markdown-code-block pre {
+  border-radius: 0 0 7px 7px !important;
 }
 
 .agnes-chat-messages button:hover {
