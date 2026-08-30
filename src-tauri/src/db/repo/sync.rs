@@ -6,7 +6,6 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::error::{AppError, AppResult};
-use crate::sync::crypto::EMPTY_PAYLOAD_HASH;
 use crate::sync::hlc::HybridTimestamp;
 use crate::sync::payload::{self, SyncEntityType};
 
@@ -494,9 +493,39 @@ pub fn status(conn: &Connection) -> AppResult<SyncDbStatus> {
 }
 
 /// Reset state that belongs to the currently configured remote sync gateway.
-/// Queued changes are retained and rebased against an empty remote stream.
+/// The latest local projection for every tracked entity is rebuilt as a fresh baseline.
 pub fn reset_for_gateway_change(conn: &mut Connection) -> AppResult<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let baseline = {
+        let mut statement = tx.prepare(
+            "SELECT entity_type, entity_id, operation, local_version, source_payload FROM ( \
+               SELECT entity_type, entity_id, operation, local_version, source_payload, \
+                      ROW_NUMBER() OVER ( \
+                        PARTITION BY entity_type, entity_id ORDER BY created_at DESC, rowid DESC \
+                      ) AS position \
+               FROM sync_outbox \
+             ) WHERE position = 1 \
+             ORDER BY CASE entity_type \
+               WHEN 'user_profile' THEN 0 WHEN 'agent' THEN 1 WHEN 'workspace' THEN 2 \
+               WHEN 'session' THEN 3 WHEN 'message' THEN 4 WHEN 'memory_file' THEN 5 \
+               WHEN 'calendar' THEN 6 WHEN 'calendar_event' THEN 7 \
+               WHEN 'event_exception' THEN 8 WHEN 'task_list' THEN 9 WHEN 'task' THEN 10 \
+               WHEN 'reading_book' THEN 11 WHEN 'reading_highlight' THEN 12 ELSE 99 END, \
+               entity_id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
     tx.execute(
         "UPDATE sync_runtime_state SET last_pull_cursor = 0, last_object_cursor = 0, \
          bootstrap_state = 'required', last_success_at = NULL, last_error_code = NULL, \
@@ -505,58 +534,36 @@ pub fn reset_for_gateway_change(conn: &mut Connection) -> AppResult<()> {
     )?;
     tx.execute("DELETE FROM sync_entity_state", [])?;
     tx.execute("DELETE FROM sync_conflicts", [])?;
-    tx.execute(
-        "UPDATE sync_outbox SET status = 'pending', attempt_count = 0, next_retry_at = NULL, \
-         last_error_code = NULL, last_error_message = NULL, synced_at = NULL \
-         WHERE status IN ('pending', 'in_flight', 'dead_letter')",
-        [],
-    )?;
-    // Existing encrypted rows contain the old revision in their AAD. Convert them back to
-    // their local source payload so the next sync can encrypt them with the new revision.
-    let queued_payloads = {
-        let mut statement = tx.prepare(
-            "SELECT change_id, operation, source_payload FROM sync_outbox WHERE status = 'pending'",
-        )?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        rows
-    };
-    for (change_id, operation, source_payload) in queued_payloads {
-        let (payload, payload_hash) = if operation == "upsert" {
-            let source_payload = source_payload.unwrap_or_default();
-            (
-                Some(source_payload.clone()),
-                sha256_hex(source_payload.as_bytes()),
-            )
-        } else {
-            (None, EMPTY_PAYLOAD_HASH.to_string())
+    tx.execute("DELETE FROM sync_outbox", [])?;
+    for (entity_type, entity_id, operation, local_version, source_payload) in baseline {
+        let deleted = match operation.as_str() {
+            "upsert" => false,
+            "delete" => true,
+            other => {
+                return Err(AppError::Other(format!(
+                    "unsupported baseline operation `{other}` for {entity_type} `{entity_id}`"
+                )))
+            }
         };
-        tx.execute(
-            "UPDATE sync_outbox SET payload_encoding = 'json', payload = ?1, payload_hash = ?2, \
-             key_version = NULL WHERE change_id = ?3 AND status = 'pending'",
-            params![payload, payload_hash, change_id],
+        let source = source_payload
+            .as_deref()
+            .map(serde_json::from_str::<Value>)
+            .transpose()?
+            .unwrap_or_else(|| Value::Object(Default::default()));
+        if !deleted && source_payload.is_none() {
+            return Err(AppError::Other(format!(
+                "baseline source payload is missing for {entity_type} `{entity_id}`"
+            )));
+        }
+        enqueue_projection(
+            &tx,
+            parse_sync_entity_type(&entity_type)?,
+            &entity_id,
+            local_version,
+            deleted,
+            &source,
         )?;
     }
-    tx.execute(
-        "WITH ranked AS ( \
-           SELECT change_id, \
-                  NULLIF(ROW_NUMBER() OVER ( \
-                    PARTITION BY entity_type, entity_id ORDER BY created_at, rowid \
-                  ) - 1, 0) AS rebased_revision \
-           FROM sync_outbox WHERE status = 'pending' \
-         ) \
-         UPDATE sync_outbox SET base_revision = ( \
-           SELECT rebased_revision FROM ranked WHERE ranked.change_id = sync_outbox.change_id \
-         ) WHERE status = 'pending'",
-        [],
-    )?;
     tx.commit()?;
     Ok(())
 }
@@ -979,7 +986,14 @@ fn apply_remote_entities(
         .map_err(AppError::Other)?
         .to_string();
         last_hlc = Some(merged);
-        apply_remote_entity(tx, entity, now_ms)?;
+        if let Err(error) = apply_remote_entity(tx, entity, now_ms) {
+            let context = format!(
+                "failed to apply remote {} `{}` revision {} at server sequence {}: {error}",
+                entity.entity_type, entity.entity_id, entity.revision, entity.server_seq
+            );
+            eprintln!("[sync] {context}");
+            return Err(AppError::Other(context));
+        }
     }
     if let Some(last_hlc) = last_hlc {
         tx.execute(
@@ -4184,7 +4198,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_for_gateway_change_reinitializes_remote_state_and_rebases_queue() {
+    fn reset_for_gateway_change_rebuilds_latest_entities_as_fresh_baseline() {
         let mut conn = setup();
         conn.execute(
             "UPDATE sync_runtime_state SET last_pull_cursor = 1807, last_object_cursor = 42, \
@@ -4209,6 +4223,8 @@ mod tests {
             ("change-1", "agent-1", Some(18_i64), "dead_letter", 1_i64),
             ("change-2", "agent-1", Some(19_i64), "pending", 2_i64),
             ("change-3", "agent-2", Some(7_i64), "in_flight", 3_i64),
+            ("change-4", "agent-3", Some(2_i64), "synced", 4_i64),
+            ("change-5", "agent-4", Some(5_i64), "conflict", 5_i64),
         ] {
             conn.execute(
                 "INSERT INTO sync_outbox (change_id, device_id, entity_type, entity_id, operation, \
@@ -4275,11 +4291,13 @@ mod tests {
             Option<i64>,
             i64,
             Option<String>,
+            bool,
         )> = conn
             .prepare(
-                "SELECT change_id, base_revision, status, payload_encoding, payload, key_version, \
-                 attempt_count, last_error_code \
-                 FROM sync_outbox ORDER BY created_at",
+                "SELECT entity_id, base_revision, status, payload_encoding, payload, key_version, \
+                 attempt_count, last_error_code, \
+                 change_id NOT IN ('change-1','change-2','change-3','change-4','change-5') \
+                 FROM sync_outbox ORDER BY entity_id",
             )
             .unwrap()
             .query_map([], |row| {
@@ -4292,6 +4310,7 @@ mod tests {
                     row.get(5)?,
                     row.get(6)?,
                     row.get(7)?,
+                    row.get(8)?,
                 ))
             })
             .unwrap()
@@ -4301,34 +4320,48 @@ mod tests {
             rows,
             vec![
                 (
-                    "change-1".into(),
+                    "agent-1".into(),
                     None,
                     "pending".into(),
                     "json".into(),
                     r#"{"id":"agent-1"}"#.into(),
                     None,
                     0,
-                    None
-                ),
-                (
-                    "change-2".into(),
-                    Some(1),
-                    "pending".into(),
-                    "json".into(),
-                    r#"{"id":"agent-1"}"#.into(),
                     None,
-                    0,
-                    None
+                    true,
                 ),
                 (
-                    "change-3".into(),
+                    "agent-2".into(),
                     None,
                     "pending".into(),
                     "json".into(),
                     r#"{"id":"agent-2"}"#.into(),
                     None,
                     0,
-                    None
+                    None,
+                    true,
+                ),
+                (
+                    "agent-3".into(),
+                    None,
+                    "pending".into(),
+                    "json".into(),
+                    r#"{"id":"agent-3"}"#.into(),
+                    None,
+                    0,
+                    None,
+                    true,
+                ),
+                (
+                    "agent-4".into(),
+                    None,
+                    "pending".into(),
+                    "json".into(),
+                    r#"{"id":"agent-4"}"#.into(),
+                    None,
+                    0,
+                    None,
+                    true,
                 ),
             ]
         );
