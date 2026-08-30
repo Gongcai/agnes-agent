@@ -470,6 +470,41 @@ pub fn status(conn: &Connection) -> AppResult<SyncDbStatus> {
     .map_err(Into::into)
 }
 
+/// Reset state that belongs to the currently configured remote sync gateway.
+/// Queued changes are retained and rebased against an empty remote stream.
+pub fn reset_for_gateway_change(conn: &mut Connection) -> AppResult<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute(
+        "UPDATE sync_runtime_state SET last_pull_cursor = 0, last_object_cursor = 0, \
+         bootstrap_state = 'required', last_success_at = NULL, last_error_code = NULL, \
+         backoff_until = NULL WHERE singleton = 1",
+        [],
+    )?;
+    tx.execute("DELETE FROM sync_entity_state", [])?;
+    tx.execute("DELETE FROM sync_conflicts", [])?;
+    tx.execute(
+        "UPDATE sync_outbox SET status = 'pending', attempt_count = 0, next_retry_at = NULL, \
+         last_error_code = NULL, last_error_message = NULL \
+         WHERE status IN ('pending', 'in_flight', 'dead_letter')",
+        [],
+    )?;
+    tx.execute(
+        "WITH ranked AS ( \
+           SELECT change_id, \
+                  NULLIF(ROW_NUMBER() OVER ( \
+                    PARTITION BY entity_type, entity_id ORDER BY created_at, rowid \
+                  ) - 1, 0) AS rebased_revision \
+           FROM sync_outbox WHERE status = 'pending' \
+         ) \
+         UPDATE sync_outbox SET base_revision = ( \
+           SELECT rebased_revision FROM ranked WHERE ranked.change_id = sync_outbox.change_id \
+         ) WHERE status = 'pending'",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn set_e2ee_key_version(conn: &Connection, key_version: Option<i64>) -> AppResult<()> {
     if key_version.is_some_and(|version| version <= 0) {
         return Err(AppError::Other(
@@ -3937,5 +3972,113 @@ mod tests {
         let status = status(&conn).unwrap();
         assert_eq!(status.last_object_cursor, 4);
         assert_eq!(status.last_pull_cursor, 0);
+    }
+
+    #[test]
+    fn reset_for_gateway_change_reinitializes_remote_state_and_rebases_queue() {
+        let mut conn = setup();
+        conn.execute(
+            "UPDATE sync_runtime_state SET last_pull_cursor = 1807, last_object_cursor = 42, \
+             bootstrap_state = 'complete', last_success_at = 100, last_error_code = 'INVALID_REQUEST', \
+             backoff_until = 200 WHERE singleton = 1",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_entity_state (entity_type, entity_id, remote_revision, updated_at) \
+             VALUES ('agent', 'agent-1', 18, 100)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_conflicts (id, entity_type, entity_id, local_version, local_hlc, created_at, updated_at) \
+             VALUES ('conflict-1', 'agent', 'agent-1', 1, '1-0000-test', 100, 100)",
+            [],
+        )
+        .unwrap();
+        for (change_id, entity_id, base_revision, status, created_at) in [
+            ("change-1", "agent-1", Some(18_i64), "dead_letter", 1_i64),
+            ("change-2", "agent-1", Some(19_i64), "pending", 2_i64),
+            ("change-3", "agent-2", Some(7_i64), "in_flight", 3_i64),
+        ] {
+            conn.execute(
+                "INSERT INTO sync_outbox (change_id, device_id, entity_type, entity_id, operation, \
+                 base_revision, local_version, hlc, payload_hash, status, attempt_count, \
+                 last_error_code, last_error_message, created_at) \
+                 VALUES (?1, ?2, 'agent', ?3, 'upsert', ?4, 1, ?5, ?6, ?7, 4, \
+                         'INVALID_REQUEST', 'old failure', ?8)",
+                rusqlite::params![
+                    change_id,
+                    LOCAL_DEVICE,
+                    entity_id,
+                    base_revision,
+                    format!("{}-0000-test", created_at),
+                    "a".repeat(64),
+                    status,
+                    created_at,
+                ],
+            )
+            .unwrap();
+        }
+
+        reset_for_gateway_change(&mut conn).unwrap();
+
+        let runtime: (i64, i64, String, Option<i64>, Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT last_pull_cursor, last_object_cursor, bootstrap_state, last_success_at, \
+                 last_error_code, backoff_until FROM sync_runtime_state WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(runtime, (0, 0, "required".into(), None, None, None));
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM sync_entity_state", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM sync_conflicts", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+
+        let rows: Vec<(String, Option<i64>, String, i64, Option<String>)> = conn
+            .prepare(
+                "SELECT change_id, base_revision, status, attempt_count, last_error_code \
+                 FROM sync_outbox ORDER BY created_at",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("change-1".into(), None, "pending".into(), 0, None),
+                ("change-2".into(), Some(1), "pending".into(), 0, None),
+                ("change-3".into(), None, "pending".into(), 0, None),
+            ]
+        );
     }
 }

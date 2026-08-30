@@ -759,6 +759,13 @@ pub async fn sync_now(
 }
 
 #[tauri::command]
+pub async fn reset_sync_gateway_state(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::sync::engine::SyncStatus> {
+    state.sync.reset_gateway_state().await
+}
+
+#[tauri::command]
 pub async fn set_sync_credential(
     state: tauri::State<'_, AppState>,
     credential: Option<SyncCredential>,

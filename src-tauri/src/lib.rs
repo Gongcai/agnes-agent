@@ -649,6 +649,7 @@ pub fn run() {
             commands::list_sync_devices,
             commands::revoke_sync_device,
             commands::sync_now,
+            commands::reset_sync_gateway_state,
             commands::set_sync_credential,
             commands::set_sync_gateway_url,
             commands::begin_sync_e2ee_setup,

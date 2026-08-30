@@ -652,6 +652,9 @@ pub enum DbCommand {
     GetSyncStatus {
         resp: oneshot::Sender<AppResult<repo::sync::SyncDbStatus>>,
     },
+    ResetSyncForGatewayChange {
+        resp: oneshot::Sender<AppResult<()>>,
+    },
     SetSyncE2eeKeyVersion {
         key_version: Option<i64>,
         resp: oneshot::Sender<AppResult<()>>,
@@ -2264,6 +2267,13 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn reset_sync_for_gateway_change(&self) -> AppResult<()> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ResetSyncForGatewayChange { resp })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn set_sync_e2ee_key_version(&self, key_version: Option<i64>) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::SetSyncE2eeKeyVersion { key_version, resp })?;
@@ -3462,6 +3472,9 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::GetSyncStatus { resp } => {
                     let _ = resp.send(repo::sync::status(&conn));
+                }
+                DbCommand::ResetSyncForGatewayChange { resp } => {
+                    let _ = resp.send(repo::sync::reset_for_gateway_change(&mut conn));
                 }
                 DbCommand::SetSyncE2eeKeyVersion { key_version, resp } => {
                     let _ = resp.send(repo::sync::set_e2ee_key_version(&conn, key_version));

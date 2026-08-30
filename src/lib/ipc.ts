@@ -91,6 +91,10 @@ export async function syncNow(): Promise<SyncStatus> {
   return invoke<SyncStatus>("sync_now");
 }
 
+export async function resetSyncGatewayState(): Promise<SyncStatus> {
+  return invoke<SyncStatus>("reset_sync_gateway_state");
+}
+
 export interface SyncConflict {
   id: string;
   entityType: string;

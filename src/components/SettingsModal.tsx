@@ -31,6 +31,7 @@ import {
   listSyncDevices,
   resolveSyncConflict,
   revokeSyncDevice,
+  resetSyncGatewayState,
   restoreSyncE2ee,
   setSyncCredential,
   setSyncGatewayUrl,
@@ -855,6 +856,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncStatusError, setSyncStatusError] = useState<string | null>(null);
   const [isSyncingNow, setIsSyncingNow] = useState(false);
+  const [isResettingSync, setIsResettingSync] = useState(false);
   const [syncGatewayDraft, setSyncGatewayDraft] = useState("");
   const [isSavingSyncGateway, setIsSavingSyncGateway] = useState(false);
   const syncGatewayDraftInitialized = useRef(false);
@@ -1577,6 +1579,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setSyncStatusError(String(error));
     } finally {
       setIsSyncingNow(false);
+    }
+  };
+
+  const handleResetSyncGatewayState = async () => {
+    if (!await confirmDelete({
+      title: "重新初始化当前同步网关？",
+      description: "这会重置本机同步游标、冲突和失败队列，但不会删除本地业务数据；完成后会立即尝试将本地数据同步到当前网关。",
+      confirmLabel: "重置并同步",
+    })) return;
+    setIsResettingSync(true);
+    setSyncStatusError(null);
+    try {
+      const resetStatus = await resetSyncGatewayState();
+      setSyncStatus(resetStatus);
+      const status = await syncNow();
+      const [conflicts, devices] = await Promise.all([
+        listSyncConflicts(),
+        status.credentialConfigured ? listSyncDevices() : Promise.resolve([]),
+      ]);
+      setSyncStatus(status);
+      setSyncConflicts(conflicts);
+      setSyncDevices(devices);
+    } catch (error) {
+      setSyncStatusError(String(error));
+    } finally {
+      setIsResettingSync(false);
     }
   };
 
@@ -4119,9 +4147,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               {isSavingSyncGateway ? "保存中..." : "保存"}
                             </button>
                           </div>
-                          <p className="mt-1 text-[10px] text-stone-400">
-                            仅保存在本机；可填写自建服务器地址，例如包含端口的 http/https 地址。
-                          </p>
+                          <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                            <p className="text-[10px] text-stone-400">
+                              仅保存在本机；可填写自建服务器地址，例如包含端口的 http/https 地址。
+                            </p>
+                            <button
+                              type="button"
+                              onClick={handleResetSyncGatewayState}
+                              disabled={isResettingSync || isSyncingNow || isSavingSyncGateway || syncStatus.syncing}
+                              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 text-[10px] font-medium text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              <ArrowsClockwise className={`h-3 w-3 ${isResettingSync ? "animate-spin" : ""}`} />
+                              {isResettingSync ? "重置中..." : "重置并同步"}
+                            </button>
+                          </div>
                         </div>
                         <div className="min-w-0">
                           <span className="block text-stone-400 mb-1">本机标识</span>

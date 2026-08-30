@@ -254,6 +254,11 @@ impl SyncService {
 
     pub async fn set_gateway_url(&self, value: &str) -> AppResult<SyncStatus> {
         let normalized = normalize_gateway_url(value)?;
+        let _guard = self.run_gate.lock().await;
+        let current = self.gateway_url().await?;
+        if current != normalized {
+            self.db.reset_sync_for_gateway_change().await?;
+        }
         self.db
             .set_setting(
                 crate::sync::settings::SYNC_GATEWAY_URL_SETTING.into(),
@@ -291,6 +296,12 @@ impl SyncService {
             return Ok(status);
         };
         self.run_until_idle(&transport, Some(&keyset)).await
+    }
+
+    pub async fn reset_gateway_state(&self) -> AppResult<SyncStatus> {
+        let _guard = self.run_gate.lock().await;
+        self.db.reset_sync_for_gateway_change().await?;
+        self.status().await
     }
 
     pub async fn publish_knowledge_artifact(
