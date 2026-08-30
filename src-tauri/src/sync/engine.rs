@@ -1639,6 +1639,7 @@ impl SyncService {
         transport: &dyn SyncTransport,
         keyset: Option<&SyncKeyset>,
     ) -> AppResult<bool> {
+        let mut restarted_after_dependency_error = false;
         for _ in 0..MAX_REMOTE_PAGES_PER_RUN {
             let status = self.db.get_sync_status().await?;
             if status.bootstrap_state == "complete" {
@@ -1690,7 +1691,8 @@ impl SyncService {
                 .into_iter()
                 .map(|entity| remote_entity_from_bootstrap(entity, keyset))
                 .collect::<AppResult<Vec<_>>>()?;
-            self.db
+            if let Err(error) = self
+                .db
                 .apply_sync_bootstrap_page(
                     status.bootstrap_state,
                     entities,
@@ -1699,7 +1701,17 @@ impl SyncService {
                     has_more,
                     unix_millis(),
                 )
-                .await?;
+                .await
+            {
+                if !restarted_after_dependency_error
+                    && error.to_string().contains("FOREIGN KEY constraint failed")
+                {
+                    self.db.restart_sync_bootstrap().await?;
+                    restarted_after_dependency_error = true;
+                    continue;
+                }
+                return Err(error);
+            }
             if !has_more {
                 return self.ack_cursor(transport, snapshot_cursor).await;
             }

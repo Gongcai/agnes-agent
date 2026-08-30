@@ -412,6 +412,15 @@ pub fn enqueue_existing_local_entities(conn: &mut Connection) -> AppResult<()> {
     Ok(())
 }
 
+pub fn restart_bootstrap(conn: &Connection) -> AppResult<()> {
+    conn.execute(
+        "UPDATE sync_runtime_state SET bootstrap_state='required', last_pull_cursor=0,
+         last_error_code=NULL, backoff_until=NULL WHERE singleton=1",
+        [],
+    )?;
+    Ok(())
+}
+
 pub fn enqueue_projection(
     conn: &Connection,
     entity_type: SyncEntityType,
