@@ -854,6 +854,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             && !isUser
             && messageIndex === messages.length - 1
             && (message.status === "pending" || message.status === "streaming");
+          const hasAssistantOutput = message.parts.some((part) => (
+            part.kind === "tool_call"
+              ? Boolean(part.tool_call)
+              : Boolean(part.content?.trim())
+          ));
           return (
             <div
               key={message._renderKey ?? message.id}
@@ -919,6 +924,16 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   )
                 ) : (
                   <div className="agnes-assistant-body space-y-3.5">
+                    {isLiveAssistant && !hasAssistantOutput && (
+                      <div className="agnes-assistant-waiting flex items-center gap-2" role="status" aria-live="polite">
+                        <span className="agnes-assistant-waiting-dots inline-flex items-center gap-1" aria-hidden="true">
+                          <span />
+                          <span />
+                          <span />
+                        </span>
+                        <span>正在等待回复…</span>
+                      </div>
+                    )}
                     {message.parts.map((part) => {
                       // tool_result 已在工具卡片中展示（tc.output），跳过避免重复泄漏为正文
                       if (part.kind === "tool_result") return null;
