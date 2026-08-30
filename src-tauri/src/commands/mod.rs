@@ -3389,21 +3389,15 @@ async fn import_reading_book_from_path(
     path: String,
 ) -> AppResult<crate::db::repo::reading::ReadingBookRow> {
     let path_for_parse = path.clone();
+    let app_handle = state.app_handle.clone();
     let (bytes, source_hash, parsed) = tokio::task::spawn_blocking(move || {
-        let source = std::path::PathBuf::from(path_for_parse);
-        let metadata = std::fs::metadata(&source)?;
-        if !metadata.is_file() {
-            return Err(AppError::Other(
-                "EPUB import path must be a regular file".into(),
-            ));
-        }
-        if metadata.len() > crate::reading::MAX_EPUB_ARCHIVE_BYTES {
+        let bytes = read_import_file(&app_handle, &path_for_parse)?;
+        if bytes.len() as u64 > crate::reading::MAX_EPUB_ARCHIVE_BYTES {
             return Err(AppError::Other(format!(
                 "EPUB exceeds the {} MiB import limit",
                 crate::reading::MAX_EPUB_ARCHIVE_BYTES / 1024 / 1024
             )));
         }
-        let bytes = std::fs::read(&source)?;
         let parsed = crate::reading::parse_epub_bytes(&bytes)?;
         let source_hash = format!("{:x}", Sha256::digest(&bytes));
         Ok::<_, AppError>((bytes, source_hash, parsed))
@@ -3529,6 +3523,29 @@ async fn import_reading_book_from_path(
         let _ = std::fs::remove_file(&stored_path);
     }
     import_result
+}
+
+fn read_import_file(_app_handle: &tauri::AppHandle, path: &str) -> AppResult<Vec<u8>> {
+    #[cfg(target_os = "android")]
+    {
+        let file_path = <tauri_plugin_fs::FilePath as std::str::FromStr>::from_str(path)
+            .expect("FilePath parsing is infallible");
+        return tauri_plugin_fs::FsExt::fs(_app_handle)
+            .read(file_path)
+            .map_err(|error| AppError::Other(format!("无法读取 EPUB 文件: {error}")));
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let source = std::path::PathBuf::from(path);
+        let metadata = std::fs::metadata(&source)?;
+        if !metadata.is_file() {
+            return Err(AppError::Other(
+                "EPUB import path must be a regular file".into(),
+            ));
+        }
+        Ok(std::fs::read(source)?)
+    }
 }
 
 #[tauri::command]
