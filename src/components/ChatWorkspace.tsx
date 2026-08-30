@@ -444,6 +444,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   } = useAgentStore();
 
   const [inputVal, setInputVal] = useState("");
+  const [mobileInputActive, setMobileInputActive] = useState(false);
+  const mobileInputRef = useRef<HTMLTextAreaElement>(null);
+  const mobileInputBlurTimerRef = useRef<number | null>(null);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [attachmentPicker, setAttachmentPicker] = useState<"menu" | "knowledge" | "skill" | null>(null);
@@ -505,6 +508,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     setAttachments([]);
     setAttachmentPicker(null);
     setAttachmentError(null);
+    setMobileInputActive(false);
   }, [activeSessionId]);
 
   useEffect(() => {
@@ -513,7 +517,44 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     setAttachments([]);
     setAttachmentPicker(null);
     setAttachmentError(null);
+    setMobileInputActive(false);
   }, [draftSession?.id]);
+
+  useEffect(() => {
+    if (!mobileInputActive) return;
+    const node = mobileInputRef.current;
+    if (!node) return;
+    node.focus({ preventScroll: true });
+    window.setTimeout(() => node.scrollIntoView({ block: "nearest", behavior: "auto" }), 0);
+  }, [mobileInputActive]);
+
+  useEffect(() => () => {
+    if (mobileInputBlurTimerRef.current !== null) {
+      window.clearTimeout(mobileInputBlurTimerRef.current);
+    }
+  }, []);
+
+  const openMobileInput = () => {
+    if (!window.matchMedia("(max-width: 640px)").matches) return;
+    if (mobileInputBlurTimerRef.current !== null) {
+      window.clearTimeout(mobileInputBlurTimerRef.current);
+      mobileInputBlurTimerRef.current = null;
+    }
+    setMobileInputActive(true);
+  };
+
+  const closeMobileInputIfBlurred = () => {
+    if (mobileInputBlurTimerRef.current !== null) {
+      window.clearTimeout(mobileInputBlurTimerRef.current);
+    }
+    mobileInputBlurTimerRef.current = window.setTimeout(() => {
+      mobileInputBlurTimerRef.current = null;
+      const activeElement = document.activeElement;
+      if (activeElement !== mobileInputRef.current && !activeElement?.closest(".agnes-mobile-input-overlay")) {
+        setMobileInputActive(false);
+      }
+    }, 80);
+  };
 
   const appendLocalPaths = (paths: string[]) => {
     setAttachments((current) => {
@@ -1131,6 +1172,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       {/* Input box */}
       <div
         className={`agnes-chat-composer absolute inset-x-0 z-20 border-t border-stone-200 bg-[#FAF9F5] p-4 transition-[bottom,transform,background-color] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+          mobileInputActive ? "agnes-chat-composer--mobile-hidden" : ""
+        } ${
           isEmptyConversation
             ? "agnes-chat-composer--empty bottom-1/2 translate-y-1/2"
             : "bottom-0 translate-y-0"
@@ -1173,8 +1216,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             </div>
           )}
           <textarea
+            tabIndex={mobileInputActive ? -1 : 0}
             value={inputVal}
             onChange={(e) => setInputVal(e.target.value)}
+            onFocus={openMobileInput}
+            onBlur={closeMobileInputIfBlurred}
             onPaste={(event) => void handlePaste(event)}
             onKeyDown={(e) => {
               if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v" && isTauri()) {
@@ -1650,6 +1696,68 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           </div>
         </div>
       </div>
+
+      </div>
+
+      {/* Android uses a separate fixed composer while the IME is open. The
+          visual viewport variables place it above keyboards that do not resize
+          the layout viewport. */}
+      <div
+        className="agnes-mobile-input-overlay"
+        data-active={mobileInputActive}
+        aria-hidden={!mobileInputActive}
+      >
+        <div className="agnes-mobile-input-box">
+          <textarea
+            ref={mobileInputRef}
+            tabIndex={mobileInputActive ? 0 : -1}
+            value={inputVal}
+            onChange={(e) => setInputVal(e.target.value)}
+            onFocus={openMobileInput}
+            onBlur={closeMobileInputIfBlurred}
+            onPaste={(event) => void handlePaste(event)}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v" && isTauri()) {
+                e.preventDefault();
+                void handleNativePaste(e.currentTarget);
+                return;
+              }
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
+            placeholder="输入消息..."
+            className="agnes-mobile-input-textarea"
+            aria-label="输入消息"
+          />
+          {isStreaming ? (
+            <button
+              type="button"
+              onClick={() => activeSessionId && cancelRun(activeSessionId).catch(console.error)}
+              className="agnes-mobile-input-action agnes-mobile-input-stop"
+              title="停止生成"
+              aria-label="停止生成"
+            >
+              <Square className="h-4 w-4 fill-current" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void handleSend()}
+              disabled={
+                (!inputVal.trim() && attachments.length === 0)
+                || !hasSessionTarget
+                || isPreparingSession
+              }
+              className="agnes-mobile-input-action agnes-mobile-input-send"
+              title="发送"
+              aria-label="发送"
+            >
+              <PaperPlaneRight className="h-4 w-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       <ModifyMemoryModal

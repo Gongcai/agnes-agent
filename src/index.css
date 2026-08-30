@@ -1339,6 +1339,10 @@ pre,
   background: transparent !important;
 }
 
+.agnes-mobile-input-overlay {
+  display: none;
+}
+
 .agnes-chat-empty-welcome h1 {
   font-family: var(--claude-display-font);
   font-size: 48px;
@@ -2707,6 +2711,94 @@ pre,
 
   .agnes-chat-composer:not(.agnes-chat-composer--empty) {
     bottom: var(--agnes-keyboard-height, 0px) !important;
+  }
+
+  .agnes-chat-composer--mobile-hidden {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .agnes-mobile-input-overlay {
+    position: fixed;
+    top: calc(
+      var(--agnes-visual-viewport-height, 100vh)
+      + var(--agnes-visual-viewport-offset-top, 0px)
+    );
+    right: 0;
+    left: 0;
+    z-index: 100;
+    display: block;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    background: var(--claude-canvas);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-100%);
+    transition: opacity 120ms ease;
+  }
+
+  .agnes-mobile-input-overlay[data-active="true"] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .agnes-mobile-input-box {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    width: 100%;
+    max-width: 744px;
+    margin: 0 auto;
+    padding: 5px;
+    border: 0.5px solid var(--claude-border-strong);
+    border-radius: 16px;
+    background: var(--claude-input);
+    box-shadow: 0 1px 2px rgba(31, 30, 27, 0.08), 0 -8px 24px rgba(31, 30, 27, 0.06);
+  }
+
+  .agnes-mobile-input-textarea {
+    min-height: 42px;
+    max-height: 136px;
+    flex: 1;
+    resize: none;
+    overflow-y: auto;
+    border: 0;
+    outline: none;
+    background: transparent;
+    padding: 10px 12px 8px;
+    color: var(--claude-ink);
+    font: inherit;
+    font-size: 16px;
+    line-height: 1.45;
+  }
+
+  .agnes-mobile-input-textarea::placeholder {
+    color: var(--claude-muted);
+  }
+
+  .agnes-mobile-input-action {
+    display: inline-flex;
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 1px;
+    border: 0;
+    border-radius: 50%;
+    color: white;
+  }
+
+  .agnes-mobile-input-action:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+
+  .agnes-mobile-input-send {
+    background: var(--claude-clay);
+  }
+
+  .agnes-mobile-input-stop {
+    background: var(--claude-danger);
   }
 
   .agnes-chat-messages .agnes-message-row > div:last-child {

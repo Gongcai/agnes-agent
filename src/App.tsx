@@ -99,6 +99,14 @@ export default function App() {
           window.innerHeight - viewport.height - viewport.offsetTop,
         );
         document.documentElement.style.setProperty(
+          "--agnes-visual-viewport-height",
+          `${Math.round(viewport.height)}px`,
+        );
+        document.documentElement.style.setProperty(
+          "--agnes-visual-viewport-offset-top",
+          `${Math.round(viewport.offsetTop)}px`,
+        );
+        document.documentElement.style.setProperty(
           "--agnes-keyboard-height",
           `${Math.round(keyboardHeight)}px`,
         );
@@ -115,6 +123,8 @@ export default function App() {
       viewport.removeEventListener("scroll", updateKeyboardHeight);
       window.removeEventListener("resize", updateKeyboardHeight);
       document.documentElement.style.removeProperty("--agnes-keyboard-height");
+      document.documentElement.style.removeProperty("--agnes-visual-viewport-height");
+      document.documentElement.style.removeProperty("--agnes-visual-viewport-offset-top");
     };
   }, []);
 
