@@ -336,6 +336,7 @@ impl AndroidLinuxRuntime {
             let rootfs_dir = staging.join("rootfs");
             std::fs::create_dir_all(&rootfs_dir)?;
             extract_rootfs(&mut archive, &rootfs_dir)?;
+            ensure_rootfs_runtime_layout(&rootfs_dir)?;
 
             self.update_install_progress("Runtime 已解压，正在校验文件完整性");
             let (digest, size) = digest_rootfs(&rootfs_dir)?;
@@ -576,6 +577,11 @@ impl AgentRuntime for AndroidLinuxRuntime {
         std::fs::create_dir_all(&proot_tmp_dir).map_err(|error| {
             AppError::Other(format!("无法创建 Android PRoot 临时目录: {error}"))
         })?;
+        let proot_shm_dir = proot_tmp_dir.join("shm");
+        std::fs::create_dir_all(&proot_shm_dir).map_err(|error| {
+            AppError::Other(format!("无法创建 Android PRoot 共享内存目录: {error}"))
+        })?;
+        std::fs::set_permissions(&proot_shm_dir, std::fs::Permissions::from_mode(0o700))?;
         let android_workspace_root = crate::tools::workspace::android_workspace_root(
             self.root_dir
                 .parent()
@@ -633,6 +639,23 @@ fn sync_android_resolv_conf(rootfs_dir: &Path, dns_servers: &[String]) -> AppRes
     );
     std::fs::write(&temporary, contents)?;
     std::fs::rename(temporary, etc_dir.join("resolv.conf"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn ensure_rootfs_runtime_layout(rootfs_dir: &Path) -> AppResult<()> {
+    // Empty directories are easy to lose while preparing a ZIP rootfs. Keep
+    // the targets present because Android cannot provide /dev/shm for PRoot.
+    create_safe_directories(rootfs_dir, Path::new("dev/shm"))?;
+    create_safe_directories(rootfs_dir, Path::new("tmp"))?;
+    std::fs::set_permissions(
+        rootfs_dir.join("dev/shm"),
+        std::fs::Permissions::from_mode(0o1777),
+    )?;
+    std::fs::set_permissions(
+        rootfs_dir.join("tmp"),
+        std::fs::Permissions::from_mode(0o1777),
+    )?;
     Ok(())
 }
 

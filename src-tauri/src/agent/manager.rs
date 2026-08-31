@@ -134,14 +134,21 @@ impl AgentLauncher {
                 if !config.proot_tmp_dir.is_dir() {
                     return Err(AppError::Agent("Android PRoot 临时目录不存在".into()));
                 }
+                let proot_shm_dir = config.proot_tmp_dir.join("shm");
+                if !proot_shm_dir.is_dir() {
+                    return Err(AppError::Agent(
+                        "Android PRoot shared-memory directory 不存在".into(),
+                    ));
+                }
                 if !config.proot_loader_path.is_file() {
                     return Err(AppError::Agent("Android PRoot loader 不存在".into()));
                 }
 
                 let child = Command::new(&config.proot_path)
-                    .args(["-0", "-r"])
+                    .args(["-r"])
                     .arg(&config.rootfs_dir)
-                    .args(["-b", "/dev", "-b", "/proc"])
+                    .args(["-b", "/dev", "-b", "/proc", "-b"])
+                    .arg(format!("{}:/dev/shm", proot_shm_dir.display()))
                     .args(["-b"])
                     .arg(format!("{}:/workspace", config.workspace_dir.display()))
                     .args(["-b"])
@@ -156,6 +163,10 @@ impl AgentLauncher {
                     .env("PROOT_LOADER", &config.proot_loader_path)
                     .env("LD_LIBRARY_PATH", "")
                     .env("HOME", "/root")
+                    .env("TMPDIR", "/tmp")
+                    .env("LANG", "C.UTF-8")
+                    .env("LC_ALL", "C.UTF-8")
+                    .env("UV_LINK_MODE", "copy")
                     .env(
                         "PYTHONPATH",
                         "/opt/agnes-agent:/opt/agnes-agent/site-packages",

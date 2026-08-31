@@ -101,6 +101,13 @@ impl AndroidProotProcessRuntime {
                 self.proot_tmp_dir.display()
             )));
         }
+        let proot_shm_dir = self.proot_tmp_dir.join("shm");
+        if !proot_shm_dir.is_dir() {
+            return Err(AppError::Other(format!(
+                "Android PRoot shared-memory directory is invalid: {}",
+                proot_shm_dir.display()
+            )));
+        }
         if !self.rootfs_dir.is_absolute()
             || !self.rootfs_dir.is_dir()
             || !self.rootfs_dir.join("usr/bin/env").is_file()
@@ -135,13 +142,14 @@ impl AndroidProotProcessRuntime {
         let guest_cwd = Path::new("/workspace").join(relative_cwd);
 
         let mut proot_args = vec![
-            OsString::from("-0"),
             OsString::from("-r"),
             self.rootfs_dir.clone().into_os_string(),
             OsString::from("-b"),
             OsString::from("/dev"),
             OsString::from("-b"),
             OsString::from("/proc"),
+            OsString::from("-b"),
+            OsString::from(format!("{}:/dev/shm", proot_shm_dir.display())),
             OsString::from("-b"),
             OsString::from(format!("{}:/workspace", workspace_root.display())),
             OsString::from("-b"),
@@ -164,6 +172,9 @@ impl AndroidProotProcessRuntime {
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         );
         set_environment(&mut env, "TMPDIR", "/tmp");
+        set_environment(&mut env, "LANG", "C.UTF-8");
+        set_environment(&mut env, "LC_ALL", "C.UTF-8");
+        set_environment(&mut env, "UV_LINK_MODE", "copy");
         set_environment(&mut env, "LD_LIBRARY_PATH", "");
         set_environment(&mut env, "PROOT_TMP_DIR", self.proot_tmp_dir.as_os_str());
         set_environment(&mut env, "PROOT_LOADER", self.proot_loader_path.as_os_str());
@@ -1185,6 +1196,7 @@ mod tests {
         std::fs::create_dir_all(rootfs.join("usr/bin")).unwrap();
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::create_dir_all(&proot_tmp).unwrap();
+        std::fs::create_dir_all(proot_tmp.join("shm")).unwrap();
         std::fs::create_dir_all(&android_workspace_root).unwrap();
         for path in [&rootfs.join("usr/bin/env"), &proot, &loader] {
             std::fs::write(path, "test").unwrap();
@@ -1212,13 +1224,14 @@ mod tests {
             .map(|arg| arg.to_string_lossy().to_string())
             .collect::<Vec<_>>();
         let expected_prefix = vec![
-            "-0".into(),
             "-r".into(),
             rootfs.to_string_lossy().to_string(),
             "-b".into(),
             "/dev".into(),
             "-b".into(),
             "/proc".into(),
+            "-b".into(),
+            format!("{}:/dev/shm", proot_tmp.join("shm").display()),
             "-b".into(),
             format!("{}:/workspace", workspace.display()),
             "-b".into(),
@@ -1227,9 +1240,9 @@ mod tests {
             "/workspace/src".into(),
             "/usr/bin/env".into(),
         ];
-        assert_eq!(args[0..14], expected_prefix);
-        assert_eq!(args[14], "bash");
-        assert_eq!(args[15], "-c");
+        assert_eq!(args[0..15], expected_prefix);
+        assert_eq!(args[15], "bash");
+        assert_eq!(args[16], "-c");
         assert!(command
             .env
             .iter()
@@ -1238,6 +1251,18 @@ mod tests {
             .env
             .iter()
             .any(|(name, value)| { name == "PROOT_TMP_DIR" && value == proot_tmp.as_os_str() }));
+        assert!(command
+            .env
+            .iter()
+            .any(|(name, value)| { name == "LANG" && value == "C.UTF-8" }));
+        assert!(command
+            .env
+            .iter()
+            .any(|(name, value)| { name == "LC_ALL" && value == "C.UTF-8" }));
+        assert!(command
+            .env
+            .iter()
+            .any(|(name, value)| { name == "UV_LINK_MODE" && value == "copy" }));
         assert!(command
             .env
             .iter()
@@ -1257,6 +1282,7 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::create_dir_all(&android_workspace_root).unwrap();
         std::fs::create_dir_all(&proot_tmp).unwrap();
+        std::fs::create_dir_all(proot_tmp.join("shm")).unwrap();
         for name in ["env", "proot", "loader"] {
             let path = if name == "env" {
                 rootfs.join("usr/bin").join(name)

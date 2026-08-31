@@ -8,6 +8,8 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  chmodSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -101,10 +103,93 @@ function runZip(output, packageRoot) {
 function resetBuildHostResolver(rootfs) {
   const resolver = join(rootfs, "etc", "resolv.conf");
   mkdirSync(dirname(resolver), { recursive: true });
+  try {
+    if (lstatSync(resolver).isSymbolicLink()) unlinkSync(resolver);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
   writeFileSync(
     resolver,
     "# Runtime resolver is supplied by Android ConnectivityManager at launch.\n",
   );
+}
+
+function resolveRootfsPath(rootfs, entryPath) {
+  const root = resolve(rootfs);
+  let current = resolve(root, entryPath);
+  const seen = new Set();
+  for (let depth = 0; depth < 40; depth += 1) {
+    const relativePath = relative(root, current);
+    if (
+      relativePath.startsWith(`..${sep}`) ||
+      relativePath === ".." ||
+      relativePath.includes(`${sep}..${sep}`)
+    ) {
+      throw new Error(`Rootfs symlink escapes rootfs: ${entryPath}`);
+    }
+    const stat = lstatSync(current);
+    if (!stat.isSymbolicLink()) return current;
+    if (seen.has(current)) throw new Error(`Rootfs symlink loop: ${entryPath}`);
+    seen.add(current);
+    const target = readlinkSync(current);
+    current = target.startsWith(sep)
+      ? resolve(root, `.${target}`)
+      : resolve(dirname(current), target);
+  }
+  throw new Error(`Rootfs symlink chain is too deep: ${entryPath}`);
+}
+
+function normalizePythonEntrypoints(rootfs) {
+  const bin = join(rootfs, "usr", "bin");
+  const python = join(bin, "python3");
+  const pip312 = join(bin, "pip3.12");
+  if (!existsSync(python)) {
+    throw new Error(`Rootfs is missing required file: ${python}`);
+  }
+  if (!existsSync(pip312)) {
+    throw new Error(`Rootfs is missing required file: ${pip312}`);
+  }
+
+  const resolvedPython = resolveRootfsPath(rootfs, "usr/bin/python3");
+  const resolvedPip = resolveRootfsPath(rootfs, "usr/bin/pip3.12");
+  if (!lstatSync(resolvedPython).isFile()) {
+    throw new Error("Rootfs python3 does not resolve to a regular file");
+  }
+  if (!lstatSync(resolvedPip).isFile()) {
+    throw new Error("Rootfs pip3.12 does not resolve to a regular file");
+  }
+  chmodSync(resolvedPython, 0o755);
+  chmodSync(resolvedPip, 0o755);
+
+  // Some Ubuntu rootfs exports contain pip3 -> pip3 (a broken self-link).
+  // Normalize aliases in the copied package so the installed Runtime never
+  // carries an ELOOP entrypoint.
+  for (const [alias, target] of [["pip3", "pip3.12"], ["pip", "pip3"]]) {
+    const aliasPath = join(bin, alias);
+    let valid = false;
+    try {
+      valid =
+        lstatSync(aliasPath).isFile() &&
+        lstatSync(resolveRootfsPath(rootfs, `usr/bin/${alias}`)).isFile();
+    } catch (error) {
+      if (error.code !== "ENOENT" && !String(error.message).includes("symlink")) throw error;
+    }
+    if (!valid) {
+      try {
+        unlinkSync(aliasPath);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      symlinkSync(target, aliasPath);
+    }
+  }
+  resolveRootfsPath(rootfs, "usr/bin/pip3");
+  resolveRootfsPath(rootfs, "usr/bin/pip");
+}
+
+function ensureRuntimeDirectories(rootfs) {
+  mkdirSync(join(rootfs, "dev", "shm"), { recursive: true });
+  mkdirSync(join(rootfs, "tmp"), { recursive: true });
 }
 
 const rootfsInput = resolve(requiredArgument("--rootfs"));
@@ -137,6 +222,8 @@ try {
   const rootfs = join(packageRoot, "rootfs");
   mkdirSync(rootfs, { recursive: true });
   copyTree(rootfsInput, rootfs);
+  ensureRuntimeDirectories(rootfs);
+  normalizePythonEntrypoints(rootfs);
   resetBuildHostResolver(rootfs);
 
   const agentDestination = join(rootfs, "opt", "agnes-agent", "app");

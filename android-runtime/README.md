@@ -83,7 +83,9 @@ Android linker 和动态依赖，并在目标 ABI 目录生成：
 pnpm build:android-runtime -- --rootfs <rootfs-path> --abi <arm64-v8a|x86_64>
 ```
 
-脚本会注入 Agnes Agent，生成 manifest，校验 rootfs 后输出 `runtime.zip`。当前 x86_64
+脚本会注入 Agnes Agent，生成 manifest，校验 rootfs 后输出 `runtime.zip`。打包时还会补齐
+`rootfs/dev/shm` 和 `rootfs/tmp`，并将 Python 的 `pip3`/`pip` 入口规范化为可解析的真实
+脚本，拒绝自指软链接。当前 x86_64
 Ubuntu 24.04.4 完整制品已在 Android 模拟器通过首次安装、PRoot 启动、Agent Protocol 握手和
 模型流式回复验证；
 Ubuntu rootfs 的下载、apt 安装和锁定 Python 依赖安装目前仍是人工制备流程，不能视为完整的

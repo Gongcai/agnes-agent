@@ -124,6 +124,7 @@ PRoot runner 当前约定以下文件由 Android 包和 rootfs 制品共同提�
 - `libagnes_proot.so`：由目标 ABI 的 `jniLibs` 打入 APK，安装后从 Android `nativeLibraryDir` 执行；不从应用可写 rootfs 执行 ELF；
 - `libagnes_proot_loader.so`：同 ABI 的静态 PRoot ELF loader；通过 `PROOT_LOADER` 直接使用，避免 PRoot 在 Android 应用私有目录临时提取 loader；
 - `usr/bin/python3`：Linux 用户空间内的 Python 解释器；
+- `usr/bin/pip3` 和 `usr/bin/pip`：必须解析到真实的 pip 脚本，不能是自指软链接；打包器会在 staging rootfs 中规范化为 `pip3.12`/`pip3`；
 - `opt/agnes-agent/app/main.py`：与桌面端同源的 Python Agent；
 - `usr/bin/bash`、`usr/bin/git`、Python 和 SSH 等 Agent 工具依赖也必须位于 rootfs；
 - Agent 依赖、证书和启动配置也必须位于 rootfs 内，不写入 Android 私有目录中的明文配置。
@@ -146,12 +147,22 @@ Linux 的 `/workspace`，并把持久项目根目录额外挂载为 `/root/works
 或未授权 Android 路径挂载进 Linux。文件、记忆和数据库工具仍由 Rust 直接执行，避免 Linux
 进程绕过 Rust 的权限审计。
 
+运行时不使用 PRoot 的 `-0` 伪 root 模式：Android 进程保持真实 UID，避免 `getuid()` 与
+`/proc/self/status` 不一致。rootfs 和应用私有项目目录由同一 Android 应用拥有，Agent 不依赖
+伪 root 才能运行。`/dev`、`/proc` 和应用私有的 `android-runtime/tmp/shm` 分别挂载到 Linux
+环境，其中最后一项提供 POSIX semaphore 所需的 `/dev/shm`；Android 无法在进程内创建真实
+tmpfs，因此启动前必须准备该目录。工具和 Agent 固定注入 `LANG=C.UTF-8`、`LC_ALL=C.UTF-8`、
+`TMPDIR=/tmp` 与 `UV_LINK_MODE=copy`。共享存储工作区仍可读写，但其 FUSE 限制意味着不能
+依赖软链接或直接执行其中的脚本；需要这类能力的项目应使用应用私有 Linux 项目工作区。
+
 开发调试可以使用预置 rootfs 或本机生成的测试 rootfs。正式 APK/AAB 默认内置对应 ABI 的 Runtime；应用内更新或远端制品下载作为后续升级通道，不能成为首次使用的必要步骤。
 
 Runtime ZIP 可使用 `pnpm build:android-runtime -- --rootfs <Ubuntu-rootfs> --abi <arm64-v8a|x86_64>`
 生成。脚本会复制 rootfs 到临时目录，注入 `agent/app` 和记忆提示词，保留安全软链接并按
-安装器相同的规则生成 SHA-256，并输出带 `manifest.json` 的 ZIP。依赖包、Python 和
-系统库必须预先安装到输入 rootfs；脚本不会联网安装依赖，也不会读取宿主密钥。
+安装器相同的规则生成 SHA-256，并输出带 `manifest.json` 的 ZIP。打包时还会补齐
+`rootfs/dev/shm` 和 `rootfs/tmp`，并将 Python 的 `pip3`/`pip` 入口规范化为可解析的真实
+脚本，拒绝自指软链接。依赖包、Python 和系统库必须预先安装到输入 rootfs；脚本不会联网
+安装依赖，也不会读取宿主密钥。
 
 宿主 PRoot 可使用 `pnpm build:android-proot -- --abi <arm64-v8a|x86_64>` 从锁定的 Termux
 PRoot 与 Samba talloc commit 构建。版本、commit、Ubuntu Base URL 和 SHA-256 记录在
