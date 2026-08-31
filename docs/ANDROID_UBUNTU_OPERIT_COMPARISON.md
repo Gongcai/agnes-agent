@@ -13,14 +13,14 @@
 文中结论分为三类：
 
 - **Operit 事实**：由指定 commit 的源码或制品直接确认。
-- **Agnes 现状**：由设备实测和当前代码确认。
+- **Agnes 基线现状**：由设备实测和 `40dd624` 代码确认；P0 后续变化单列在 4.2 节。
 - **推荐设计**：面向 Agnes 的架构决策，不代表 Operit 已这样实现。
 
 关键参考源码见文末。行号仅对应上述固定 commit，后续上游更新可能变化。
 
 ## 2. 结论摘要
 
-Agnes 当前问题的共同根因不是缺少 Python、pip 或某条错误提示，而是 **Android 宿主、PRoot
+Agnes 在 `40dd624` 基线上的共同根因不是缺少 Python、pip 或某条错误提示，而是 **Android 宿主、PRoot
 guest 和 Agent 工具策略没有共享同一套运行时模型**：
 
 1. Shell 在 PRoot guest 中看到 `/workspace`、`/root` 和 `/tmp`；文件、Git 和静态检查运行在
@@ -120,8 +120,9 @@ Operit 先用最小参数启动一次 PRoot，再逐项扩展：
 4. 候选 bind 会加入完整参数再执行一次 PRoot probe；失败则跳过，不污染最终启动参数。
 5. probe 失败时输出 rootfs、loader、seccomp、link2symlink、bind 参数和原始 stdout/stderr。
 
-因此 `--link2symlink` 在 Operit 中是可选兼容开关，不是 Ubuntu 启动的固定前提。Agnes 当前在
-Agent 启动、工具命令和 rootfs probe 三处固定加入该参数，这正是需要从根上调整的地方。
+因此 `--link2symlink` 在 Operit 中是可选兼容开关，不是 Ubuntu 启动的固定前提。Agnes 的
+`40dd624` 基线在 Agent 启动、工具命令和 rootfs probe 三处固定加入该参数，这正是需要从根上
+调整的地方。
 
 还需注意：仅测试“PRoot 带这个参数能启动”仍不足以证明某个 bind mount 支持 venv。Agnes 的
 capability probe 应同时覆盖 guest rootfs、应用私有数据目录和 workspace 三种文件系统语义。
@@ -243,7 +244,7 @@ APT、pip、uv、npm 的镜像配置会写入 guest `/root` 或 `/etc`。
 | E 静态检查误伤 | 不完整 shell parser 被用作强制安全边界 | hidden exec 执行普通 shell，超时与进程组负责生命周期 | 用资源级 resolver 做路径授权；未知副作用进入审批，避免整条命令因 glob/环境读取被误拒 |
 | F session ID/会话恢复 | 返回协议和 registry 不一致 | Operit session manager 与 hidden executor 各自持有 registry | 返回不可截断 opaque ID；unknown 返回当前会话；重连可查询状态，超时可靠清理进程组 |
 
-### 4.1 对 `40dd624` 的评估
+### 4.1 对 `40dd624` 基线的评估
 
 当前提交加入 PRoot `-0`、guest writable roots、`/workspace` 别名处理、`cd`/glob 检查修正、venv
 提前提示和完整 session ID 错误。这些变化适合作为止血，并验证了问题定位，但有三处仍需架构替换：
@@ -255,6 +256,24 @@ APT、pip、uv、npm 的镜像配置会写入 guest `/root` 或 `/etc`。
    恢复 PEP 668，并用内置 uv + 外置环境目录解决 Python 可用性。
 
 因此下一轮不应继续添加更多命令名或路径字符串特判。
+
+### 4.2 P0 首轮实施状态
+
+首轮实现已经完成以下基础改造：
+
+- 新增不可变 `AndroidProotRuntimeConfig`，Agent 主进程与 shell/git 工具从同一配置生成 fake-root、
+  rootfs、`/dev`、`/proc`、`/dev/shm`、workspace bind 和 guest 环境参数。
+- Runtime probe 先不带 `--link2symlink` 启动真实 Python/`multiprocessing.SimpleQueue`；只有最小
+  模式失败而兼容模式成功时才启用该参数，并把结果传给全部执行器。
+- probe 读取 `/proc/version`、`stat`、`loadavg`、`uptime` 和 `vmstat`，记录实际可读性；当前只
+  生成能力档案，synthetic proc fallback 仍属于后续工作。
+- 在 rootfs、app-private environment store、Home workspace 和 app-private project workspace 中
+  实测读写/rename、symlink、hardlink、direct exec，结果原子写入 `capabilities.json`，不记录宿主
+  绝对路径。
+- 删除安装时放开全局 pip 的行为；启动和安装会删除内容完全匹配旧 Agnes 注入值的
+  `/etc/pip.conf`，其他用户配置保持不变。
+- 创建持久的 `user/environments` 与 `user/cache/uv` 目录，为后续 uv environment service 准备
+  execution store；本轮尚未内置 uv 或自动创建项目环境。
 
 ## 5. Agnes 推荐目标架构
 
@@ -545,15 +564,14 @@ PRoot `-0` 只改变 guest 观察到的身份，不提供 Android 提权；同�
 - `assets/setup_fake_sysdata.sh`：Android 受限 proc/sys 节点的替代数据。
 - `jniLibs/arm64-v8a/libsudo.so`：两个字节 `$@` 的 sudo shim。
 
-### Agnes 当前实现
+### Agnes P0 实现
 
-- `src-tauri/src/agent/manager.rs:145-164`：Agent PRoot 启动参数及固定
-  `--link2symlink`、`/workspace` bind。
-- `src-tauri/src/tools/sandbox.rs:45-200`：工具 PRoot launch spec、guest cwd 和环境变量。
+- `src-tauri/src/agent/manager.rs`：Agent 使用共享 PRoot 配置启动，不再独立拼接能力参数。
+- `src-tauri/src/tools/sandbox.rs`：共享 `AndroidProotRuntimeConfig`、guest cwd、bind 与环境变量。
 - `src-tauri/src/tools/sandbox.rs:315-450`：writable roots、protected paths 与策略 sandbox。
 - `src-tauri/src/tools/builtin/mod.rs:145-174`：`/workspace` 到宿主 workspace 的当前特判。
 - `src-tauri/src/tools/builtin/shell.rs:80-130,340-700`：shell 静态写目标、cwd、glob 和 venv 检查。
 - `src-tauri/src/tools/terminal.rs:115-330`：每命令 PTY、session registry、进程组和轮询。
 - `src-tauri/src/runtime.rs:300-370`：版本化 Runtime 安装和校验。
-- `src-tauri/src/runtime.rs:625-710`：DNS、rootfs layout、当前 pip 配置和 rootfs probe。
+- `src-tauri/src/runtime.rs`：Python 策略迁移、条件 PRoot probe、`/proc` 与文件系统能力档案。
 - `android-runtime/README.md`：Runtime 制品、工作区和构建流程。

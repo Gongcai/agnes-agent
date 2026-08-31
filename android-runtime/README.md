@@ -31,6 +31,16 @@ Android 的 Shell 和 Git 工具会复用 Agent 启动时的 PRoot rootfs。Rust
 应用私有目录或未授权路径。Agent 主进程和 Rust 发起的 Shell/Git/Python 工具进程都会将持久项目
 根目录挂载为 `/root/workspace`，文件和记忆工具仍由 Rust 执行，Linux 进程不能绕过 Rust 审计。
 
+Runtime supervisor 使用 PRoot `-0` 提供仅限 guest rootfs 的 fake-root，并在每次启动前先以最小
+参数运行 Python/`/dev/shm` 探测。`--link2symlink` 不是固定参数：只有最小模式失败、带该参数的
+兼容模式成功时才启用。最终能力值通过同一份启动配置传给 Agent 与工具执行器。
+
+启动还会在 `android-runtime/capabilities.json` 记录关键 `/proc` 节点可读性，以及 rootfs、
+environment store、Home workspace 和应用私有项目 workspace 的读写/rename、symlink、hardlink、
+direct-exec 能力。档案不包含 Android 宿主绝对路径。持久 Python 环境和 uv cache 预留在
+`android-runtime/user/environments` 与 `android-runtime/user/cache/uv`；全局 Python 保留 PEP 668，
+Runtime 不再通过 `break-system-packages` 默认放开全局 pip。
+
 ## Android 项目工作区
 
 Runtime 启动时会在应用私有数据下创建持久项目根目录：

@@ -12,9 +12,9 @@ use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::mcp::McpManager;
 use crate::secrets::SharedSecretStore;
-#[cfg(target_os = "android")]
-use crate::tools::sandbox::AndroidProotProcessRuntime;
 use crate::tools::sandbox::ToolProcessRuntime;
+#[cfg(target_os = "android")]
+use crate::tools::sandbox::{AndroidProotProcessRuntime, AndroidProotRuntimeConfig};
 
 /// Agent 运行时：拥有 Python sidecar 子进程与 WS Server 端口/token。
 struct AgentRuntime {
@@ -67,12 +67,8 @@ struct DevUvLauncher;
 struct BundledBinLauncher;
 #[cfg(target_os = "android")]
 struct AndroidLinuxLauncher {
-    proot_path: std::path::PathBuf,
-    proot_loader_path: std::path::PathBuf,
-    rootfs_dir: std::path::PathBuf,
+    runtime: AndroidProotRuntimeConfig,
     workspace_dir: std::path::PathBuf,
-    android_workspace_root: std::path::PathBuf,
-    proot_tmp_dir: std::path::PathBuf,
 }
 
 enum AgentLauncher {
@@ -108,19 +104,23 @@ impl AgentLauncher {
         match self {
             #[cfg(target_os = "android")]
             Self::AndroidLinux(config) => {
-                if !config.proot_path.is_file() {
-                    return Err(AppError::Agent(format!(
-                        "Android Runtime 缺少 PRoot: {}",
-                        config.proot_path.display()
-                    )));
-                }
-                if !config.rootfs_dir.join("usr/bin/python3").is_file() {
+                config
+                    .runtime
+                    .validate()
+                    .map_err(|error| AppError::Agent(error.to_string()))?;
+                if !config
+                    .runtime
+                    .rootfs_dir()
+                    .join("usr/bin/python3")
+                    .is_file()
+                {
                     return Err(AppError::Agent(
                         "Android Runtime 缺少 /usr/bin/python3".into(),
                     ));
                 }
                 if !config
-                    .rootfs_dir
+                    .runtime
+                    .rootfs_dir()
                     .join("opt/agnes-agent/app/main.py")
                     .is_file()
                 {
@@ -131,51 +131,24 @@ impl AgentLauncher {
                 if !config.workspace_dir.is_dir() {
                     return Err(AppError::Agent("Android Agent 工作区不存在".into()));
                 }
-                if !config.proot_tmp_dir.is_dir() {
-                    return Err(AppError::Agent("Android PRoot 临时目录不存在".into()));
-                }
-                let proot_shm_dir = config.proot_tmp_dir.join("shm");
-                if !proot_shm_dir.is_dir() {
-                    return Err(AppError::Agent(
-                        "Android PRoot shared-memory directory 不存在".into(),
-                    ));
-                }
-                if !config.proot_loader_path.is_file() {
-                    return Err(AppError::Agent("Android PRoot loader 不存在".into()));
-                }
 
-                let child = Command::new(&config.proot_path)
+                let mut proot_args = config.runtime.base_args();
+                config.runtime.append_workspace_args(
+                    &mut proot_args,
+                    &config.workspace_dir,
+                    std::path::Path::new("/workspace"),
+                );
+                proot_args.extend(
+                    ["/usr/bin/python3", "-m", "app.main"]
+                        .into_iter()
+                        .map(std::ffi::OsString::from),
+                );
+                let child = Command::new(config.runtime.proot_path())
                     .env_clear()
-                    // Fake root is required for apt/dpkg inside the guest.
-                    .arg("-0")
-                    .args(["-r"])
-                    .arg(&config.rootfs_dir)
-                    // Android denies hard links; glibc sem_open needs this emulation.
-                    .arg("--link2symlink")
-                    .args(["-b", "/dev", "-b", "/proc", "-b"])
-                    .arg(format!("{}:/dev/shm", proot_shm_dir.display()))
-                    .args(["-b"])
-                    .arg(format!("{}:/workspace", config.workspace_dir.display()))
-                    .args(["-b"])
-                    .arg(format!(
-                        "{}:/root/workspace",
-                        config.android_workspace_root.display()
-                    ))
-                    .args(["-w", "/workspace", "/usr/bin/python3", "-m", "app.main"])
+                    .args(proot_args)
+                    .envs(config.runtime.environment())
                     .env("AGENT_WS_URL", ws_url)
                     .env("AGENT_PROTOCOL_TOKEN", token)
-                    .env("PROOT_TMP_DIR", &config.proot_tmp_dir)
-                    .env("PROOT_LOADER", &config.proot_loader_path)
-                    // Keep POSIX semaphores working on Android PRoot.
-                    .env("PROOT_NO_SECCOMP", "1")
-                    .env("LD_LIBRARY_PATH", "")
-                    .env("HOME", "/root")
-                    .env("TERM", "dumb")
-                    .env("NO_COLOR", "1")
-                    .env("TMPDIR", "/tmp")
-                    .env("LANG", "C.UTF-8")
-                    .env("LC_ALL", "C.UTF-8")
-                    .env("UV_LINK_MODE", "copy")
                     .env(
                         "PYTHONPATH",
                         "/opt/agnes-agent:/opt/agnes-agent/site-packages",
@@ -367,23 +340,13 @@ impl AgentManager {
         secrets: SharedSecretStore,
         home_workspace_dir: std::path::PathBuf,
         storage: Arc<crate::storage::StorageService>,
-        rootfs_dir: std::path::PathBuf,
-        proot_path: std::path::PathBuf,
-        proot_loader_path: std::path::PathBuf,
-        android_workspace_root: std::path::PathBuf,
-        proot_tmp_dir: std::path::PathBuf,
+        proot_config: AndroidProotRuntimeConfig,
     ) -> AppResult<()> {
         *self
             .process_runtime
             .lock()
             .unwrap_or_else(|error| error.into_inner()) =
-            ToolProcessRuntime::AndroidProot(AndroidProotProcessRuntime::new(
-                proot_path.clone(),
-                proot_loader_path.clone(),
-                proot_tmp_dir.clone(),
-                rootfs_dir.clone(),
-                android_workspace_root.clone(),
-            ));
+            ToolProcessRuntime::AndroidProot(AndroidProotProcessRuntime::new(proot_config.clone()));
         self.start_with_launcher(
             db,
             app_handle,
@@ -392,12 +355,8 @@ impl AgentManager {
             home_workspace_dir.clone(),
             storage,
             AgentLauncher::AndroidLinux(AndroidLinuxLauncher {
-                proot_path,
-                proot_loader_path,
-                rootfs_dir,
+                runtime: proot_config,
                 workspace_dir: home_workspace_dir,
-                android_workspace_root,
-                proot_tmp_dir,
             }),
         )
     }

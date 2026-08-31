@@ -39,6 +39,8 @@ use crate::mcp::McpManager;
 use crate::secrets::SharedSecretStore;
 #[cfg(target_os = "android")]
 use crate::storage::StorageService;
+#[cfg(target_os = "android")]
+use crate::tools::sandbox::AndroidProotRuntimeConfig;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -170,6 +172,54 @@ struct NativeRuntimeEnvironment {
     proot_loader_available: bool,
     proot_loader_path: String,
     dns_servers: Vec<String>,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AndroidRuntimeCapabilityProfile {
+    schema_version: u32,
+    link2symlink_enabled: bool,
+    proc: AndroidProcCapabilities,
+    filesystems: AndroidFilesystemCapabilities,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AndroidProcCapabilities {
+    version_readable: bool,
+    stat_readable: bool,
+    loadavg_readable: bool,
+    uptime_readable: bool,
+    vmstat_readable: bool,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AndroidFilesystemCapabilities {
+    rootfs: FilesystemCapabilities,
+    environment_store: FilesystemCapabilities,
+    home_workspace: FilesystemCapabilities,
+    project_workspace: FilesystemCapabilities,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FilesystemCapabilities {
+    read_write_rename: bool,
+    symlink: bool,
+    hardlink: bool,
+    direct_exec: bool,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug)]
+struct AndroidProotProbe {
+    link2symlink_enabled: bool,
+    proc: AndroidProcCapabilities,
 }
 
 #[cfg(target_os = "android")]
@@ -345,7 +395,7 @@ impl AndroidLinuxRuntime {
                     "Android Runtime rootfs 校验失败: sha256={digest}, size={size}"
                 )));
             }
-            ensure_guest_pip_config(&rootfs_dir)?;
+            enforce_guest_python_policy(&rootfs_dir)?;
             self.update_install_progress("Runtime 校验通过，正在写入版本信息");
             std::fs::write(
                 staging.join("manifest.json"),
@@ -573,6 +623,7 @@ impl AgentRuntime for AndroidLinuxRuntime {
         if !proot_loader_path.is_absolute() || !proot_loader_path.is_file() {
             return Err(AppError::Other("Android PRoot loader 路径无效".into()));
         }
+        enforce_guest_python_policy(&rootfs_dir)?;
         sync_android_resolv_conf(&rootfs_dir, &environment.dns_servers)?;
         let proot_tmp_dir = self.root_dir.join("tmp");
         std::fs::create_dir_all(&proot_tmp_dir).map_err(|error| {
@@ -593,7 +644,35 @@ impl AgentRuntime for AndroidLinuxRuntime {
         std::fs::create_dir_all(&android_workspace_root).map_err(|error| {
             AppError::Other(format!("无法创建 Android Linux 用户工作区: {error}"))
         })?;
-        probe_android_rootfs(&proot_path, &proot_loader_path, &rootfs_dir, &proot_tmp_dir)?;
+        let environment_store = self.root_dir.join("user/environments");
+        let uv_cache_dir = self.root_dir.join("user/cache/uv");
+        std::fs::create_dir_all(&environment_store).map_err(|error| {
+            AppError::Other(format!("无法创建 Android Python 环境目录: {error}"))
+        })?;
+        std::fs::create_dir_all(&uv_cache_dir)
+            .map_err(|error| AppError::Other(format!("无法创建 Android uv 缓存目录: {error}")))?;
+        let proot_probe =
+            probe_android_rootfs(&proot_path, &proot_loader_path, &rootfs_dir, &proot_tmp_dir)?;
+        let capability_profile = AndroidRuntimeCapabilityProfile {
+            schema_version: 1,
+            link2symlink_enabled: proot_probe.link2symlink_enabled,
+            proc: proot_probe.proc,
+            filesystems: AndroidFilesystemCapabilities {
+                rootfs: probe_filesystem_capabilities(&rootfs_dir.join("tmp")),
+                environment_store: probe_filesystem_capabilities(&environment_store),
+                home_workspace: probe_filesystem_capabilities(&self.home_workspace_dir),
+                project_workspace: probe_filesystem_capabilities(&android_workspace_root),
+            },
+        };
+        persist_android_runtime_capabilities(&self.root_dir, &capability_profile)?;
+        let proot_config = AndroidProotRuntimeConfig::new(
+            proot_path,
+            proot_loader_path,
+            proot_tmp_dir,
+            rootfs_dir,
+            android_workspace_root,
+            capability_profile.link2symlink_enabled,
+        );
         let _: serde_json::Value = self.run_native_command("start")?;
         if let Err(error) = self.agent.start_android(
             self.db.clone(),
@@ -602,11 +681,7 @@ impl AgentRuntime for AndroidLinuxRuntime {
             self.secrets.clone(),
             self.home_workspace_dir.clone(),
             self.storage.clone(),
-            rootfs_dir,
-            proot_path,
-            proot_loader_path,
-            android_workspace_root,
-            proot_tmp_dir,
+            proot_config,
         ) {
             let _ = self.run_native_command::<serde_json::Value>("stop");
             return Err(error);
@@ -663,16 +738,19 @@ fn ensure_rootfs_runtime_layout(rootfs_dir: &Path) -> AppResult<()> {
     Ok(())
 }
 
-#[cfg(target_os = "android")]
-fn ensure_guest_pip_config(rootfs_dir: &Path) -> AppResult<()> {
-    // PEP 668 otherwise makes every guest pip install fail unless callers
-    // remember the Android-specific override. This is runtime metadata and is
-    // deliberately written after the package digest has been verified.
-    let etc_dir = rootfs_dir.join("etc");
-    std::fs::create_dir_all(&etc_dir)?;
-    let pip_conf = etc_dir.join("pip.conf");
-    if !pip_conf.exists() {
-        std::fs::write(pip_conf, "[global]\nbreak-system-packages = true\n")?;
+#[cfg(any(target_os = "android", test))]
+const LEGACY_AGNES_PIP_CONFIG: &str = "[global]\nbreak-system-packages = true\n";
+
+#[cfg(any(target_os = "android", test))]
+fn enforce_guest_python_policy(rootfs_dir: &Path) -> AppResult<()> {
+    let pip_conf = rootfs_dir.join("etc/pip.conf");
+    match std::fs::read_to_string(&pip_conf) {
+        Ok(contents) if contents == LEGACY_AGNES_PIP_CONFIG => {
+            std::fs::remove_file(pip_conf)?;
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     Ok(())
 }
@@ -683,17 +761,57 @@ fn probe_android_rootfs(
     proot_loader_path: &Path,
     rootfs_dir: &Path,
     proot_tmp_dir: &Path,
-) -> AppResult<()> {
+) -> AppResult<AndroidProotProbe> {
+    let minimal = run_android_rootfs_probe(
+        proot_path,
+        proot_loader_path,
+        rootfs_dir,
+        proot_tmp_dir,
+        false,
+    )?;
+    if minimal.status.success() {
+        return Ok(AndroidProotProbe {
+            link2symlink_enabled: false,
+            proc: parse_android_proc_capabilities(&minimal.stdout),
+        });
+    }
+
+    let compatibility = run_android_rootfs_probe(
+        proot_path,
+        proot_loader_path,
+        rootfs_dir,
+        proot_tmp_dir,
+        true,
+    )?;
+    if compatibility.status.success() {
+        return Ok(AndroidProotProbe {
+            link2symlink_enabled: true,
+            proc: parse_android_proc_capabilities(&compatibility.stdout),
+        });
+    }
+
+    Err(AppError::Other(format!(
+        "Android Linux Runtime 启动探测失败（minimal: {}; link2symlink fallback: {}）",
+        proot_probe_failure_detail(&minimal),
+        proot_probe_failure_detail(&compatibility)
+    )))
+}
+
+#[cfg(target_os = "android")]
+fn run_android_rootfs_probe(
+    proot_path: &Path,
+    proot_loader_path: &Path,
+    rootfs_dir: &Path,
+    proot_tmp_dir: &Path,
+    link2symlink_enabled: bool,
+) -> AppResult<std::process::Output> {
     let shm_dir = proot_tmp_dir.join("shm");
-    let output = std::process::Command::new(proot_path)
-        .env_clear()
-        // Fake root lets apt/dpkg update the isolated rootfs while Android
-        // keeps the real app uid unchanged.
-        .arg("-0")
-        .args(["-r"])
-        .arg(rootfs_dir)
-        // Android denies hard links; glibc sem_open needs this emulation.
-        .arg("--link2symlink")
+    let mut command = std::process::Command::new(proot_path);
+    command.env_clear().arg("-0").args(["-r"]).arg(rootfs_dir);
+    if link2symlink_enabled {
+        command.arg("--link2symlink");
+    }
+    command
         .args(["-b", "/dev", "-b", "/proc", "-b"])
         .arg(format!("{}:/dev/shm", shm_dir.display()))
         .args([
@@ -701,7 +819,19 @@ fn probe_android_rootfs(
             "/root",
             "/usr/bin/python3",
             "-c",
-            "import multiprocessing; queue = multiprocessing.SimpleQueue(); queue.close(); print('ok')",
+            r#"import multiprocessing
+queue = multiprocessing.SimpleQueue()
+queue.close()
+readable = []
+for name in ("version", "stat", "loadavg", "uptime", "vmstat"):
+    try:
+        with open("/proc/" + name, "rb") as handle:
+            handle.read(1)
+        readable.append(name)
+    except OSError:
+        pass
+print("AGNES_PROC_READABLE=" + ",".join(readable))
+print("AGNES_PROBE_OK=1")"#,
         ])
         .env("PROOT_TMP_DIR", proot_tmp_dir)
         .env("PROOT_LOADER", proot_loader_path)
@@ -714,20 +844,95 @@ fn probe_android_rootfs(
         .env("LANG", "C.UTF-8")
         .env("LC_ALL", "C.UTF-8")
         .env("TMPDIR", "/tmp")
-        .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        .env(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        )
         .output()
-        .map_err(|error| AppError::Other(format!("Android PRoot 启动探测失败: {error}")))?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(AppError::Other(format!(
-            "Android Linux Runtime 启动探测失败: {}",
-            if detail.is_empty() {
-                format!("退出码 {:?}", output.status.code())
-            } else {
-                detail
-            }
-        )));
+        .map_err(|error| AppError::Other(format!("Android PRoot 启动探测失败: {error}")))
+}
+
+#[cfg(target_os = "android")]
+fn proot_probe_failure_detail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if stderr.is_empty() {
+        format!("exit code {:?}", output.status.code())
+    } else {
+        stderr
     }
+}
+
+#[cfg(target_os = "android")]
+fn parse_android_proc_capabilities(stdout: &[u8]) -> AndroidProcCapabilities {
+    let output = String::from_utf8_lossy(stdout);
+    let readable = output
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("AGNES_PROC_READABLE="))
+        .unwrap_or_default()
+        .split(',')
+        .collect::<HashSet<_>>();
+    AndroidProcCapabilities {
+        version_readable: readable.contains("version"),
+        stat_readable: readable.contains("stat"),
+        loadavg_readable: readable.contains("loadavg"),
+        uptime_readable: readable.contains("uptime"),
+        vmstat_readable: readable.contains("vmstat"),
+    }
+}
+
+#[cfg(target_os = "android")]
+fn probe_filesystem_capabilities(directory: &Path) -> FilesystemCapabilities {
+    let mut capabilities = FilesystemCapabilities::default();
+    let probe_dir = directory.join(format!(".agnes-capability-{}", Uuid::new_v4()));
+    if std::fs::create_dir(&probe_dir).is_err() {
+        return capabilities;
+    }
+
+    let source = probe_dir.join("source");
+    let renamed = probe_dir.join("renamed");
+    if std::fs::write(&source, b"agnes-capability")
+        .and_then(|_| std::fs::read(&source))
+        .is_ok_and(|contents| contents == b"agnes-capability")
+        && std::fs::rename(&source, &renamed).is_ok()
+        && std::fs::read(&renamed).is_ok_and(|contents| contents == b"agnes-capability")
+    {
+        capabilities.read_write_rename = true;
+    }
+
+    let symlink_path = probe_dir.join("symlink");
+    if symlink("renamed", &symlink_path).is_ok()
+        && std::fs::read_link(&symlink_path).is_ok_and(|target| target == Path::new("renamed"))
+    {
+        capabilities.symlink = true;
+    }
+
+    let hardlink_path = probe_dir.join("hardlink");
+    if std::fs::hard_link(&renamed, &hardlink_path).is_ok() {
+        capabilities.hardlink = true;
+    }
+
+    let executable = probe_dir.join("exec-probe.sh");
+    if std::fs::write(&executable, b"#!/system/bin/sh\nexit 0\n").is_ok()
+        && std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).is_ok()
+    {
+        capabilities.direct_exec = std::process::Command::new(&executable)
+            .env_clear()
+            .status()
+            .is_ok_and(|status| status.success());
+    }
+
+    let _ = std::fs::remove_dir_all(probe_dir);
+    capabilities
+}
+
+#[cfg(target_os = "android")]
+fn persist_android_runtime_capabilities(
+    root_dir: &Path,
+    profile: &AndroidRuntimeCapabilityProfile,
+) -> AppResult<()> {
+    let temporary = root_dir.join("capabilities.json.tmp");
+    std::fs::write(&temporary, serde_json::to_vec_pretty(profile)?)?;
+    std::fs::rename(temporary, root_dir.join("capabilities.json"))?;
     Ok(())
 }
 
@@ -1125,8 +1330,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        read_runtime_pointer, safe_relative_path, safe_symlink_target, swap_runtime_pointers,
-        valid_version,
+        enforce_guest_python_policy, read_runtime_pointer, safe_relative_path, safe_symlink_target,
+        swap_runtime_pointers, valid_version, LEGACY_AGNES_PIP_CONFIG,
     };
     use std::fs;
     use tempfile::tempdir;
@@ -1156,6 +1361,32 @@ mod tests {
             Path::new("usr/bin/tool"),
             "../../../outside"
         ));
+    }
+
+    #[test]
+    fn legacy_agnes_global_pip_override_is_removed() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc")).unwrap();
+        fs::write(root.path().join("etc/pip.conf"), LEGACY_AGNES_PIP_CONFIG).unwrap();
+
+        enforce_guest_python_policy(root.path()).unwrap();
+
+        assert!(!root.path().join("etc/pip.conf").exists());
+    }
+
+    #[test]
+    fn user_managed_pip_configuration_is_preserved() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc")).unwrap();
+        let custom = "[global]\nindex-url = https://example.invalid/simple\n";
+        fs::write(root.path().join("etc/pip.conf"), custom).unwrap();
+
+        enforce_guest_python_policy(root.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.path().join("etc/pip.conf")).unwrap(),
+            custom
+        );
     }
 
     #[test]

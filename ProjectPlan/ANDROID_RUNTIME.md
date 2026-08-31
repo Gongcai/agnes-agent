@@ -1,7 +1,7 @@
 # Android 本地 Agent 与 Linux Runtime 设计
 
 > 状态：A1 开发中；x86_64 Ubuntu 24.04.4 完整 Runtime 已在模拟器完成内置安装、Agent Protocol 握手和模型流式回复验证，PRoot 源码构建已自动化；ARM64 实机制品与 Ubuntu rootfs 全自动构建流水线待完成
-> 更新时间：2026-08-29
+> 更新时间：2026-08-31
 > 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`、`OPERIT_ANDROID_RUNTIME_REFERENCE.md`
 
 ## 1. 目标
@@ -124,7 +124,7 @@ PRoot runner 当前约定以下文件由 Android 包和 rootfs 制品共同提�
 - `libagnes_proot.so`：由目标 ABI 的 `jniLibs` 打入 APK，安装后从 Android `nativeLibraryDir` 执行；不从应用可写 rootfs 执行 ELF；
 - `libagnes_proot_loader.so`：同 ABI 的静态 PRoot ELF loader；通过 `PROOT_LOADER` 直接使用，避免 PRoot 在 Android 应用私有目录临时提取 loader；
 - `usr/bin/python3`：Linux 用户空间内的 Python 解释器；
-- `usr/bin/pip3` 和 `usr/bin/pip`：必须解析到真实的 pip 脚本，不能是自指软链接；打包器会在 staging rootfs 中规范化为 `pip3.12`/`pip3`；
+- `usr/bin/pip3` 和 `usr/bin/pip`：必须解析到真实的 pip 脚本，不能是自指软链接；打包器会在 staging rootfs 中规范化为 `pip3.12`/`pip3`，但 Runtime 保留 PEP 668，默认不允许污染全局 Python；
 - `opt/agnes-agent/app/main.py`：与桌面端同源的 Python Agent；
 - `usr/bin/bash`、`usr/bin/git`、Python 和 SSH 等 Agent 工具依赖也必须位于 rootfs；
 - Agent 依赖、证书和启动配置也必须位于 rootfs 内，不写入 Android 私有目录中的明文配置。
@@ -147,19 +147,27 @@ Linux 的 `/workspace`，并把持久项目根目录额外挂载为 `/root/works
 或未授权 Android 路径挂载进 Linux。文件、记忆和数据库工具仍由 Rust 直接执行，避免 Linux
 进程绕过 Rust 的权限审计。
 
-运行时不使用 PRoot 的 `-0` 伪 root 模式：Android 进程保持真实 UID，避免 `getuid()` 与
-`/proc/self/status` 不一致。rootfs 和应用私有项目目录由同一 Android 应用拥有，Agent 不依赖
-伪 root 才能运行。`/dev`、`/proc` 和应用私有的 `android-runtime/tmp/shm` 分别挂载到 Linux
-环境，其中最后一项提供 POSIX semaphore 所需的 `/dev/shm`；Android 无法在进程内创建真实
-tmpfs，因此启动前必须准备该目录。工具和 Agent 固定注入 `LANG=C.UTF-8`、`LC_ALL=C.UTF-8`、
-`TMPDIR=/tmp` 与 `UV_LINK_MODE=copy`。共享存储工作区仍可读写，但其 FUSE 限制意味着不能
-依赖软链接或直接执行其中的脚本；需要这类能力的项目应使用应用私有 Linux 项目工作区。
+运行时使用 PRoot `-0` fake-root，让 `apt`/`dpkg` 在隔离 rootfs 内获得一致的 root 语义；Android
+内核仍以应用 UID 执行进程，因此这不是 Android root，也不能越过应用沙箱。`/dev`、`/proc` 和
+应用私有的 `android-runtime/tmp/shm` 分别挂载到 Linux 环境，其中最后一项提供 POSIX semaphore
+所需的 `/dev/shm`；Android 无法在进程内创建真实 tmpfs，因此启动前必须准备该目录。工具和 Agent
+固定注入 `LANG=C.UTF-8`、`LC_ALL=C.UTF-8`、`TMPDIR=/tmp` 与 `UV_LINK_MODE=copy`。共享存储
+工作区仍可读写，但其 FUSE 限制意味着不能依赖软链接或直接执行其中的脚本；Python 虚拟环境和
+需要直接执行的工具应进入应用私有 execution store。
 
 每次启动 Agent 前，Rust 会使用与正式 Agent 相同的 PRoot、loader、`/dev`、`/proc` 和
-`/dev/shm` 挂载，运行一次最小 Python `multiprocessing.SimpleQueue` 探测。探测失败时不启动
-前台 Runtime Service 或 Agent，并把 PRoot、Python、共享内存和 rootfs 兼容性错误返回给 UI。
-不能使用 `statvfs` 的 `NOEXEC` 标志判断 Android 共享存储是否可执行；需要这类能力的项目仍
-应在应用私有工作区中运行。
+`/dev/shm` 挂载，运行一次最小 Python `multiprocessing.SimpleQueue` 探测。先以不带
+`--link2symlink` 的最小模式启动；只有最小模式失败而兼容模式成功时才为本次 Runtime 启用该参数。
+Agent 与工具进程共享同一份不可变 PRoot 配置，不能分别拼接能力参数。探测同时读取关键 `/proc`
+节点，并在 rootfs、environment store、Home workspace 和应用私有项目 workspace 实测读写/rename、
+symlink、hardlink 与 direct exec。结果写入不含宿主路径的 `android-runtime/capabilities.json`。
+探测失败时不启动前台 Runtime Service 或 Agent，并把 PRoot、Python、共享内存和 rootfs 兼容性
+错误返回给 UI。
+
+Runtime 启动会创建持久的 `android-runtime/user/environments` 与 `user/cache/uv`，作为后续 uv
+environment service 的 app-private execution store。当前阶段只建立目录与能力档案，尚未自动绑定
+项目环境。全局 Python 保留 Ubuntu PEP 668；历史版本若存在 Agnes 精确生成的
+`[global] break-system-packages = true` 配置会在启动时迁移删除，用户自定义 pip 配置不会被覆盖。
 
 Agent 和 Android Linux 工具进程都通过 `env_clear` 启动，仅保留协议、PRoot 和运行时所需的
 显式变量；工具策略允许的环境变量也必须经过白名单过滤。这样 Android 宿主的路径、代理和
@@ -304,6 +312,8 @@ Android 有两种执行模式：
 - [ ] 自动化 Ubuntu rootfs、apt 和 Python 锁定依赖的可复现构建；
 - [ ] 构建并在 ARM64 设备验收完整 Runtime 制品，完成发布签署；
 - [x] Rust Core 与 Agent 的本地认证 WS IPC 接线；
+- [x] PRoot `-0` fake-root、共享启动配置和条件 `--link2symlink` capability probe；
+- [x] rootfs/workspace/environment store 文件系统能力档案与旧全局 pip override 迁移；
 - [x] 完成现有 Agent Protocol 握手和模型流式回复；取消流程待单独验收。
 
 ### A2：Android 本地完整 Agent

@@ -52,20 +52,30 @@ pub enum ToolProcessRuntime {
 
 #[derive(Clone, Debug)]
 pub struct AndroidProotProcessRuntime {
+    config: AndroidProotRuntimeConfig,
+}
+
+/// Immutable Android PRoot settings produced by the Runtime supervisor.
+/// Agent and tool runners share this value so capability-dependent flags and
+/// guest mounts cannot drift between launch paths.
+#[derive(Clone, Debug)]
+pub(crate) struct AndroidProotRuntimeConfig {
     proot_path: PathBuf,
     proot_loader_path: PathBuf,
     proot_tmp_dir: PathBuf,
     rootfs_dir: PathBuf,
     android_workspace_root: PathBuf,
+    link2symlink_enabled: bool,
 }
 
-impl AndroidProotProcessRuntime {
+impl AndroidProotRuntimeConfig {
     pub fn new(
         proot_path: PathBuf,
         proot_loader_path: PathBuf,
         proot_tmp_dir: PathBuf,
         rootfs_dir: PathBuf,
         android_workspace_root: PathBuf,
+        link2symlink_enabled: bool,
     ) -> Self {
         Self {
             proot_path,
@@ -73,17 +83,19 @@ impl AndroidProotProcessRuntime {
             proot_tmp_dir,
             rootfs_dir,
             android_workspace_root,
+            link2symlink_enabled,
         }
     }
 
-    fn command_spec(
-        &self,
-        program: &str,
-        args: &[String],
-        env_allowlist: &[String],
-        workspace_root: Option<&Path>,
-        cwd: Option<&Path>,
-    ) -> AppResult<SandboxCommand> {
+    pub(crate) fn proot_path(&self) -> &Path {
+        &self.proot_path
+    }
+
+    pub(crate) fn rootfs_dir(&self) -> &Path {
+        &self.rootfs_dir
+    }
+
+    pub(crate) fn validate(&self) -> AppResult<()> {
         for (path, label) in [
             (&self.proot_path, "PRoot"),
             (&self.proot_loader_path, "PRoot loader"),
@@ -123,6 +135,92 @@ impl AndroidProotProcessRuntime {
                 self.android_workspace_root.display()
             )));
         }
+        Ok(())
+    }
+
+    pub(crate) fn base_args(&self) -> Vec<OsString> {
+        let mut args = vec![
+            OsString::from("-0"),
+            OsString::from("-r"),
+            self.rootfs_dir.clone().into_os_string(),
+        ];
+        if self.link2symlink_enabled {
+            args.push(OsString::from("--link2symlink"));
+        }
+        args.extend([
+            OsString::from("-b"),
+            OsString::from("/dev"),
+            OsString::from("-b"),
+            OsString::from("/proc"),
+            OsString::from("-b"),
+            OsString::from(format!(
+                "{}:/dev/shm",
+                self.proot_tmp_dir.join("shm").display()
+            )),
+        ]);
+        args
+    }
+
+    pub(crate) fn append_workspace_args(
+        &self,
+        args: &mut Vec<OsString>,
+        workspace_root: &Path,
+        guest_cwd: &Path,
+    ) {
+        args.extend([
+            OsString::from("-b"),
+            OsString::from(format!("{}:/workspace", workspace_root.display())),
+            OsString::from("-b"),
+            OsString::from(format!(
+                "{}:/root/workspace",
+                self.android_workspace_root.display()
+            )),
+            OsString::from("-w"),
+            guest_cwd.as_os_str().to_owned(),
+        ]);
+    }
+
+    pub(crate) fn environment(&self) -> Vec<(OsString, OsString)> {
+        [
+            ("HOME", OsString::from("/root")),
+            (
+                "PATH",
+                OsString::from("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
+            ),
+            ("TERM", OsString::from("dumb")),
+            ("NO_COLOR", OsString::from("1")),
+            ("TMPDIR", OsString::from("/tmp")),
+            ("LANG", OsString::from("C.UTF-8")),
+            ("LC_ALL", OsString::from("C.UTF-8")),
+            ("UV_LINK_MODE", OsString::from("copy")),
+            ("LD_LIBRARY_PATH", OsString::new()),
+            ("PROOT_TMP_DIR", self.proot_tmp_dir.as_os_str().to_owned()),
+            (
+                "PROOT_LOADER",
+                self.proot_loader_path.as_os_str().to_owned(),
+            ),
+            ("PROOT_NO_SECCOMP", OsString::from("1")),
+        ]
+        .into_iter()
+        .map(|(name, value)| (OsString::from(name), value))
+        .collect()
+    }
+}
+
+impl AndroidProotProcessRuntime {
+    pub(crate) fn new(config: AndroidProotRuntimeConfig) -> Self {
+        Self { config }
+    }
+
+    fn command_spec(
+        &self,
+        program: &str,
+        args: &[String],
+        env_allowlist: &[String],
+        workspace_root: Option<&Path>,
+        cwd: Option<&Path>,
+    ) -> AppResult<SandboxCommand> {
+        self.config.validate()?;
 
         let workspace_root = workspace_root
             .map(normalize_root)
@@ -141,31 +239,10 @@ impl AndroidProotProcessRuntime {
         })?;
         let guest_cwd = Path::new("/workspace").join(relative_cwd);
 
-        let mut proot_args = vec![
-            OsString::from("-0"),
-            OsString::from("-r"),
-            self.rootfs_dir.clone().into_os_string(),
-            // Android denies hard links; PRoot emulates them with symlinks,
-            // which is required by glibc sem_open inside the guest.
-            OsString::from("--link2symlink"),
-            OsString::from("-b"),
-            OsString::from("/dev"),
-            OsString::from("-b"),
-            OsString::from("/proc"),
-            OsString::from("-b"),
-            OsString::from(format!("{}:/dev/shm", proot_shm_dir.display())),
-            OsString::from("-b"),
-            OsString::from(format!("{}:/workspace", workspace_root.display())),
-            OsString::from("-b"),
-            OsString::from(format!(
-                "{}:/root/workspace",
-                self.android_workspace_root.display()
-            )),
-            OsString::from("-w"),
-            guest_cwd.into_os_string(),
-            OsString::from("/usr/bin/env"),
-            OsString::from(program),
-        ];
+        let mut proot_args = self.config.base_args();
+        self.config
+            .append_workspace_args(&mut proot_args, &workspace_root, &guest_cwd);
+        proot_args.extend([OsString::from("/usr/bin/env"), OsString::from(program)]);
         proot_args.extend(args.iter().map(OsString::from));
 
         // Operit starts its Linux shell with a clean environment. Preserve
@@ -176,26 +253,12 @@ impl AndroidProotProcessRuntime {
         } else {
             filtered_environment(env_allowlist)
         };
-        set_environment(&mut env, "HOME", "/root");
-        set_environment(
-            &mut env,
-            "PATH",
-            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        );
-        set_environment(&mut env, "TERM", "dumb");
-        set_environment(&mut env, "NO_COLOR", "1");
-        set_environment(&mut env, "TMPDIR", "/tmp");
-        set_environment(&mut env, "LANG", "C.UTF-8");
-        set_environment(&mut env, "LC_ALL", "C.UTF-8");
-        set_environment(&mut env, "UV_LINK_MODE", "copy");
-        set_environment(&mut env, "LD_LIBRARY_PATH", "");
-        set_environment(&mut env, "PROOT_TMP_DIR", self.proot_tmp_dir.as_os_str());
-        set_environment(&mut env, "PROOT_LOADER", self.proot_loader_path.as_os_str());
-        // Android's seccomp acceleration can deny POSIX semaphore syscalls.
-        set_environment(&mut env, "PROOT_NO_SECCOMP", "1");
+        for (name, value) in self.config.environment() {
+            set_environment(&mut env, name, value);
+        }
 
         Ok(SandboxCommand {
-            program: self.proot_path.clone().into_os_string(),
+            program: self.config.proot_path.clone().into_os_string(),
             args: proot_args,
             env,
         })
@@ -1235,13 +1298,14 @@ mod tests {
             std::fs::write(path, "test").unwrap();
         }
 
-        let runtime = AndroidProotProcessRuntime::new(
+        let runtime = AndroidProotProcessRuntime::new(AndroidProotRuntimeConfig::new(
             proot,
             loader.clone(),
             proot_tmp.clone(),
             rootfs.clone(),
             android_workspace_root.clone(),
-        );
+            false,
+        ));
         let command = runtime
             .command_spec(
                 "bash",
@@ -1260,7 +1324,6 @@ mod tests {
             "-0".into(),
             "-r".into(),
             rootfs.to_string_lossy().to_string(),
-            "--link2symlink".into(),
             "-b".into(),
             "/dev".into(),
             "-b".into(),
@@ -1275,9 +1338,9 @@ mod tests {
             "/workspace/src".into(),
             "/usr/bin/env".into(),
         ];
-        assert_eq!(args[0..17], expected_prefix);
-        assert_eq!(args[17], "bash");
-        assert_eq!(args[18], "-c");
+        assert_eq!(args[0..16], expected_prefix);
+        assert_eq!(args[16], "bash");
+        assert_eq!(args[17], "-c");
         assert!(command
             .env
             .iter()
@@ -1327,17 +1390,41 @@ mod tests {
             std::fs::write(path, "test").unwrap();
         }
 
-        let runtime = AndroidProotProcessRuntime::new(
+        let runtime = AndroidProotProcessRuntime::new(AndroidProotRuntimeConfig::new(
             temp.path().join("proot"),
             temp.path().join("loader"),
             proot_tmp,
             rootfs,
             android_workspace_root,
-        );
+            false,
+        ));
         let error = runtime
             .command_spec("bash", &[], &[], Some(&workspace), Some(&outside))
             .unwrap_err();
         assert!(error.to_string().contains("escapes the workspace"));
+    }
+
+    #[test]
+    fn android_proot_link2symlink_is_capability_controlled() {
+        let config = |enabled| {
+            AndroidProotRuntimeConfig::new(
+                PathBuf::from("/proot"),
+                PathBuf::from("/loader"),
+                PathBuf::from("/tmp/proot"),
+                PathBuf::from("/rootfs"),
+                PathBuf::from("/workspace-root"),
+                enabled,
+            )
+        };
+
+        assert!(!config(false)
+            .base_args()
+            .iter()
+            .any(|argument| argument == "--link2symlink"));
+        assert!(config(true)
+            .base_args()
+            .iter()
+            .any(|argument| argument == "--link2symlink"));
     }
 
     #[cfg(unix)]
