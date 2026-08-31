@@ -2688,6 +2688,38 @@ fn cache_chat_attachment(
     workspace_root: &std::path::Path,
     attachment: ChatAttachmentInput,
 ) -> AppResult<CachedChatAttachment> {
+    cache_chat_attachment_with_source_bytes(workspace_root, attachment, None)
+}
+
+fn cache_chat_attachment_for_app(
+    app_handle: &tauri::AppHandle,
+    workspace_root: &std::path::Path,
+    attachment: ChatAttachmentInput,
+) -> AppResult<CachedChatAttachment> {
+    #[cfg(target_os = "android")]
+    {
+        let source_path = attachment
+            .path
+            .as_deref()
+            .filter(|value| !value.trim().is_empty());
+        let source_bytes = source_path
+            .map(|path| read_import_file(app_handle, path))
+            .transpose()?;
+        return cache_chat_attachment_with_source_bytes(workspace_root, attachment, source_bytes);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app_handle;
+        cache_chat_attachment(workspace_root, attachment)
+    }
+}
+
+fn cache_chat_attachment_with_source_bytes(
+    workspace_root: &std::path::Path,
+    attachment: ChatAttachmentInput,
+    source_bytes: Option<Vec<u8>>,
+) -> AppResult<CachedChatAttachment> {
     if attachment.id.is_empty()
         || attachment.id.len() > 128
         || !attachment
@@ -2724,17 +2756,21 @@ fn cache_chat_attachment(
 
     let bytes = match (source_path.as_deref(), attachment.data_base64.as_deref()) {
         (Some(path), None) => {
-            let metadata = std::fs::metadata(path)?;
-            if !metadata.is_file() {
-                return Err(AppError::Other("附件路径必须是普通文件".into()));
+            if let Some(bytes) = source_bytes {
+                bytes
+            } else {
+                let metadata = std::fs::metadata(path)?;
+                if !metadata.is_file() {
+                    return Err(AppError::Other("附件路径必须是普通文件".into()));
+                }
+                if metadata.len() > MAX_LOCAL_CHAT_ATTACHMENT_BYTES {
+                    return Err(AppError::Other(format!(
+                        "单个附件不能超过 {} MiB",
+                        MAX_LOCAL_CHAT_ATTACHMENT_BYTES / 1024 / 1024
+                    )));
+                }
+                std::fs::read(path)?
             }
-            if metadata.len() > MAX_LOCAL_CHAT_ATTACHMENT_BYTES {
-                return Err(AppError::Other(format!(
-                    "单个附件不能超过 {} MiB",
-                    MAX_LOCAL_CHAT_ATTACHMENT_BYTES / 1024 / 1024
-                )));
-            }
-            std::fs::read(path)?
         }
         (None, Some(encoded)) => BASE64
             .decode(encoded)
@@ -2838,8 +2874,9 @@ async fn prepare_chat_attachment_parts(
             "local_file" => {
                 let cache_root = workspace_root.to_path_buf();
                 let task_root = cache_root.clone();
+                let app_handle = state.app_handle.clone();
                 let cached = tokio::task::spawn_blocking(move || {
-                    cache_chat_attachment(&task_root, attachment)
+                    cache_chat_attachment_for_app(&app_handle, &task_root, attachment)
                 })
                 .await
                 .map_err(|error| AppError::Other(format!("附件读取任务异常中止：{error}")))??;
@@ -3530,22 +3567,36 @@ fn read_import_file(_app_handle: &tauri::AppHandle, path: &str) -> AppResult<Vec
     {
         let file_path = <tauri_plugin_fs::FilePath as std::str::FromStr>::from_str(path)
             .expect("FilePath parsing is infallible");
-        return tauri_plugin_fs::FsExt::fs(_app_handle)
-            .read(file_path)
-            .map_err(|error| AppError::Other(format!("无法读取 EPUB 文件: {error}")));
+        match file_path {
+            tauri_plugin_fs::FilePath::Url(url) if url.scheme() == "content" => {
+                tauri_plugin_fs::FsExt::fs(_app_handle)
+                    .read(tauri_plugin_fs::FilePath::Url(url))
+                    .map_err(|error| AppError::Other(format!("无法读取 Android 文件: {error}")))
+            }
+            tauri_plugin_fs::FilePath::Url(url) if url.scheme() == "file" => url
+                .to_file_path()
+                .map_err(|_| AppError::Other("Android 文件 URI 无效".into()))
+                .and_then(read_regular_file),
+            tauri_plugin_fs::FilePath::Url(_) => {
+                Err(AppError::Other("不支持的 Android 文件 URI".into()))
+            }
+            tauri_plugin_fs::FilePath::Path(path) => read_regular_file(path),
+        }
     }
 
     #[cfg(not(target_os = "android"))]
     {
         let source = std::path::PathBuf::from(path);
-        let metadata = std::fs::metadata(&source)?;
-        if !metadata.is_file() {
-            return Err(AppError::Other(
-                "EPUB import path must be a regular file".into(),
-            ));
-        }
-        Ok(std::fs::read(source)?)
+        read_regular_file(source)
     }
+}
+
+fn read_regular_file(source: std::path::PathBuf) -> AppResult<Vec<u8>> {
+    let metadata = std::fs::metadata(&source)?;
+    if !metadata.is_file() {
+        return Err(AppError::Other("导入路径必须是普通文件".into()));
+    }
+    Ok(std::fs::read(source)?)
 }
 
 #[tauri::command]
