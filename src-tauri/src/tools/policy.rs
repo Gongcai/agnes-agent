@@ -312,6 +312,7 @@ impl Default for SandboxPolicy {
                 "~/.local".into(),
                 "~/.cargo".into(),
                 "~/.rustup".into(),
+                "/tmp".into(),
             ],
             // Zero means unlimited for the corresponding optional limit.
             cpu_time_sec: 0,
@@ -615,7 +616,7 @@ mod tests {
         assert_eq!(value["sandbox"]["allow_read_outside_workspace"], true);
         assert_eq!(
             value["sandbox"]["writable_roots"],
-            serde_json::json!(["~/.cache", "~/.local", "~/.cargo", "~/.rustup"])
+            serde_json::json!(["~/.cache", "~/.local", "~/.cargo", "~/.rustup", "/tmp"])
         );
     }
 
@@ -626,7 +627,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             policy.sandbox.writable_roots,
-            vec!["~/.cache", "~/.local", "~/.cargo", "~/.rustup"]
+            vec!["~/.cache", "~/.local", "~/.cargo", "~/.rustup", "/tmp"]
         );
         assert!(policy.sandbox.allow_read_outside_workspace);
     }

@@ -153,6 +153,18 @@ pub fn builtin_tools() -> Vec<Box<dyn BuiltinTool>> {
 /// Resolve a file argument relative to the current workspace.
 pub fn resolve_path(ctx: &ToolCtx<'_>, path: &str) -> PathBuf {
     let expanded = crate::tools::policy::expand_home(path);
+    // Android exposes the selected host directory under this stable guest
+    // alias. File tools execute on the host side, so resolve the alias before
+    // touching the filesystem instead of attempting to access host `/workspace`.
+    if let Some(workspace) = ctx.workspace_cwd.as_deref() {
+        let guest_workspace = Path::new("/workspace");
+        if expanded == guest_workspace {
+            return workspace.to_path_buf();
+        }
+        if let Ok(relative) = expanded.strip_prefix(guest_workspace) {
+            return workspace.join(relative);
+        }
+    }
     if expanded.is_absolute() {
         return expanded;
     }

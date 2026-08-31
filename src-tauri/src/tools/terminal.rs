@@ -301,13 +301,22 @@ impl TerminalManager {
     }
 
     fn session(&self, id: &str, owner_session_id: &str) -> AppResult<Arc<TerminalSession>> {
-        let session = self
+        let sessions = self
             .sessions
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(id)
-            .cloned()
-            .ok_or_else(|| AppError::Other(format!("Unknown terminal session `{id}`")))?;
+            .unwrap_or_else(|error| error.into_inner());
+        let session = sessions.get(id).cloned().ok_or_else(|| {
+            let mut active = sessions.keys().cloned().collect::<Vec<_>>();
+            active.sort();
+            let available = if active.is_empty() {
+                "none".to_string()
+            } else {
+                active.join(", ")
+            };
+            AppError::Other(format!(
+                "Unknown terminal session `{id}`; active sessions: {available}"
+            ))
+        })?;
         if session.owner_session_id != owner_session_id {
             return Err(AppError::Other(format!(
                 "Terminal session `{id}` belongs to another conversation"

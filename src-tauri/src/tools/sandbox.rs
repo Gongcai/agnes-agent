@@ -142,6 +142,7 @@ impl AndroidProotProcessRuntime {
         let guest_cwd = Path::new("/workspace").join(relative_cwd);
 
         let mut proot_args = vec![
+            OsString::from("-0"),
             OsString::from("-r"),
             self.rootfs_dir.clone().into_os_string(),
             // Android denies hard links; PRoot emulates them with symlinks,
@@ -330,6 +331,19 @@ impl PolicySandbox {
             .iter()
             .map(|path| normalize_root(&expand_home(path)))
             .collect::<Vec<_>>();
+        if matches!(&process_runtime, ToolProcessRuntime::AndroidProot(_)) {
+            configured_write_roots.extend(
+                [
+                    "/root/.cache",
+                    "/root/.local",
+                    "/root/.cargo",
+                    "/root/.rustup",
+                    "/tmp",
+                ]
+                .into_iter()
+                .map(PathBuf::from),
+            );
+        }
         deduplicate_paths(&mut configured_write_roots);
 
         let temp_write_roots = temporary_write_paths();
@@ -408,7 +422,7 @@ impl PolicySandbox {
         let protect_metadata = policy.shell.deny_write_outside_workspace
             || policy.sandbox.landlock
             || policy.sandbox.bwrap != BwrapMode::Disabled;
-        let protected_paths = protect_metadata
+        let mut protected_paths: Vec<PathBuf> = protect_metadata
             .then(|| workspace_cwd.map(normalize_root))
             .flatten()
             .into_iter()
@@ -418,6 +432,11 @@ impl PolicySandbox {
                     .map(move |name| normalize_root(&workspace.join(name)))
             })
             .collect();
+        if matches!(&process_runtime, ToolProcessRuntime::AndroidProot(_)) {
+            // A fake-root guest must not turn direct shell/file writes into
+            // writes to the runtime's loader and system-library directories.
+            protected_paths.extend([PathBuf::from("/lib"), PathBuf::from("/lib64")]);
+        }
 
         Self {
             read_roots,
@@ -865,7 +884,7 @@ fn check_under_roots(path: &Path, roots: &[PathBuf], operation: &str) -> Result<
         Ok(())
     } else {
         Err(format!(
-            "Sandbox denied permission to {operation} `{}`",
+            "Path `{}` is outside the allowed {operation} roots; use a workspace-relative path or an approved writable directory",
             target.display()
         ))
     }
@@ -1238,6 +1257,7 @@ mod tests {
             .map(|arg| arg.to_string_lossy().to_string())
             .collect::<Vec<_>>();
         let expected_prefix = vec![
+            "-0".into(),
             "-r".into(),
             rootfs.to_string_lossy().to_string(),
             "--link2symlink".into(),
@@ -1255,9 +1275,9 @@ mod tests {
             "/workspace/src".into(),
             "/usr/bin/env".into(),
         ];
-        assert_eq!(args[0..16], expected_prefix);
-        assert_eq!(args[16], "bash");
-        assert_eq!(args[17], "-c");
+        assert_eq!(args[0..17], expected_prefix);
+        assert_eq!(args[17], "bash");
+        assert_eq!(args[18], "-c");
         assert!(command
             .env
             .iter()

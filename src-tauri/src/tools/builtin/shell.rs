@@ -108,6 +108,12 @@ impl BuiltinTool for ShellTool {
                 return Err(AppError::Other(error));
             }
         }
+        if command_creates_workspace_venv(command_str, &cwd_absolute, ctx.workspace_cwd.as_deref())
+        {
+            let error = "Android workspace 不支持符号链接，无法在此创建 Python venv；请将 venv 放到 /tmp 或 rootfs 内";
+            ctx.record_failure(error).await?;
+            return Err(AppError::Other(error.into()));
+        }
 
         ctx.update_running(&cwd_absolute.to_string_lossy()).await?;
 
@@ -344,7 +350,7 @@ pub(crate) fn validate_shell_write_scope(
         return Err("Nested shell command exceeds the safety inspection limit".to_string());
     }
     let tokens = shell_tokens(command)?;
-    validate_stateful_shell_tokens(&tokens)?;
+    validate_stateful_shell_tokens(&tokens, cwd, Some(sandbox))?;
     for (index, token) in tokens.iter().enumerate() {
         if token == ">" || token == ">>" {
             let target = tokens
@@ -468,7 +474,20 @@ fn validate_write_target(
     sandbox: &dyn crate::tools::sandbox::SandboxGuard,
 ) -> Result<(), String> {
     match resolve_write_target(target, cwd)? {
-        Some(path) => sandbox.check_write(&path),
+        Some(path) => match sandbox.check_write(&path) {
+            Ok(()) => Ok(()),
+            Err(original) if target == "~" || target.starts_with("~/") => {
+                // Android commands run with HOME=/root while policy parsing
+                // happens in the host process, whose HOME is different.
+                let guest = if target == "~" {
+                    std::path::PathBuf::from("/root")
+                } else {
+                    std::path::PathBuf::from("/root").join(&target[2..])
+                };
+                sandbox.check_write(&guest).map_err(|_| original)
+            }
+            Err(error) => Err(error),
+        },
         None => Ok(()),
     }
 }
@@ -480,13 +499,27 @@ fn resolve_write_target(target: &str, cwd: &Path) -> Result<Option<std::path::Pa
     if target.is_empty()
         || target
             .chars()
-            .any(|character| matches!(character, '$' | '`' | '*' | '?' | '[' | ']' | '{' | '}'))
+            .any(|character| matches!(character, '$' | '`'))
     {
         return Err(format!(
             "Cannot safely resolve dynamic shell write target `{target}`"
         ));
     }
-    let expanded = crate::tools::policy::expand_home(target);
+    let expanded = if cfg!(target_os = "android") && (target == "~" || target.starts_with("~/")) {
+        if target == "~" {
+            std::path::PathBuf::from("/root")
+        } else {
+            std::path::PathBuf::from("/root").join(&target[2..])
+        }
+    } else {
+        crate::tools::policy::expand_home(target)
+    };
+    if target == "/workspace" {
+        return Ok(Some(cwd.to_path_buf()));
+    }
+    if let Some(relative) = target.strip_prefix("/workspace/") {
+        return Ok(Some(cwd.join(relative)));
+    }
     let path = if expanded.is_absolute() {
         expanded
     } else {
@@ -507,7 +540,7 @@ pub(crate) fn shell_write_targets(
         return Err("Nested shell command exceeds the safety inspection limit".to_string());
     }
     let tokens = shell_tokens(command)?;
-    validate_stateful_shell_tokens(&tokens)?;
+    validate_stateful_shell_tokens(&tokens, cwd, None)?;
     let mut targets = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         if token == ">" || token == ">>" {
@@ -590,7 +623,11 @@ pub(crate) fn shell_write_targets(
     Ok(targets)
 }
 
-fn validate_stateful_shell_tokens(tokens: &[String]) -> Result<(), String> {
+fn validate_stateful_shell_tokens(
+    tokens: &[String],
+    cwd: &Path,
+    sandbox: Option<&dyn crate::tools::sandbox::SandboxGuard>,
+) -> Result<(), String> {
     if tokens.iter().any(|token| {
         (token.starts_with('~') && token != "~" && !token.starts_with("~/"))
             || token.starts_with("HOME=")
@@ -601,13 +638,21 @@ fn validate_stateful_shell_tokens(tokens: &[String]) -> Result<(), String> {
         return Err("Shell path expansion depends on mutable environment state".to_string());
     }
     for segment in shell_segments(tokens) {
-        let Some((_, program)) = segment_command(segment) else {
+        let Some((command_index, program)) = segment_command(segment) else {
             continue;
         };
-        if matches!(
-            program.as_str(),
-            "cd" | "pushd" | "popd" | "source" | "." | "eval" | "exec"
-        ) {
+        if matches!(program.as_str(), "cd" | "pushd") {
+            let target = segment
+                .iter()
+                .skip(command_index + 1)
+                .find(|argument| !argument.starts_with('-'))
+                .map(String::as_str)
+                .unwrap_or(".");
+            let target = resolve_shell_cwd_target(target, cwd, sandbox.is_none())?;
+            if let Some(sandbox) = sandbox {
+                sandbox.check_cwd(&target)?;
+            }
+        } else if matches!(program.as_str(), "popd" | "source" | "." | "eval" | "exec") {
             return Err(format!(
                 "Shell command `{program}` changes execution state and cannot be safely scoped"
             ));
@@ -616,8 +661,73 @@ fn validate_stateful_shell_tokens(tokens: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn resolve_shell_cwd_target(
+    target: &str,
+    cwd: &Path,
+    scope_only: bool,
+) -> Result<std::path::PathBuf, String> {
+    if target.is_empty()
+        || target
+            .chars()
+            .any(|character| matches!(character, '$' | '`' | '*' | '?' | '[' | ']' | '{' | '}'))
+    {
+        return Err(format!(
+            "Cannot safely resolve dynamic shell cwd `{target}`"
+        ));
+    }
+    if target == "/workspace" {
+        return Ok(cwd.to_path_buf());
+    }
+    if let Some(relative) = target.strip_prefix("/workspace/") {
+        return Ok(cwd.join(relative));
+    }
+    if scope_only && target.starts_with('/') && !target.starts_with("/tmp/") {
+        return Err(format!(
+            "Shell command `cd` targets an unapproved absolute path `{target}`"
+        ));
+    }
+    let expanded = if cfg!(target_os = "android") && (target == "~" || target.starts_with("~/")) {
+        if target == "~" {
+            std::path::PathBuf::from("/root")
+        } else {
+            std::path::PathBuf::from("/root").join(&target[2..])
+        }
+    } else {
+        crate::tools::policy::expand_home(target)
+    };
+    Ok(if expanded.is_absolute() {
+        expanded
+    } else {
+        cwd.join(expanded)
+    })
+}
+
+fn command_creates_workspace_venv(command: &str, cwd: &Path, workspace: Option<&Path>) -> bool {
+    if !cfg!(target_os = "android") {
+        return false;
+    }
+    let Some(workspace) = workspace else {
+        return false;
+    };
+    let workspace = crate::tools::builtin::normalize_path(workspace);
+    if !cwd.starts_with(&workspace) {
+        return false;
+    }
+    let Ok(tokens) = shell_tokens(command) else {
+        return false;
+    };
+    tokens.windows(3).any(|window| {
+        matches!(window[0].as_str(), "python" | "python3")
+            && window[1] == "-m"
+            && window[2] == "venv"
+    })
+}
+
 fn segment_command(segment: &[String]) -> Option<(usize, String)> {
     let mut index = 0;
+    while segment.get(index).map(String::as_str) == Some("(") {
+        index += 1;
+    }
     while index < segment.len()
         && (segment[index].contains('=') && !segment[index].starts_with('='))
     {
@@ -638,7 +748,8 @@ fn segment_command(segment: &[String]) -> Option<(usize, String)> {
             index += 1;
         }
     }
-    let program = Path::new(segment.get(index)?)
+    let program_token = segment.get(index)?.trim_start_matches('(');
+    let program = Path::new(program_token)
         .file_name()
         .and_then(|name| name.to_str())?
         .to_string();
@@ -785,6 +896,12 @@ mod tests {
         assert!(
             shell_write_targets("cd /etc && touch marker", Path::new("/workspace"), 0).is_err()
         );
+        assert!(shell_write_targets("cd . && echo ok", Path::new("/workspace"), 0).is_ok());
+        assert!(
+            shell_write_targets("( cd /workspace; echo ok )", Path::new("/workspace"), 0).is_ok()
+        );
+        assert!(shell_write_targets("rm -f *.deb", Path::new("/workspace"), 0).is_ok());
+        assert!(shell_write_targets("echo x > ./*.txt", Path::new("/workspace"), 0).is_ok());
         assert!(
             shell_write_targets("HOME=/etc touch ~/marker", Path::new("/workspace"), 0).is_err()
         );

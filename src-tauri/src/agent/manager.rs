@@ -146,6 +146,8 @@ impl AgentLauncher {
 
                 let child = Command::new(&config.proot_path)
                     .env_clear()
+                    // Fake root is required for apt/dpkg inside the guest.
+                    .arg("-0")
                     .args(["-r"])
                     .arg(&config.rootfs_dir)
                     // Android denies hard links; glibc sem_open needs this emulation.

@@ -345,6 +345,7 @@ impl AndroidLinuxRuntime {
                     "Android Runtime rootfs 校验失败: sha256={digest}, size={size}"
                 )));
             }
+            ensure_guest_pip_config(&rootfs_dir)?;
             self.update_install_progress("Runtime 校验通过，正在写入版本信息");
             std::fs::write(
                 staging.join("manifest.json"),
@@ -663,6 +664,20 @@ fn ensure_rootfs_runtime_layout(rootfs_dir: &Path) -> AppResult<()> {
 }
 
 #[cfg(target_os = "android")]
+fn ensure_guest_pip_config(rootfs_dir: &Path) -> AppResult<()> {
+    // PEP 668 otherwise makes every guest pip install fail unless callers
+    // remember the Android-specific override. This is runtime metadata and is
+    // deliberately written after the package digest has been verified.
+    let etc_dir = rootfs_dir.join("etc");
+    std::fs::create_dir_all(&etc_dir)?;
+    let pip_conf = etc_dir.join("pip.conf");
+    if !pip_conf.exists() {
+        std::fs::write(pip_conf, "[global]\nbreak-system-packages = true\n")?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
 fn probe_android_rootfs(
     proot_path: &Path,
     proot_loader_path: &Path,
@@ -672,6 +687,9 @@ fn probe_android_rootfs(
     let shm_dir = proot_tmp_dir.join("shm");
     let output = std::process::Command::new(proot_path)
         .env_clear()
+        // Fake root lets apt/dpkg update the isolated rootfs while Android
+        // keeps the real app uid unchanged.
+        .arg("-0")
         .args(["-r"])
         .arg(rootfs_dir)
         // Android denies hard links; glibc sem_open needs this emulation.
