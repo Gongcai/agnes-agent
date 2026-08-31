@@ -581,7 +581,9 @@ impl AgentRuntime for AndroidLinuxRuntime {
         std::fs::create_dir_all(&proot_shm_dir).map_err(|error| {
             AppError::Other(format!("无法创建 Android PRoot 共享内存目录: {error}"))
         })?;
-        std::fs::set_permissions(&proot_shm_dir, std::fs::Permissions::from_mode(0o700))?;
+        // PRoot may expose the bind source with a different guest UID. Keep
+        // the app-private semaphore directory writable after that mapping.
+        std::fs::set_permissions(&proot_shm_dir, std::fs::Permissions::from_mode(0o1777))?;
         let android_workspace_root = crate::tools::workspace::android_workspace_root(
             self.root_dir
                 .parent()
