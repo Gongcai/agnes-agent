@@ -187,6 +187,8 @@ impl AndroidProotProcessRuntime {
         set_environment(&mut env, "LD_LIBRARY_PATH", "");
         set_environment(&mut env, "PROOT_TMP_DIR", self.proot_tmp_dir.as_os_str());
         set_environment(&mut env, "PROOT_LOADER", self.proot_loader_path.as_os_str());
+        // Android's seccomp acceleration can deny POSIX semaphore syscalls.
+        set_environment(&mut env, "PROOT_NO_SECCOMP", "1");
 
         Ok(SandboxCommand {
             program: self.proot_path.clone().into_os_string(),

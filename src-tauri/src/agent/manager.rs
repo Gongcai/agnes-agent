@@ -162,6 +162,8 @@ impl AgentLauncher {
                     .env("AGENT_PROTOCOL_TOKEN", token)
                     .env("PROOT_TMP_DIR", &config.proot_tmp_dir)
                     .env("PROOT_LOADER", &config.proot_loader_path)
+                    // Keep POSIX semaphores working on Android PRoot.
+                    .env("PROOT_NO_SECCOMP", "1")
                     .env("LD_LIBRARY_PATH", "")
                     .env("HOME", "/root")
                     .env("TERM", "dumb")

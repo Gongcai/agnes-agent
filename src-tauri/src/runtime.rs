@@ -685,6 +685,9 @@ fn probe_android_rootfs(
         ])
         .env("PROOT_TMP_DIR", proot_tmp_dir)
         .env("PROOT_LOADER", proot_loader_path)
+        // Android's seccomp acceleration can deny the IPC operations used by
+        // glibc's POSIX semaphore implementation inside the PRoot guest.
+        .env("PROOT_NO_SECCOMP", "1")
         .env("LD_LIBRARY_PATH", "")
         .env("HOME", "/root")
         .env("TERM", "dumb")
