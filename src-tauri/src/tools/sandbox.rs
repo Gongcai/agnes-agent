@@ -144,6 +144,9 @@ impl AndroidProotProcessRuntime {
         let mut proot_args = vec![
             OsString::from("-r"),
             self.rootfs_dir.clone().into_os_string(),
+            // Android denies hard links; PRoot emulates them with symlinks,
+            // which is required by glibc sem_open inside the guest.
+            OsString::from("--link2symlink"),
             OsString::from("-b"),
             OsString::from("/dev"),
             OsString::from("-b"),
@@ -1237,6 +1240,7 @@ mod tests {
         let expected_prefix = vec![
             "-r".into(),
             rootfs.to_string_lossy().to_string(),
+            "--link2symlink".into(),
             "-b".into(),
             "/dev".into(),
             "-b".into(),
@@ -1251,9 +1255,9 @@ mod tests {
             "/workspace/src".into(),
             "/usr/bin/env".into(),
         ];
-        assert_eq!(args[0..15], expected_prefix);
-        assert_eq!(args[15], "bash");
-        assert_eq!(args[16], "-c");
+        assert_eq!(args[0..16], expected_prefix);
+        assert_eq!(args[16], "bash");
+        assert_eq!(args[17], "-c");
         assert!(command
             .env
             .iter()

@@ -674,6 +674,8 @@ fn probe_android_rootfs(
         .env_clear()
         .args(["-r"])
         .arg(rootfs_dir)
+        // Android denies hard links; glibc sem_open needs this emulation.
+        .arg("--link2symlink")
         .args(["-b", "/dev", "-b", "/proc", "-b"])
         .arg(format!("{}:/dev/shm", shm_dir.display()))
         .args([

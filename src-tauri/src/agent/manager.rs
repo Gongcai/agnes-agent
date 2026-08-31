@@ -148,6 +148,8 @@ impl AgentLauncher {
                     .env_clear()
                     .args(["-r"])
                     .arg(&config.rootfs_dir)
+                    // Android denies hard links; glibc sem_open needs this emulation.
+                    .arg("--link2symlink")
                     .args(["-b", "/dev", "-b", "/proc", "-b"])
                     .arg(format!("{}:/dev/shm", proot_shm_dir.display()))
                     .args(["-b"])
