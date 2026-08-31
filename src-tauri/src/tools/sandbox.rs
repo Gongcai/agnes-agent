@@ -164,13 +164,22 @@ impl AndroidProotProcessRuntime {
         ];
         proot_args.extend(args.iter().map(OsString::from));
 
-        let mut env = filtered_environment(env_allowlist);
+        // Operit starts its Linux shell with a clean environment. Preserve
+        // only explicitly allowed variables so Android host paths cannot leak
+        // into the Ubuntu userspace.
+        let mut env = if env_allowlist.is_empty() {
+            Vec::new()
+        } else {
+            filtered_environment(env_allowlist)
+        };
         set_environment(&mut env, "HOME", "/root");
         set_environment(
             &mut env,
             "PATH",
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         );
+        set_environment(&mut env, "TERM", "dumb");
+        set_environment(&mut env, "NO_COLOR", "1");
         set_environment(&mut env, "TMPDIR", "/tmp");
         set_environment(&mut env, "LANG", "C.UTF-8");
         set_environment(&mut env, "LC_ALL", "C.UTF-8");

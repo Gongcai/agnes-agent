@@ -590,6 +590,7 @@ impl AgentRuntime for AndroidLinuxRuntime {
         std::fs::create_dir_all(&android_workspace_root).map_err(|error| {
             AppError::Other(format!("无法创建 Android Linux 用户工作区: {error}"))
         })?;
+        probe_android_rootfs(&proot_path, &proot_loader_path, &rootfs_dir, &proot_tmp_dir)?;
         let _: serde_json::Value = self.run_native_command("start")?;
         if let Err(error) = self.agent.start_android(
             self.db.clone(),
@@ -656,6 +657,52 @@ fn ensure_rootfs_runtime_layout(rootfs_dir: &Path) -> AppResult<()> {
         rootfs_dir.join("tmp"),
         std::fs::Permissions::from_mode(0o1777),
     )?;
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn probe_android_rootfs(
+    proot_path: &Path,
+    proot_loader_path: &Path,
+    rootfs_dir: &Path,
+    proot_tmp_dir: &Path,
+) -> AppResult<()> {
+    let shm_dir = proot_tmp_dir.join("shm");
+    let output = std::process::Command::new(proot_path)
+        .env_clear()
+        .args(["-r"])
+        .arg(rootfs_dir)
+        .args(["-b", "/dev", "-b", "/proc", "-b"])
+        .arg(format!("{}:/dev/shm", shm_dir.display()))
+        .args([
+            "-w",
+            "/root",
+            "/usr/bin/python3",
+            "-c",
+            "import multiprocessing; queue = multiprocessing.SimpleQueue(); queue.close(); print('ok')",
+        ])
+        .env("PROOT_TMP_DIR", proot_tmp_dir)
+        .env("PROOT_LOADER", proot_loader_path)
+        .env("LD_LIBRARY_PATH", "")
+        .env("HOME", "/root")
+        .env("TERM", "dumb")
+        .env("LANG", "C.UTF-8")
+        .env("LC_ALL", "C.UTF-8")
+        .env("TMPDIR", "/tmp")
+        .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        .output()
+        .map_err(|error| AppError::Other(format!("Android PRoot 启动探测失败: {error}")))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(AppError::Other(format!(
+            "Android Linux Runtime 启动探测失败: {}",
+            if detail.is_empty() {
+                format!("退出码 {:?}", output.status.code())
+            } else {
+                detail
+            }
+        )));
+    }
     Ok(())
 }
 

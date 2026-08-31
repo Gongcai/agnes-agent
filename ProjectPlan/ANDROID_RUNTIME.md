@@ -155,6 +155,17 @@ tmpfs，因此启动前必须准备该目录。工具和 Agent 固定注入 `LAN
 `TMPDIR=/tmp` 与 `UV_LINK_MODE=copy`。共享存储工作区仍可读写，但其 FUSE 限制意味着不能
 依赖软链接或直接执行其中的脚本；需要这类能力的项目应使用应用私有 Linux 项目工作区。
 
+每次启动 Agent 前，Rust 会使用与正式 Agent 相同的 PRoot、loader、`/dev`、`/proc` 和
+`/dev/shm` 挂载，运行一次最小 Python `multiprocessing.SimpleQueue` 探测。探测失败时不启动
+前台 Runtime Service 或 Agent，并把 PRoot、Python、共享内存和 rootfs 兼容性错误返回给 UI。
+不能使用 `statvfs` 的 `NOEXEC` 标志判断 Android 共享存储是否可执行；需要这类能力的项目仍
+应在应用私有工作区中运行。
+
+Agent 和 Android Linux 工具进程都通过 `env_clear` 启动，仅保留协议、PRoot 和运行时所需的
+显式变量；工具策略允许的环境变量也必须经过白名单过滤。这样 Android 宿主的路径、代理和
+其他配置不会意外进入 Ubuntu 用户空间，同时固定注入 `HOME`、`TERM`、`PATH`、locale、
+`TMPDIR` 和 `NO_COLOR`。
+
 开发调试可以使用预置 rootfs 或本机生成的测试 rootfs。正式 APK/AAB 默认内置对应 ABI 的 Runtime；应用内更新或远端制品下载作为后续升级通道，不能成为首次使用的必要步骤。
 
 Runtime ZIP 可使用 `pnpm build:android-runtime -- --rootfs <Ubuntu-rootfs> --abi <arm64-v8a|x86_64>`

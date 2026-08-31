@@ -145,6 +145,7 @@ impl AgentLauncher {
                 }
 
                 let child = Command::new(&config.proot_path)
+                    .env_clear()
                     .args(["-r"])
                     .arg(&config.rootfs_dir)
                     .args(["-b", "/dev", "-b", "/proc", "-b"])
@@ -163,6 +164,8 @@ impl AgentLauncher {
                     .env("PROOT_LOADER", &config.proot_loader_path)
                     .env("LD_LIBRARY_PATH", "")
                     .env("HOME", "/root")
+                    .env("TERM", "dumb")
+                    .env("NO_COLOR", "1")
                     .env("TMPDIR", "/tmp")
                     .env("LANG", "C.UTF-8")
                     .env("LC_ALL", "C.UTF-8")
