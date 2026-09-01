@@ -11,7 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::error::{AppError, AppResult};
-use crate::tools::builtin::{GuestMount, GuestPathResolver};
+use crate::tools::builtin::{GuestMount, GuestPathResolver, ResolvedGuestPath};
 use crate::tools::policy::{expand_home, BwrapMode, ToolPolicy};
 
 const SANDBOX_HELPER_FLAG: &str = "--agnes-sandbox-exec";
@@ -448,6 +448,44 @@ impl AndroidProotRuntimeConfig {
             host_cwd,
             guest_cwd,
         ))
+    }
+
+    /// Resolves a path for the Runtime file UI with the same mount table used
+    /// by PRoot processes. Runtime internals and Android pseudo-filesystems
+    /// are intentionally excluded from this user-facing surface.
+    pub(crate) fn resolve_user_visible_file_path(&self, raw: &str) -> AppResult<ResolvedGuestPath> {
+        let path = Path::new(raw);
+        if !path.is_absolute() {
+            return Err(AppError::Other(
+                "Runtime 文件路径必须是绝对 guest 路径".into(),
+            ));
+        }
+        let workspace = self.user_workspace_dir.as_deref().ok_or_else(|| {
+            AppError::Other("Android user terminal workspace is not configured".into())
+        })?;
+        let resolved = self.guest_path_resolver(workspace).resolve(raw);
+        if matches!(
+            resolved.resource_id.as_str(),
+            "rootfs" | "workspace" | "project-root" | "user-home" | "shared-storage"
+        ) {
+            Ok(resolved)
+        } else {
+            Err(AppError::Other(format!(
+                "Runtime 文件浏览不开放该路径资源: {}",
+                resolved.guest_path.display()
+            )))
+        }
+    }
+
+    pub(crate) fn user_visible_resource_root(&self, resource_id: &str) -> Option<PathBuf> {
+        if resource_id == "rootfs" {
+            return Some(self.rootfs_dir.clone());
+        }
+        let workspace = self.user_workspace_dir.as_deref()?;
+        self.workspace_mounts(workspace)
+            .into_iter()
+            .find(|mount| mount.resource_id == resource_id)
+            .map(|mount| mount.source)
     }
 
     pub(crate) fn environment(&self) -> Vec<(OsString, OsString)> {
@@ -2146,6 +2184,46 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["/sdcard", "/storage/emulated/0"]
         );
+    }
+
+    #[test]
+    fn runtime_file_browser_reuses_mount_table_and_excludes_internals() {
+        let config = AndroidProotRuntimeConfig::new(
+            PathBuf::from("/proot"),
+            PathBuf::from("/loader"),
+            PathBuf::from("/tmp/proot"),
+            PathBuf::from("/rootfs"),
+            PathBuf::from("/android/projects"),
+            false,
+        )
+        .with_runtime_mounts(
+            PathBuf::from("/runtime"),
+            PathBuf::from("/runtime/environments"),
+            PathBuf::from("/runtime/cache"),
+        )
+        .with_user_workspace(PathBuf::from("/android/workspace"))
+        .with_user_home(PathBuf::from("/runtime/home"))
+        .with_shared_storage(PathBuf::from("/storage/emulated/0"));
+
+        let home = config
+            .resolve_user_visible_file_path("/root/notes.txt")
+            .unwrap();
+        assert_eq!(home.resource_id, "user-home");
+        assert_eq!(home.host_path, PathBuf::from("/runtime/home/notes.txt"));
+        let storage = config
+            .resolve_user_visible_file_path("/storage/emulated/0/Download/app.py")
+            .unwrap();
+        assert_eq!(storage.resource_id, "shared-storage");
+        assert_eq!(
+            storage.host_path,
+            PathBuf::from("/storage/emulated/0/Download/app.py")
+        );
+        assert!(config
+            .resolve_user_visible_file_path("/opt/agnes/runtime-data/config.json")
+            .is_err());
+        assert!(config
+            .resolve_user_visible_file_path("relative.txt")
+            .is_err());
     }
 
     #[test]

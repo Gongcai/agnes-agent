@@ -318,6 +318,43 @@ pub async fn request_android_shared_storage_access(
         .map_err(|error| AppError::Other(format!("共享存储授权请求异常退出: {error}")))?
 }
 
+/// Lists direct children of a user-visible directory in the Android Runtime namespace.
+#[tauri::command]
+pub async fn list_runtime_files(
+    guest_path: String,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<crate::runtime::RuntimeFileEntry>> {
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.list_runtime_files(&guest_path))
+        .await
+        .map_err(|error| AppError::Other(format!("Runtime 文件浏览任务异常退出: {error}")))?
+}
+
+/// Reads a bounded UTF-8 text file through the Android Runtime mount table.
+#[tauri::command]
+pub async fn read_runtime_file(
+    guest_path: String,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::runtime::RuntimeFileContent> {
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.read_runtime_file(&guest_path))
+        .await
+        .map_err(|error| AppError::Other(format!("Runtime 文件读取任务异常退出: {error}")))?
+}
+
+/// Saves a bounded UTF-8 text file through the Android Runtime mount table.
+#[tauri::command]
+pub async fn write_runtime_file(
+    guest_path: String,
+    content: String,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<()> {
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.write_runtime_file(&guest_path, &content))
+        .await
+        .map_err(|error| AppError::Other(format!("Runtime 文件保存任务异常退出: {error}")))?
+}
+
 /// Lists user-owned Linux PTY sessions. This registry is independent from Agent tool terminals.
 #[tauri::command]
 pub async fn list_user_linux_terminals(

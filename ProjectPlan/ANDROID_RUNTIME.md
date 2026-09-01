@@ -447,10 +447,11 @@ Android 有两种执行模式：
 - [x] Shell、文件读写、Git、Python、SSH、MCP 和用户 PTY 共用完整 Runtime mount table；
 - [ ] User terminal 与 Agent 默认可修改 guest rootfs、home 和 runtime data，并可直接安装依赖、
   编辑文件、打开目录和运行脚本；
-- [ ] 用户授予 All files access 后，将 emulated storage 同时映射为 `/sdcard` 与 Android 原始路径，
-  Agent、PTY、Rust 文件工具和 UI 文件入口对同一文件解析一致；当前 mount table、Agent、PTY 和 Rust
-  文件工具已完成，UI 文件入口待后续文件浏览实现；
-- [ ] 提供 Runtime 文件浏览入口，可浏览 `/root`、项目、rootfs 和已授权共享存储并打开文件夹；
+- [x] 用户授予 All files access 后，将 emulated storage 同时映射为 `/sdcard` 与 Android 原始路径，
+  Agent、PTY、Rust 文件工具和 UI 文件入口对同一文件解析一致；UI 复用 Runtime mount table，只暴露
+  rootfs、`/root`、项目和已授权共享存储，不暴露 Runtime 内部资源；
+- [x] 提供 Runtime 文件浏览入口，可浏览 `/root`、项目、rootfs 和已授权共享存储并打开文件夹、编辑
+  有界 UTF-8 文本，并从选中目录启动终端；DocumentsProvider 与二进制编辑仍属后续工作；
 - 用户可调 resource 授权、审计、超时、并发和输出上限；
 - 应用私有工作区、SAF 工作区和可选宽共享存储；
 - Android Bridge 的最小系统能力；

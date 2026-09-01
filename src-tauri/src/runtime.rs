@@ -60,6 +60,23 @@ pub struct AgentRuntimeStatus {
     pub shared_storage_available: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeFileEntry {
+    pub name: String,
+    pub guest_path: String,
+    pub kind: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeFileContent {
+    pub guest_path: String,
+    pub content: String,
+    pub truncated: bool,
+}
+
 pub trait AgentRuntime: Send + Sync {
     fn status(&self) -> AgentRuntimeStatus;
 
@@ -87,6 +104,18 @@ pub trait AgentRuntime: Send + Sync {
 
     fn request_shared_storage_access(&self) -> AppResult<()> {
         Err(AppError::Other("当前平台不支持共享存储授权".into()))
+    }
+
+    fn list_runtime_files(&self, _guest_path: &str) -> AppResult<Vec<RuntimeFileEntry>> {
+        Err(AppError::Other("当前平台不支持 Runtime 文件浏览".into()))
+    }
+
+    fn read_runtime_file(&self, _guest_path: &str) -> AppResult<RuntimeFileContent> {
+        Err(AppError::Other("当前平台不支持 Runtime 文件浏览".into()))
+    }
+
+    fn write_runtime_file(&self, _guest_path: &str, _content: &str) -> AppResult<()> {
+        Err(AppError::Other("当前平台不支持 Runtime 文件浏览".into()))
     }
 
     fn user_terminal_list(&self) -> AppResult<Vec<UserTerminalInfo>> {
@@ -516,6 +545,137 @@ impl AndroidLinuxRuntime {
             abi: previous_snapshot.abi,
         })
     }
+
+    fn resolve_runtime_file_path(
+        &self,
+        guest_path: &str,
+    ) -> AppResult<(PathBuf, PathBuf, PathBuf)> {
+        let config = self
+            .user_terminal_config
+            .lock()
+            .expect("user terminal config lock poisoned")
+            .clone()
+            .ok_or_else(|| AppError::Other("请先启动 Android Linux Runtime".into()))?;
+        let resolved = config.resolve_user_visible_file_path(guest_path)?;
+        let resource_root = config
+            .user_visible_resource_root(&resolved.resource_id)
+            .ok_or_else(|| AppError::Other("Runtime 文件资源配置无效".into()))?;
+        Ok((resolved.host_path, resolved.guest_path, resource_root))
+    }
+
+    fn list_runtime_files_inner(&self, guest_path: &str) -> AppResult<Vec<RuntimeFileEntry>> {
+        let (host_path, guest_path, resource_root) = self.resolve_runtime_file_path(guest_path)?;
+        ensure_runtime_path_contained(&host_path, &resource_root)?;
+        if !host_path.is_dir() {
+            return Err(AppError::Other(format!(
+                "Runtime 文件路径不是目录: {}",
+                guest_path.display()
+            )));
+        }
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(&host_path)? {
+            let entry = entry?;
+            let metadata = entry.file_type()?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let kind = if metadata.is_dir() {
+                "directory"
+            } else if metadata.is_symlink() {
+                "symlink"
+            } else {
+                "file"
+            };
+            let size = std::fs::symlink_metadata(entry.path())
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            entries.push(RuntimeFileEntry {
+                guest_path: guest_path.join(&name).to_string_lossy().into_owned(),
+                name,
+                kind: kind.into(),
+                size,
+            });
+        }
+        entries.sort_by(|left, right| {
+            let left_directory = left.kind == "directory";
+            let right_directory = right.kind == "directory";
+            right_directory
+                .cmp(&left_directory)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(entries)
+    }
+
+    fn read_runtime_file_inner(&self, guest_path: &str) -> AppResult<RuntimeFileContent> {
+        const MAX_RUNTIME_FILE_BYTES: u64 = 512 * 1024;
+        let (host_path, guest_path, resource_root) = self.resolve_runtime_file_path(guest_path)?;
+        ensure_runtime_path_contained(&host_path, &resource_root)?;
+        if !host_path.is_file() {
+            return Err(AppError::Other(format!(
+                "Runtime 文件路径不是普通文件: {}",
+                guest_path.display()
+            )));
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(&host_path)?
+            .take(MAX_RUNTIME_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        let truncated = bytes.len() as u64 > MAX_RUNTIME_FILE_BYTES;
+        if truncated {
+            bytes.truncate(MAX_RUNTIME_FILE_BYTES as usize);
+        }
+        let content = String::from_utf8(bytes)
+            .map_err(|_| AppError::Other("Runtime 文件浏览目前只支持 UTF-8 文本文件".into()))?;
+        Ok(RuntimeFileContent {
+            guest_path: guest_path.to_string_lossy().into_owned(),
+            content,
+            truncated,
+        })
+    }
+
+    fn write_runtime_file_inner(&self, guest_path: &str, content: &str) -> AppResult<()> {
+        const MAX_RUNTIME_FILE_BYTES: usize = 512 * 1024;
+        if content.len() > MAX_RUNTIME_FILE_BYTES {
+            return Err(AppError::Other("Runtime 文件内容超过 512 KiB 上限".into()));
+        }
+        let (host_path, guest_path, resource_root) = self.resolve_runtime_file_path(guest_path)?;
+        let parent = host_path
+            .parent()
+            .ok_or_else(|| AppError::Other("不能直接修改 Runtime 文件系统根目录".into()))?;
+        ensure_runtime_path_contained(parent, &resource_root)?;
+        if host_path.exists() {
+            ensure_runtime_path_contained(&host_path, &resource_root)?;
+            if !host_path.is_file() {
+                return Err(AppError::Other(format!(
+                    "Runtime 文件路径不是普通文件: {}",
+                    guest_path.display()
+                )));
+            }
+        }
+        let temporary = parent.join(format!(".agnes-edit-{}", Uuid::new_v4()));
+        let result = (|| {
+            std::fs::write(&temporary, content)?;
+            std::fs::rename(&temporary, &host_path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
+    }
+}
+
+#[cfg(target_os = "android")]
+fn ensure_runtime_path_contained(path: &Path, resource_root: &Path) -> AppResult<()> {
+    let resource_root = resource_root
+        .canonicalize()
+        .map_err(|error| AppError::Other(format!("Runtime 文件资源不可用: {error}")))?;
+    let path = path
+        .canonicalize()
+        .map_err(|error| AppError::Other(format!("无法解析 Runtime 文件路径: {error}")))?;
+    if path.starts_with(&resource_root) {
+        Ok(())
+    } else {
+        Err(AppError::Other("Runtime 文件路径超出已挂载资源范围".into()))
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -711,7 +871,7 @@ impl AgentRuntime for AndroidLinuxRuntime {
         let proot_config = AndroidProotRuntimeConfig::new(
             proot_path,
             proot_loader_path,
-            proot_tmp_dir,
+            proot_tmp_dir.clone(),
             rootfs_dir.clone(),
             android_workspace_root.clone(),
             false,
@@ -796,6 +956,18 @@ impl AgentRuntime for AndroidLinuxRuntime {
     fn request_shared_storage_access(&self) -> AppResult<()> {
         let _: serde_json::Value = self.run_native_command("requestSharedStorageAccess")?;
         Ok(())
+    }
+
+    fn list_runtime_files(&self, guest_path: &str) -> AppResult<Vec<RuntimeFileEntry>> {
+        self.list_runtime_files_inner(guest_path)
+    }
+
+    fn read_runtime_file(&self, guest_path: &str) -> AppResult<RuntimeFileContent> {
+        self.read_runtime_file_inner(guest_path)
+    }
+
+    fn write_runtime_file(&self, guest_path: &str, content: &str) -> AppResult<()> {
+        self.write_runtime_file_inner(guest_path, content)
     }
 
     fn user_terminal_list(&self) -> AppResult<Vec<UserTerminalInfo>> {

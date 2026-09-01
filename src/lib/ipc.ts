@@ -37,6 +37,31 @@ export async function requestAndroidSharedStorageAccess(): Promise<void> {
   return invoke("request_android_shared_storage_access");
 }
 
+export interface RuntimeFileEntry {
+  name: string;
+  guestPath: string;
+  kind: "directory" | "file" | "symlink";
+  size: number;
+}
+
+export interface RuntimeFileContent {
+  guestPath: string;
+  content: string;
+  truncated: boolean;
+}
+
+export function listRuntimeFiles(guestPath: string): Promise<RuntimeFileEntry[]> {
+  return invoke<RuntimeFileEntry[]>("list_runtime_files", { guestPath });
+}
+
+export function readRuntimeFile(guestPath: string): Promise<RuntimeFileContent> {
+  return invoke<RuntimeFileContent>("read_runtime_file", { guestPath });
+}
+
+export function writeRuntimeFile(guestPath: string, content: string): Promise<void> {
+  return invoke("write_runtime_file", { guestPath, content });
+}
+
 export interface UserLinuxTerminalInfo {
   sessionId: string;
   cwd: string;

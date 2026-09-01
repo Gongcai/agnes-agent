@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const sdkRoot = process.env.ANDROID_SDK_ROOT || process.env.ANDROID_HOME || join(homedir(), "Android", "Sdk");
 const scriptDir = dirname(fileURLToPath(import.meta.url));
+const tauriCli = join(scriptDir, "..", "node_modules", ".bin", process.platform === "win32" ? "tauri.cmd" : "tauri");
 
 function findNdk() {
   const configured = [process.env.ANDROID_NDK_HOME, process.env.NDK_HOME].filter(Boolean);
@@ -55,7 +56,13 @@ for (const [target, [cargoTarget, compiler]] of Object.entries(toolchains)) {
 }
 
 const args = process.argv.slice(2).filter((value, index) => !(index === 0 && value === "--"));
-const buildArgs = args.length === 0 ? ["--debug", "--apk", "--target", "aarch64"] : [...args];
+// Tauri Android builds are release by default. Accept the conventional flag
+// at this wrapper boundary without forwarding it to the Tauri CLI.
+const releaseRequested = args.includes("--release");
+const buildArgs = args
+  .filter((value) => value !== "--release")
+  .concat(args.length === 0 ? ["--debug", "--apk", "--target", "aarch64"] : []);
+if (releaseRequested && buildArgs.length === 0) buildArgs.push("--apk", "--target", "aarch64");
 const informational = buildArgs.some((value) => value === "--help" || value === "-h" || value === "--version" || value === "-V");
 if (!informational && !buildArgs.some((value) => value === "--target" || value === "-t" || value.startsWith("--target=") || value.startsWith("-t="))) {
   buildArgs.push("--target", "aarch64");
@@ -91,7 +98,8 @@ if (!informational) {
   if (prepared.status !== 0) process.exit(prepared.status ?? 1);
 }
 
-const result = spawnSync("pnpm", ["tauri", "android", "build", ...buildArgs], {
+if (!existsSync(tauriCli)) throw new Error(`Local Tauri CLI does not exist: ${tauriCli}`);
+const result = spawnSync(tauriCli, ["android", "build", ...buildArgs], {
   env,
   stdio: "inherit",
 });
