@@ -699,8 +699,8 @@ impl AgentRuntime for AndroidLinuxRuntime {
             proot_path,
             proot_loader_path,
             proot_tmp_dir,
-            rootfs_dir,
-            android_workspace_root,
+            rootfs_dir.clone(),
+            android_workspace_root.clone(),
             false,
         )
         .with_runtime_mounts(
@@ -723,10 +723,8 @@ impl AgentRuntime for AndroidLinuxRuntime {
             },
         };
         persist_android_runtime_capabilities(&self.root_dir, &capability_profile)?;
-        let proot_config = AndroidProotRuntimeConfig {
-            link2symlink_enabled: capability_profile.link2symlink_enabled,
-            ..proot_config
-        };
+        let proot_config =
+            proot_config.with_link2symlink_enabled(capability_profile.link2symlink_enabled);
         let _: serde_json::Value = self.run_native_command("start")?;
         if let Err(error) = self.agent.start_android(
             self.db.clone(),
@@ -735,7 +733,7 @@ impl AgentRuntime for AndroidLinuxRuntime {
             self.secrets.clone(),
             self.home_workspace_dir.clone(),
             self.storage.clone(),
-            proot_config,
+            proot_config.clone(),
         ) {
             let _ = self.run_native_command::<serde_json::Value>("stop");
             return Err(error);

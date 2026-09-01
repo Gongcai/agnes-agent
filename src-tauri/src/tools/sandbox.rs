@@ -139,6 +139,11 @@ impl AndroidProotRuntimeConfig {
         self
     }
 
+    pub(crate) fn with_link2symlink_enabled(mut self, enabled: bool) -> Self {
+        self.link2symlink_enabled = enabled;
+        self
+    }
+
     pub(crate) fn proot_path(&self) -> &Path {
         &self.proot_path
     }
