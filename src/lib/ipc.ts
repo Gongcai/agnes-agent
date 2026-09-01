@@ -32,6 +32,59 @@ export async function stopAgentRuntime(): Promise<AgentRuntimeStatus> {
   return invoke<AgentRuntimeStatus>("stop_agent_runtime");
 }
 
+export interface UserLinuxTerminalInfo {
+  sessionId: string;
+  cwd: string;
+  rows: number;
+  cols: number;
+  running: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  truncated: boolean;
+}
+
+export interface UserLinuxTerminalPoll {
+  sessionId: string;
+  output: string;
+  nextCursor: number;
+  running: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  truncated: boolean;
+}
+
+export function listUserLinuxTerminals(): Promise<UserLinuxTerminalInfo[]> {
+  return invoke<UserLinuxTerminalInfo[]>("list_user_linux_terminals");
+}
+
+export function createUserLinuxTerminal(
+  cwd = "/root",
+  rows = 30,
+  cols = 100,
+): Promise<UserLinuxTerminalPoll> {
+  return invoke<UserLinuxTerminalPoll>("create_user_linux_terminal", { cwd, rows, cols });
+}
+
+export function pollUserLinuxTerminal(sessionId: string, cursor = 0): Promise<UserLinuxTerminalPoll> {
+  return invoke<UserLinuxTerminalPoll>("poll_user_linux_terminal", { sessionId, cursor });
+}
+
+export function writeUserLinuxTerminal(sessionId: string, input: string): Promise<void> {
+  return invoke("write_user_linux_terminal", { sessionId, input });
+}
+
+export function resizeUserLinuxTerminal(sessionId: string, rows: number, cols: number): Promise<void> {
+  return invoke("resize_user_linux_terminal", { sessionId, rows, cols });
+}
+
+export function interruptUserLinuxTerminal(sessionId: string): Promise<void> {
+  return invoke("interrupt_user_linux_terminal", { sessionId });
+}
+
+export function closeUserLinuxTerminal(sessionId: string): Promise<void> {
+  return invoke("close_user_linux_terminal", { sessionId });
+}
+
 export interface AgentSummary {
   id: string;
   name: string;

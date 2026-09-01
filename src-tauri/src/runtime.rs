@@ -41,6 +41,9 @@ use crate::secrets::SharedSecretStore;
 use crate::storage::StorageService;
 #[cfg(target_os = "android")]
 use crate::tools::sandbox::AndroidProotRuntimeConfig;
+#[cfg(target_os = "android")]
+use crate::tools::terminal::UserTerminalManager;
+use crate::tools::terminal::{UserTerminalInfo, UserTerminalPoll};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,6 +82,39 @@ pub trait AgentRuntime: Send + Sync {
 
     fn stop(&self) -> AppResult<AgentRuntimeStatus> {
         Ok(self.status())
+    }
+
+    fn user_terminal_list(&self) -> AppResult<Vec<UserTerminalInfo>> {
+        Err(AppError::Other("当前平台不支持用户 Linux 终端".into()))
+    }
+
+    fn user_terminal_create(
+        &self,
+        _cwd: Option<&str>,
+        _rows: u16,
+        _cols: u16,
+    ) -> AppResult<UserTerminalPoll> {
+        Err(AppError::Other("当前平台不支持用户 Linux 终端".into()))
+    }
+
+    fn user_terminal_poll(&self, _id: &str, _cursor: u64) -> AppResult<UserTerminalPoll> {
+        Err(AppError::Other("当前平台不支持用户 Linux 终端".into()))
+    }
+
+    fn user_terminal_write(&self, _id: &str, _input: &str) -> AppResult<()> {
+        Err(AppError::Other("当前平台不支持用户 Linux 终端".into()))
+    }
+
+    fn user_terminal_resize(&self, _id: &str, _rows: u16, _cols: u16) -> AppResult<()> {
+        Err(AppError::Other("当前平台不支持用户 Linux 终端".into()))
+    }
+
+    fn user_terminal_interrupt(&self, _id: &str) -> AppResult<()> {
+        Err(AppError::Other("当前平台不支持用户 Linux 终端".into()))
+    }
+
+    fn user_terminal_close(&self, _id: &str) -> AppResult<()> {
+        Err(AppError::Other("当前平台不支持用户 Linux 终端".into()))
     }
 }
 
@@ -243,6 +279,8 @@ pub struct AndroidLinuxRuntime {
     home_workspace_dir: PathBuf,
     storage: Arc<StorageService>,
     snapshot: Mutex<RuntimeSnapshot>,
+    user_terminals: Arc<UserTerminalManager>,
+    user_terminal_config: Mutex<Option<AndroidProotRuntimeConfig>>,
 }
 
 #[cfg(target_os = "android")]
@@ -271,6 +309,8 @@ impl AndroidLinuxRuntime {
             home_workspace_dir,
             storage,
             snapshot: Mutex::new(snapshot),
+            user_terminals: Arc::new(UserTerminalManager::default()),
+            user_terminal_config: Mutex::new(None),
         }
     }
 
@@ -645,9 +685,13 @@ impl AgentRuntime for AndroidLinuxRuntime {
             AppError::Other(format!("无法创建 Android Linux 用户工作区: {error}"))
         })?;
         let environment_store = self.root_dir.join("user/environments");
+        let user_home = self.root_dir.join("user/home");
         let uv_cache_dir = self.root_dir.join("user/cache/uv");
         std::fs::create_dir_all(&environment_store).map_err(|error| {
             AppError::Other(format!("无法创建 Android Python 环境目录: {error}"))
+        })?;
+        std::fs::create_dir_all(&user_home).map_err(|error| {
+            AppError::Other(format!("无法创建 Android Linux 用户目录: {error}"))
         })?;
         std::fs::create_dir_all(&uv_cache_dir)
             .map_err(|error| AppError::Other(format!("无法创建 Android uv 缓存目录: {error}")))?;
@@ -663,7 +707,9 @@ impl AgentRuntime for AndroidLinuxRuntime {
             self.root_dir.clone(),
             environment_store.clone(),
             self.root_dir.join("user/cache"),
-        );
+        )
+        .with_user_workspace(android_workspace_root.clone())
+        .with_user_home(user_home);
         let proot_probe = probe_android_rootfs(&proot_config)?;
         let capability_profile = AndroidRuntimeCapabilityProfile {
             schema_version: 1,
@@ -694,13 +740,66 @@ impl AgentRuntime for AndroidLinuxRuntime {
             let _ = self.run_native_command::<serde_json::Value>("stop");
             return Err(error);
         }
+        *self
+            .user_terminal_config
+            .lock()
+            .expect("user terminal config lock poisoned") = Some(proot_config);
         Ok(self.status())
     }
 
     fn stop(&self) -> AppResult<AgentRuntimeStatus> {
+        self.user_terminals.stop_all();
+        *self
+            .user_terminal_config
+            .lock()
+            .expect("user terminal config lock poisoned") = None;
         self.agent.shutdown();
         let _: serde_json::Value = self.run_native_command("stop")?;
         Ok(self.status())
+    }
+
+    fn user_terminal_list(&self) -> AppResult<Vec<UserTerminalInfo>> {
+        Ok(self.user_terminals.list())
+    }
+
+    fn user_terminal_create(
+        &self,
+        cwd: Option<&str>,
+        rows: u16,
+        cols: u16,
+    ) -> AppResult<UserTerminalPoll> {
+        let config = self
+            .user_terminal_config
+            .lock()
+            .expect("user terminal config lock poisoned")
+            .clone()
+            .ok_or_else(|| AppError::Other("请先启动 Android Linux Runtime".into()))?;
+        let (command, host_cwd, guest_cwd) = config.user_command_spec(cwd)?;
+        self.user_terminals
+            .create(command, &host_cwd, &guest_cwd, rows, cols, 2 * 1024 * 1024)
+    }
+
+    fn user_terminal_poll(&self, id: &str, cursor: u64) -> AppResult<UserTerminalPoll> {
+        self.user_terminals.poll(id, cursor)
+    }
+
+    fn user_terminal_write(&self, id: &str, input: &str) -> AppResult<()> {
+        if input.len() > 64 * 1024 {
+            return Err(AppError::Other("终端输入超过 64 KiB".into()));
+        }
+        self.user_terminals.write(id, input)
+    }
+
+    fn user_terminal_resize(&self, id: &str, rows: u16, cols: u16) -> AppResult<()> {
+        self.user_terminals.resize(id, rows, cols)
+    }
+
+    fn user_terminal_interrupt(&self, id: &str) -> AppResult<()> {
+        self.user_terminals.signal_interrupt(id)
+    }
+
+    fn user_terminal_close(&self, id: &str) -> AppResult<()> {
+        self.user_terminals.close(id)
     }
 }
 

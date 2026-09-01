@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Brain, BookOpen, Code, CalendarBlank, CheckSquare, Check, CaretDown, CaretRight, CaretUp, Database, Folder, FolderPlus, HardDrive, House, MagnifyingGlass, Chat, PencilSimple, PushPin, PushPinSlash, Plus, Gear, Trash, X, type Icon } from "@phosphor-icons/react";
+import { Brain, BookOpen, Code, CalendarBlank, CheckSquare, Check, CaretDown, CaretRight, CaretUp, Database, Folder, FolderPlus, HardDrive, House, MagnifyingGlass, Chat, PencilSimple, PushPin, PushPinSlash, Plus, Gear, TerminalWindow, Trash, X, type Icon } from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { ENABLED_APP_FEATURES, type AppFeatureId, type ChatMode } from "../lib/features";
@@ -48,6 +48,7 @@ const FEATURE_ICONS: Record<AppFeatureId, Icon> = {
   drive: HardDrive,
   calendar: CalendarBlank,
   tasks: CheckSquare,
+  terminal: TerminalWindow,
 };
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -583,7 +584,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </span>
           <span className="agnes-sidebar-label truncate text-xs">搜索</span>
         </button>
-        {ENABLED_APP_FEATURES.filter((feature) => feature.id !== "chat" && feature.id !== "drive").map((feature) => {
+        {ENABLED_APP_FEATURES.filter((feature) => (
+          feature.id !== "chat"
+          && feature.id !== "drive"
+          && (feature.id !== "terminal" || isAndroid)
+        )).map((feature) => {
           const Icon = FEATURE_ICONS[feature.id];
           const selected = feature.id === activeFeature;
           return (

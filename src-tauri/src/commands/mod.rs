@@ -307,6 +307,101 @@ pub async fn stop_agent_runtime(
         .map_err(|error| AppError::Other(format!("Agent Runtime 停止任务异常退出: {error}")))?
 }
 
+/// Lists user-owned Linux PTY sessions. This registry is independent from Agent tool terminals.
+#[tauri::command]
+pub async fn list_user_linux_terminals(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<Vec<crate::tools::terminal::UserTerminalInfo>> {
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.user_terminal_list())
+        .await
+        .map_err(|error| AppError::Other(format!("Linux 终端查询任务异常退出: {error}")))?
+}
+
+/// Creates an interactive Ubuntu PTY owned by the current app UI.
+#[tauri::command]
+pub async fn create_user_linux_terminal(
+    cwd: Option<String>,
+    rows: Option<u16>,
+    cols: Option<u16>,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::tools::terminal::UserTerminalPoll> {
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.user_terminal_create(cwd.as_deref(), rows.unwrap_or(30), cols.unwrap_or(100))
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("Linux 终端创建任务异常退出: {error}")))?
+}
+
+/// Reads terminal output starting at a cursor without replaying input.
+#[tauri::command]
+pub async fn poll_user_linux_terminal(
+    session_id: String,
+    cursor: Option<u64>,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<crate::tools::terminal::UserTerminalPoll> {
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.user_terminal_poll(&session_id, cursor.unwrap_or(0))
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("Linux 终端输出查询任务异常退出: {error}")))?
+}
+
+/// Writes raw bytes represented as a UTF-8 string to a user terminal PTY.
+#[tauri::command]
+pub async fn write_user_linux_terminal(
+    session_id: String,
+    input: String,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<()> {
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.user_terminal_write(&session_id, &input))
+        .await
+        .map_err(|error| AppError::Other(format!("Linux 终端输入任务异常退出: {error}")))?
+}
+
+/// Resizes the PTY directly, allowing readline and full-screen tools to react normally.
+#[tauri::command]
+pub async fn resize_user_linux_terminal(
+    session_id: String,
+    rows: u16,
+    cols: u16,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<()> {
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.user_terminal_resize(&session_id, rows, cols)
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("Linux 终端调整任务异常退出: {error}")))?
+}
+
+/// Sends SIGINT to the foreground process group of a user terminal.
+#[tauri::command]
+pub async fn interrupt_user_linux_terminal(
+    session_id: String,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<()> {
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.user_terminal_interrupt(&session_id))
+        .await
+        .map_err(|error| AppError::Other(format!("Linux 终端中断任务异常退出: {error}")))?
+}
+
+/// Closes a user terminal and kills its process group.
+#[tauri::command]
+pub async fn close_user_linux_terminal(
+    session_id: String,
+    state: tauri::State<'_, AppState>,
+) -> AppResult<()> {
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.user_terminal_close(&session_id))
+        .await
+        .map_err(|error| AppError::Other(format!("Linux 终端关闭任务异常退出: {error}")))?
+}
+
 /// Opens the webview inspector in development builds.
 #[tauri::command]
 pub fn open_webview_devtools(window: tauri::WebviewWindow) {

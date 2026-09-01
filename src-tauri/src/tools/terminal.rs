@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, ChildKiller, PtySize};
+use portable_pty::{native_pty_system, ChildKiller, MasterPty, PtySize};
 
 use crate::error::{AppError, AppResult};
 use crate::tools::sandbox::SandboxCommand;
@@ -17,6 +17,31 @@ const MAX_TERMINAL_SESSIONS: usize = 16;
 pub struct TerminalPoll {
     pub session_id: String,
     pub output: String,
+    pub running: bool,
+    pub exit_code: Option<i32>,
+    pub signal: Option<String>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserTerminalInfo {
+    pub session_id: String,
+    pub cwd: String,
+    pub rows: u16,
+    pub cols: u16,
+    pub running: bool,
+    pub exit_code: Option<i32>,
+    pub signal: Option<String>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserTerminalPoll {
+    pub session_id: String,
+    pub output: String,
+    pub next_cursor: u64,
     pub running: bool,
     pub exit_code: Option<i32>,
     pub signal: Option<String>,
@@ -62,6 +87,19 @@ impl TerminalState {
         output.replace("\r\n", "\n")
     }
 
+    fn output_from(&self, cursor: u64) -> (String, u64) {
+        let mut output = String::new();
+        let start_cursor = cursor.max(self.base_offset);
+        if cursor < self.base_offset {
+            output.push_str("... earlier terminal output truncated by policy\n");
+        }
+        let start = start_cursor
+            .saturating_sub(self.base_offset)
+            .min(self.output.len() as u64) as usize;
+        output.push_str(&String::from_utf8_lossy(&self.output[start..]));
+        (output.replace("\r\n", "\n"), self.total_offset)
+    }
+
     fn finished(&self) -> bool {
         self.exit_code.is_some() && self.reader_closed
     }
@@ -73,6 +111,9 @@ struct TerminalSession {
     run_id: String,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    master: Mutex<Box<dyn MasterPty + Send>>,
+    cwd: PathBuf,
+    size: Mutex<PtySize>,
     state: Arc<Mutex<TerminalState>>,
     #[cfg(unix)]
     process_group: Option<i32>,
@@ -110,15 +151,55 @@ impl TerminalSession {
         writer.flush()?;
         Ok(())
     }
+
+    fn resize(&self, rows: u16, cols: u16) -> AppResult<()> {
+        let size = PtySize {
+            rows: rows.clamp(1, 500),
+            cols: cols.clamp(1, 500),
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        self.master
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .resize(size)
+            .map_err(|error| AppError::Other(format!("Unable to resize terminal: {error}")))?;
+        *self.size.lock().unwrap_or_else(|error| error.into_inner()) = size;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn signal(&self, signal: nix::sys::signal::Signal) -> AppResult<()> {
+        let Some(process_group) = self.process_group else {
+            return Err(AppError::Other(
+                "Terminal process group is unavailable".into(),
+            ));
+        };
+        nix::sys::signal::killpg(nix::unistd::Pid::from_raw(process_group), signal)
+            .map_err(|error| AppError::Other(format!("Unable to signal terminal: {error}")))
+    }
 }
 
 /// Owns all terminal processes for one Agent WebSocket connection.
-#[derive(Default)]
 pub struct TerminalManager {
     sessions: Mutex<HashMap<String, Arc<TerminalSession>>>,
+    id_prefix: String,
+}
+
+impl Default for TerminalManager {
+    fn default() -> Self {
+        Self::with_id_prefix("agent-terminal-")
+    }
 }
 
 impl TerminalManager {
+    fn with_id_prefix(prefix: &str) -> Self {
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            id_prefix: prefix.to_string(),
+        }
+    }
+
     pub fn spawn(
         &self,
         command: SandboxCommand,
@@ -127,6 +208,55 @@ impl TerminalManager {
         run_id: &str,
         max_output_bytes: usize,
         timeout_sec: u32,
+    ) -> AppResult<String> {
+        self.spawn_with_size(
+            command,
+            cwd,
+            owner_session_id,
+            run_id,
+            max_output_bytes,
+            timeout_sec,
+            PtySize {
+                rows: 30,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        )
+    }
+
+    fn spawn_with_size(
+        &self,
+        command: SandboxCommand,
+        cwd: &Path,
+        owner_session_id: &str,
+        run_id: &str,
+        max_output_bytes: usize,
+        timeout_sec: u32,
+        size: PtySize,
+    ) -> AppResult<String> {
+        self.spawn_with_size_and_display_cwd(
+            command,
+            cwd,
+            cwd,
+            owner_session_id,
+            run_id,
+            max_output_bytes,
+            timeout_sec,
+            size,
+        )
+    }
+
+    fn spawn_with_size_and_display_cwd(
+        &self,
+        command: SandboxCommand,
+        cwd: &Path,
+        display_cwd: &Path,
+        owner_session_id: &str,
+        run_id: &str,
+        max_output_bytes: usize,
+        timeout_sec: u32,
+        size: PtySize,
     ) -> AppResult<String> {
         self.remove_finished();
         if self
@@ -143,12 +273,7 @@ impl TerminalManager {
 
         let pty = native_pty_system();
         let pair = pty
-            .openpty(PtySize {
-                rows: 30,
-                cols: 120,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
+            .openpty(size)
             .map_err(|error| AppError::Other(format!("Unable to open PTY: {error}")))?;
         let mut command = command.into_pty();
         command.cwd(cwd);
@@ -171,7 +296,7 @@ impl TerminalManager {
         let process_group = pair.master.process_group_leader();
         drop(pair.slave);
 
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = format!("{}{}", self.id_prefix, uuid::Uuid::new_v4());
         let state = Arc::new(Mutex::new(TerminalState::default()));
         let session = Arc::new(TerminalSession {
             id: id.clone(),
@@ -179,6 +304,9 @@ impl TerminalManager {
             run_id: run_id.to_string(),
             writer: Mutex::new(Some(writer)),
             killer: Mutex::new(killer),
+            master: Mutex::new(pair.master),
+            cwd: display_cwd.to_path_buf(),
+            size: Mutex::new(size),
             state: state.clone(),
             #[cfg(unix)]
             process_group,
@@ -286,6 +414,99 @@ impl TerminalManager {
         Ok(snapshot(&session))
     }
 
+    fn snapshot_at(
+        &self,
+        id: &str,
+        owner_session_id: &str,
+        cursor: u64,
+    ) -> AppResult<UserTerminalPoll> {
+        let session = self.session(id, owner_session_id)?;
+        let state = session
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let (output, next_cursor) = state.output_from(cursor);
+        Ok(UserTerminalPoll {
+            session_id: session.id.clone(),
+            output,
+            next_cursor,
+            running: !state.finished(),
+            exit_code: state.exit_code,
+            signal: state.signal.clone(),
+            truncated: state.truncated,
+        })
+    }
+
+    fn list_infos(&self, owner_session_id: &str) -> Vec<UserTerminalInfo> {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut infos = sessions
+            .values()
+            .filter(|session| session.owner_session_id == owner_session_id)
+            .map(|session| {
+                let state = session
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let size = session
+                    .size
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                UserTerminalInfo {
+                    session_id: session.id.clone(),
+                    cwd: session.cwd.to_string_lossy().into_owned(),
+                    rows: size.rows,
+                    cols: size.cols,
+                    running: !state.finished(),
+                    exit_code: state.exit_code,
+                    signal: state.signal.clone(),
+                    truncated: state.truncated,
+                }
+            })
+            .collect::<Vec<_>>();
+        infos.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        infos
+    }
+
+    fn resize(&self, id: &str, owner_session_id: &str, rows: u16, cols: u16) -> AppResult<()> {
+        self.session(id, owner_session_id)?.resize(rows, cols)
+    }
+
+    #[cfg(unix)]
+    fn signal(
+        &self,
+        id: &str,
+        owner_session_id: &str,
+        signal: nix::sys::signal::Signal,
+    ) -> AppResult<()> {
+        self.session(id, owner_session_id)?.signal(signal)
+    }
+
+    fn close(&self, id: &str, owner_session_id: &str) -> AppResult<()> {
+        let session = self.session(id, owner_session_id)?;
+        session.stop();
+        self.sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(id);
+        Ok(())
+    }
+
+    fn stop_all(&self) {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for session in sessions {
+            session.stop();
+        }
+    }
+
     pub fn stop_run(&self, run_id: &str) {
         let sessions = self
             .sessions
@@ -336,6 +557,85 @@ impl TerminalManager {
                     .unwrap_or_else(|error| error.into_inner())
                     .finished()
             });
+    }
+}
+
+/// User-visible PTYs have a separate registry and ID namespace from Agent
+/// terminal sessions. They remain addressable after process exit for reconnect.
+pub struct UserTerminalManager {
+    terminals: TerminalManager,
+}
+
+impl Default for UserTerminalManager {
+    fn default() -> Self {
+        Self {
+            terminals: TerminalManager::with_id_prefix("user-terminal-"),
+        }
+    }
+}
+
+impl UserTerminalManager {
+    pub(crate) fn create(
+        &self,
+        command: SandboxCommand,
+        host_cwd: &Path,
+        guest_cwd: &Path,
+        rows: u16,
+        cols: u16,
+        max_output_bytes: usize,
+    ) -> AppResult<UserTerminalPoll> {
+        let id = self.terminals.spawn_with_size_and_display_cwd(
+            command,
+            host_cwd,
+            guest_cwd,
+            "user-terminal",
+            "user-terminal",
+            max_output_bytes,
+            0,
+            PtySize {
+                rows: rows.clamp(1, 500),
+                cols: cols.clamp(1, 500),
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        )?;
+        self.terminals.snapshot_at(&id, "user-terminal", 0)
+    }
+
+    pub(crate) fn list(&self) -> Vec<UserTerminalInfo> {
+        self.terminals.list_infos("user-terminal")
+    }
+
+    pub(crate) fn poll(&self, id: &str, cursor: u64) -> AppResult<UserTerminalPoll> {
+        self.terminals.snapshot_at(id, "user-terminal", cursor)
+    }
+
+    pub(crate) fn write(&self, id: &str, chars: &str) -> AppResult<()> {
+        self.terminals.session(id, "user-terminal")?.write(chars)
+    }
+
+    pub(crate) fn resize(&self, id: &str, rows: u16, cols: u16) -> AppResult<()> {
+        self.terminals.resize(id, "user-terminal", rows, cols)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn signal_interrupt(&self, id: &str) -> AppResult<()> {
+        self.terminals
+            .signal(id, "user-terminal", nix::sys::signal::Signal::SIGINT)
+    }
+
+    pub(crate) fn close(&self, id: &str) -> AppResult<()> {
+        self.terminals.close(id, "user-terminal")
+    }
+
+    pub(crate) fn stop_all(&self) {
+        self.terminals.stop_all();
+    }
+}
+
+impl Drop for UserTerminalManager {
+    fn drop(&mut self) {
+        self.terminals.stop_all();
     }
 }
 
@@ -526,5 +826,65 @@ mod tests {
         assert!(poll.truncated);
         assert!(poll.output.contains("output truncated by policy"));
         assert!(poll.output.ends_with("7890"));
+    }
+
+    #[tokio::test]
+    async fn user_terminal_keeps_cursor_output_and_separate_id_namespace() {
+        let manager = UserTerminalManager::default();
+        let initial = manager
+            .create(
+                shell_command("printf user-terminal-ok"),
+                Path::new("."),
+                Path::new("/root"),
+                24,
+                80,
+                1024,
+            )
+            .unwrap();
+        assert!(initial.session_id.starts_with("user-terminal-"));
+        assert_eq!(initial.next_cursor, 0);
+
+        let mut cursor = initial.next_cursor;
+        let mut output = String::new();
+        for _ in 0..20 {
+            let poll = manager.poll(&initial.session_id, cursor).unwrap();
+            cursor = poll.next_cursor;
+            output.push_str(&poll.output);
+            if !poll.running {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(output.contains("user-terminal-ok"));
+        assert_eq!(manager.list()[0].cwd, "/root");
+        assert!(manager.resize(&initial.session_id, 40, 120).is_ok());
+        manager.close(&initial.session_id).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn user_terminal_interrupt_targets_only_its_process_group() {
+        let manager = UserTerminalManager::default();
+        let initial = manager
+            .create(
+                shell_command("trap 'exit 130' INT; while true; do sleep 1; done"),
+                Path::new("."),
+                Path::new("/root"),
+                24,
+                80,
+                1024,
+            )
+            .unwrap();
+        manager.signal_interrupt(&initial.session_id).unwrap();
+        for _ in 0..20 {
+            let poll = manager.poll(&initial.session_id, 0).unwrap();
+            if !poll.running {
+                assert_ne!(poll.exit_code, Some(0));
+                manager.close(&initial.session_id).unwrap();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("user terminal did not stop after SIGINT");
     }
 }

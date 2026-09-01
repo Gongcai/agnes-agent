@@ -88,6 +88,10 @@ Agent hidden exec 使用独立的 session namespace，默认无 stdin，通过 m
 `/dev/null`，stdout/stderr 各自受策略上限约束，超时会回收进程组；`write_stdin` 和
 `stop_terminal` 不会接管 hidden exec，而是明确要求使用用户终端。
 
+当前 Rust Core 和 Android UI 已接入独立用户 PTY：终端使用 `user-terminal-*` 会话 ID、独立 registry、
+cursor 输出补读、输入、resize、Ctrl+C、退出状态和重连列表；Runtime 停止时会回收全部用户 PTY。
+进程重启后的旧 PTY 不会伪装成可恢复会话，后续需要持久化 interrupted 元数据并完成独立 Service/真机验收。
+
 Runtime rootfs 除 Agent 依赖外，发布制品还必须包含可用的交互 shell、PTY 所需的 Linux 工具和
 包管理/开发工具依赖；缺少 `bash`、`apt`、`dpkg`、Python、Git 或 SSH 时，构建和启动验收必须失败。
 

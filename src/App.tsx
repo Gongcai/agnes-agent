@@ -8,6 +8,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { AppContextMenu } from "./components/AppContextMenu";
 import { CommandPalette } from "./components/CommandPalette";
 import { EmptyState } from "./components/ui/empty-state";
+import { AndroidTerminalWorkspace } from "./components/AndroidTerminalWorkspace";
 import { Button } from "./components/ui/button";
 import { Plus, BracketsCurly } from "@phosphor-icons/react";
 import { type AppNotification } from "./components/NotificationCenter";
@@ -314,6 +315,9 @@ export default function App() {
             onCloseRequestedTask={() => setRequestedPlannerTaskId(null)}
             onCloseRequestedEvent={() => setRequestedPlannerEventId(null)}
           />
+        )}
+        {activeFeature === "terminal" && (
+          <AndroidTerminalWorkspace onClose={() => setActiveFeature("chat")} />
         )}
       </div>
 

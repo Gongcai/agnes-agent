@@ -89,6 +89,8 @@ pub(crate) struct AndroidProotRuntimeConfig {
     runtime_data_dir: Option<PathBuf>,
     environment_store_dir: Option<PathBuf>,
     cache_dir: Option<PathBuf>,
+    user_workspace_dir: Option<PathBuf>,
+    user_home_dir: Option<PathBuf>,
 }
 
 impl AndroidProotRuntimeConfig {
@@ -110,6 +112,8 @@ impl AndroidProotRuntimeConfig {
             runtime_data_dir: None,
             environment_store_dir: None,
             cache_dir: None,
+            user_workspace_dir: None,
+            user_home_dir: None,
         }
     }
 
@@ -122,6 +126,16 @@ impl AndroidProotRuntimeConfig {
         self.runtime_data_dir = Some(runtime_data_dir);
         self.environment_store_dir = Some(environment_store_dir);
         self.cache_dir = Some(cache_dir);
+        self
+    }
+
+    pub(crate) fn with_user_workspace(mut self, workspace_dir: PathBuf) -> Self {
+        self.user_workspace_dir = Some(workspace_dir);
+        self
+    }
+
+    pub(crate) fn with_user_home(mut self, home_dir: PathBuf) -> Self {
+        self.user_home_dir = Some(home_dir);
         self
     }
 
@@ -246,6 +260,13 @@ impl AndroidProotRuntimeConfig {
                 target: "/root/workspace",
             },
         ];
+        if let Some(source) = &self.user_home_dir {
+            mounts.push(AndroidProotBindMount {
+                resource_id: "user-home",
+                source: source.clone(),
+                target: "/root",
+            });
+        }
         if let Some(source) = &self.runtime_data_dir {
             mounts.push(AndroidProotBindMount {
                 resource_id: "runtime-data",
@@ -268,6 +289,75 @@ impl AndroidProotRuntimeConfig {
             });
         }
         mounts
+    }
+
+    pub(crate) fn user_command_spec(
+        &self,
+        cwd: Option<&str>,
+    ) -> AppResult<(SandboxCommand, PathBuf, PathBuf)> {
+        self.validate()?;
+        let workspace = self.user_workspace_dir.as_ref().ok_or_else(|| {
+            AppError::Other("Android user terminal workspace is not configured".into())
+        })?;
+        if !workspace.is_dir() {
+            return Err(AppError::Other(format!(
+                "Android user terminal workspace is invalid: {}",
+                workspace.display()
+            )));
+        }
+        let guest_cwd = normalize_guest_cwd(cwd.unwrap_or("/root"))?;
+        let home = self.user_home_dir.as_ref().ok_or_else(|| {
+            AppError::Other("Android user terminal home is not configured".into())
+        })?;
+        if !home.is_dir() {
+            return Err(AppError::Other(format!(
+                "Android user terminal home is invalid: {}",
+                home.display()
+            )));
+        }
+        let mounts = self.workspace_mounts(workspace);
+        let host_cwd = mounts
+            .iter()
+            .find_map(|mount| {
+                let target = Path::new(mount.target);
+                let relative = if guest_cwd == target {
+                    Some(PathBuf::new())
+                } else {
+                    guest_cwd.strip_prefix(target).ok().map(Path::to_path_buf)
+                }?;
+                Some(mount.source.join(relative))
+            })
+            .unwrap_or_else(|| {
+                self.rootfs_dir
+                    .join(guest_cwd.strip_prefix("/").unwrap_or(&guest_cwd))
+            });
+        if !host_cwd.is_dir() {
+            return Err(AppError::Other(format!(
+                "Android user terminal cwd is not a directory: {}",
+                guest_cwd.display()
+            )));
+        }
+
+        let mut args = self.base_args();
+        for mount in mounts {
+            append_bind_mount(&mut args, &mount);
+        }
+        args.extend([
+            OsString::from("-w"),
+            guest_cwd.as_os_str().to_owned(),
+            OsString::from("/usr/bin/env"),
+            OsString::from("bash"),
+            OsString::from("--login"),
+        ]);
+        Ok((
+            SandboxCommand {
+                program: self.proot_path.clone().into_os_string(),
+                args,
+                env: self.environment(),
+            },
+            host_cwd,
+            guest_cwd,
+        ))
     }
 
     pub(crate) fn environment(&self) -> Vec<(OsString, OsString)> {
@@ -302,6 +392,34 @@ fn append_bind_mount(args: &mut Vec<OsString>, mount: &AndroidProotBindMount) {
         OsString::from("-b"),
         OsString::from(format!("{}:{}", mount.source.display(), mount.target)),
     ]);
+}
+
+fn normalize_guest_cwd(raw: &str) -> AppResult<PathBuf> {
+    let path = Path::new(raw);
+    if !path.is_absolute() {
+        return Err(AppError::Other(
+            "Android user terminal cwd must be an absolute guest path".into(),
+        ));
+    }
+    let mut normalized = PathBuf::from("/");
+    for component in path.components() {
+        match component {
+            std::path::Component::RootDir => {}
+            std::path::Component::Normal(value) => normalized.push(value),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                return Err(AppError::Other(
+                    "Android user terminal cwd cannot contain `..`".into(),
+                ));
+            }
+            std::path::Component::Prefix(_) => {
+                return Err(AppError::Other(
+                    "Android user terminal cwd has an invalid path prefix".into(),
+                ));
+            }
+        }
+    }
+    Ok(normalized)
 }
 
 impl AndroidProotProcessRuntime {
@@ -1690,6 +1808,107 @@ mod tests {
                 ("runtime-shm", "/dev/shm"),
             ]
         );
+    }
+
+    #[test]
+    fn android_user_terminal_maps_guest_cwds_to_runtime_mounts() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        let selected_workspace = temp.path().join("selected-workspace");
+        let project_root = temp.path().join("user/workspace");
+        let home = temp.path().join("user/home");
+        let runtime_data = temp.path().join("runtime");
+        let environments = runtime_data.join("environments");
+        let cache = runtime_data.join("cache");
+        let proot = temp.path().join("proot");
+        let loader = temp.path().join("loader");
+        let proot_tmp = temp.path().join("proot-tmp");
+        std::fs::create_dir_all(rootfs.join("usr/bin")).unwrap();
+        std::fs::create_dir_all(&selected_workspace).unwrap();
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&environments).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::create_dir_all(proot_tmp.join("shm")).unwrap();
+        std::fs::write(rootfs.join("usr/bin/env"), "test").unwrap();
+        std::fs::write(&proot, "test").unwrap();
+        std::fs::write(&loader, "test").unwrap();
+
+        let config = AndroidProotRuntimeConfig::new(
+            proot,
+            loader,
+            proot_tmp,
+            rootfs,
+            project_root.clone(),
+            false,
+        )
+        .with_runtime_mounts(runtime_data, environments, cache)
+        .with_user_workspace(selected_workspace.clone())
+        .with_user_home(home.clone());
+
+        for (guest_cwd, expected_host_cwd) in [
+            ("/root", home),
+            ("/root/workspace", project_root),
+            ("/workspace", selected_workspace),
+            ("/opt/agnes/runtime-data", temp.path().join("runtime")),
+            ("/opt/agnes/envs", temp.path().join("runtime/environments")),
+            ("/opt/agnes/cache", temp.path().join("runtime/cache")),
+        ] {
+            let (command, host_cwd, normalized_guest_cwd) =
+                config.user_command_spec(Some(guest_cwd)).unwrap();
+            assert_eq!(host_cwd, expected_host_cwd);
+            assert_eq!(normalized_guest_cwd, Path::new(guest_cwd));
+            let args = command
+                .args
+                .iter()
+                .map(|argument| argument.to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            assert!(args
+                .windows(2)
+                .any(|window| window[0] == "-w" && window[1] == guest_cwd));
+            assert!(args
+                .windows(2)
+                .any(|window| window[0] == "/usr/bin/env" && window[1] == "bash"));
+        }
+    }
+
+    #[test]
+    fn android_user_terminal_rejects_relative_and_parent_cwds() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        let home = temp.path().join("home");
+        let workspace = temp.path().join("workspace");
+        let proot = temp.path().join("proot");
+        let loader = temp.path().join("loader");
+        let proot_tmp = temp.path().join("proot-tmp");
+        std::fs::create_dir_all(rootfs.join("usr/bin")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(proot_tmp.join("shm")).unwrap();
+        std::fs::write(rootfs.join("usr/bin/env"), "test").unwrap();
+        std::fs::write(&proot, "test").unwrap();
+        std::fs::write(&loader, "test").unwrap();
+        let config = AndroidProotRuntimeConfig::new(
+            proot,
+            loader,
+            proot_tmp,
+            rootfs,
+            workspace.clone(),
+            false,
+        )
+        .with_user_workspace(workspace)
+        .with_user_home(home);
+
+        let relative = config.user_command_spec(Some("root"));
+        assert!(relative
+            .unwrap_err()
+            .to_string()
+            .contains("absolute guest path"));
+        let parent = config.user_command_spec(Some("/root/../workspace"));
+        assert!(parent
+            .unwrap_err()
+            .to_string()
+            .contains("cannot contain `..`"));
     }
 
     #[tokio::test]

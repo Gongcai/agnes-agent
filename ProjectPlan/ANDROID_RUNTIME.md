@@ -1,6 +1,6 @@
 # Android 本地 Agent 与 Linux Runtime 设计
 
-> 状态：A1 开发中；x86_64 Ubuntu 24.04.4 完整 Runtime 已在模拟器完成内置安装、Agent Protocol 握手和模型流式回复验证，PRoot 源码构建已自动化；ARM64 实机制品、用户可见 Linux PTY 与 Ubuntu rootfs 全自动构建流水线待完成
+> 状态：A1 开发中；x86_64 Ubuntu 24.04.4 完整 Runtime 已在模拟器完成内置安装、Agent Protocol 握手和模型流式回复验证，用户可见 Linux PTY 的 Rust/UI 接线与挂载边界已完成；ARM64 实机制品、真机验收、PTY 原始字节协议与 Ubuntu rootfs 全自动构建流水线待完成
 > 更新时间：2026-09-01
 > 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`、`OPERIT_ANDROID_RUNTIME_REFERENCE.md`
 
@@ -428,17 +428,17 @@ Android 有两种执行模式：
 - [x] rootfs/workspace/environment store 文件系统能力档案与旧全局 pip override 迁移；
 - [x] Agent hidden exec 使用独立非交互管道、空 stdin、超时、输出上限和进程组清理；交互命令返回 `requires_interactive_terminal`；
 - [x] 完成现有 Agent Protocol 握手和模型流式回复；取消流程待单独验收。
-- [ ] Runtime Service 建立 user terminal 与 Agent hidden exec 的独立 session namespace 和事件模型；
+- [x] Runtime Service 建立 user terminal 与 Agent hidden exec 的独立 session namespace，以及可按 cursor 补读的 PTY 输出 API；事件订阅优化待补充。
 
 ### A2：Android 本地完整 Agent
 
 - [x] Android Shell/Git 进程通过 PRoot Ubuntu rootfs 执行，并将会话工作区映射为 `/workspace`；
 - [x] Android Code 模式在持久 Linux 用户目录创建项目，并挂载为 `/root/workspace`；
-- [ ] 从 Android UI 随时创建、列出、重连和关闭用户可见 Linux PTY；
-- [ ] 支持原始输入、输出订阅、当前 cwd、窗口 resize、Ctrl+C、退出状态和中断原因展示；
+- [x] 从 Android UI 随时创建、列出、重连和关闭用户可见 Linux PTY；
+- [x] 支持 UTF-8 输入、按 cursor 输出订阅、当前 cwd、窗口 resize、Ctrl+C、退出状态和中断原因展示；原始字节协议待替换 UTF-8 bridge。
 - [ ] 用户终端可直接运行 `bash`、`apt`、`dpkg`、`python3`、`git` 和 `ssh`，并遵守 Runtime 资源与网络边界；
-- [ ] user terminal 与 Agent hidden exec 不共享 stdin、输出流、取消信号或 session ID；
-- [ ] Shell、文件读写、Git、Python、SSH、MCP 和用户 PTY 共用完整 Runtime mount table；
+- [x] user terminal 与 Agent hidden exec 不共享 stdin、输出流、取消信号或 session ID；
+- [x] Shell、文件读写、Git、Python、SSH、MCP 和用户 PTY 共用完整 Runtime mount table；
 - [ ] User terminal 与 Agent 默认可修改 guest rootfs、home 和 runtime data，并可直接安装依赖、
   编辑文件、打开目录和运行脚本；
 - [ ] 用户授予 All files access 后，将 emulated storage 同时映射为 `/sdcard` 与 Android 原始路径，

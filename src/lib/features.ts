@@ -5,7 +5,8 @@ export type AppFeatureId =
   | "knowledge"
   | "drive"
   | "calendar"
-  | "tasks";
+  | "tasks"
+  | "terminal";
 
 export type ChatMode = "home" | "code";
 
@@ -23,6 +24,7 @@ export const APP_FEATURES: readonly AppFeatureDefinition[] = [
   { id: "drive", label: "网盘", enabled: true },
   { id: "calendar", label: "日历", enabled: true },
   { id: "tasks", label: "待办", enabled: true },
+  { id: "terminal", label: "终端", enabled: true },
 ];
 
 export const ENABLED_APP_FEATURES = APP_FEATURES.filter((feature) => feature.enabled);
