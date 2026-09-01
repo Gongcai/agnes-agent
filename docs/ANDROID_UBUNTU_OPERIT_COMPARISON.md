@@ -498,6 +498,8 @@ PRoot `-0` 只改变 guest 观察到的身份，不提供 Android 提权；同�
 
 - [x] 引入首个 `GuestPathResolver`，将相对路径、`/workspace` 与
   `/root/workspace` 收敛为同一个 workspace resource ID。
+- [x] resolver 内部支持按 guest target 最长前缀匹配的 mount table，后续 Runtime mount 可注入同一
+  API。
 - [x] file/read/write/search/patch/git/shell cwd、审批预览及 shell 静态写目标均通过
   resolver 解析；`/workspace` 不再错误依赖当前子目录 cwd。
 - [ ] 将 Runtime bind mounts 显式建模为完整 mount table，并接入 rootfs、guest HOME、`/tmp` 和

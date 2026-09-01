@@ -160,21 +160,114 @@ pub struct ResolvedGuestPath {
     pub resource_id: String,
 }
 
+/// One guest-visible bind mount and its host-side resource identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuestMount {
+    pub resource_id: String,
+    pub host_root: PathBuf,
+    pub guest_root: PathBuf,
+}
+
+impl GuestMount {
+    pub fn new(
+        resource_id: impl Into<String>,
+        host_root: impl Into<PathBuf>,
+        guest_root: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            resource_id: resource_id.into(),
+            host_root: host_root.into(),
+            guest_root: guest_root.into(),
+        }
+    }
+}
+
+/// Mount table shared by host-side tools and guest process launchers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuestMountTable {
+    mounts: Vec<GuestMount>,
+}
+
+impl GuestMountTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add(&mut self, mount: GuestMount) {
+        self.mounts.push(mount);
+    }
+
+    fn matching_guest_mount(&self, path: &Path) -> Option<(&GuestMount, PathBuf)> {
+        self.mounts
+            .iter()
+            .filter_map(|mount| {
+                let relative = if path == mount.guest_root {
+                    Some(PathBuf::new())
+                } else {
+                    path.strip_prefix(&mount.guest_root)
+                        .ok()
+                        .map(Path::to_path_buf)
+                }?;
+                Some((mount, relative))
+            })
+            .max_by_key(|(mount, _)| mount.guest_root.components().count())
+            .map(|(mount, relative)| (mount, relative))
+    }
+
+    fn matching_host_mount(&self, path: &Path) -> Option<(&GuestMount, PathBuf)> {
+        self.mounts
+            .iter()
+            .filter_map(|mount| {
+                let relative = if path == mount.host_root {
+                    Some(PathBuf::new())
+                } else {
+                    path.strip_prefix(&mount.host_root)
+                        .ok()
+                        .map(Path::to_path_buf)
+                }?;
+                Some((mount, relative))
+            })
+            .max_by_key(|(mount, _)| mount.host_root.components().count())
+            .map(|(mount, relative)| (mount, relative))
+    }
+}
+
 /// Shared guest/host path resolver for all built-in tools and policy helpers.
 #[derive(Clone, Debug)]
 pub struct GuestPathResolver {
+    mounts: GuestMountTable,
     workspace_root: Option<PathBuf>,
     fallback_root: PathBuf,
 }
 
 impl GuestPathResolver {
     pub fn new(workspace_root: Option<&Path>, fallback_root: Option<&Path>) -> Self {
+        let mut resolver = Self::with_mounts(workspace_root, fallback_root, GuestMountTable::new());
+        if let Some(workspace) = workspace_root {
+            resolver = resolver
+                .with_mount(GuestMount::new("workspace", workspace, "/workspace"))
+                .with_mount(GuestMount::new("workspace", workspace, "/root/workspace"));
+        }
+        resolver
+    }
+
+    pub fn with_mounts(
+        workspace_root: Option<&Path>,
+        fallback_root: Option<&Path>,
+        mounts: GuestMountTable,
+    ) -> Self {
         Self {
+            mounts,
             workspace_root: workspace_root.map(Path::to_path_buf),
             fallback_root: fallback_root
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| PathBuf::from(".")),
         }
+    }
+
+    pub fn with_mount(mut self, mount: GuestMount) -> Self {
+        self.mounts.add(mount);
+        self
     }
 
     pub fn from_context(ctx: &ToolCtx<'_>) -> Self {
@@ -197,48 +290,37 @@ impl GuestPathResolver {
     /// aliases such as `/workspace` and `/root/workspace`.
     pub fn resolve_from_cwd(&self, raw: &str, cwd: Option<&Path>) -> ResolvedGuestPath {
         let raw_path = Path::new(raw);
-        let guest_workspace = Path::new("/workspace");
-        let guest_project = Path::new("/root/workspace");
-        let guest_home = Path::new("/root");
-
-        if let Some(workspace) = self.workspace_root.as_deref() {
-            if raw_path == guest_workspace || raw_path == guest_project {
-                return ResolvedGuestPath {
-                    host_path: workspace.to_path_buf(),
-                    guest_path: raw_path.to_path_buf(),
-                    resource_id: "workspace".into(),
-                };
-            }
-            if let Ok(relative) = raw_path.strip_prefix(guest_workspace) {
-                return ResolvedGuestPath {
-                    host_path: workspace.join(relative),
-                    guest_path: raw_path.to_path_buf(),
-                    resource_id: "workspace".into(),
-                };
-            }
-            if let Ok(relative) = raw_path.strip_prefix(guest_project) {
-                return ResolvedGuestPath {
-                    host_path: workspace.join(relative),
-                    guest_path: raw_path.to_path_buf(),
-                    resource_id: "workspace".into(),
-                };
-            }
-        }
 
         if raw == "~" || raw.starts_with("~/") {
             let relative = raw.strip_prefix("~/").unwrap_or_default();
+            let guest_home = Path::new("/root");
+            let guest_path = if relative.is_empty() {
+                guest_home.to_path_buf()
+            } else {
+                guest_home.join(relative)
+            };
+            if let Some((mount, mount_relative)) = self.mounts.matching_guest_mount(&guest_path) {
+                return ResolvedGuestPath {
+                    host_path: mount.host_root.join(mount_relative),
+                    guest_path,
+                    resource_id: mount.resource_id.clone(),
+                };
+            }
             return ResolvedGuestPath {
                 host_path: crate::tools::policy::expand_home(raw),
-                guest_path: if relative.is_empty() {
-                    guest_home.to_path_buf()
-                } else {
-                    guest_home.join(relative)
-                },
+                guest_path,
                 resource_id: "guest-home".into(),
             };
         }
 
         if raw_path.is_absolute() {
+            if let Some((mount, relative)) = self.mounts.matching_guest_mount(raw_path) {
+                return ResolvedGuestPath {
+                    host_path: mount.host_root.join(relative),
+                    guest_path: raw_path.to_path_buf(),
+                    resource_id: mount.resource_id.clone(),
+                };
+            }
             return ResolvedGuestPath {
                 host_path: raw_path.to_path_buf(),
                 guest_path: raw_path.to_path_buf(),
@@ -249,16 +331,18 @@ impl GuestPathResolver {
         let base = cwd
             .or(self.workspace_root.as_deref())
             .unwrap_or(&self.fallback_root);
+        let host_path = base.join(raw_path);
+        if let Some((mount, relative)) = self.mounts.matching_host_mount(&host_path) {
+            return ResolvedGuestPath {
+                host_path,
+                guest_path: mount.guest_root.join(relative),
+                resource_id: mount.resource_id.clone(),
+            };
+        }
         ResolvedGuestPath {
-            host_path: base.join(raw_path),
-            guest_path: guest_workspace.join(raw_path),
-            resource_id: self
-                .workspace_root
-                .as_deref()
-                .is_some_and(|workspace| base.starts_with(workspace))
-                .then_some("workspace")
-                .unwrap_or("host")
-                .into(),
+            host_path,
+            guest_path: Path::new("/workspace").join(raw_path),
+            resource_id: "host".into(),
         }
     }
 
@@ -445,6 +529,29 @@ mod tests {
 
         assert_eq!(resolved.host_path, workspace.join("README.md"));
         assert_eq!(resolved.resource_id, "workspace");
+    }
+
+    #[test]
+    fn custom_mounts_use_longest_guest_prefix_and_guest_home() {
+        let resolver = GuestPathResolver::new(Some(Path::new("/private/workspace")), None)
+            .with_mount(GuestMount::new(
+                "environment-store",
+                "/private/environments",
+                "/opt/agnes/envs",
+            ))
+            .with_mount(GuestMount::new("guest-home", "/private/home", "/root"));
+
+        let environment = resolver.resolve("/opt/agnes/envs/project/bin/python");
+        assert_eq!(
+            environment.host_path,
+            Path::new("/private/environments/project/bin/python")
+        );
+        assert_eq!(environment.resource_id, "environment-store");
+
+        let home = resolver.resolve("~/.cache/uv");
+        assert_eq!(home.host_path, Path::new("/private/home/.cache/uv"));
+        assert_eq!(home.guest_path, Path::new("/root/.cache/uv"));
+        assert_eq!(home.resource_id, "guest-home");
     }
 
     #[test]
