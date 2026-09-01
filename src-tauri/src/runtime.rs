@@ -236,6 +236,7 @@ struct AndroidProcCapabilities {
 #[serde(rename_all = "camelCase")]
 struct AndroidFilesystemCapabilities {
     rootfs: FilesystemCapabilities,
+    tmp: FilesystemCapabilities,
     environment_store: FilesystemCapabilities,
     home_workspace: FilesystemCapabilities,
     project_workspace: FilesystemCapabilities,
@@ -716,7 +717,8 @@ impl AgentRuntime for AndroidLinuxRuntime {
             link2symlink_enabled: proot_probe.link2symlink_enabled,
             proc: proot_probe.proc,
             filesystems: AndroidFilesystemCapabilities {
-                rootfs: probe_filesystem_capabilities(&rootfs_dir.join("tmp")),
+                rootfs: probe_filesystem_capabilities(&rootfs_dir),
+                tmp: probe_filesystem_capabilities(&proot_tmp_dir),
                 environment_store: probe_filesystem_capabilities(&environment_store),
                 home_workspace: probe_filesystem_capabilities(&self.home_workspace_dir),
                 project_workspace: probe_filesystem_capabilities(&android_workspace_root),
@@ -929,7 +931,7 @@ print("AGNES_PROBE_OK=1")"#,
         .env("TMPDIR", "/tmp")
         .env(
             "PATH",
-            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games",
         )
         .output()
         .map_err(|error| AppError::Other(format!("Android PRoot 启动探测失败: {error}")))

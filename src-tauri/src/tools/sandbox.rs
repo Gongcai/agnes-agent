@@ -370,7 +370,9 @@ impl AndroidProotRuntimeConfig {
             ("HOME", OsString::from("/root")),
             (
                 "PATH",
-                OsString::from("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
+                OsString::from(
+                    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games",
+                ),
             ),
             ("TERM", OsString::from("dumb")),
             ("NO_COLOR", OsString::from("1")),
@@ -873,7 +875,7 @@ impl SandboxGuard for PolicySandbox {
         if self
             .protected_paths
             .iter()
-            .any(|protected| target.starts_with(protected))
+            .any(|protected| is_path_within(&target, protected))
         {
             return Err(format!(
                 "Sandbox denied permission to write protected metadata path `{}`",
@@ -884,7 +886,7 @@ impl SandboxGuard for PolicySandbox {
     }
 
     fn check_cwd(&self, path: &Path) -> Result<(), String> {
-        check_under_roots(path, &self.cwd_roots, "use as a working directory")
+        check_under_roots(path, &self.cwd_roots, "working-directory")
     }
 
     fn command_spec(
@@ -1026,7 +1028,10 @@ impl PolicySandbox {
                 .map(OsString::from),
             );
             for path in &self.process_spec.read_write {
-                if !path.exists() || path.starts_with("/dev") || path == Path::new("/") {
+                if !path.exists()
+                    || is_path_within(path, Path::new("/dev"))
+                    || path == Path::new("/")
+                {
                     continue;
                 }
                 command_args.push(OsString::from("--bind"));
@@ -1281,7 +1286,7 @@ pub async fn join_capture(
 
 fn check_under_roots(path: &Path, roots: &[PathBuf], operation: &str) -> Result<(), String> {
     let target = crate::tools::builtin::normalize_path(path);
-    if roots.iter().any(|root| target.starts_with(root)) {
+    if roots.iter().any(|root| is_path_within(&target, root)) {
         Ok(())
     } else {
         Err(format!(
@@ -1289,6 +1294,10 @@ fn check_under_roots(path: &Path, roots: &[PathBuf], operation: &str) -> Result<
             target.display()
         ))
     }
+}
+
+fn is_path_within(path: &Path, root: &Path) -> bool {
+    path == root || path.strip_prefix(root).is_ok()
 }
 
 fn normalize_root(path: &Path) -> PathBuf {
@@ -1526,6 +1535,12 @@ mod tests {
         assert!(sandbox.check_read(Path::new("/etc/passwd")).is_ok());
         assert!(sandbox.check_write(&workspace.join("output.txt")).is_ok());
         assert!(sandbox.check_write(&root.join("outside.txt")).is_err());
+        assert!(sandbox
+            .check_write(&root.join(format!(
+                "{}-sibling/output.txt",
+                workspace.file_name().unwrap().to_string_lossy()
+            )))
+            .is_err());
         for protected in [".git", ".codex", ".agents"] {
             assert!(sandbox
                 .check_write(&workspace.join(protected).join("metadata"))
@@ -1583,6 +1598,27 @@ mod tests {
         assert!(sandbox.check_write(&temp_file).is_ok());
 
         let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn normalized_parent_path_cannot_escape_write_root() {
+        let temp = tempfile::tempdir_in("target").unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut policy = ToolPolicy::default();
+        policy.file.allowed_roots = vec![workspace.to_string_lossy().to_string()];
+        policy.shell.allowed_cwd = vec![workspace.to_string_lossy().to_string()];
+        let sandbox = PolicySandbox::new(&policy, Some(&workspace));
+
+        assert!(sandbox
+            .check_write(&workspace.join("../etc/probe"))
+            .is_err());
+        let sibling = workspace
+            .parent()
+            .unwrap()
+            .join("workspace-sibling")
+            .join("probe");
+        assert!(sandbox.check_write(&sibling).is_err());
     }
 
     #[test]

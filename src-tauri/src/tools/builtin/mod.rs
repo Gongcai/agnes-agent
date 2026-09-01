@@ -294,11 +294,11 @@ impl GuestPathResolver {
         if raw == "~" || raw.starts_with("~/") {
             let relative = raw.strip_prefix("~/").unwrap_or_default();
             let guest_home = Path::new("/root");
-            let guest_path = if relative.is_empty() {
+            let guest_path = normalize_guest_path(&if relative.is_empty() {
                 guest_home.to_path_buf()
             } else {
                 guest_home.join(relative)
-            };
+            });
             if let Some((mount, mount_relative)) = self.mounts.matching_guest_mount(&guest_path) {
                 return ResolvedGuestPath {
                     host_path: mount.host_root.join(mount_relative),
@@ -314,34 +314,36 @@ impl GuestPathResolver {
         }
 
         if raw_path.is_absolute() {
-            if let Some((mount, relative)) = self.mounts.matching_guest_mount(raw_path) {
+            let guest_path = normalize_guest_path(raw_path);
+            if let Some((mount, relative)) = self.mounts.matching_guest_mount(&guest_path) {
                 return ResolvedGuestPath {
                     host_path: mount.host_root.join(relative),
-                    guest_path: raw_path.to_path_buf(),
+                    guest_path,
                     resource_id: mount.resource_id.clone(),
                 };
             }
             return ResolvedGuestPath {
-                host_path: raw_path.to_path_buf(),
-                guest_path: raw_path.to_path_buf(),
-                resource_id: format!("host:{}", raw_path.display()),
+                host_path: guest_path.clone(),
+                resource_id: format!("host:{}", guest_path.display()),
+                guest_path,
             };
         }
 
         let base = cwd
             .or(self.workspace_root.as_deref())
             .unwrap_or(&self.fallback_root);
-        let host_path = base.join(raw_path);
+        let host_path = normalize_path(&base.join(raw_path));
         if let Some((mount, relative)) = self.mounts.matching_host_mount(&host_path) {
             return ResolvedGuestPath {
                 host_path,
-                guest_path: mount.guest_root.join(relative),
+                guest_path: normalize_guest_path(&mount.guest_root.join(relative)),
                 resource_id: mount.resource_id.clone(),
             };
         }
+        let guest_path = normalize_guest_path(&Path::new("/workspace").join(raw_path));
         ResolvedGuestPath {
             host_path,
-            guest_path: Path::new("/workspace").join(raw_path),
+            guest_path,
             resource_id: "host".into(),
         }
     }
@@ -389,11 +391,53 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     }
     if let Ok(mut canonical) = existing.canonicalize() {
         for component in missing.into_iter().rev() {
-            canonical.push(component);
+            if component == std::ffi::OsStr::new(".") {
+                continue;
+            }
+            if component == std::ffi::OsStr::new("..") {
+                canonical.pop();
+            } else {
+                canonical.push(component);
+            }
         }
         canonical
     } else {
-        path.to_path_buf()
+        normalize_guest_path(path)
+    }
+}
+
+/// Normalize a guest path without consulting the host filesystem. This is
+/// required before matching paths against PRoot mount aliases.
+pub fn normalize_guest_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    let absolute = path.is_absolute();
+    if absolute {
+        normalized.push(Path::new("/"));
+    }
+
+    for component in path.components() {
+        match component {
+            std::path::Component::RootDir | std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if normalized.file_name().is_some() {
+                    normalized.pop();
+                } else if !absolute {
+                    normalized.push("..");
+                }
+            }
+            std::path::Component::Normal(value) => normalized.push(value),
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        if absolute {
+            PathBuf::from("/")
+        } else {
+            PathBuf::from(".")
+        }
+    } else {
+        normalized
     }
 }
 
@@ -529,6 +573,31 @@ mod tests {
 
         assert_eq!(resolved.host_path, workspace.join("README.md"));
         assert_eq!(resolved.resource_id, "workspace");
+    }
+
+    #[test]
+    fn guest_aliases_are_normalized_before_mount_matching() {
+        let workspace = Path::new("/tmp/agnes-workspace");
+        let resolver = GuestPathResolver::new(Some(workspace), None);
+
+        let escaped = resolver.resolve("/workspace/../etc/probe");
+
+        assert_eq!(escaped.guest_path, Path::new("/etc/probe"));
+        assert_eq!(escaped.host_path, Path::new("/etc/probe"));
+        assert_ne!(escaped.resource_id, "workspace");
+    }
+
+    #[test]
+    fn normalize_path_collapses_parent_components_for_missing_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let target = workspace.join("..").join("missing").join("probe");
+
+        assert_eq!(
+            normalize_path(&target),
+            temp.path().join("missing").join("probe")
+        );
     }
 
     #[test]

@@ -947,6 +947,8 @@ fn push_token(tokens: &mut Vec<String>, current: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::policy::ToolPolicy;
+    use crate::tools::sandbox::PolicySandbox;
 
     #[test]
     fn tokenizes_redirections_and_nested_operators() {
@@ -1015,5 +1017,28 @@ mod tests {
                 Path::new("/workspace/root.txt").to_path_buf(),
             ]
         );
+    }
+
+    #[test]
+    fn rejects_parent_traversal_in_guest_write_targets() {
+        let temp = tempfile::tempdir_in("target").unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut policy = ToolPolicy::default();
+        policy.file.allowed_roots = vec![workspace.to_string_lossy().to_string()];
+        policy.shell.allowed_cwd = vec![workspace.to_string_lossy().to_string()];
+        let sandbox = PolicySandbox::new(&policy, Some(&workspace));
+
+        for command in [
+            "echo x > /workspace/../etc/probe",
+            "echo x > /tmp/../etc/probe",
+            "echo x > /usr/bin/../lib/probe",
+        ] {
+            assert!(
+                validate_shell_write_scope(command, &workspace, Some(&workspace), &sandbox, 0)
+                    .is_err(),
+                "expected traversal to be rejected: {command}"
+            );
+        }
     }
 }
