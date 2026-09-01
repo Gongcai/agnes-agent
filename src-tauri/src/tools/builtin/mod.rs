@@ -359,6 +359,23 @@ impl GuestPathResolver {
     pub fn resolve_host(&self, raw: &str) -> PathBuf {
         self.resolve(raw).host_path
     }
+
+    /// Resolve a policy-owned path. Unlike a model-supplied path, an absolute
+    /// value may already be the host path inserted by the Rust executor.
+    pub fn resolve_policy_path(&self, raw: &str) -> ResolvedGuestPath {
+        let path = Path::new(raw);
+        if path.is_absolute() {
+            let host_path = normalize_path(path);
+            if let Some((mount, relative)) = self.mounts.matching_host_mount(&host_path) {
+                return ResolvedGuestPath {
+                    host_path,
+                    guest_path: normalize_guest_path(&mount.guest_root.join(relative)),
+                    resource_id: mount.resource_id.clone(),
+                };
+            }
+        }
+        self.resolve(raw)
+    }
 }
 
 /// Resolve a file argument relative to the current workspace.

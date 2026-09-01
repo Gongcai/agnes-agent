@@ -621,11 +621,12 @@ async fn handle_conn<R: tauri::Runtime>(
                     policy = crate::tools::executor::effective_policy(&policy, &workspace_cwd, &[]);
                     let sandbox_escalation = (permission_mode != PermissionMode::FullAccess)
                         .then(|| {
-                            crate::tools::permissions::sandbox_escalation_for_tool_call(
+                            crate::tools::permissions::sandbox_escalation_for_tool_call_with_runtime(
                                 &tool_name,
                                 &args,
                                 &policy,
                                 workspace_cwd.as_deref(),
+                                &manager.process_runtime(),
                             )
                         })
                         .flatten();
@@ -647,11 +648,12 @@ async fn handle_conn<R: tauri::Runtime>(
                     };
                     let role_policy_requires_approval =
                         crate::tools::builtin::needs_approval(&tool_name, &args, &policy);
-                    let diff_preview = crate::tools::review::preview_tool_call(
+                    let diff_preview = crate::tools::review::preview_tool_call_with_runtime(
                         &tool_name,
                         &args,
                         workspace_cwd.as_deref(),
                         &policy,
+                        &manager.process_runtime(),
                     )
                     .await;
                     let effective_cwd = args

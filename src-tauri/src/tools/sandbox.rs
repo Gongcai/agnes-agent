@@ -298,7 +298,8 @@ impl AndroidProotRuntimeConfig {
     }
 
     fn guest_path_resolver(&self, workspace_root: &Path) -> GuestPathResolver {
-        let mut resolver = GuestPathResolver::new(Some(workspace_root), None);
+        let mut resolver = GuestPathResolver::new(Some(workspace_root), None)
+            .with_mount(GuestMount::new("rootfs", self.rootfs_dir.clone(), "/"));
         for mount in self
             .base_mounts()
             .into_iter()
@@ -319,6 +320,18 @@ impl AndroidProotRuntimeConfig {
             .chain(self.workspace_mounts(workspace_root))
             .map(|mount| mount.source)
             .collect()
+    }
+
+    fn default_writable_roots(&self) -> Vec<PathBuf> {
+        let mut roots = vec![self.proot_tmp_dir.clone()];
+        if let Some(home) = &self.user_home_dir {
+            roots.extend(
+                [".cache", ".local", ".cargo", ".rustup"]
+                    .into_iter()
+                    .map(|path| home.join(path)),
+            );
+        }
+        roots
     }
 
     pub(crate) fn user_command_spec(
@@ -755,28 +768,40 @@ impl PolicySandbox {
         workspace_cwd: Option<&Path>,
         process_runtime: ToolProcessRuntime,
     ) -> Self {
+        let runtime_resolver = match (&process_runtime, workspace_cwd) {
+            (ToolProcessRuntime::AndroidProot(runtime), Some(workspace)) => {
+                Some(runtime.config.guest_path_resolver(workspace))
+            }
+            _ => None,
+        };
+        let resolve_policy_root = |path: &str| {
+            runtime_resolver
+                .as_ref()
+                .map(|resolver| resolver.resolve_policy_path(path).host_path)
+                .unwrap_or_else(|| expand_home(path))
+        };
         let mut configured_write_roots = policy
             .sandbox
             .writable_roots
             .iter()
-            .map(|path| normalize_root(&expand_home(path)))
+            .map(|path| normalize_root(&resolve_policy_root(path)))
             .collect::<Vec<_>>();
-        if matches!(&process_runtime, ToolProcessRuntime::AndroidProot(_)) {
+        if let ToolProcessRuntime::AndroidProot(runtime) = &process_runtime {
             configured_write_roots.extend(
-                [
-                    "/root/.cache",
-                    "/root/.local",
-                    "/root/.cargo",
-                    "/root/.rustup",
-                    "/tmp",
-                ]
-                .into_iter()
-                .map(PathBuf::from),
+                runtime
+                    .config
+                    .default_writable_roots()
+                    .into_iter()
+                    .map(|path| normalize_root(&path)),
             );
         }
         deduplicate_paths(&mut configured_write_roots);
 
-        let temp_write_roots = temporary_write_paths();
+        let temp_write_roots = if runtime_resolver.is_some() {
+            Vec::new()
+        } else {
+            temporary_write_paths()
+        };
 
         let mut read_roots = if policy.sandbox.allow_read_outside_workspace {
             filesystem_read_roots()
@@ -785,14 +810,21 @@ impl PolicySandbox {
                 .file
                 .allowed_roots
                 .iter()
-                .map(|path| normalize_root(&expand_home(path)))
+                .map(|path| normalize_root(&resolve_policy_root(path)))
                 .collect::<Vec<_>>()
         };
+        if matches!(&process_runtime, ToolProcessRuntime::AndroidProot(_)) {
+            // Unbound absolute guest paths resolve inside the bundled rootfs.
+            // It is readable, but it must not become a writable or cwd root.
+            if let ToolProcessRuntime::AndroidProot(runtime) = &process_runtime {
+                read_roots.push(normalize_root(&runtime.config.rootfs_dir));
+            }
+        }
         let mut cwd_roots = policy
             .shell
             .allowed_cwd
             .iter()
-            .map(|path| normalize_root(&expand_home(path)))
+            .map(|path| normalize_root(&resolve_policy_root(path)))
             .collect::<Vec<_>>();
         cwd_roots.extend(configured_write_roots.iter().cloned());
         cwd_roots.extend(temp_write_roots.iter().cloned());
@@ -1962,6 +1994,81 @@ mod tests {
                 ("runtime-shm", "/dev/shm"),
             ]
         );
+    }
+
+    #[test]
+    fn android_sandbox_resolves_guest_paths_to_runtime_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        let workspace = temp.path().join("workspace");
+        let project_root = temp.path().join("user/workspace");
+        let home = temp.path().join("user/home");
+        let runtime_data = temp.path().join("runtime");
+        let environments = runtime_data.join("environments");
+        let cache = runtime_data.join("cache");
+        let proot_tmp = temp.path().join("proot-tmp");
+        for path in [
+            rootfs.join("etc"),
+            workspace.clone(),
+            project_root.clone(),
+            home.join(".cache"),
+            environments.clone(),
+            cache.clone(),
+            proot_tmp.join("shm"),
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+
+        let runtime = ToolProcessRuntime::AndroidProot(AndroidProotProcessRuntime::new(
+            AndroidProotRuntimeConfig::new(
+                temp.path().join("proot"),
+                temp.path().join("loader"),
+                proot_tmp.clone(),
+                rootfs.clone(),
+                project_root,
+                false,
+            )
+            .with_runtime_mounts(runtime_data.clone(), environments.clone(), cache)
+            .with_user_home(home.clone()),
+        ));
+        let sandbox = PolicySandbox::new_with_process_runtime(
+            &ToolPolicy::default(),
+            Some(&workspace),
+            runtime,
+        );
+
+        assert_eq!(
+            sandbox
+                .resolve_guest_path("/etc/os-release", Some(&workspace))
+                .unwrap()
+                .0,
+            rootfs.join("etc/os-release")
+        );
+        assert_eq!(
+            sandbox
+                .resolve_guest_path("/tmp/build", Some(&workspace))
+                .unwrap()
+                .0,
+            proot_tmp.join("build")
+        );
+        assert_eq!(
+            sandbox
+                .resolve_guest_path("~/.cache/uv", Some(&workspace))
+                .unwrap()
+                .0,
+            home.join(".cache/uv")
+        );
+        assert_eq!(
+            sandbox
+                .resolve_guest_path("/opt/agnes/envs/project", Some(&workspace))
+                .unwrap()
+                .0,
+            environments.join("project")
+        );
+        assert!(sandbox.check_read(&rootfs.join("etc/os-release")).is_ok());
+        assert!(sandbox.check_write(&proot_tmp.join("build")).is_ok());
+        assert!(sandbox.check_write(&home.join(".cache/uv")).is_ok());
+        assert!(sandbox.check_write(&rootfs.join("etc/override")).is_err());
     }
 
     #[test]

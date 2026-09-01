@@ -619,7 +619,7 @@ fn validate_write_target(
     workspace_root: Option<&Path>,
     sandbox: &dyn crate::tools::sandbox::SandboxGuard,
 ) -> Result<(), String> {
-    match resolve_write_target(target, cwd, workspace_root)? {
+    match resolve_write_target(target, cwd, workspace_root, Some(sandbox))? {
         Some(path) => match sandbox.check_write(&path) {
             Ok(()) => Ok(()),
             Err(original) if target == "~" || target.starts_with("~/") => {
@@ -642,6 +642,7 @@ fn resolve_write_target(
     target: &str,
     cwd: &Path,
     workspace_root: Option<&Path>,
+    sandbox: Option<&dyn crate::tools::sandbox::SandboxGuard>,
 ) -> Result<Option<std::path::PathBuf>, String> {
     if target.starts_with('&') || target == "/dev/null" {
         return Ok(None);
@@ -655,11 +656,16 @@ fn resolve_write_target(
             "Cannot safely resolve dynamic shell write target `{target}`"
         ));
     }
-    let resolver = crate::tools::builtin::GuestPathResolver::new(workspace_root, None);
-    let resolved = resolver.resolve_from_cwd(target, Some(cwd));
-    Ok(Some(crate::tools::builtin::normalize_path(
-        &resolved.host_path,
-    )))
+    let host_path = if let Some(sandbox) = sandbox {
+        sandbox
+            .resolve_guest_path(target, Some(cwd))
+            .map_err(|error| error.to_string())?
+            .0
+    } else {
+        let resolver = crate::tools::builtin::GuestPathResolver::new(workspace_root, None);
+        resolver.resolve_from_cwd(target, Some(cwd)).host_path
+    };
+    Ok(Some(crate::tools::builtin::normalize_path(&host_path)))
 }
 
 /// Return statically identifiable shell write targets for a one-call scoped
@@ -671,18 +677,28 @@ pub(crate) fn shell_write_targets(
     workspace_root: Option<&Path>,
     depth: usize,
 ) -> Result<Vec<std::path::PathBuf>, String> {
+    shell_write_targets_with_sandbox(command, cwd, workspace_root, depth, None)
+}
+
+pub(crate) fn shell_write_targets_with_sandbox(
+    command: &str,
+    cwd: &Path,
+    workspace_root: Option<&Path>,
+    depth: usize,
+    sandbox: Option<&dyn crate::tools::sandbox::SandboxGuard>,
+) -> Result<Vec<std::path::PathBuf>, String> {
     if depth > 3 {
         return Err("Nested shell command exceeds the safety inspection limit".to_string());
     }
     let tokens = shell_tokens(command)?;
-    validate_stateful_shell_tokens(&tokens, cwd, workspace_root, None)?;
+    validate_stateful_shell_tokens(&tokens, cwd, workspace_root, sandbox)?;
     let mut targets = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         if token == ">" || token == ">>" {
             let target = tokens
                 .get(index + 1)
                 .ok_or_else(|| "Output redirection is missing a target".to_string())?;
-            if let Some(path) = resolve_write_target(target, cwd, workspace_root)? {
+            if let Some(path) = resolve_write_target(target, cwd, workspace_root, sandbox)? {
                 targets.push(path);
             }
         }
@@ -699,7 +715,8 @@ pub(crate) fn shell_write_targets(
                     .iter()
                     .filter(|argument| !argument.starts_with('-'))
                 {
-                    if let Some(path) = resolve_write_target(target, cwd, workspace_root)? {
+                    if let Some(path) = resolve_write_target(target, cwd, workspace_root, sandbox)?
+                    {
                         targets.push(path);
                     }
                 }
@@ -710,7 +727,8 @@ pub(crate) fn shell_write_targets(
                     .rev()
                     .find(|argument| !argument.starts_with('-'))
                 {
-                    if let Some(path) = resolve_write_target(target, cwd, workspace_root)? {
+                    if let Some(path) = resolve_write_target(target, cwd, workspace_root, sandbox)?
+                    {
                         targets.push(path);
                     }
                 }
@@ -718,7 +736,9 @@ pub(crate) fn shell_write_targets(
             "dd" => {
                 for argument in arguments {
                     if let Some(target) = argument.strip_prefix("of=") {
-                        if let Some(path) = resolve_write_target(target, cwd, workspace_root)? {
+                        if let Some(path) =
+                            resolve_write_target(target, cwd, workspace_root, sandbox)?
+                        {
                             targets.push(path);
                         }
                     }
@@ -730,14 +750,16 @@ pub(crate) fn shell_write_targets(
                     .rev()
                     .take_while(|argument| !argument.starts_with('-'))
                 {
-                    if let Some(path) = resolve_write_target(target, cwd, workspace_root)? {
+                    if let Some(path) = resolve_write_target(target, cwd, workspace_root, sandbox)?
+                    {
                         targets.push(path);
                     }
                 }
             }
             "find" if arguments.iter().any(|argument| argument == "-delete") => {
                 if let Some(target) = arguments.first() {
-                    if let Some(path) = resolve_write_target(target, cwd, workspace_root)? {
+                    if let Some(path) = resolve_write_target(target, cwd, workspace_root, sandbox)?
+                    {
                         targets.push(path);
                     }
                 }
@@ -747,7 +769,13 @@ pub(crate) fn shell_write_targets(
                     let nested = arguments.get(flag_index + 1).ok_or_else(|| {
                         "Nested shell `-c` invocation is missing its command".to_string()
                     })?;
-                    targets.extend(shell_write_targets(nested, cwd, workspace_root, depth + 1)?);
+                    targets.extend(shell_write_targets_with_sandbox(
+                        nested,
+                        cwd,
+                        workspace_root,
+                        depth + 1,
+                        sandbox,
+                    )?);
                 }
             }
             _ => {}
@@ -784,7 +812,7 @@ fn validate_stateful_shell_tokens(
                 .find(|argument| !argument.starts_with('-'))
                 .map(String::as_str)
                 .unwrap_or(".");
-            let target = resolve_shell_cwd_target(target, cwd, workspace_root, sandbox.is_none())?;
+            let target = resolve_shell_cwd_target(target, cwd, workspace_root, sandbox)?;
             if let Some(sandbox) = sandbox {
                 sandbox.check_cwd(&target)?;
             }
@@ -801,7 +829,7 @@ fn resolve_shell_cwd_target(
     target: &str,
     cwd: &Path,
     workspace_root: Option<&Path>,
-    scope_only: bool,
+    sandbox: Option<&dyn crate::tools::sandbox::SandboxGuard>,
 ) -> Result<std::path::PathBuf, String> {
     if target.is_empty()
         || target
@@ -812,10 +840,15 @@ fn resolve_shell_cwd_target(
             "Cannot safely resolve dynamic shell cwd `{target}`"
         ));
     }
+    if let Some(sandbox) = sandbox {
+        return sandbox
+            .resolve_guest_path(target, Some(cwd))
+            .map(|(host_path, _)| host_path)
+            .map_err(|error| error.to_string());
+    }
     let resolver = crate::tools::builtin::GuestPathResolver::new(workspace_root, None);
     let resolved = resolver.resolve_from_cwd(target, Some(cwd));
-    if scope_only
-        && target.starts_with('/')
+    if target.starts_with('/')
         && resolved.resource_id != "workspace"
         && !target.starts_with("/tmp/")
     {

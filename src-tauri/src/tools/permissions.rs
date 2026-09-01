@@ -107,10 +107,30 @@ pub fn sandbox_escalation_for_tool_call(
     policy: &ToolPolicy,
     workspace_cwd: Option<&Path>,
 ) -> Option<SandboxEscalation> {
-    let sandbox = PolicySandbox::new(policy, workspace_cwd);
+    sandbox_escalation_for_tool_call_with_runtime(
+        tool,
+        args,
+        policy,
+        workspace_cwd,
+        &crate::tools::sandbox::ToolProcessRuntime::Host,
+    )
+}
+
+/// Determine a temporary filesystem exception using the same process runtime
+/// and guest mount table as the physical tool execution.
+pub fn sandbox_escalation_for_tool_call_with_runtime(
+    tool: &str,
+    args: &serde_json::Value,
+    policy: &ToolPolicy,
+    workspace_cwd: Option<&Path>,
+    process_runtime: &crate::tools::sandbox::ToolProcessRuntime,
+) -> Option<SandboxEscalation> {
+    let sandbox =
+        PolicySandbox::new_with_process_runtime(policy, workspace_cwd, process_runtime.clone());
     match tool {
         "file_write" | "file_edit" => {
-            let target = resolve_tool_path(args.get("path")?.as_str()?, workspace_cwd, policy);
+            let target =
+                resolve_tool_path(args.get("path")?.as_str()?, workspace_cwd, policy, &sandbox);
             sandbox.check_write(&target).err().map(|_| {
                 SandboxEscalation::FileWriteRoot(target.parent().unwrap_or(&target).to_path_buf())
             })
@@ -122,6 +142,7 @@ pub fn sandbox_escalation_for_tool_call(
                     .unwrap_or("."),
                 workspace_cwd,
                 policy,
+                &sandbox,
             );
             sandbox
                 .check_write(&base)
@@ -139,16 +160,23 @@ pub fn sandbox_escalation_for_tool_call(
                     .unwrap_or("."),
                 workspace_cwd,
                 policy,
+                &sandbox,
             );
             let command = args
                 .get("command")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("");
-            let outside_cwd = policy.check_shell(&cwd.to_string_lossy()).is_err()
+            let outside_cwd = (!sandbox.is_non_interactive()
+                && policy.check_shell(&cwd.to_string_lossy()).is_err())
                 || sandbox.check_cwd(&cwd).is_err();
             let mut writable_roots = Vec::new();
-            let write_targets =
-                crate::tools::builtin::shell::shell_write_targets(command, &cwd, workspace_cwd, 0);
+            let write_targets = crate::tools::builtin::shell::shell_write_targets_with_sandbox(
+                command,
+                &cwd,
+                workspace_cwd,
+                0,
+                Some(&sandbox),
+            );
             if policy.shell.deny_write_outside_workspace {
                 match &write_targets {
                     Ok(targets) => {
@@ -200,6 +228,7 @@ pub fn sandbox_escalation_for_tool_call(
                     .unwrap_or("."),
                 workspace_cwd,
                 policy,
+                &sandbox,
             );
             let outside_cwd = sandbox.check_cwd(&cwd).is_err();
             if outside_cwd {
@@ -295,11 +324,24 @@ fn existing_git_root(cwd: &Path) -> Option<PathBuf> {
     }
 }
 
-fn resolve_tool_path(path: &str, workspace_cwd: Option<&Path>, policy: &ToolPolicy) -> PathBuf {
+fn resolve_tool_path(
+    path: &str,
+    workspace_cwd: Option<&Path>,
+    policy: &ToolPolicy,
+    sandbox: &PolicySandbox,
+) -> PathBuf {
     let fallback_root = policy.shell.allowed_cwd.first().map(Path::new);
-    let resolved =
-        crate::tools::builtin::resolve_path_from_workspace(path, workspace_cwd, fallback_root);
-    crate::tools::builtin::normalize_path(&resolved.host_path)
+    sandbox
+        .resolve_guest_path(path, workspace_cwd)
+        .map(|(host_path, _)| host_path)
+        .unwrap_or_else(|_| {
+            let resolved = crate::tools::builtin::resolve_path_from_workspace(
+                path,
+                workspace_cwd,
+                fallback_root,
+            );
+            crate::tools::builtin::normalize_path(&resolved.host_path)
+        })
 }
 
 /// Resolve human approval for the active session mode.
@@ -524,6 +566,60 @@ mod tests {
         );
 
         assert_eq!(escalation, None);
+    }
+
+    #[test]
+    fn android_runtime_tmp_does_not_request_a_host_filesystem_escalation() {
+        use crate::tools::sandbox::{
+            AndroidProotProcessRuntime, AndroidProotRuntimeConfig, ToolProcessRuntime,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        let workspace = temp.path().join("workspace");
+        let project_root = temp.path().join("user/workspace");
+        let home = temp.path().join("user/home");
+        let proot_tmp = temp.path().join("proot-tmp");
+        for path in [
+            rootfs.join("etc"),
+            workspace.clone(),
+            project_root.clone(),
+            home.clone(),
+            proot_tmp.join("shm"),
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let runtime = ToolProcessRuntime::AndroidProot(AndroidProotProcessRuntime::new(
+            AndroidProotRuntimeConfig::new(
+                temp.path().join("proot"),
+                temp.path().join("loader"),
+                proot_tmp.clone(),
+                rootfs,
+                project_root,
+                false,
+            )
+            .with_user_home(home),
+        ));
+        let policy = ToolPolicy::default();
+
+        let file = sandbox_escalation_for_tool_call_with_runtime(
+            "file_write",
+            &serde_json::json!({"path": "/tmp/output.txt", "content": "ok"}),
+            &policy,
+            Some(&workspace),
+            &runtime,
+        );
+        let shell = sandbox_escalation_for_tool_call_with_runtime(
+            "shell",
+            &serde_json::json!({"cwd": "/tmp", "command": "touch output.txt"}),
+            &policy,
+            Some(&workspace),
+            &runtime,
+        );
+
+        assert_eq!(file, None);
+        assert_eq!(shell, None);
+        assert!(proot_tmp.is_dir());
     }
 
     #[test]
