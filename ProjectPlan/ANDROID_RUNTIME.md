@@ -426,6 +426,7 @@ Android 有两种执行模式：
 - [x] Rust Core 与 Agent 的本地认证 WS IPC 接线；
 - [x] PRoot `-0` fake-root、共享启动配置和条件 `--link2symlink` capability probe；
 - [x] rootfs/workspace/environment store 文件系统能力档案与旧全局 pip override 迁移；
+- [x] Agent hidden exec 使用独立非交互管道、空 stdin、超时、输出上限和进程组清理；交互命令返回 `requires_interactive_terminal`；
 - [x] 完成现有 Agent Protocol 握手和模型流式回复；取消流程待单独验收。
 - [ ] Runtime Service 建立 user terminal 与 Agent hidden exec 的独立 session namespace 和事件模型；
 

@@ -192,6 +192,14 @@ function ensureRuntimeDirectories(rootfs) {
   mkdirSync(join(rootfs, "tmp"), { recursive: true });
 }
 
+function ensureNoopSudo(rootfs) {
+  const sudo = join(rootfs, "usr", "bin", "sudo");
+  if (existsSync(sudo)) return;
+  mkdirSync(dirname(sudo), { recursive: true });
+  writeFileSync(sudo, "#!/bin/sh\nexec \"$@\"\n");
+  chmodSync(sudo, 0o755);
+}
+
 const rootfsInput = resolve(requiredArgument("--rootfs"));
 const abi = argumentValue("--abi", "arm64-v8a");
 const runtimeVersion = argumentValue("--runtime-version", "ubuntu-24.04.1");
@@ -224,6 +232,7 @@ try {
   copyTree(rootfsInput, rootfs);
   ensureRuntimeDirectories(rootfs);
   normalizePythonEntrypoints(rootfs);
+  ensureNoopSudo(rootfs);
   resetBuildHostResolver(rootfs);
 
   const agentDestination = join(rootfs, "opt", "agnes-agent", "app");

@@ -112,13 +112,6 @@ impl BuiltinTool for ShellTool {
                 return Err(AppError::Other(error));
             }
         }
-        if command_creates_workspace_venv(command_str, &cwd_absolute, ctx.workspace_cwd.as_deref())
-        {
-            let error = "Android workspace 不支持符号链接，无法在此创建 Python venv；请将 venv 放到 /tmp 或 rootfs 内";
-            ctx.record_failure(error).await?;
-            return Err(AppError::Other(error.into()));
-        }
-
         ctx.update_running(&cwd_absolute.to_string_lossy()).await?;
 
         let command_args = vec!["-c".to_string(), command_str.to_string()];
@@ -140,6 +133,19 @@ impl BuiltinTool for ShellTool {
             .and_then(Value::as_u64)
             .map(|value| value.min(86_400) as u32)
             .unwrap_or(ctx.policy.shell.timeout_sec);
+
+        if ctx.sandbox.is_non_interactive() {
+            let likely_interactive = command_likely_interactive(command_str);
+            let result = crate::tools::sandbox::execute_hidden(
+                command,
+                &cwd_absolute,
+                ctx.policy.shell.max_output_bytes as usize,
+                timeout_sec,
+            )
+            .await?;
+            return complete_hidden_tool_call(ctx, &result, likely_interactive).await;
+        }
+
         let run_id = ctx.run_id.unwrap_or(ctx.tool_call_id);
         let terminal_id = match ctx.terminals.spawn(
             command,
@@ -208,6 +214,13 @@ impl BuiltinTool for WriteStdinTool {
         if !ctx.policy.shell.enabled {
             return fail(ctx, "Shell execution tools are disabled").await;
         }
+        if ctx.sandbox.is_non_interactive() {
+            return fail(
+                ctx,
+                "Android hidden shell execution has no stdin; use the user Linux terminal for interactive input",
+            )
+            .await;
+        }
         let terminal_id = required_string(ctx, "session_id").await?;
         let chars = ctx.args.get("chars").and_then(Value::as_str).unwrap_or("");
         if chars.len() > 64 * 1024 {
@@ -260,6 +273,13 @@ impl BuiltinTool for StopTerminalTool {
         if !ctx.policy.shell.enabled {
             return fail(ctx, "Shell execution tools are disabled").await;
         }
+        if ctx.sandbox.is_non_interactive() {
+            return fail(
+                ctx,
+                "Android hidden shell execution has no terminal session; use the user Linux terminal to stop interactive work",
+            )
+            .await;
+        }
         let terminal_id = required_string(ctx, "session_id").await?;
         ctx.update_running(&terminal_id).await?;
         if let Err(error) = ctx.terminals.stop(&terminal_id, ctx.session_id) {
@@ -305,6 +325,107 @@ async fn complete_tool_call(
         "truncated": poll.truncated,
         "signal": poll.signal,
     }))
+}
+
+async fn complete_hidden_tool_call(
+    ctx: &ToolCtx<'_>,
+    result: &crate::tools::sandbox::HiddenExecResult,
+    likely_interactive: bool,
+) -> AppResult<Value> {
+    let requires_interactive_terminal = result.output_requests_input || likely_interactive;
+    let status = if result.timed_out {
+        "cancelled"
+    } else if requires_interactive_terminal {
+        "requires_interactive_terminal"
+    } else {
+        "done"
+    };
+    let result_kind = if result.timed_out {
+        "timeout"
+    } else if requires_interactive_terminal {
+        "requires_interactive_terminal"
+    } else {
+        "exit"
+    };
+    ctx.update_complete(
+        status,
+        Some(result_kind),
+        Some(result.exit_code),
+        Some(result.stdout.clone()),
+        Some(result.stderr.clone()),
+    )
+    .await?;
+    Ok(json!({
+        "status": status,
+        "session_id": Value::Null,
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "truncated": result.output_truncated,
+        "requires_interactive_terminal": requires_interactive_terminal,
+    }))
+}
+
+pub(crate) fn command_likely_interactive(command: &str) -> bool {
+    let Ok(tokens) = shell_tokens(command) else {
+        return true;
+    };
+    for segment in shell_segments(&tokens) {
+        let Some((command_index, program)) = segment_command(segment) else {
+            continue;
+        };
+        let arguments = &segment[command_index + 1..];
+        if matches!(
+            program.as_str(),
+            "read"
+                | "select"
+                | "passwd"
+                | "su"
+                | "top"
+                | "htop"
+                | "less"
+                | "more"
+                | "vim"
+                | "vi"
+                | "nano"
+                | "emacs"
+                | "ftp"
+                | "sftp"
+        ) {
+            return true;
+        }
+        if matches!(program.as_str(), "ssh" | "scp") {
+            let batch_mode = arguments
+                .iter()
+                .any(|argument| argument == "-n" || argument == "-oBatchMode=yes")
+                || arguments
+                    .windows(2)
+                    .any(|pair| pair[0] == "-o" && pair[1] == "BatchMode=yes");
+            if !batch_mode {
+                return true;
+            }
+        }
+        if matches!(program.as_str(), "apt" | "apt-get")
+            && arguments.iter().any(|argument| {
+                matches!(
+                    argument.as_str(),
+                    "install"
+                        | "remove"
+                        | "purge"
+                        | "upgrade"
+                        | "full-upgrade"
+                        | "dist-upgrade"
+                        | "autoremove"
+                )
+            })
+            && !arguments
+                .iter()
+                .any(|argument| argument == "-y" || argument == "--assume-yes")
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn render_terminal_output(poll: &crate::tools::terminal::TerminalPoll) -> String {
@@ -684,27 +805,6 @@ fn resolve_shell_cwd_target(
         ));
     }
     Ok(resolved.host_path)
-}
-
-fn command_creates_workspace_venv(command: &str, cwd: &Path, workspace: Option<&Path>) -> bool {
-    if !cfg!(target_os = "android") {
-        return false;
-    }
-    let Some(workspace) = workspace else {
-        return false;
-    };
-    let workspace = crate::tools::builtin::normalize_path(workspace);
-    if !cwd.starts_with(&workspace) {
-        return false;
-    }
-    let Ok(tokens) = shell_tokens(command) else {
-        return false;
-    };
-    tokens.windows(3).any(|window| {
-        matches!(window[0].as_str(), "python" | "python3")
-            && window[1] == "-m"
-            && window[2] == "venv"
-    })
 }
 
 fn segment_command(segment: &[String]) -> Option<(usize, String)> {

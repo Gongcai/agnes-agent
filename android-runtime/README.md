@@ -84,6 +84,10 @@ Agent hidden exec 使用独立的 session namespace，默认无 stdin，通过 m
 不重复走 Agent 工具审批，但仍受 Android 沙箱、PRoot 挂载、网络策略、资源配额和 provisioning
 边界约束，并写入可审计的运行事件。
 
+当前 Rust 工具执行器已将 Android PRoot 下的 Agent `shell` 接入该 hidden exec 平面：stdin 固定为
+`/dev/null`，stdout/stderr 各自受策略上限约束，超时会回收进程组；`write_stdin` 和
+`stop_terminal` 不会接管 hidden exec，而是明确要求使用用户终端。
+
 Runtime rootfs 除 Agent 依赖外，发布制品还必须包含可用的交互 shell、PTY 所需的 Linux 工具和
 包管理/开发工具依赖；缺少 `bash`、`apt`、`dpkg`、Python、Git 或 SSH 时，构建和启动验收必须失败。
 

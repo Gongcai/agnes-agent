@@ -651,8 +651,20 @@ impl AgentRuntime for AndroidLinuxRuntime {
         })?;
         std::fs::create_dir_all(&uv_cache_dir)
             .map_err(|error| AppError::Other(format!("无法创建 Android uv 缓存目录: {error}")))?;
-        let proot_probe =
-            probe_android_rootfs(&proot_path, &proot_loader_path, &rootfs_dir, &proot_tmp_dir)?;
+        let proot_config = AndroidProotRuntimeConfig::new(
+            proot_path,
+            proot_loader_path,
+            proot_tmp_dir,
+            rootfs_dir,
+            android_workspace_root,
+            false,
+        )
+        .with_runtime_mounts(
+            self.root_dir.clone(),
+            environment_store.clone(),
+            self.root_dir.join("user/cache"),
+        );
+        let proot_probe = probe_android_rootfs(&proot_config)?;
         let capability_profile = AndroidRuntimeCapabilityProfile {
             schema_version: 1,
             link2symlink_enabled: proot_probe.link2symlink_enabled,
@@ -665,14 +677,10 @@ impl AgentRuntime for AndroidLinuxRuntime {
             },
         };
         persist_android_runtime_capabilities(&self.root_dir, &capability_profile)?;
-        let proot_config = AndroidProotRuntimeConfig::new(
-            proot_path,
-            proot_loader_path,
-            proot_tmp_dir,
-            rootfs_dir,
-            android_workspace_root,
-            capability_profile.link2symlink_enabled,
-        );
+        let proot_config = AndroidProotRuntimeConfig {
+            link2symlink_enabled: capability_profile.link2symlink_enabled,
+            ..proot_config
+        };
         let _: serde_json::Value = self.run_native_command("start")?;
         if let Err(error) = self.agent.start_android(
             self.db.clone(),
@@ -756,19 +764,8 @@ fn enforce_guest_python_policy(rootfs_dir: &Path) -> AppResult<()> {
 }
 
 #[cfg(target_os = "android")]
-fn probe_android_rootfs(
-    proot_path: &Path,
-    proot_loader_path: &Path,
-    rootfs_dir: &Path,
-    proot_tmp_dir: &Path,
-) -> AppResult<AndroidProotProbe> {
-    let minimal = run_android_rootfs_probe(
-        proot_path,
-        proot_loader_path,
-        rootfs_dir,
-        proot_tmp_dir,
-        false,
-    )?;
+fn probe_android_rootfs(config: &AndroidProotRuntimeConfig) -> AppResult<AndroidProotProbe> {
+    let minimal = run_android_rootfs_probe(config, false)?;
     if minimal.status.success() {
         return Ok(AndroidProotProbe {
             link2symlink_enabled: false,
@@ -776,13 +773,7 @@ fn probe_android_rootfs(
         });
     }
 
-    let compatibility = run_android_rootfs_probe(
-        proot_path,
-        proot_loader_path,
-        rootfs_dir,
-        proot_tmp_dir,
-        true,
-    )?;
+    let compatibility = run_android_rootfs_probe(config, true)?;
     if compatibility.status.success() {
         return Ok(AndroidProotProbe {
             link2symlink_enabled: true,
@@ -799,21 +790,17 @@ fn probe_android_rootfs(
 
 #[cfg(target_os = "android")]
 fn run_android_rootfs_probe(
-    proot_path: &Path,
-    proot_loader_path: &Path,
-    rootfs_dir: &Path,
-    proot_tmp_dir: &Path,
+    config: &AndroidProotRuntimeConfig,
     link2symlink_enabled: bool,
 ) -> AppResult<std::process::Output> {
-    let shm_dir = proot_tmp_dir.join("shm");
-    let mut command = std::process::Command::new(proot_path);
-    command.env_clear().arg("-0").args(["-r"]).arg(rootfs_dir);
+    let mut command = std::process::Command::new(config.proot_path());
+    let mut args = config.base_args();
     if link2symlink_enabled {
-        command.arg("--link2symlink");
+        args.insert(0, "--link2symlink".into());
     }
     command
-        .args(["-b", "/dev", "-b", "/proc", "-b"])
-        .arg(format!("{}:/dev/shm", shm_dir.display()))
+        .env_clear()
+        .args(args)
         .args([
             "-w",
             "/root",
@@ -833,8 +820,7 @@ for name in ("version", "stat", "loadavg", "uptime", "vmstat"):
 print("AGNES_PROC_READABLE=" + ",".join(readable))
 print("AGNES_PROBE_OK=1")"#,
         ])
-        .env("PROOT_TMP_DIR", proot_tmp_dir)
-        .env("PROOT_LOADER", proot_loader_path)
+        .envs(config.environment())
         // Android's seccomp acceleration can deny the IPC operations used by
         // glibc's POSIX semaphore implementation inside the PRoot guest.
         .env("PROOT_NO_SECCOMP", "1")

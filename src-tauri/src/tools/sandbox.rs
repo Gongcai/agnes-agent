@@ -55,6 +55,26 @@ pub struct AndroidProotProcessRuntime {
     config: AndroidProotRuntimeConfig,
 }
 
+#[derive(Debug)]
+pub(crate) struct HiddenExecResult {
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) exit_code: i32,
+    pub(crate) timed_out: bool,
+    pub(crate) output_truncated: bool,
+    pub(crate) output_requests_input: bool,
+}
+
+/// A bind mount in the Android guest namespace. The resource ID is kept next
+/// to the paths so launchers and host-side policy code can refer to the same
+/// logical resource without exposing Android implementation paths to agents.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AndroidProotBindMount {
+    pub(crate) resource_id: &'static str,
+    pub(crate) source: PathBuf,
+    pub(crate) target: &'static str,
+}
+
 /// Immutable Android PRoot settings produced by the Runtime supervisor.
 /// Agent and tool runners share this value so capability-dependent flags and
 /// guest mounts cannot drift between launch paths.
@@ -66,6 +86,9 @@ pub(crate) struct AndroidProotRuntimeConfig {
     rootfs_dir: PathBuf,
     android_workspace_root: PathBuf,
     link2symlink_enabled: bool,
+    runtime_data_dir: Option<PathBuf>,
+    environment_store_dir: Option<PathBuf>,
+    cache_dir: Option<PathBuf>,
 }
 
 impl AndroidProotRuntimeConfig {
@@ -84,7 +107,22 @@ impl AndroidProotRuntimeConfig {
             rootfs_dir,
             android_workspace_root,
             link2symlink_enabled,
+            runtime_data_dir: None,
+            environment_store_dir: None,
+            cache_dir: None,
         }
+    }
+
+    pub(crate) fn with_runtime_mounts(
+        mut self,
+        runtime_data_dir: PathBuf,
+        environment_store_dir: PathBuf,
+        cache_dir: PathBuf,
+    ) -> Self {
+        self.runtime_data_dir = Some(runtime_data_dir);
+        self.environment_store_dir = Some(environment_store_dir);
+        self.cache_dir = Some(cache_dir);
+        self
     }
 
     pub(crate) fn proot_path(&self) -> &Path {
@@ -147,17 +185,9 @@ impl AndroidProotRuntimeConfig {
         if self.link2symlink_enabled {
             args.push(OsString::from("--link2symlink"));
         }
-        args.extend([
-            OsString::from("-b"),
-            OsString::from("/dev"),
-            OsString::from("-b"),
-            OsString::from("/proc"),
-            OsString::from("-b"),
-            OsString::from(format!(
-                "{}:/dev/shm",
-                self.proot_tmp_dir.join("shm").display()
-            )),
-        ]);
+        for mount in self.base_mounts() {
+            append_bind_mount(&mut args, &mount);
+        }
         args
     }
 
@@ -167,17 +197,77 @@ impl AndroidProotRuntimeConfig {
         workspace_root: &Path,
         guest_cwd: &Path,
     ) {
-        args.extend([
-            OsString::from("-b"),
-            OsString::from(format!("{}:/workspace", workspace_root.display())),
-            OsString::from("-b"),
-            OsString::from(format!(
-                "{}:/root/workspace",
-                self.android_workspace_root.display()
-            )),
-            OsString::from("-w"),
-            guest_cwd.as_os_str().to_owned(),
-        ]);
+        for mount in self.workspace_mounts(workspace_root) {
+            append_bind_mount(args, &mount);
+        }
+        args.extend([OsString::from("-w"), guest_cwd.as_os_str().to_owned()]);
+    }
+
+    pub(crate) fn base_mounts(&self) -> Vec<AndroidProotBindMount> {
+        vec![
+            AndroidProotBindMount {
+                resource_id: "android-dev",
+                source: PathBuf::from("/dev"),
+                target: "/dev",
+            },
+            AndroidProotBindMount {
+                resource_id: "android-proc",
+                source: PathBuf::from("/proc"),
+                target: "/proc",
+            },
+            AndroidProotBindMount {
+                resource_id: "android-sys",
+                source: PathBuf::from("/sys"),
+                target: "/sys",
+            },
+            AndroidProotBindMount {
+                resource_id: "runtime-tmp",
+                source: self.proot_tmp_dir.clone(),
+                target: "/tmp",
+            },
+            AndroidProotBindMount {
+                resource_id: "runtime-shm",
+                source: self.proot_tmp_dir.join("shm"),
+                target: "/dev/shm",
+            },
+        ]
+    }
+
+    pub(crate) fn workspace_mounts(&self, workspace_root: &Path) -> Vec<AndroidProotBindMount> {
+        let mut mounts = vec![
+            AndroidProotBindMount {
+                resource_id: "workspace",
+                source: workspace_root.to_path_buf(),
+                target: "/workspace",
+            },
+            AndroidProotBindMount {
+                resource_id: "project-root",
+                source: self.android_workspace_root.clone(),
+                target: "/root/workspace",
+            },
+        ];
+        if let Some(source) = &self.runtime_data_dir {
+            mounts.push(AndroidProotBindMount {
+                resource_id: "runtime-data",
+                source: source.clone(),
+                target: "/opt/agnes/runtime-data",
+            });
+        }
+        if let Some(source) = &self.environment_store_dir {
+            mounts.push(AndroidProotBindMount {
+                resource_id: "env-store",
+                source: source.clone(),
+                target: "/opt/agnes/envs",
+            });
+        }
+        if let Some(source) = &self.cache_dir {
+            mounts.push(AndroidProotBindMount {
+                resource_id: "runtime-cache",
+                source: source.clone(),
+                target: "/opt/agnes/cache",
+            });
+        }
+        mounts
     }
 
     pub(crate) fn environment(&self) -> Vec<(OsString, OsString)> {
@@ -205,6 +295,13 @@ impl AndroidProotRuntimeConfig {
         .map(|(name, value)| (OsString::from(name), value))
         .collect()
     }
+}
+
+fn append_bind_mount(args: &mut Vec<OsString>, mount: &AndroidProotBindMount) {
+    args.extend([
+        OsString::from("-b"),
+        OsString::from(format!("{}:{}", mount.source.display(), mount.target)),
+    ]);
 }
 
 impl AndroidProotProcessRuntime {
@@ -265,6 +362,12 @@ impl AndroidProotProcessRuntime {
     }
 }
 
+impl ToolProcessRuntime {
+    pub(crate) fn is_android_proot(&self) -> bool {
+        matches!(self, Self::AndroidProot(_))
+    }
+}
+
 impl SandboxCommand {
     #[cfg(test)]
     pub(crate) fn direct(program: String, args: Vec<String>, env: Vec<(String, String)>) -> Self {
@@ -290,6 +393,7 @@ impl SandboxCommand {
             command.as_std_mut().process_group(0);
         }
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        command.stdin(Stdio::null());
         command
     }
 
@@ -304,6 +408,109 @@ impl SandboxCommand {
     }
 }
 
+/// Execute an Agent command without a PTY or an input channel. This is the
+/// execution plane for Android hidden calls; user terminals use TerminalManager
+/// and must never share its session, stdin, or output state.
+pub(crate) async fn execute_hidden(
+    command: SandboxCommand,
+    cwd: &Path,
+    max_output_bytes: usize,
+    timeout_sec: u32,
+) -> AppResult<HiddenExecResult> {
+    let stream_limit = (max_output_bytes.max(2) / 2).max(1);
+    let mut child = command
+        .into_tokio()
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .spawn()
+        .map_err(|error| AppError::Other(format!("Unable to spawn hidden command: {error}")))?;
+
+    let pid = child.id().and_then(|pid| i32::try_from(pid).ok());
+    let stdout_task = child
+        .stdout
+        .take()
+        .map(|stdout| tokio::spawn(read_stream_capped(stdout, stream_limit)));
+    let stderr_task = child
+        .stderr
+        .take()
+        .map(|stderr| tokio::spawn(read_stream_capped(stderr, stream_limit)));
+
+    let wait_result = if timeout_sec == 0 {
+        child.wait().await.map_err(|error| error.to_string())
+    } else {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_sec as u64),
+            child.wait(),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(|error| error.to_string()),
+            Err(_) => {
+                kill_process_tree(&mut child, pid).await;
+                return Ok(hidden_capture_result(stdout_task, stderr_task, -9, true).await);
+            }
+        }
+    };
+
+    let status =
+        wait_result.map_err(|error| AppError::Other(format!("Hidden command failed: {error}")))?;
+    cleanup_process_group(pid);
+    let exit_code = status.code().unwrap_or(-1);
+    Ok(hidden_capture_result(stdout_task, stderr_task, exit_code, false).await)
+}
+
+async fn hidden_capture_result(
+    stdout_task: Option<tokio::task::JoinHandle<(Vec<u8>, bool)>>,
+    stderr_task: Option<tokio::task::JoinHandle<(Vec<u8>, bool)>>,
+    exit_code: i32,
+    timed_out: bool,
+) -> HiddenExecResult {
+    let (stdout_bytes, stdout_truncated) = join_capture(stdout_task).await;
+    let (stderr_bytes, stderr_truncated) = join_capture(stderr_task).await;
+    let stdout = render_captured_output(stdout_bytes, stdout_truncated);
+    let stderr = render_captured_output(stderr_bytes, stderr_truncated);
+    let output_requests_input = output_requests_input(&stdout) || output_requests_input(&stderr);
+    HiddenExecResult {
+        stdout,
+        stderr,
+        exit_code,
+        timed_out,
+        output_truncated: stdout_truncated || stderr_truncated,
+        output_requests_input,
+    }
+}
+
+async fn kill_process_tree(child: &mut tokio::process::Child, pid: Option<i32>) {
+    cleanup_process_group(pid);
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+fn cleanup_process_group(pid: Option<i32>) {
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        use nix::sys::signal::{killpg, Signal};
+        use nix::unistd::Pid;
+        let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
+    }
+}
+
+fn output_requests_input(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    [
+        "[y/n]",
+        "[y/n/?]",
+        "password:",
+        "passphrase:",
+        "press enter",
+        "continue?",
+        "do you want to continue",
+        "enter value",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
 enum ProcessIsolation {
     Allowed,
     Bubblewrap {
@@ -315,6 +522,10 @@ enum ProcessIsolation {
 }
 
 pub trait SandboxGuard: Send + Sync {
+    fn is_non_interactive(&self) -> bool {
+        false
+    }
+
     fn check_read(&self, path: &Path) -> Result<(), String>;
     fn check_write(&self, path: &Path) -> Result<(), String>;
     fn check_cwd(&self, path: &Path) -> Result<(), String>;
@@ -526,6 +737,10 @@ impl PolicySandbox {
 }
 
 impl SandboxGuard for PolicySandbox {
+    fn is_non_interactive(&self) -> bool {
+        self.process_runtime.is_android_proot()
+    }
+
     fn check_read(&self, path: &Path) -> Result<(), String> {
         check_under_roots(path, &self.read_roots, "read")
     }
@@ -1325,9 +1540,13 @@ mod tests {
             "-r".into(),
             rootfs.to_string_lossy().to_string(),
             "-b".into(),
-            "/dev".into(),
+            "/dev:/dev".into(),
             "-b".into(),
-            "/proc".into(),
+            "/proc:/proc".into(),
+            "-b".into(),
+            "/sys:/sys".into(),
+            "-b".into(),
+            format!("{}:/tmp", proot_tmp.display()),
             "-b".into(),
             format!("{}:/dev/shm", proot_tmp.join("shm").display()),
             "-b".into(),
@@ -1338,9 +1557,9 @@ mod tests {
             "/workspace/src".into(),
             "/usr/bin/env".into(),
         ];
-        assert_eq!(args[0..16], expected_prefix);
-        assert_eq!(args[16], "bash");
-        assert_eq!(args[17], "-c");
+        assert_eq!(args[0..expected_prefix.len()], expected_prefix);
+        assert_eq!(args[expected_prefix.len()], "bash");
+        assert_eq!(args[expected_prefix.len() + 1], "-c");
         assert!(command
             .env
             .iter()
@@ -1425,6 +1644,110 @@ mod tests {
             .base_args()
             .iter()
             .any(|argument| argument == "--link2symlink"));
+    }
+
+    #[test]
+    fn android_proot_runtime_mounts_have_stable_resource_ids_and_targets() {
+        let config = AndroidProotRuntimeConfig::new(
+            PathBuf::from("/proot"),
+            PathBuf::from("/loader"),
+            PathBuf::from("/tmp/proot"),
+            PathBuf::from("/rootfs"),
+            PathBuf::from("/android/workspace"),
+            false,
+        )
+        .with_runtime_mounts(
+            PathBuf::from("/runtime"),
+            PathBuf::from("/runtime/environments"),
+            PathBuf::from("/runtime/cache"),
+        );
+
+        let mounts = config.workspace_mounts(Path::new("/selected/workspace"));
+        assert_eq!(
+            mounts
+                .iter()
+                .map(|mount| (mount.resource_id, mount.target))
+                .collect::<Vec<_>>(),
+            vec![
+                ("workspace", "/workspace"),
+                ("project-root", "/root/workspace"),
+                ("runtime-data", "/opt/agnes/runtime-data"),
+                ("env-store", "/opt/agnes/envs"),
+                ("runtime-cache", "/opt/agnes/cache"),
+            ]
+        );
+        assert_eq!(
+            config
+                .base_mounts()
+                .iter()
+                .map(|mount| (mount.resource_id, mount.target))
+                .collect::<Vec<_>>(),
+            vec![
+                ("android-dev", "/dev"),
+                ("android-proc", "/proc"),
+                ("android-sys", "/sys"),
+                ("runtime-tmp", "/tmp"),
+                ("runtime-shm", "/dev/shm"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn hidden_exec_uses_null_stdin_and_reports_interactive_output() {
+        let result = execute_hidden(
+            SandboxCommand::direct(
+                "/bin/bash".to_string(),
+                vec![
+                    "-c".to_string(),
+                    "printf 'Do you want to continue? [Y/n]' >&2".to_string(),
+                ],
+                Vec::new(),
+            ),
+            Path::new("."),
+            1024,
+            5,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.exit_code, 0);
+        assert!(!result.timed_out);
+        assert!(result.output_requests_input);
+        assert!(result.stderr.contains("Do you want to continue?"));
+    }
+
+    #[test]
+    fn hidden_exec_detects_commands_that_need_a_terminal() {
+        assert!(crate::tools::builtin::shell::command_likely_interactive(
+            "apt install jq"
+        ));
+        assert!(!crate::tools::builtin::shell::command_likely_interactive(
+            "apt-get install -y jq"
+        ));
+        assert!(crate::tools::builtin::shell::command_likely_interactive(
+            "read answer"
+        ));
+    }
+
+    #[tokio::test]
+    async fn hidden_exec_times_out_and_caps_output() {
+        let result = execute_hidden(
+            SandboxCommand::direct(
+                "/bin/bash".to_string(),
+                vec!["-c".to_string(), "printf 123456789; sleep 5".to_string()],
+                Vec::new(),
+            ),
+            Path::new("."),
+            4,
+            1,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.timed_out);
+        assert_eq!(result.exit_code, -9);
+        assert!(result.output_truncated);
+        assert!(result.stdout.contains("output truncated"));
     }
 
     #[cfg(unix)]
