@@ -27,8 +27,9 @@ guest 和 Agent 工具策略没有共享同一套运行时模型**：
    Android 宿主侧。此前两侧分别解析路径，导致同一目录因写法不同得到互相矛盾的结果。
 2. PRoot 参数被当成固定配置，而不是设备能力探测结果。固定启用 `--link2symlink`，再叠加
    external storage 不支持 symlink/noexec，使 workspace 内的 venv 和本地可执行文件天然失败。
-3. Agent 命令和用户终端共用“可交互 PTY”的思路。Agent 实际无人替它输入 sudo 密码或 apt
-   提示，因此后台命令必须默认非交互、可超时、可取消，并在确需人工输入时显式移交可见终端。
+3. Agent 命令和用户终端不能共用同一执行会话。Agent 实际无人替它输入 sudo 密码或 apt
+   提示，因此后台命令必须默认非交互、可超时、可取消；同时 Agnes 必须提供完整、独立、
+   用户可直接操作的 Linux 可见 PTY，供用户运行内置 Ubuntu 工具。
 4. 系统包安装与普通项目命令没有形成独立的 provisioning 边界。`apt`/`dpkg` 应由 Runtime
    supervisor 在 fake-root guest 中受控执行，而不是依赖真实 sudo 或用户补输密码。
 5. Python 环境位置和生命周期没有被建模。workspace 适合存源码、`pyproject.toml` 和锁文件，
@@ -212,7 +213,9 @@ Operit 明确分离两种执行平面。
 
 这一设计对 Agnes 很重要。当前 Agnes 的每个 shell tool call 都创建 PTY，并通过 `write_stdin`
 允许后续输入；它适合通用工具协议，却会让本应无人值守的命令误以为存在交互用户。目标设计应把
-默认 Agent 命令改为 hidden non-interactive exec，把 PTY 作为显式请求的另一种会话类型。
+Agent 命令改为 hidden non-interactive exec，同时把用户可见 PTY 做成 Android Runtime 的一等产品
+入口，而不是只在 Agent 失败时临时接管。两类会话必须拥有不同的 session namespace、生命周期
+策略和 UI 状态，不能互相复用或覆盖。
 
 ### 3.7 Operit 的包管理定位
 
@@ -382,15 +385,20 @@ workspace 相对路径；EROFS、EACCES 和“策略拒绝”必须分别报告�
 - 命令若检测到需要 TTY/输入，返回结构化 `requires_interactive_terminal`，不能无限等待。
 - 需要保持 cwd/env 的任务可按 conversation/workspace key 复用 shell，但必须串行化并在异常后重建。
 
-#### User visible PTY（显式）
+#### User visible Linux PTY（一等入口）
 
-- 只在用户打开终端或 Agent 请求人工接管并获得批准后创建。
+- 用户可以随时从 Agnes 打开内置 Ubuntu 终端；终端创建、重连和关闭都由 Runtime Service 管理。
+- 每个用户终端绑定明确的 workspace、guest HOME 和 Runtime 版本，并显示 fake-root 与资源边界。
 - 支持 resize、Ctrl+C、原始字符输入和 canonical/non-canonical 状态。
-- UI 清楚显示命令、当前等待输入状态和 fake-root 说明。
-- 不能把隐藏 Agent session 悄悄变成等待用户输入的会话。
+- UI 清楚显示当前 cwd、命令输出、输入焦点、运行状态和 fake-root 说明。
+- 终端可直接运行 shell、apt、dpkg、Python、Git、SSH 等内置 Linux 命令；命令权限仍受 Runtime
+  mount、sandbox、网络策略和 Android 应用边界限制。
+- 不能把隐藏 Agent session 悄悄变成等待用户输入的会话；Agent 的人工介入必须显式创建或绑定
+  一个用户批准的 handoff 任务。
 
-Agnes 可以继续保留 `write_stdin` 工具，但应只针对显式 interactive session。普通 `shell` 返回
-hidden exec 结果；这样 apt、构建和脚本执行不会因为分配 PTY 而改变行为。
+Agnes 可以继续保留 `write_stdin` 工具，但它只针对 Agent 管理的 interactive session。用户终端
+使用独立的 terminal API 和 session registry；普通 Agent `shell` 返回 hidden exec 结果，这样
+apt、构建和脚本执行不会因为分配 PTY 而改变行为。
 
 ### 5.5 apt、dpkg 与 sudo 策略
 
@@ -478,7 +486,8 @@ PRoot `-0` 只改变 guest 观察到的身份，不提供 Android 提权；同�
 
 1. **不照搬全局开发终端模型**：Operit 允许用户主动选择并安装全局 pip、pipx、Node 和 Rust；
    Agnes 应按 workspace 建立隔离环境。
-2. **不依赖用户回答后台提示**：Operit 有完整可见 PTY；Agnes 的 Agent session 多数无人值守。
+2. **不依赖用户回答后台提示**：Agent 使用 hidden exec；Agnes 同时提供独立的完整可见 Linux PTY，
+   但后台 Agent 不能偷偷占用或等待用户终端。
 3. **不使用单份可变 rootfs 替换**：Agnes 已有版本化安装与回滚，应继续保留。
 4. **不把静态 fake `/proc` 当真实遥测**：仅为格式兼容，并标记 synthetic。
 5. **不把 no-op sudo 当权限控制**：权限控制在宿主 supervisor，不在 shim。
@@ -508,9 +517,12 @@ PRoot `-0` 只改变 guest 观察到的身份，不提供 Android 提权；同�
 
 ### P2：执行平面分离
 
-- 实现默认 hidden non-interactive executor，包含 marker、timeout、进程组清理和 shell 重建。
-- PTY 变为显式 interactive session，并提供可查询的完整 session registry。
-- 增加 `requires_interactive_terminal` 状态及 UI handoff。
+- [ ] 实现默认 hidden non-interactive executor，包含 marker、timeout、进程组清理和 shell 重建。
+- [ ] 将用户可见 Linux PTY 作为独立的一等 terminal service，提供创建、输入、resize、Ctrl+C、
+  输出订阅、重连、关闭和完整 session registry。
+- [ ] 为 Agent hidden exec 与用户终端分配独立 session namespace；增加
+  `requires_interactive_terminal` 状态及用户确认后的 UI handoff。
+- [ ] 用户终端和 Agent 执行均复用 Runtime launch spec，但不能共享 stdin、输出流或取消信号。
 
 ### P3：系统 provisioning
 
@@ -546,9 +558,12 @@ PRoot `-0` 只改变 guest 观察到的身份，不提供 Android 提权；同�
 9. `/proc/version` 等受限节点返回标记来源的兼容数据，不把 synthetic 值报告成真实遥测。
 10. hidden exec 遇到输入等待时返回结构化状态；超时后没有后代进程或锁残留。
 11. interactive PTY 可接收输入、Ctrl+C 和 resize，但不会与 hidden exec 的输出/session ID 混淆。
-12. 未知 session ID 返回当前会话列表；所有 ID 在协议、日志和 UI 中保持完整。
-13. Runtime 更新失败后仍能启动 previous 版本，workspace 与 environment metadata 不丢失。
-14. 同一锁文件重建得到等价环境；不同 workspace 不共享可变 site-packages。
+12. 用户可以直接打开内置 Ubuntu 终端并运行 `bash`、`apt`、`python3`、`git`，输入、resize、
+    Ctrl+C 和输出订阅在重连后保持可追踪。
+13. 未知 session ID 返回当前会话列表；Agent hidden exec 与用户终端的 ID、输入和输出不会混淆。
+14. Runtime 更新失败后仍能启动 previous 版本，workspace、environment metadata 和用户终端状态
+    按恢复策略保留或明确标记中断。
+15. 同一锁文件重建得到等价环境；不同 workspace 不共享可变 site-packages。
 
 ## 9. 源码依据
 

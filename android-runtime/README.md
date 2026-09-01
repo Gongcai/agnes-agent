@@ -21,12 +21,15 @@ android-runtime/
     └── libagnes_proot_loader.so
 ```
 
-`runtime.zip` 包含 Ubuntu 用户空间和 Agnes Python Agent。`libagnes_proot.so` 是 Android
+`runtime.zip` 包含 Ubuntu 用户空间和 Agnes Python Agent。Runtime 同时承载两个执行平面：用户直接
+操作的可见 Linux PTY，以及供 Agent 和后台任务使用的 hidden non-interactive exec；两者必须使用
+独立会话和事件流。`libagnes_proot.so` 是 Android
 宿主侧的 PRoot 可执行文件；使用原生库命名后，Android 会把它安装到应用只读、可执行的
 原生库目录。`libagnes_proot_loader.so` 是同 ABI 的静态 ELF loader，运行时通过
 `PROOT_LOADER` 直接使用，避免 PRoot 从应用私有临时目录提取 loader。
 
-Android 的 Shell 和 Git 工具会复用 Agent 启动时的 PRoot rootfs。Rust 会先完成工作区、cwd、
+Android 的 Shell 和 Git 工具会复用 Agent 启动时的 PRoot rootfs。用户终端和 Agent 工具共享同一份
+Runtime launch spec，但不会共享 stdin、输出流或取消信号。Rust 会先完成工作区、cwd、
 写入边界和审批检查，再将工作区映射为 Linux 内的 `/workspace`；工具不会获得其他 Android
 应用私有目录或未授权路径。Agent 主进程和 Rust 发起的 Shell/Git/Python 工具进程都会将持久项目
 根目录挂载为 `/root/workspace`，文件和记忆工具仍由 Rust 执行，Linux 进程不能绕过 Rust 审计。
@@ -63,6 +66,26 @@ Linux 用户目录：/root/workspace/tiny-tool
 会话启动后，选中的项目还会被挂载到 `/workspace` 作为当前工作目录。`/root/workspace/tiny-tool`
 和 `/workspace` 来自同一份宿主目录，所以 Agent 的 Shell/Git 操作与 Rust 文件工具看到的是同一
 份文件。项目不存放在 rootfs 版本目录中，Runtime 更新、回滚和重新安装不会覆盖它。
+
+## 用户可见 Linux 终端
+
+Android Runtime Service 必须提供独立于 Activity 的用户终端会话。用户可以随时从 Agnes 打开内置
+Ubuntu shell，直接运行 rootfs 中的 `bash`、`apt`、`dpkg`、`python3`、`git` 和 `ssh`；这不是仅在
+Agent 失败时才出现的 handoff 界面。
+
+终端会话至少记录 `terminal_session_id`、workspace、guest `HOME`、cwd、Runtime 版本、PTY 行列数、
+输出序号、退出状态和中断原因。接口需要覆盖创建、列出、输出订阅、原始输入、resize、Ctrl+C、
+重连和关闭。输出订阅必须可从序号继续，重连不得重放用户输入；Runtime 或进程被回收后，会话标记
+为 `interrupted`，不得假装仍在运行。
+
+Agent hidden exec 使用独立的 session namespace，默认无 stdin，通过 marker/结构化事件返回结果，
+并由 timeout、取消和进程组清理控制生命周期。它遇到交互输入时返回
+`requires_interactive_terminal`；只有用户明确批准后，才创建或绑定 handoff 会话。用户终端命令
+不重复走 Agent 工具审批，但仍受 Android 沙箱、PRoot 挂载、网络策略、资源配额和 provisioning
+边界约束，并写入可审计的运行事件。
+
+Runtime rootfs 除 Agent 依赖外，发布制品还必须包含可用的交互 shell、PTY 所需的 Linux 工具和
+包管理/开发工具依赖；缺少 `bash`、`apt`、`dpkg`、Python、Git 或 SSH 时，构建和启动验收必须失败。
 
 ## 构建 PRoot
 
