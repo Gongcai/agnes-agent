@@ -10,14 +10,21 @@ use crate::tools::policy::Risk;
 
 pub struct GitTool;
 
-fn resolve_cwd(ctx: &ToolCtx<'_>) -> std::path::PathBuf {
+fn resolve_cwd(ctx: &ToolCtx<'_>) -> (std::path::PathBuf, std::path::PathBuf) {
     let raw = ctx
         .args
         .get("cwd")
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())
         .unwrap_or(".");
-    crate::tools::builtin::normalize_path(&crate::tools::builtin::resolve_path(ctx, raw))
+    ctx.sandbox
+        .resolve_guest_path(raw, ctx.workspace_cwd.as_deref())
+        .unwrap_or_else(|_| {
+            let host = crate::tools::builtin::normalize_path(&crate::tools::builtin::resolve_path(
+                ctx, raw,
+            ));
+            (host.clone(), host)
+        })
 }
 
 #[async_trait]
@@ -82,7 +89,7 @@ impl BuiltinTool for GitTool {
             }
         };
 
-        let cwd_absolute = resolve_cwd(ctx);
+        let (cwd_absolute, _guest_cwd) = resolve_cwd(ctx);
 
         if let Err(e) = ctx.policy.check_git() {
             ctx.record_failure(&e).await?;

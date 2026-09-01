@@ -866,7 +866,8 @@ async fn handle_conn<R: tauri::Runtime>(
 
                             json!({
                                 "id": tc_id,
-                                "exit_code": -1,
+                                "exit_code": null,
+                                "result_kind": "tool_error",
                                 "stdout": "",
                                 "stderr": err_str,
                             })

@@ -181,7 +181,7 @@ impl ToolExecutor {
                             tool_call_id.to_string(),
                             "failed".into(),
                             Some(message.clone()),
-                            Some(-1),
+                            None,
                             None,
                             Some(message),
                         )

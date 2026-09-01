@@ -13,14 +13,21 @@ pub struct ShellTool;
 pub struct WriteStdinTool;
 pub struct StopTerminalTool;
 
-fn resolve_cwd(ctx: &ToolCtx<'_>) -> std::path::PathBuf {
+fn resolve_cwd(ctx: &ToolCtx<'_>) -> (std::path::PathBuf, std::path::PathBuf) {
     let raw = ctx
         .args
         .get("cwd")
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())
         .unwrap_or(".");
-    crate::tools::builtin::normalize_path(&crate::tools::builtin::resolve_path(ctx, raw))
+    ctx.sandbox
+        .resolve_guest_path(raw, ctx.workspace_cwd.as_deref())
+        .unwrap_or_else(|_| {
+            let host = crate::tools::builtin::normalize_path(&crate::tools::builtin::resolve_path(
+                ctx, raw,
+            ));
+            (host.clone(), host)
+        })
 }
 
 #[async_trait]
@@ -90,11 +97,23 @@ impl BuiltinTool for ShellTool {
             }
         };
 
-        let cwd_absolute = resolve_cwd(ctx);
+        let (cwd_absolute, guest_cwd) = resolve_cwd(ctx);
+        let policy_cwd = if ctx.sandbox.is_non_interactive() {
+            &guest_cwd
+        } else {
+            &cwd_absolute
+        };
 
-        if let Err(e) = ctx.policy.check_shell(&cwd_absolute.to_string_lossy()) {
-            ctx.record_failure(&e).await?;
-            return Err(AppError::Other(e));
+        if !ctx.policy.shell.enabled {
+            let error = "Shell 执行工具已被禁用";
+            ctx.record_failure(error).await?;
+            return Err(AppError::Other(error.into()));
+        }
+        if !ctx.sandbox.is_non_interactive() {
+            if let Err(e) = ctx.policy.check_shell(&policy_cwd.to_string_lossy()) {
+                ctx.record_failure(&e).await?;
+                return Err(AppError::Other(e));
+            }
         }
         if let Err(error) = ctx.sandbox.check_cwd(&cwd_absolute) {
             ctx.record_failure(&error).await?;

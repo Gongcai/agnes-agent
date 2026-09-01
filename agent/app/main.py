@@ -136,6 +136,8 @@ async def run_agent_graph(
             stdout = result_payload.get("stdout", "")
             stderr = result_payload.get("stderr", "")
             
+            if exit_code is None:
+                return f"Tool error:\n{stderr or stdout}"
             if exit_code != 0:
                 return f"Error (Exit Code {exit_code}):\n{stderr or stdout}"
             return stdout or result_payload.get("result") or "Success"

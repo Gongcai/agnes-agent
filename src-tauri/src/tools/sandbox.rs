@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::error::{AppError, AppResult};
+use crate::tools::builtin::{GuestMount, GuestPathResolver};
 use crate::tools::policy::{expand_home, BwrapMode, ToolPolicy};
 
 const SANDBOX_HELPER_FLAG: &str = "--agnes-sandbox-exec";
@@ -296,6 +297,30 @@ impl AndroidProotRuntimeConfig {
         mounts
     }
 
+    fn guest_path_resolver(&self, workspace_root: &Path) -> GuestPathResolver {
+        let mut resolver = GuestPathResolver::new(Some(workspace_root), None);
+        for mount in self
+            .base_mounts()
+            .into_iter()
+            .chain(self.workspace_mounts(workspace_root))
+        {
+            resolver = resolver.with_mount(GuestMount::new(
+                mount.resource_id,
+                mount.source,
+                mount.target,
+            ));
+        }
+        resolver
+    }
+
+    fn host_mount_roots(&self, workspace_root: &Path) -> Vec<PathBuf> {
+        self.base_mounts()
+            .into_iter()
+            .chain(self.workspace_mounts(workspace_root))
+            .map(|mount| mount.source)
+            .collect()
+    }
+
     pub(crate) fn user_command_spec(
         &self,
         cwd: Option<&str>,
@@ -453,13 +478,15 @@ impl AndroidProotProcessRuntime {
         let cwd = cwd
             .map(normalize_root)
             .unwrap_or_else(|| workspace_root.clone());
-        let relative_cwd = cwd.strip_prefix(&workspace_root).map_err(|_| {
-            AppError::Other(format!(
-                "Android Linux tool cwd escapes the workspace: {}",
+        let resolver = self.config.guest_path_resolver(&workspace_root);
+        let resolved_cwd = resolver.resolve_from_cwd(".", Some(&cwd));
+        if resolved_cwd.resource_id == "host" {
+            return Err(AppError::Other(format!(
+                "Android Linux tool cwd is not a mounted Runtime path: {}",
                 cwd.display()
-            ))
-        })?;
-        let guest_cwd = Path::new("/workspace").join(relative_cwd);
+            )));
+        }
+        let guest_cwd = resolved_cwd.guest_path;
 
         let mut proot_args = self.config.base_args();
         self.config
@@ -654,6 +681,10 @@ pub trait SandboxGuard: Send + Sync {
     fn check_read(&self, path: &Path) -> Result<(), String>;
     fn check_write(&self, path: &Path) -> Result<(), String>;
     fn check_cwd(&self, path: &Path) -> Result<(), String>;
+    /// Resolve a user-visible guest path to its host path and stable guest path.
+    /// Android overrides this with the Runtime mount table; desktop keeps the
+    /// existing workspace aliases.
+    fn resolve_guest_path(&self, raw: &str, cwd: Option<&Path>) -> AppResult<(PathBuf, PathBuf)>;
     fn command(
         &self,
         program: &str,
@@ -765,6 +796,17 @@ impl PolicySandbox {
             .collect::<Vec<_>>();
         cwd_roots.extend(configured_write_roots.iter().cloned());
         cwd_roots.extend(temp_write_roots.iter().cloned());
+        if let (ToolProcessRuntime::AndroidProot(runtime), Some(workspace)) =
+            (&process_runtime, workspace_cwd)
+        {
+            cwd_roots.extend(
+                runtime
+                    .config
+                    .host_mount_roots(workspace)
+                    .into_iter()
+                    .map(|path| normalize_root(&path)),
+            );
+        }
         deduplicate_paths(&mut cwd_roots);
 
         let primary_write_root = workspace_cwd
@@ -887,6 +929,22 @@ impl SandboxGuard for PolicySandbox {
 
     fn check_cwd(&self, path: &Path) -> Result<(), String> {
         check_under_roots(path, &self.cwd_roots, "working-directory")
+    }
+
+    fn resolve_guest_path(&self, raw: &str, cwd: Option<&Path>) -> AppResult<(PathBuf, PathBuf)> {
+        let resolver = match &self.process_runtime {
+            ToolProcessRuntime::AndroidProot(runtime) => self
+                .workspace_root
+                .as_deref()
+                .map(|root| runtime.config.guest_path_resolver(root)),
+            ToolProcessRuntime::Host => None,
+        }
+        .unwrap_or_else(|| GuestPathResolver::new(self.workspace_root.as_deref(), None));
+        let resolved = resolver.resolve_from_cwd(raw, cwd);
+        Ok((
+            crate::tools::builtin::normalize_path(&resolved.host_path),
+            resolved.guest_path,
+        ))
     }
 
     fn command_spec(
@@ -1779,7 +1837,62 @@ mod tests {
         let error = runtime
             .command_spec("bash", &[], &[], Some(&workspace), Some(&outside))
             .unwrap_err();
-        assert!(error.to_string().contains("escapes the workspace"));
+        assert!(error.to_string().contains("not a mounted Runtime path"));
+    }
+
+    #[test]
+    fn android_proot_maps_runtime_tmp_cwd_into_linux_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        let workspace = temp.path().join("workspace");
+        let proot_tmp = temp.path().join("proot-tmp");
+        let android_workspace_root = temp.path().join("user/workspace");
+        let runtime_data = temp.path().join("runtime");
+        let environments = temp.path().join("environments");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(rootfs.join("usr/bin")).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&android_workspace_root).unwrap();
+        std::fs::create_dir_all(proot_tmp.join("shm")).unwrap();
+        for path in [&runtime_data, &environments, &cache] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        for path in [
+            &rootfs.join("usr/bin/env"),
+            &temp.path().join("proot"),
+            &temp.path().join("loader"),
+        ] {
+            std::fs::write(path, "test").unwrap();
+        }
+
+        let runtime = AndroidProotProcessRuntime::new(
+            AndroidProotRuntimeConfig::new(
+                temp.path().join("proot"),
+                temp.path().join("loader"),
+                proot_tmp.clone(),
+                rootfs,
+                android_workspace_root,
+                false,
+            )
+            .with_runtime_mounts(runtime_data, environments, cache),
+        );
+        let command = runtime
+            .command_spec(
+                "bash",
+                &["-c".into(), "pwd".into()],
+                &[],
+                Some(&workspace),
+                Some(&proot_tmp),
+            )
+            .unwrap();
+        let args = command
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(args
+            .windows(2)
+            .any(|window| window[0] == "-w" && window[1] == "/tmp"));
     }
 
     #[test]

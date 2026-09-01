@@ -90,8 +90,16 @@ impl<'a> ToolCtx<'a> {
 
     /// 统一失败落库。
     pub async fn record_failure(&self, err_msg: &str) -> AppResult<()> {
-        self.update_complete("failed", None, Some(-1), None, Some(err_msg.to_string()))
-            .await
+        // A preflight or tool validation failure is not a process exit code.
+        // Keep exit_code empty so callers can distinguish it from command 1.
+        self.update_complete(
+            "failed",
+            Some("tool_error"),
+            None,
+            None,
+            Some(err_msg.to_string()),
+        )
+        .await
     }
 }
 
@@ -355,7 +363,10 @@ impl GuestPathResolver {
 
 /// Resolve a file argument relative to the current workspace.
 pub fn resolve_path(ctx: &ToolCtx<'_>, path: &str) -> PathBuf {
-    GuestPathResolver::from_context(ctx).resolve_host(path)
+    ctx.sandbox
+        .resolve_guest_path(path, ctx.workspace_cwd.as_deref())
+        .map(|(host_path, _)| host_path)
+        .unwrap_or_else(|_| GuestPathResolver::from_context(ctx).resolve_host(path))
 }
 
 /// Resolve a path with the same fallback rules as built-in tools, without a
