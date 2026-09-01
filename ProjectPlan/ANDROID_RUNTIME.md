@@ -4,6 +4,12 @@
 > 更新时间：2026-09-01
 > 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`、`OPERIT_ANDROID_RUNTIME_REFERENCE.md`
 
+> 产品决策（2026-09-01）：Android 继续采用 Agnes 的 Agent-first 模型，但用户不是 Agent 的附属审批者。
+> 用户必须能通过独立 PTY 完整使用内置 Ubuntu，进行包管理、编译、调试、运行服务和文件管理；
+> PTY 是用户访问 Ubuntu 系统及其文件的主要门户。正式版接受内置完整 Runtime 的安装包和磁盘体积。
+> Agnes 提供接近 Operit 的宽泛 Linux 基础能力和可选挂载，不替用户或 Agent 预先决定工具链、依赖
+> 安装方式或 workspace 隔离策略；硬限制只来自 Android 本身和用户明确授予的资源范围。
+
 ## 1. 目标
 
 Android 端最终必须支持与桌面端同等级别的本地 Agent 工作流：Agent、工具、记忆、工作区和任务执行可以在手机本地完成。第一版可以先交付聊天、同步和基础运行时接口，但不能把 Android 永久定义为只能查看历史的轻客户端。
@@ -30,7 +36,7 @@ Operit 的公开实现提供了有价值的架构参考：Android 主应用与�
 | QEMU 虚拟机 | 保留研究 | 隔离较强，但体积、启动速度、性能和功耗不适合当前版本 |
 | 自研完整 Linux 运行时 | 长期研究 | 控制力强，但会重新承担终端、包管理、rootfs 和工具生态的维护成本 |
 
-PRoot 是用户态路径转换和系统调用拦截机制，不是强安全边界，也不能提供真正的 root、namespace、cgroup 或 systemd。Android 的真实安全边界必须由 Android 权限、SAF 授权、Rust capability、工具审批、路径检查和资源限制共同提供。
+PRoot 是用户态路径转换和系统调用拦截机制，不是强安全边界，也不能提供真正的 root、namespace、cgroup 或 systemd。Android 的真实安全边界来自 Android UID/权限、SELinux、scoped storage/SAF 和 Keystore；Rust capability、审计、用户可调授权与资源限制用于表达和管理这些边界，不能把完整 Linux 人为缩成命令白名单。
 
 ## 3. 目标架构
 
@@ -68,8 +74,8 @@ PRoot 是用户态路径转换和系统调用拦截机制，不是强安全边�
 
 Rust Core 继续是应用资源和数据的唯一所有者：
 
-- 负责 SQLite、同步、E2EE、工具策略、审批、审计和会话状态；
-- 负责把工具请求转换为 Android Linux Runtime 中的受控执行；
+- 负责 SQLite、同步、E2EE、用户可调工具授权、审计和会话状态；
+- 负责把工具请求转换为 Android Linux Runtime 执行，并保持取消、超时和结构化结果；
 - 负责 Agent Protocol 的连接、取消、重连和状态恢复；
 - 不把 API Key、同步凭证或 E2EE keyset 传入 Ubuntu 文件系统。
 
@@ -86,8 +92,10 @@ Android Runtime Service 负责跨 Activity 生命周期维护运行时：
 ### 3.2 用户可见 Linux 终端
 
 Android Local 不只提供 Agent 后台工具调用，还提供一个用户可以随时打开的内置 Ubuntu 终端。
-这个终端是 Runtime 的一等入口，不需要先触发 Agent handoff；用户可以直接使用 shell、`apt`、
-`dpkg`、Python、Git 和 SSH 等已打包的 Linux 工具。
+这个终端是用户访问内置 Ubuntu 系统、开发工具和文件的一等门户，不需要先触发 Agent handoff；
+用户可以直接使用 shell、`apt`、`dpkg`、Python、Git、SSH、编译器和本地服务。Agnes 保持
+Agent-first 的产品入口不等于限制人工开发能力：Agent 与用户可以操作同一项目和 Ubuntu 实例，
+两者使用不同的会话传输和生命周期，但默认共享同一套 Linux 工具、文件 namespace 和用户授权。
 
 终端会话由 Runtime Service 持有，不依附某个 Activity。每个会话至少绑定以下状态：
 
@@ -106,13 +114,19 @@ resize 更新同一 PTY 的窗口大小，不能通过模拟另一条 shell 命�
 
 | 执行平面 | 入口 | stdin/输出 | 生命周期 | 权限语义 |
 |---|---|---|---|---|
-| User terminal | 用户终端 UI | 独占 PTY 字节流 | 由用户打开、重连、关闭 | 仍受 Runtime sandbox、挂载、网络和资源限制 |
-| Agent hidden exec | Agent `shell`/工具调用 | 默认无 stdin，结构化输出 | timeout、取消和进程组清理 | 额外经过 Rust tool policy、审批和审计 |
+| User terminal | 用户终端 UI | 独占 PTY 字节流 | 由用户打开、重连、关闭 | 与 Agent 共享用户选择的 Runtime 能力，仍受 Android/SAF 边界 |
+| Agent hidden exec | Agent `shell`/工具调用 | 默认无 stdin，结构化输出 | timeout、取消和进程组清理 | 使用同一基础 Linux 能力；保留审计、取消和资源上限，不另设人为工具禁区 |
 
-用户主动输入的终端命令不重复走 Agent 工具审批，但不能绕过 Android 应用沙箱、Runtime 挂载边界、
-资源配额和 provisioning 规则。终端可以观察包安装和交互提示；Agent hidden exec 遇到需要输入时
-必须返回 `requires_interactive_terminal`，经用户明确批准后才创建或绑定 handoff 会话，不能偷偷
-接管用户已有终端。
+用户主动输入的终端命令不重复走 Agent 工具审批，但不能绕过 Android 应用沙箱、用户选择的 Runtime
+挂载边界、资源配额和网络边界。用户对自己的 Ubuntu 实例拥有完整开发控制，可以直接安装或删除系统包、
+创建语言环境、编译原生程序、修改 guest 配置并启动监听服务；这些操作不需要按 Agent 工具调用
+逐条审批，也不要求 Agnes 代替用户选择全局或 workspace 环境，但仍记录 Runtime 审计事件，并明确提示磁盘、网络暴露和 Runtime 重置影响。包管理状态
+属于当前用户 Runtime 的可变层，升级前记录包清单和关键配置；恢复内置 Runtime 时必须让用户选择
+保留、导出或丢弃这些变更，不能静默覆盖。
+
+Agent hidden exec 默认使用非交互协议，但拥有与用户终端一致的 Ubuntu 基础命令、包管理、网络和
+文件能力；它不应因为是 Agent 就被强制切换到另一套工具或依赖模型。需要输入时必须返回
+`requires_interactive_terminal`，经用户明确批准后才创建或绑定 handoff 会话，不能偷偷接管用户已有终端。
 
 ## 4. Linux 用户空间
 
@@ -155,7 +169,7 @@ PRoot runner 当前约定以下文件由 Android 包和 rootfs 制品共同提�
 - `libagnes_proot.so`：由目标 ABI 的 `jniLibs` 打入 APK，安装后从 Android `nativeLibraryDir` 执行；不从应用可写 rootfs 执行 ELF；
 - `libagnes_proot_loader.so`：同 ABI 的静态 PRoot ELF loader；通过 `PROOT_LOADER` 直接使用，避免 PRoot 在 Android 应用私有目录临时提取 loader；
 - `usr/bin/python3`：Linux 用户空间内的 Python 解释器；
-- `usr/bin/pip3` 和 `usr/bin/pip`：必须解析到真实的 pip 脚本，不能是自指软链接；打包器会在 staging rootfs 中规范化为 `pip3.12`/`pip3`，但 Runtime 保留 PEP 668，默认不允许污染全局 Python；
+- `usr/bin/pip3` 和 `usr/bin/pip`：必须解析到真实的 pip 脚本，不能是自指软链接；打包器会在 staging rootfs 中规范化为 `pip3.12`/`pip3`；Runtime 保留 Ubuntu 的 PEP 668 默认语义，但 Agnes 不额外拦截用户或 Agent 明确选择的安装方案；
 - `opt/agnes-agent/app/main.py`：与桌面端同源的 Python Agent；
 - `usr/bin/bash`、`usr/bin/git`、Python 和 SSH 等 Agent 工具依赖也必须位于 rootfs；
 - Agent 依赖、证书和启动配置也必须位于 rootfs 内，不写入 Android 私有目录中的明文配置。
@@ -170,21 +184,22 @@ Rust 会把应用私有工作区绑定为 Linux 的 `/workspace`，通过一次�
 WS 连接 Agent Protocol。Android Runtime 不向其他应用暴露 Service，停止 Runtime 时会
 先回收 Agent 子进程，再移除前台通知。
 
-Shell 和 Git 工具在 Android 上也通过同一个 PRoot rootfs 执行。Rust 先按现有工具策略检查
+Shell 和 Git 工具在 Android 上也通过同一个 PRoot rootfs 执行。当前实现仍先按现有工具策略检查
 宿主工作区、cwd、写入边界、审批、超时和输出上限，再将当前工作区只读/读写边界映射为
 Linux 的 `/workspace`，并把持久项目根目录额外挂载为 `/root/workspace`，把宿主 cwd 转换为
 `/workspace` 下的相对路径。工具进程使用 APK
 内置的 `libagnes_proot.so` 和静态 `libagnes_proot_loader.so`，不把应用数据库、其他会话目录
 或未授权 Android 路径挂载进 Linux。文件、记忆和数据库工具仍由 Rust 直接执行，避免 Linux
-进程绕过 Rust 的权限审计。
+进程绕过 Rust 的权限审计。这是待替换的基线：目标实现保留业务数据库和秘密边界，但移除只允许
+workspace 的默认限制，让 Rust 文件工具与 Linux shell 共用完整 Runtime mount table。
 
 运行时使用 PRoot `-0` fake-root，让 `apt`/`dpkg` 在隔离 rootfs 内获得一致的 root 语义；Android
 内核仍以应用 UID 执行进程，因此这不是 Android root，也不能越过应用沙箱。`/dev`、`/proc` 和
 应用私有的 `android-runtime/tmp/shm` 分别挂载到 Linux 环境，其中最后一项提供 POSIX semaphore
 所需的 `/dev/shm`；Android 无法在进程内创建真实 tmpfs，因此启动前必须准备该目录。工具和 Agent
 固定注入 `LANG=C.UTF-8`、`LC_ALL=C.UTF-8`、`TMPDIR=/tmp` 与 `UV_LINK_MODE=copy`。共享存储
-工作区仍可读写，但其 FUSE 限制意味着不能依赖软链接或直接执行其中的脚本；Python 虚拟环境和
-需要直接执行的工具应进入应用私有 execution store。
+工作区仍可读写，但其 FUSE 限制意味着部分设备上不能依赖软链接或直接执行其中的脚本；Python
+虚拟环境和需要直接执行的工具可以选择应用私有 execution store，最终由能力探测和用户/Agent 决定。
 
 每次启动 Agent 前，Rust 会使用与正式 Agent 相同的 PRoot、loader、`/dev`、`/proc` 和
 `/dev/shm` 挂载，运行一次最小 Python `multiprocessing.SimpleQueue` 探测。先以不带
@@ -237,21 +252,80 @@ Android 构建从仓库根目录下未纳入 Git 的 `android-runtime/<abi>/` �
 
 本地完整 Agent 的第一批 Linux 能力：
 
-- Python 3.12、`pip`/`uv` 所需的最小运行支持；
-- Shell、基础文件工具、Git、SSH；
+- Python 3.12、`pip`、`uv` 和 venv；
+- Shell、完整基础文件工具、Git、SSH、证书和常用编译工具；
 - Python Agent 依赖及现有 Agent WebSocket 协议；
-- 后续按需加入 Node.js、编译工具、MCP 进程和更多 Skills 依赖。
+- Runtime 设置提供 Node.js/npm/fnm、Rust/rustup、MCP 进程和更多 Skills 依赖的可选预装入口；它们
+  安装到同一个用户可配置 Ubuntu，不拆成 Agent 专用工具套件。
 
 不把桌面端的 Python sidecar 打包方式直接照搬到 Android。Android 需要维护一个可升级的 Linux Python 环境，但 Agent Protocol 和 Python 业务代码尽量保持同源。
 
 ## 5. Android 与 Linux 的文件互通
 
-Android 不把整个 `/sdcard` 或 Android 私有目录默认暴露给 Linux。工作区分为两类：
+Android 不可能靠 PRoot 绕过应用 UID、SELinux、scoped storage 和用户授予的存储权限，但在这些
+真实边界以内，Agnes 不再额外收窄成“只能访问当前 workspace”。目标是让用户和 Agent 在 guest
+看到稳定、连贯、接近普通 Linux 的文件系统，并让 shell、文件工具、Git、编辑器和脚本共用它。
+
+Runtime 使用按资源授权区分的 mount profile，执行主体不再决定可用工具范围：
+
+| Profile | 默认可见内容 | 可选内容 | 用途 |
+|---|---|---|---|
+| Base Linux profile | rootfs、用户 home、workspace、专用 tmp 和必要伪文件系统 | 无需额外授权 | 用户和 Agent 的共同基础环境 |
+| Extended storage profile | Base profile | 用户明确授权的 SAF 目录或 emulated storage | 用户和 Agent 均可使用；由用户选择是否开启 |
+
+挂载授权以稳定 resource ID 记录，并同时对 User terminal 与 Agent 生效；不再人为制造“用户可见但
+Agent 永远不可见”的文件模型。用户可以单独关闭 Agent 对某个 resource 的访问，但默认不把 Agnes
+的策略限制误写成 Linux 能力限制。
+
+目标 mount table 向 Operit 普通 PRoot 模式靠近：
+
+| Android source | Guest target | 说明 |
+|---|---|---|
+| Runtime rootfs | `/` | 用户和 Agent 可修改的完整 fake-root Ubuntu |
+| Agnes runtime data subtree | 对应 `/data/user/<user>/<package>/runtime` 与 `/data/data/<package>/runtime` | 只映射 Runtime 自身数据，不暴露 SQLite、API Key、同步凭证或 E2EE 数据 |
+| Runtime home | `/root` 及其稳定宿主映射 | 工具链、配置、缓存和用户文件可持久化 |
+| host `/dev`、`/proc`、`/sys`、`/dev/pts` | 同路径 | 按 source/capability probe 挂载，缺失节点使用明确标记的 fallback |
+| host `/proc/self/fd*` | `/dev/fd`、`/dev/stdin`、`/dev/stdout`、`/dev/stderr` | 保持常见 CLI 的文件描述符语义 |
+| `/storage/emulated/<user>` | `/sdcard` 与同一原始路径 | 用户授予 All files access 后启用，两个别名指向同一 resource |
+| host `/data/local/tmp` | `/data/local/tmp` | 与 Operit 一样先探测；仅在当前 app UID 实际可访问且用户启用兼容挂载时加入 |
+
+普通 PRoot 不映射整个 `/data/data` 或 `/data/user`，也不尝试访问其他应用私有数据。若未来提供
+root/chroot 实验模式，必须作为完全不同的高风险产品能力重新决策，不能由普通 Runtime 自动升级。
+
+工作区分为两类：
 
 1. **应用私有工作区**：默认绑定到 Agnes 私有目录，稳定、无需额外授权，适合 Agent 自己创建的文件。
 2. **用户授权工作区**：用户通过 Storage Access Framework 选择目录，Android 保存 persistable URI 权限，Runtime 将授权范围映射为 Linux 的 `/workspace`。
 
-### 5.1 Android 内置项目工作区
+SAF 返回的是 `content://` 文档树，不是可直接交给 PRoot `-b` 的 POSIX 路径。对于本机 emulated
+storage，优先使用用户授予的 All files access 和真实路径直接 bind，避免把安装依赖、编辑、目录
+浏览和脚本运行拆成多套文件模型。只有云盘或其他确实不提供 POSIX 路径的 DocumentsProvider 才使用
+app-private mirror/import-export；镜像后端需要冲突检测、原子写回、删除确认和授权失效处理，不能把
+URI 字符串伪装成普通路径。
+
+### 5.1 用户共享存储宽挂载
+
+为了支持用户和 Agent 直接处理 Downloads、媒体和已有源码，Runtime 初始化向用户提供“共享存储访问”
+选项：在 Android 系统设置中由用户授予相应权限后，将当前 Android user 的 emulated storage
+同时挂到 `/sdcard` 和 `/storage/emulated/<user>`，与 Operit 和 Android 常见路径保持一致；可额外
+提供 `/mnt/android` 友好别名，但内部策略只识别同一个 resource ID。是否启用、开放给哪些会话由
+用户选择，不由 Agnes 预设工作流。
+
+该模式必须满足：
+
+- Android 授权前不可用，Runtime 首次设置时主动提供并解释其读取、修改和删除范围；随时可以撤销；
+- 不挂载整个 `/data/data`、`/data/user` 或其他应用私有目录；Agnes runtime data 使用精确子目录映射，
+  `/data/local/tmp` 仅在 probe 成功且用户启用兼容挂载时加入；
+- 默认可以同时供用户终端、Agent hidden exec 和 MCP 使用；用户可按 resource ID 撤销某类会话，
+  但不提供与 Linux 基础能力无关的强制 workspace 隔离；
+- 启动时探测 read/write/rename、symlink、direct exec 和 case sensitivity，按实际能力报告；共享存储
+  通常不适合 venv、原生构建输出或密钥，app-private execution store 作为推荐位置但不强制；
+- 终端启动的脚本、依赖安装钩子和本地服务与用户本人拥有相同的挂载可见性，因此 UI 必须把当前
+  广域挂载持续显示在终端状态中，关闭权限后立即阻止新会话继承；
+- Google Play 发行不得默认依赖 `MANAGE_EXTERNAL_STORAGE`。若应用商店政策不允许 Agnes 申请
+  All files access，则 Play 版本只提供 SAF/app-private 模式，完整共享存储模式留给符合政策的渠道。
+
+### 5.2 Android 内置项目工作区
 
 Android Code 模式提供一个面向小工具开发的内置项目入口。Runtime 启动时会在应用私有数据目录中
 预先创建持久目录：
@@ -280,15 +354,22 @@ rootfs 版本目录内，因此 Runtime 升级、回滚或重新安装不会删�
 该入口不默认授权整个 Android 文件系统，也不替代后续 SAF 外部目录绑定；它是 Android 本地小型
 工具开发的低门槛默认路径。
 
-同步的 `workspace` 只保存逻辑 ID、名称和仓库身份等字段；本机绑定保存绑定类型、URI 或本地路径、权限状态和校验时间。任何 Android URI、Linux rootfs 路径和宿主绝对路径都不得进入同步 payload、Agent prompt 或云端日志。
+同步的 `workspace` 只保存逻辑 ID、名称和仓库身份等字段；本机绑定保存绑定类型、URI 或本地路径、权限状态和校验时间。Android URI 和 app-private 宿主实现路径不得进入同步 payload、Agent prompt 或云端日志；`/root`、`/workspace`、`/sdcard` 和 `/storage/emulated/<user>` 等稳定 guest 路径可以正常提供给 Agent。
 
 工具执行规则：
 
-- 没有工作区绑定时，Android 可以查看工作区会话，但文件、Shell、Git 工具必须明确拒绝；
+- 没有工作区绑定时，文件、Shell 和其他 Linux 工具仍可在 `/root`、rootfs 和已授权挂载中工作；
+  Git 只有在当前目录确实是仓库时才执行仓库操作，不因缺少 Agnes workspace 记录而整体禁用；
 - SAF 绑定失效时，不把空路径或旧路径当作有效 cwd；
 - Rust 在每次文件工具调用前重新验证绑定和 capability；
-- PRoot 的路径映射只实现可用性，不替代 Rust 的路径授权；
+- PRoot mount table 与 Rust 路径解析共享同一 canonical resource；Rust 只执行用户明确配置的资源撤销，
+  不再添加仅针对 Agent 的隐式 workspace 限制；
 - Android 系统能力通过窄化 Bridge 提供，例如文件选择、分享、剪贴板、通知和相机，不向 Python 暴露通用 Android API。
+
+Android UI 需要提供面向统一 Runtime namespace 的文件入口：可以直接浏览 `/root`、项目、rootfs
+和已授权共享存储，打开目录、编辑文件并把选中的 guest 路径交给终端或 Agent。实现可以采用
+app-internal 文件浏览器并按需增加只读/读写 DocumentsProvider；无论采用哪种 UI，都必须复用同一
+mount table 和 GuestPathResolver，不能再维护一套 SAF URI/缓存副本路径。
 
 ## 6. 模型运行模式
 
@@ -356,9 +437,14 @@ Android 有两种执行模式：
 - [ ] 支持原始输入、输出订阅、当前 cwd、窗口 resize、Ctrl+C、退出状态和中断原因展示；
 - [ ] 用户终端可直接运行 `bash`、`apt`、`dpkg`、`python3`、`git` 和 `ssh`，并遵守 Runtime 资源与网络边界；
 - [ ] user terminal 与 Agent hidden exec 不共享 stdin、输出流、取消信号或 session ID；
-- Shell、文件读写、Git、Python、SSH 和记忆工具的完整功能与权限验收；
-- 工具审批、sandbox、审计、超时、并发和输出上限；
-- 应用私有工作区和 SAF 工作区；
+- [ ] Shell、文件读写、Git、Python、SSH、MCP 和用户 PTY 共用完整 Runtime mount table；
+- [ ] User terminal 与 Agent 默认可修改 guest rootfs、home 和 runtime data，并可直接安装依赖、
+  编辑文件、打开目录和运行脚本；
+- [ ] 用户授予 All files access 后，将 emulated storage 同时映射为 `/sdcard` 与 Android 原始路径，
+  Agent、PTY、Rust 文件工具和 UI 文件入口对同一文件解析一致；
+- [ ] 提供 Runtime 文件浏览入口，可浏览 `/root`、项目、rootfs 和已授权共享存储并打开文件夹；
+- 用户可调 resource 授权、审计、超时、并发和输出上限；
+- 应用私有工作区、SAF 工作区和可选宽共享存储；
 - Android Bridge 的最小系统能力；
 - 后台任务、崩溃恢复和运行状态恢复；
 - Skills/MCP 按 Android 资源和权限边界逐项接入。
@@ -380,9 +466,10 @@ Runtime 原型必须先满足：
 - 前台服务停止会取消任务并清理子进程；
 - App 被杀后能恢复或明确标记未完成运行；
 - Python Agent 在 Ubuntu 用户空间中通过现有协议握手；
-- Shell、Git、Python 和 SSH 只能访问有效工作区；
+- Shell、Git、Python、SSH 和文件工具共享同一 Runtime namespace，可访问 rootfs、home、workspace
+  以及用户已授权的扩展存储；
 - Android 未授权路径不可访问；
-- Rust 工具审批不能被 Linux Shell 绕过；
+- 用户可以查看并调整 Agent 的 resource 授权；路径别名不能绕过被明确撤销的 resource；
 - rootfs 下载中断、校验失败和升级失败不会替换当前可用版本；
 - 超时、输出大小、并发和存储配额均有硬限制；
 - UI 与 Runtime 断开后可以重连并恢复运行状态。

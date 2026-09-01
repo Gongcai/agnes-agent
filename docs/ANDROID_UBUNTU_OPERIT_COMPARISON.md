@@ -30,10 +30,10 @@ guest 和 Agent 工具策略没有共享同一套运行时模型**：
 3. Agent 命令和用户终端不能共用同一执行会话。Agent 实际无人替它输入 sudo 密码或 apt
    提示，因此后台命令必须默认非交互、可超时、可取消；同时 Agnes 必须提供完整、独立、
    用户可直接操作的 Linux 可见 PTY，供用户运行内置 Ubuntu 工具。
-4. 系统包安装与普通项目命令没有形成独立的 provisioning 边界。`apt`/`dpkg` 应由 Runtime
-   supervisor 在 fake-root guest 中受控执行，而不是依赖真实 sudo 或用户补输密码。
-5. Python 环境位置和生命周期没有被建模。workspace 适合存源码、`pyproject.toml` 和锁文件，
-   不适合存放需要 symlink 与直接执行能力的 `.venv`。
+4. 系统包安装仍应使用 PRoot fake-root 和无密码 sudo 兼容层；supervisor 可以提供预检、恢复和
+   审计，但不能把 `apt`/`dpkg` 从普通 Linux 命令改造成只能通过 Agnes API 调用的特权功能。
+5. Python、Node 和 Rust 的环境位置需要能力提示，但不能被产品强制。workspace 支持完整 POSIX
+   语义时可以直接放依赖；共享存储 noexec 或缺少 symlink 时，推荐改用 app-private execution store。
 
 Operit 已经解决了其中最重要的运行时基础问题：
 
@@ -43,10 +43,10 @@ Operit 已经解决了其中最重要的运行时基础问题：
 - PRoot bind 定义与 Linux-to-host 文件路径映射共用一个模型；
 - 用户可见命令走 PTY，后台执行走独立 hidden shell，并具备 marker、timeout 和进程组清理。
 
-Agnes 应借鉴这些机制，但不能直接照搬 Operit 的“用户可配置全局开发终端”定位。Agnes 的手机
-Ubuntu 基本只供 Agent 使用，目标应是 **可重复、无人值守、按项目隔离**：默认保留 PEP 668，
-禁止全局 pip 污染；内置 `uv` 并把项目虚拟环境放入应用私有、支持 symlink 和 exec 的 runtime
-data，Miniconda/micromamba 只作为可选的大型环境后端。
+Agnes 应借鉴 Operit 的“可配置完整开发终端”定位，并把相同 Linux 基础能力交给用户和 Agent。
+Runtime 内置或提供 Python、pip、uv、Node、fnm、Rust 等工具入口；按 workspace 使用 uv/venv、
+fnm 或锁文件是推荐的依赖管理方式，不是强制隔离。Agnes 负责报告真实文件系统能力、提供可恢复
+的 Runtime 和明确授权范围，不替用户或 Agent 决定全局安装还是项目环境。
 
 ## 3. Operit 的实际架构
 
@@ -161,6 +161,56 @@ Operit 在 `PRootMountMapping` 中集中定义基础 bind：
 此前 shell 只认识 `/workspace`，宿主文件工具只认识 external storage 长路径，本质上就是缺少这一
 层统一 namespace。
 
+需要准确区分 Operit 的普通 PRoot 与 root/chroot 分支：普通 PRoot 不会获得其他应用数据权限，
+`/data/user/<user>/<operit-package>` 和 `/data/data/<operit-package>` 都只映射回 Operit 自己的
+`applicationInfo.dataDir`；只有显式启用、通过 `su` 启动的 chroot 分支才尝试 bind 整个
+`/data/user/<user>` 和 `/data/data`。即使 mount 参数存在，最终可见范围仍由 Android UID、SELinux
+和 source probe 决定，PRoot 不能提升权限。
+
+Operit 主应用同时声明 `MANAGE_EXTERNAL_STORAGE`，Android 11+ 的权限引导通过
+`ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` 请求 All files access，并以
+`Environment.isExternalStorageManager()` 判断是否授予。因此在用户允许后，`/storage/emulated/<user>`
+到 `/sdcard` 的挂载确实能让 Ubuntu 命令直接遍历和修改大部分共享存储，而不只是一个无效别名。
+
+#### 宽范围挂载的收益
+
+1. 终端、Linux 工具、Operit 文件 Provider 和 Android 应用使用相同路径，不需要在 SAF URI、缓存
+   副本与 Linux 路径之间反复导入导出。
+2. 用户能直接处理 Downloads、相册、录音、现有代码仓库和其他共享文件，CLI、SSH/SFTP、编辑器、
+   编译脚本之间的互操作成本低。
+3. 旧脚本和工具普遍认识 `/sdcard`，保留 `/storage/emulated/<user>` 原路径又能兼容 Android 工具
+   返回的绝对路径。
+4. app-private data 以 Android 原路径映射后，宿主文件 API 与 guest 对同一文件的观察一致，也方便
+   终端运行时组件共享 socket、脚本和状态文件。
+5. 直接 bind 没有 SAF 文档树逐文件 IPC 和镜像同步成本，大目录扫描、Git、grep 与批量转换更自然。
+
+#### 宽范围挂载的风险和限制
+
+1. **权限爆炸半径**：只要终端进程能看到整个 `/sdcard`，用户运行的脚本、npm/pip 安装钩子、MCP
+   server 或被利用的 CLI 也能读取、篡改和删除其中全部可访问文件。
+2. **数据外传**：相册、下载、导出备份、聊天附件和可能误放在共享存储的密钥会同时暴露给联网
+   进程；“命令由用户启动”不代表依赖代码可信。
+3. **Agent 权限范围扩大**：用户选择让 Agent 与 PTY 共用宽挂载后，Agent 可以读取共享存储；这应
+   被 UI 明确表达为用户授予的能力。路径别名要求策略按 canonical resource 判断，不能只检查
+   `/workspace` 或 `/sdcard` 字符串。
+4. **破坏性操作**：错误的 `rm`、构建清理脚本、递归格式化或恶意依赖可影响非当前项目文件，恢复
+   能力取决于用户自己的备份和 Android 回收站实现。
+5. **文件系统语义不完整**：emulated storage 常缺少可靠 symlink、Unix 权限和 direct exec，可能
+   noexec、大小写语义不同；它适合交换文件，不适合 venv、包缓存和原生构建目录。
+6. **平台与分发约束**：`MANAGE_EXTERNAL_STORAGE` 是 Android 特殊权限，用户授权摩擦高，Google
+   Play 对用途有严格审核；以它作为核心路径会影响商店发布和不同 Android 版本兼容性。
+7. **系统接口暴露**：`/dev`、`/proc`、`/sys` 和 `/data/local/tmp` 的宽挂载会增加设备信息与特殊
+   节点暴露。Android UID/SELinux 仍会阻止多数特权操作，但“访问失败”不能代替最小挂载设计。
+8. **root 模式风险质变**：普通 PRoot 下 `/data/data` 只映射本应用目录；一旦用户通过 `su` 进入
+   chroot 并挂载整个 data root，恶意或误操作的影响可能扩展到其他应用数据，不再是同一级风险。
+
+**Agnes 决策（2026-09-01）**：保留 Agent-first 产品模型，同时保证用户通过 PTY 拥有完整 Ubuntu
+开发能力。文件模型向 Operit 靠近：rootfs、Agnes app-private data、guest home 和必要伪文件系统
+形成统一 namespace；用户授予 All files access 后，同时映射 `/sdcard` 和 Android 原始 emulated
+storage 路径。User terminal 与 Agent hidden exec 默认共享这套 Runtime 能力，让 Agent 获得接近
+真机 Linux 的安装依赖、编辑文件、打开目录和运行脚本体验；用户仍可按 resource 单独撤销 Agent
+访问。普通 PRoot 只映射 Agnes 自身 app data，不尝试访问其他应用私有数据。
+
 ### 3.5 Android 受限 `/proc` 的 fallback
 
 Android 即使 bind 了 `/proc`，某些节点仍可能不存在或返回 `EACCES`。Operit 的
@@ -224,8 +274,10 @@ pipx、Node.js、Rust 等组件，并组合执行 apt 和安装脚本。uv 当�
 APT、pip、uv、npm 的镜像配置会写入 guest `/root` 或 `/etc`。
 
 这种做法在 Operit 的产品定位下合理：用户拥有可见终端、可观察安装过程，并主动选择全局工具。
-但它不是 Agnes Python 隔离策略的答案。Agnes 的 Agent 会长期、自动地执行多个项目，若允许它
-对 rootfs 全局 pip install，环境会逐次漂移，Runtime 回滚、问题复现和项目隔离都会失效。
+它也说明了 Agnes 不应替用户选择唯一的 Python 工作流。Runtime 只提供 Python、pip、uv 等基础
+工具，并保留 PEP 668；用户和 Agent 可以自由选择全局工具、用户级安装或按项目建立虚拟环境。
+需要可复现性时使用 `uv`/`venv`，需要多 Node 版本时使用 `fnm`，需要 Rust 工具链时使用
+`rustup`；这些是可选能力，不是强制的 workspace 产品规则。
 
 ## 4. Agnes 实测问题的根因对照
 
@@ -236,13 +288,13 @@ APT、pip、uv、npm 的镜像配置会写入 guest `/root` 或 `/etc`。
 | A-1 `/workspace` 绝对路径被拒 | guest alias 未进入宿主策略 namespace | bind 与文件映射共用 `PRootMountMapping` | 建立唯一 mount table 和双向 path resolver；策略只判断解析后的 canonical resource |
 | A-2 `~` 可写、`/root` 不可写 | `~` 在宿主 HOME 展开，guest HOME 语义丢失 | hidden/visible shell 都显式设置 guest `HOME=/root`，文件映射可落到 rootfs | 路径 API 必须携带 namespace，guest 路径只能按 guest HOME 展开 |
 | A-3 `/tmp` 被静态拒绝 | 静态检查使用宿主路径语义 | guest `/tmp` 位于 rootfs/app-private 环境 | capability profile 声明 guest tmp，并映射到专用 app-private tmp；不靠文本特判 |
-| A-4 `/lib`、`/lib64` 可写 | writable roots 配错，加上 fake-root rootfs 本就由 app UID 持有 | Operit 把 guest 当可配置终端，没有提供 Agnes 式工具安全边界 | 普通 executor 与 provisioning executor 分权；系统目录不能作为通用 writable root |
+| A-4 `/lib`、`/lib64` 可写 | fake-root rootfs 本就由 app UID 持有，这是完整可配置 Ubuntu 的正常语义 | Operit 把 guest 当可配置终端 | 允许用户和 Agent 修改自身 rootfs；用版本回滚和审计管理风险，不用路径沙箱制造半可写 Linux |
 | B 两套工具路径互不认账 | shell 与 file/git 各自解析路径 | `mapLinuxPathToHostPath()` 统一转换 | 所有工具调用同一 `GuestPathResolver`；错误报告 guest 路径及解析原因，不泄露宿主长路径 |
 | C `cd` 按 token 拦截且可绕 | shell 文本扫描被误当沙箱边界 | hidden shell 本身允许正常 shell 语义 | cwd 作为执行状态维护；授权判断目标资源，静态分析只做预警/审批，不承担隔离 |
-| D-1 apt 最后才失败 | guest 没有 fake-root，且无 provisioning API | PRoot 固定 `-0`，sudo 为 no-op shim | supervisor 预检并以非交互 fake-root 事务执行 apt/dpkg |
-| D-2 pip 默认失败 | Ubuntu PEP 668 与“全局 pip”诉求冲突 | Operit 允许用户安装并配置 pip/pipx/uv | 保留 PEP 668；默认只允许 uv/venv/conda 环境，不放开全局 pip |
-| D-3 workspace venv 失败 | external storage 不支持 symlink，固定 `--link2symlink` 放大冲突 | `--link2symlink` 先 probe | 环境存 app-private exec/symlink 文件系统；workspace 只存项目文件 |
-| D-4 workspace noexec | Android external storage 挂载语义，不是 chmod | Operit 的工具与 rootfs 主要位于 app-private 目录 | 构建产物和 env 放 execution store；workspace 脚本通过解释器运行 |
+| D-1 apt 最后才失败 | guest 没有 fake-root，执行链不一致 | PRoot 固定 `-0`，sudo 为 no-op shim | 用户和 Agent shell 均可直接执行；supervisor 另提供可选预检与恢复 |
+| D-2 pip 默认失败 | Ubuntu PEP 668 与“全局 pip”诉求冲突 | Operit 允许用户安装并配置 pip/pipx/uv | 保留 PEP 668，但提供清晰的 `uv`/venv 路径；不通过 Agnes 策略替用户决定是否使用全局方案 |
+| D-3 workspace venv 失败 | external storage 不支持 symlink，固定 `--link2symlink` 放大冲突 | `--link2symlink` 先 probe | 提供 app-private execution store 作为推荐位置，同时允许用户选择其他可用位置并报告能力 |
+| D-4 workspace noexec | Android external storage 挂载语义，不是 chmod | Operit 的工具与 rootfs 主要位于 app-private 目录 | 提供 execution store、解释器执行和能力提示；不把 noexec 伪装成权限拒绝或强制单一布局 |
 | D-5 `/proc`/工具缺口 | Android Linux ABI 与系统接口不完整，rootfs 制品过小 | fake sysdata + 可选择安装工具 | 构建时定义基础 toolchain profile；启动时生成 capability profile 和 proc fallback |
 | E 静态检查误伤 | 不完整 shell parser 被用作强制安全边界 | hidden exec 执行普通 shell，超时与进程组负责生命周期 | 用资源级 resolver 做路径授权；未知副作用进入审批，避免整条命令因 glob/环境读取被误拒 |
 | F session ID/会话恢复 | 返回协议和 registry 不一致 | Operit session manager 与 hidden executor 各自持有 registry | 返回不可截断 opaque ID；unknown 返回当前会话；重连可查询状态，超时可靠清理进程组 |
@@ -255,8 +307,8 @@ APT、pip、uv、npm 的镜像配置会写入 guest `/root` 或 `/etc`。
 1. Agent 启动、工具命令和 rootfs probe 仍固定使用 `--link2symlink`，尚无 capability profile。
 2. 路径修复分散在 `resolve_path`、shell token 检查和 `PolicySandbox` 中，尚未形成所有工具共享的
    mount/path resolver。
-3. `/etc/pip.conf` 中的 `break-system-packages = true` 会默认放开全局 pip。应删除该默认值，
-   恢复 PEP 668，并用内置 uv + 外置环境目录解决 Python 可用性。
+3. `/etc/pip.conf` 中的 `break-system-packages = true` 会静默改变 Ubuntu 默认语义。应删除该注入、
+   恢复 PEP 668，同时提供 uv/venv 和 POSIX execution store；用户明确选择的其他安装方式保持可用。
 
 因此下一轮不应继续添加更多命令名或路径字符串特判。
 
@@ -388,11 +440,11 @@ workspace 相对路径；EROFS、EACCES 和“策略拒绝”必须分别报告�
 #### User visible Linux PTY（一等入口）
 
 - 用户可以随时从 Agnes 打开内置 Ubuntu 终端；终端创建、重连和关闭都由 Runtime Service 管理。
-- 每个用户终端绑定明确的 workspace、guest HOME 和 Runtime 版本，并显示 fake-root 与资源边界。
+- 每个用户终端绑定 guest HOME 和 Runtime 版本；workspace 可选，未选择项目时从 `/root` 启动。
 - 支持 resize、Ctrl+C、原始字符输入和 canonical/non-canonical 状态。
 - UI 清楚显示当前 cwd、命令输出、输入焦点、运行状态和 fake-root 说明。
-- 终端可直接运行 shell、apt、dpkg、Python、Git、SSH 等内置 Linux 命令；命令权限仍受 Runtime
-  mount、sandbox、网络策略和 Android 应用边界限制。
+- 终端可直接运行 shell、apt、dpkg、Python、Git、SSH 等内置 Linux 命令；除用户主动撤销的资源外，
+  不添加 Agnes 命令或路径白名单，真实边界由 Android app UID、SELinux 和存储授权决定。
 - 不能把隐藏 Agent session 悄悄变成等待用户输入的会话；Agent 的人工介入必须显式创建或绑定
   一个用户批准的 handoff 任务。
 
@@ -402,7 +454,9 @@ apt、构建和脚本执行不会因为分配 PTY 而改变行为。
 
 ### 5.5 apt、dpkg 与 sudo 策略
 
-系统包变更由 Runtime Supervisor 的 provisioning API 承担：
+用户和 Agent 都可以像普通 PRoot Linux 一样直接运行 apt/dpkg。Runtime Supervisor 额外提供可选的
+provisioning API，用于无人值守安装、失败恢复和 UI 展示。以下步骤只约束该可选 API，不限制直接
+在 shell 中运行 apt/dpkg：
 
 1. 解析明确的软件包集合，展示下载量、磁盘余量和 rootfs 版本影响；
 2. 获得策略许可后，在 PRoot `-0` 环境执行；
@@ -411,43 +465,33 @@ apt、构建和脚本执行不会因为分配 PTY 而改变行为。
 5. 失败时执行 `dpkg --configure -a`/`apt-get -f install` 只能作为同一事务的恢复步骤；
 6. 成功后更新 Runtime mutation manifest，必要时从干净版本快照回滚。
 
-普通 hidden executor 中的 `apt`/`dpkg` 命令应被识别并转交 provisioning API，而不是先下载到
-最后一步才失败。兼容 `sudo` 的策略为：
+hidden executor 可以直接执行非交互 apt/dpkg，也可以选择转交 provisioning API；两条路径使用
+相同 fake-root、源配置和可写 rootfs，不能因为调用者是 Agent 而拒绝系统目录写入。兼容 `sudo` 的策略为：
 
 - guest 可内置 no-op shim，支持常见脚本；
 - 不显示密码提示，也不要求用户输入密码；
-- shim 不属于权限边界，审批与包变更审计必须发生在宿主 supervisor；
+- shim 不属于权限边界，包变更审计可由宿主 supervisor 记录；
 - 文档和错误信息明确“root 仅在该 rootfs 内模拟”。
 
-### 5.6 Python：默认 uv、环境外置、禁止全局 pip
+### 5.6 Python、Node 与 Rust：基础工具 + 可选依赖环境
 
-Python 设计目标不是让 `pip3 install --user` 成功，而是让 Agent 每次得到可复现的项目环境。
+Agnes 参照 Operit，交付一个可继续扩展的 Linux 基础环境，而不是把 Agent 和用户锁进预设的
+workspace 工具套件。Runtime 应提供 Python 3.12、pip、uv、Node/npm 的安装入口以及
+`fnm`、Rust `rustup` 等常用管理工具；用户和 Agent 可以直接使用 apt、pip、uv、npm、cargo
+和各自的版本管理器。
 
-**默认策略**：
+Ubuntu 的 `EXTERNALLY-MANAGED`/PEP 668 默认保留，不偷偷写入 `break-system-packages = true`。
+这不是禁止全局操作：需要全局 Python 包时，用户可以明确使用系统包、用户环境或受支持的 override；
+需要项目可复现性时，可以使用 `uv venv`/`uv sync`，并把环境放到任意具备 symlink/direct-exec
+能力的位置。Node 项目可用 `fnm` 切换版本并按项目管理依赖，Rust 项目可用 `rustup` 管理 toolchain。
 
-1. Runtime 制品内置兼容当前 ABI 的 `uv`，不在首次任务中通过 pipx 下载 uv。
-2. 保留 Ubuntu 的 `EXTERNALLY-MANAGED`/PEP 668，不写
-   `break-system-packages = true`，不鼓励 `pip install --user`。
-3. 项目在 workspace 保留 `pyproject.toml`、`uv.lock` 和源码。
-4. 虚拟环境与 uv cache 放在应用私有、支持 symlink 和 direct exec 的 execution store，例如：
+app-private execution store（例如 `/opt/agnes/envs` 和 `/opt/agnes/cache`）是推荐位置，原因是它
+通常支持完整 POSIX 语义，但不是强制位置。workspace、共享存储和其他已授权路径的能力由 probe
+真实报告；当路径 noexec 或不支持 symlink 时，Agnes 应给出明确诊断和可选迁移建议，而不是把
+该选择硬编码成 Agent 的工具策略。
 
-   ```text
-   /opt/agnes/envs/<workspace-id>/<environment-id>
-   /opt/agnes/cache/uv
-   ```
-
-5. Supervisor 为命令设置 `UV_PROJECT_ENVIRONMENT`、`UV_CACHE_DIR` 和 PATH，使 `uv sync`、
-   `uv run` 使用外置环境；环境 ID 应由 workspace ID、Python 版本和 lock digest 派生。
-6. Agent prompt 默认使用 `uv sync --locked` 和 `uv run ...`；没有锁文件时先生成并明确记录变更。
-7. 仅在已激活的虚拟环境中允许 `python -m pip`。全局 pip 返回可操作错误，指向 uv 环境创建流程。
-
-这同时解决：PEP 668、workspace 不支持 symlink、workspace noexec、跨项目污染和 Runtime 更新后的
-复现问题。不能通过“把 `.venv` 换到 `/tmp`”作为长期方案，因为 `/tmp` 会被清理且无法形成稳定
-项目环境；`/tmp` 只适合一次性任务。
-
-**Miniconda/micromamba**：可作为可选 environment backend，用于需要 conda 包或非 PyPI 原生库的
-任务。其体积、索引缓存、求解时间和磁盘占用更大，不应成为默认 Runtime 依赖。无论选择哪个后端，
-环境都进入 execution store，不进入 external-storage workspace，也不写入 base rootfs 的全局 Python。
+Agent prompt 可以建议 `uv sync --locked`、`uv run`、`fnm` 或 `rustup`，但不得假设用户一定采用它们。
+环境元数据、锁文件和缓存应可见、可导出、可清理；Runtime 更新不能静默删除用户自行安装的工具链。
 
 ### 5.7 workspace 与 execution store
 
@@ -455,17 +499,17 @@ Python 设计目标不是让 `pip3 install --user` 成功，而是让 Agent 每�
 
 | 内容 | workspace | execution store |
 | --- | --- | --- |
-| 源码、文档、锁文件 | 是 | 否 |
-| Git 工作树 | 是，但 hooks 需受控解释器/代理 | 否 |
-| Python venv | 否 | 是 |
-| Node `node_modules/.bin`、原生构建产物 | 视能力而定，默认否 | 是 |
-| 下载缓存 | 否 | 是 |
-| 临时文件 | 否 | `/tmp` 专用目录 |
-| 用户最终产物 | 是 | 构建后复制回 workspace |
+| 源码、文档、锁文件 | 常用位置 | 也可使用 |
+| Git 工作树 | 按文件系统能力 | 也可使用 |
+| Python venv | 按能力和用户选择 | 推荐但非强制 |
+| Node `node_modules/.bin`、原生构建产物 | 按能力和用户选择 | 推荐但非强制 |
+| 下载缓存 | 按用户/工具配置 | 推荐位置之一 |
+| 临时文件 | 可以使用 | `/tmp` 为默认位置 |
+| 用户最终产物 | 可以使用 | 可以使用，无强制复制流程 |
 
-对于 `./script.sh`，若 workspace 为 noexec，Agent 应使用 `sh script.sh`；对于 ELF、git hook、npm
-bin 或构建工具，应在 execution store 构建/执行，再将结果同步回 workspace。错误应报告
-`workspace mount does not support direct execution`，而不是建议重复 chmod。
+对于 `./script.sh`、ELF、git hook、npm bin 或构建工具，Agnes 应报告实际的 noexec/symlink 能力，
+并可建议使用 execution store 或解释器执行；但用户和 Agent 都可以自行决定迁移、重建挂载或继续
+使用受限路径。错误应报告 `workspace mount does not support direct execution`，而不是建议重复 chmod。
 
 ### 5.8 安全边界
 
@@ -474,25 +518,26 @@ PRoot `-0` 只改变 guest 观察到的身份，不提供 Android 提权；同�
 
 - Android 应用沙箱：隔离其他应用数据，是内核级边界；
 - Runtime mount table：决定 guest 可见哪些宿主资源；
-- Tool policy/approval：决定 Agent 被授权操作哪些 resource；
-- Provisioning API：决定谁能修改 rootfs 系统状态；
-- 项目 environment：隔离 Python/工具依赖，保证可重复性。
+- Tool policy/approval：记录高风险操作并提供用户可调权限，而不是替代 Linux 的命令权限模型；
+- Provisioning API：为批量或无人值守变更提供入口，同时保留用户/Agent 直接运行 apt 等命令的能力；
+- 项目 environment：可选地隔离 Python/工具依赖，保证可重复性，不是强制的基础工具边界。
 
-`/lib`、`/lib64` 不能作为普通 writable roots。另一方面，apt 确实需要修改 `/usr`、`/etc`、
-`/var`；这应通过专用 provisioning executor 获得临时、明确的系统变更权限，而不是给所有 shell
-命令永久放开系统目录。
+`/lib`、`/lib64`、`/usr`、`/etc` 和 `/var` 都属于用户拥有的可变 guest rootfs。用户和 Agent 的
+Linux shell 可以修改它们，效果只限于 Agnes app UID 所拥有的 Runtime 文件，不会因此获得 Android
+root。版本化基础制品、mutation manifest 和 reset/export 流程负责恢复，而不是用路径沙箱模拟只读系统。
 
 ## 6. 不应直接照搬 Operit 的部分
 
-1. **不照搬全局开发终端模型**：Operit 允许用户主动选择并安装全局 pip、pipx、Node 和 Rust；
-   Agnes 应按 workspace 建立隔离环境。
+1. **不替用户决定依赖布局**：Agnes 与 Operit 一样提供基础 Linux 工具和宽泛选择；uv/venv、fnm、
+   rustup 以及全局安装都可用，workspace 隔离只作为依赖管理选项。
 2. **不依赖用户回答后台提示**：Agent 使用 hidden exec；Agnes 同时提供独立的完整可见 Linux PTY，
    但后台 Agent 不能偷偷占用或等待用户终端。
 3. **不使用单份可变 rootfs 替换**：Agnes 已有版本化安装与回滚，应继续保留。
 4. **不把静态 fake `/proc` 当真实遥测**：仅为格式兼容，并标记 synthetic。
 5. **不把 no-op sudo 当权限控制**：权限控制在宿主 supervisor，不在 shim。
-6. **不暴露宿主绝对路径给模型**：Operit 是本地终端产品，Agnes 还需维持 workspace 隐私与
-   工具审计语义。
+6. **不暴露 app-private 实现路径和秘密**：模型可以看到 `/root`、`/workspace`、`/sdcard` 和
+   `/storage/emulated/<user>` 等真实 guest 路径，但不需要看到 rootfs 在 Android dataDir 下的实现路径，
+   API Key、同步凭证、E2EE keyset 和业务数据库也不进入 Runtime namespace。
 
 ## 7. 分阶段实施建议
 
@@ -501,7 +546,8 @@ PRoot `-0` 只改变 guest 观察到的身份，不提供 Android 提权；同�
 - 删除全局 `break-system-packages = true` 注入，恢复 PEP 668。
 - 将 `--link2symlink` 改为 probe 结果，三条启动路径统一读取同一 launch spec。
 - 为 workspace、app-private env store、`/tmp` 和 `/proc` 生成 capability profile。
-- 明确 `/lib`、`/lib64` 不属于普通工具 writable roots。
+- 将 guest rootfs 作为用户和 Agent 均可配置的 Linux 文件系统，移除针对 `/lib`、`/etc` 等路径的
+  Agnes 静态写入禁令；Android app UID 仍是外层边界。
 
 ### P1：统一 namespace
 
@@ -511,8 +557,8 @@ PRoot `-0` 只改变 guest 观察到的身份，不提供 Android 提权；同�
   API。
 - [x] file/read/write/search/patch/git/shell cwd、审批预览及 shell 静态写目标均通过
   resolver 解析；`/workspace` 不再错误依赖当前子目录 cwd。
-- [ ] 将 Runtime bind mounts 显式建模为完整 mount table，并接入 rootfs、guest HOME、`/tmp` 和
-  environment store 的 host resource 映射。
+- [ ] 将 Runtime bind mounts 显式建模为完整 mount table，并接入 rootfs、guest HOME、`/tmp`、
+  Agnes runtime data、`/dev`/`/proc`/`/sys`、共享存储双路径和可选 `/data/local/tmp`。
 - [ ] 建立 EROFS、EACCES、ENOENT、policy denied 的结构化错误映射。
 
 ### P2：执行平面分离
@@ -524,18 +570,19 @@ PRoot `-0` 只改变 guest 观察到的身份，不提供 Android 提权；同�
   `requires_interactive_terminal` 状态及用户确认后的 UI handoff。
 - [ ] 用户终端和 Agent 执行均复用 Runtime launch spec，但不能共享 stdin、输出流或取消信号。
 
-### P3：系统 provisioning
+### P3：完整 Linux 系统与可选 provisioning
 
 - 内置 fake-root/no-op sudo 兼容层。
-- apt/dpkg 从普通 shell 转交 supervisor，加入非交互配置、磁盘预检、变更清单和恢复流程。
+- 用户和 Agent 的普通 shell 均可直接运行 apt/dpkg、修改 guest 系统目录和安装工具。
+- supervisor 为自动任务提供可选的非交互配置、磁盘预检、变更清单和恢复流程。
 - 将 rootfs mutation 与 Agnes `current`/`previous` 版本机制关联。
 
-### P4：Python environment service
+### P4：基础工具与可选环境管理
 
-- 在 Runtime 制品内置 uv。
-- 创建 app-private execution store，按 workspace/lock digest 管理环境。
-- 自动注入 uv 环境变量和 PATH；提供环境清理、大小统计和重建。
-- Miniconda/micromamba 作为可下载的可选后端。
+- 在 Runtime 制品内置或提供 Python/pip/uv、Node/npm/fnm 和 Rust/rustup 的可靠安装入口。
+- 创建支持完整 POSIX 语义的 app-private execution store，作为 venv、toolchain 和 cache 的推荐位置。
+- 不强制注入 workspace 专属环境；提供环境发现、选择、清理、大小统计和重建能力。
+- Miniconda/micromamba 作为可下载的可选后端，用户和 Agent 也可以自行选择其他方案。
 
 ### P5：兼容性与发布门禁
 
@@ -550,10 +597,10 @@ PRoot `-0` 只改变 guest 观察到的身份，不提供 Android 提权；同�
 1. 相对路径、`/workspace/x` 和文件工具 `x` 指向同一 inode/resource。
 2. `~/.cache` 与 `/root/.cache` 在 guest 语义下指向同一目录，宿主 HOME 不参与展开。
 3. `/tmp` 可读写、可执行、可 symlink，且退出/重启后的清理策略明确。
-4. 普通 executor 不能直接写 `/lib`、`/etc`；provisioning executor 可完成受审计 apt 安装。
-5. `apt-get install -y jq` 无密码、无人工输入，成功或在下载前返回明确预检错误。
-6. 全局 `pip install` 被拒；`uv sync --locked` 与 `uv run python ...` 成功。
-7. env 不位于 workspace；workspace noexec 时 Python/原生工具仍从 execution store 正常运行。
+4. 用户和 Agent 均可修改自身 guest rootfs 的 `/lib`、`/etc`、`/usr` 和 `/var`，但无法越过 Android app UID。
+5. `apt-get install -y jq` 在用户 PTY 与 Agent hidden exec 中都能无密码完成，失败时返回真实 apt/dpkg 错误。
+6. PEP 668 保持 Ubuntu 默认语义；uv/venv 可用，用户明确选择的全局或 override 方案不被 Agnes 策略拦截。
+7. env 可由用户或 Agent 放在任意具备所需能力的路径；workspace noexec 时能选择 execution store 正常运行。
 8. `--link2symlink` 关闭时 Runtime、uv env 和常规 Git 操作仍可工作。
 9. `/proc/version` 等受限节点返回标记来源的兼容数据，不把 synthetic 值报告成真实遥测。
 10. hidden exec 遇到输入等待时返回结构化状态；超时后没有后代进程或锁残留。
@@ -563,7 +610,9 @@ PRoot `-0` 只改变 guest 观察到的身份，不提供 Android 提权；同�
 13. 未知 session ID 返回当前会话列表；Agent hidden exec 与用户终端的 ID、输入和输出不会混淆。
 14. Runtime 更新失败后仍能启动 previous 版本，workspace、environment metadata 和用户终端状态
     按恢复策略保留或明确标记中断。
-15. 同一锁文件重建得到等价环境；不同 workspace 不共享可变 site-packages。
+15. 同一锁文件可以重建等价环境；不同 workspace 是否共享 site-packages 由所选环境管理方式决定。
+16. 授予 All files access 后，PTY、Agent shell 和文件工具对 `/sdcard` 与
+    `/storage/emulated/<user>` 的映射一致，可直接编辑、搜索和运行能力允许的文件。
 
 ## 9. 源码依据
 

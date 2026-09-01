@@ -26,7 +26,12 @@ Operit Android 内置 Ubuntu 的公开实现、资产布局、首次安装、PRo
 
 # 项目定位
 
-`agnes-agent` 是一个**带 Agent 能力的酒馆式多角色聊天应用**（更接近 SillyTavern + Agents，而非纯 Agent 工具）。核心是可创建/管理多个 **AGENTS（角色卡）**，每个 Agent 有独立人设、系统提示词、工具权限与长期记忆；用户与某个 Agent 在 session 中对话，Agent 背后挂 Python LangGraph 运行时执行工具。**桌面端和安卓端都是执行器**：桌面端在宿主操作系统运行 Agent，安卓端通过独立 Linux Runtime 在本地运行完整 Agent。SSH 作为连接桌面 Agent 的兼容能力保留，但不是安卓端的唯一执行路径。
+`agnes-agent` 是一个**带 Agent 能力的酒馆式多角色聊天应用**（更接近 SillyTavern + Agents，而非纯 Agent 工具）。核心是可创建/管理多个 **AGENTS（角色卡）**，每个 Agent 有独立人设、系统提示词、工具权限与长期记忆；用户与某个 Agent 在 session 中对话，Agent 背后挂 Python LangGraph 运行时执行工具。**桌面端和安卓端都是执行器**：桌面端在宿主操作系统运行 Agent，安卓端通过独立 Linux Runtime 在本地运行完整 Agent。Android 保持 Agent-first，但用户拥有独立的完整 Ubuntu PTY，可以人工进行包管理、开发、调试和文件操作；Agent 不能替代或限制用户的直接开发能力。SSH 作为连接桌面 Agent 的兼容能力保留，但不是安卓端的唯一执行路径。
+
+Android 的用户 PTY 与 Agent 默认共享同一套可配置 Ubuntu 基础环境和用户授权的文件 namespace。
+Agnes 提供 uv/venv、fnm、rustup 和 app-private execution store 等依赖管理选项，但不强制按
+workspace 隔离，也不把 Agent 限制在当前 workspace；具体挂载与 Android 权限边界按
+`ANDROID_RUNTIME.md` 执行。
 
 # 技术栈
 

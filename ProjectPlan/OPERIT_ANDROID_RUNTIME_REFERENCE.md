@@ -170,9 +170,11 @@ installed-rootfs/ubuntu
 - 每次启动刷新 APT、pip/uv 和 npm 软件源；
 - 可选 chroot 路径需要 root 权限，不是默认模式。
 
-Operit 的终端定位决定了它会映射外部存储和应用数据目录。Agnes 的安全模型不同：Agnes
-只能绑定应用私有工作区或用户通过 SAF 明确授权的目录，不能照搬其较宽的 `/sdcard`、
-`/data/data` 或应用沙箱映射。
+Operit 的终端定位决定了它会映射外部存储和应用数据目录。Agnes 决定向这一文件模型靠近：在
+Android UID、SELinux 和用户授权的真实边界内，让 User terminal 与 Agent 使用同一套宽泛 Linux
+namespace。普通 PRoot 映射 Agnes runtime data、home、必要伪文件系统；用户授予 All files access
+后同时提供 `/sdcard` 和 `/storage/emulated/<user>`。不映射其他应用私有数据，API Key、同步凭证、
+E2EE keyset 和 Agnes 业务数据库继续留在 Runtime namespace 之外。
 
 ## 6. Service、会话与 IPC
 
@@ -186,9 +188,9 @@ Android 进程；若需要跨应用进程回收后继续运行，还必须增加
 | Operit | Agnes |
 |---|---|
 | AIDL 暴露终端会话和命令 | Tauri Android plugin 只暴露 Runtime 生命周期和窄化系统能力 |
-| Agent 可以使用通用终端工具 | Rust Core 先执行 capability、审批和工作区检查 |
+| Agent 可以使用通用终端工具 | Agent 与用户共享完整 Linux 基础能力；Rust Core 负责审计、取消、资源上限和可调授权 |
 | Terminal Core 管理 PTY 和 rootfs | Android Runtime Service 管理 PRoot 进程，Rust Core 管理 Agent Protocol |
-| Ubuntu 文件 Provider 可供 UI 浏览 | 文件能力必须经 Rust 工具层或 SAF bridge |
+| Ubuntu 文件 Provider 可供 UI 浏览 | Rust 文件工具、终端和 UI 文件入口共享同一 mount/path resolver |
 
 Agnes 不应向其他应用导出任意 Shell Binder 接口，也不应让 Python Agent 绕过 Rust 直接获得
 Android 文件、SQLite、API Key 或 E2EE keyset。
@@ -226,7 +228,7 @@ Android 文件、SQLite、API Key 或 E2EE keyset。
 | 安装提交 | 临时目录移动到正式目录 | 采用 staging，但提交到版本目录后再切换 `current` |
 | 升级恢复 | 重置后从 APK 重装 | 保留重装，并继续支持 `current/previous` 回滚 |
 | ABI | 仅 `arm64-v8a` | 正式版 ARM64；开发版另提供 x86_64 Runtime |
-| 文件挂载 | 较宽 Android 存储和数据路径 | 不采用；仅应用私有工作区和有效 SAF 授权 |
+| 文件挂载 | 较宽 Android 存储和数据路径 | 采用普通 PRoot 的宽 namespace；共享存储需用户授权，不访问其他应用私有数据 |
 | IPC | AIDL 终端命令和回调 | 只参考 Service 分层；维持 Tauri plugin + Agent Protocol |
 | 进程隔离 | 当前公开 Service 默认同进程 | 不假设 Service 自动隔离；Agnes supervisor 生命周期单独设计和验收 |
 | 密钥边界 | 终端产品边界 | API Key、同步凭证和 E2EE keyset 永不进入 rootfs |
