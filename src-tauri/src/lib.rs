@@ -529,6 +529,7 @@ pub fn run() {
             commands::rollback_android_runtime,
             commands::start_agent_runtime,
             commands::stop_agent_runtime,
+            commands::request_android_shared_storage_access,
             commands::list_user_linux_terminals,
             commands::create_user_linux_terminal,
             commands::poll_user_linux_terminal,

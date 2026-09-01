@@ -325,6 +325,12 @@ URI 字符串伪装成普通路径。
 - Google Play 发行不得默认依赖 `MANAGE_EXTERNAL_STORAGE`。若应用商店政策不允许 Agnes 申请
   All files access，则 Play 版本只提供 SAF/app-private 模式，完整共享存储模式留给符合政策的渠道。
 
+当前实现已提供 Android 系统授权入口，并且只在系统确认授权后，将 primary user 的 emulated
+storage 作为同一 `shared-storage` resource 同时绑定到 `/sdcard` 和
+`/storage/emulated/0`；Agent hidden exec、用户 PTY 和 Rust 文件工具复用该 mount table。
+宽挂载要求 Android 11（API 30）或更高版本；授权变化在下一次 Runtime 启动时生效。SAF directory
+binding、多 Android user target 和 Runtime 文件浏览仍属于后续 A2 工作，不能用这条宽挂载替代。
+
 ### 5.2 Android 内置项目工作区
 
 Android Code 模式提供一个面向小工具开发的内置项目入口。Runtime 启动时会在应用私有数据目录中
@@ -442,7 +448,8 @@ Android 有两种执行模式：
 - [ ] User terminal 与 Agent 默认可修改 guest rootfs、home 和 runtime data，并可直接安装依赖、
   编辑文件、打开目录和运行脚本；
 - [ ] 用户授予 All files access 后，将 emulated storage 同时映射为 `/sdcard` 与 Android 原始路径，
-  Agent、PTY、Rust 文件工具和 UI 文件入口对同一文件解析一致；
+  Agent、PTY、Rust 文件工具和 UI 文件入口对同一文件解析一致；当前 mount table、Agent、PTY 和 Rust
+  文件工具已完成，UI 文件入口待后续文件浏览实现；
 - [ ] 提供 Runtime 文件浏览入口，可浏览 `/root`、项目、rootfs 和已授权共享存储并打开文件夹；
 - 用户可调 resource 授权、审计、超时、并发和输出上限；
 - 应用私有工作区、SAF 工作区和可选宽共享存储；

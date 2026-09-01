@@ -307,6 +307,17 @@ pub async fn stop_agent_runtime(
         .map_err(|error| AppError::Other(format!("Agent Runtime 停止任务异常退出: {error}")))?
 }
 
+/// Opens the Android system screen where the user can grant broad shared-storage access.
+#[tauri::command]
+pub async fn request_android_shared_storage_access(
+    state: tauri::State<'_, AppState>,
+) -> AppResult<()> {
+    let runtime = state.runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.request_shared_storage_access())
+        .await
+        .map_err(|error| AppError::Other(format!("共享存储授权请求异常退出: {error}")))?
+}
+
 /// Lists user-owned Linux PTY sessions. This registry is independent from Agent tool terminals.
 #[tauri::command]
 pub async fn list_user_linux_terminals(

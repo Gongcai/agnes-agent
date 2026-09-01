@@ -5,6 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.os.Build
+import android.os.Environment
+import android.provider.Settings
+import android.net.Uri
 import android.system.Os
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -16,6 +19,7 @@ import app.tauri.plugin.Plugin
 import java.io.File
 import java.io.FileOutputStream
 import org.json.JSONArray
+import org.json.JSONObject
 
 @TauriPlugin
 class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
@@ -98,6 +102,28 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
+  @Command
+  fun requestSharedStorageAccess(invoke: Invoke) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+      invoke.reject("Shared storage access requires Android 11 or newer")
+      return
+    }
+    if (Environment.isExternalStorageManager()) {
+      invoke.resolve(JSObject())
+      return
+    }
+    try {
+      val intent = Intent(
+        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+        Uri.parse("package:${activity.packageName}"),
+      )
+      activity.startActivity(intent)
+      invoke.resolve(JSObject())
+    } catch (exception: Exception) {
+      invoke.reject(exception.message ?: "Unable to open shared storage access settings")
+    }
+  }
+
   private fun status(): JSObject {
     val result = JSObject()
     result.put("running", RuntimeService.isRunning())
@@ -120,6 +146,9 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
     result.put("prootPath", proot.absolutePath)
     result.put("prootLoaderAvailable", prootLoader.isFile)
     result.put("prootLoaderPath", prootLoader.absolutePath)
+    val sharedStorage = sharedStorageDirectory()
+    result.put("sharedStorageAvailable", sharedStorage != null)
+    result.put("sharedStoragePath", sharedStorage?.absolutePath ?: JSONObject.NULL)
     val dns = JSONArray()
     dnsServers().forEach { dns.put(it) }
     result.put("dnsServers", dns)
@@ -148,6 +177,13 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
       .firstOrNull { it == "arm64-v8a" || it == "x86_64" }
       ?: Build.SUPPORTED_ABIS.firstOrNull()
       ?: "unsupported"
+  }
+
+  private fun sharedStorageDirectory(): File? {
+    val granted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+      Environment.isExternalStorageManager()
+    val directory = Environment.getExternalStorageDirectory()
+    return directory.takeIf { granted && it.isDirectory }
   }
 
   private fun bundledRuntimeAsset(abi: String): String {

@@ -10,6 +10,7 @@ export interface AgentRuntimeStatus {
   abi: string | null;
   bundledRuntimeAvailable: boolean;
   prootAvailable: boolean;
+  sharedStorageAvailable: boolean;
 }
 
 export async function getRuntimeStatus(): Promise<AgentRuntimeStatus> {
@@ -30,6 +31,10 @@ export async function startAgentRuntime(): Promise<AgentRuntimeStatus> {
 
 export async function stopAgentRuntime(): Promise<AgentRuntimeStatus> {
   return invoke<AgentRuntimeStatus>("stop_agent_runtime");
+}
+
+export async function requestAndroidSharedStorageAccess(): Promise<void> {
+  return invoke("request_android_shared_storage_access");
 }
 
 export interface UserLinuxTerminalInfo {

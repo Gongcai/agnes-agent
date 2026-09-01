@@ -60,7 +60,7 @@ pub struct AndroidProotProcessRuntime {
 pub(crate) struct HiddenExecResult {
     pub(crate) stdout: String,
     pub(crate) stderr: String,
-    pub(crate) exit_code: i32,
+    pub(crate) exit_code: Option<i32>,
     pub(crate) timed_out: bool,
     pub(crate) output_truncated: bool,
     pub(crate) output_requests_input: bool,
@@ -92,6 +92,7 @@ pub(crate) struct AndroidProotRuntimeConfig {
     cache_dir: Option<PathBuf>,
     user_workspace_dir: Option<PathBuf>,
     user_home_dir: Option<PathBuf>,
+    shared_storage_dir: Option<PathBuf>,
 }
 
 impl AndroidProotRuntimeConfig {
@@ -115,6 +116,7 @@ impl AndroidProotRuntimeConfig {
             cache_dir: None,
             user_workspace_dir: None,
             user_home_dir: None,
+            shared_storage_dir: None,
         }
     }
 
@@ -137,6 +139,11 @@ impl AndroidProotRuntimeConfig {
 
     pub(crate) fn with_user_home(mut self, home_dir: PathBuf) -> Self {
         self.user_home_dir = Some(home_dir);
+        self
+    }
+
+    pub(crate) fn with_shared_storage(mut self, storage_dir: PathBuf) -> Self {
+        self.shared_storage_dir = Some(storage_dir);
         self
     }
 
@@ -231,6 +238,31 @@ impl AndroidProotRuntimeConfig {
                 target: "/dev",
             },
             AndroidProotBindMount {
+                resource_id: "android-dev-pts",
+                source: PathBuf::from("/dev/pts"),
+                target: "/dev/pts",
+            },
+            AndroidProotBindMount {
+                resource_id: "android-dev-fd",
+                source: PathBuf::from("/proc/self/fd"),
+                target: "/dev/fd",
+            },
+            AndroidProotBindMount {
+                resource_id: "android-stdin",
+                source: PathBuf::from("/proc/self/fd/0"),
+                target: "/dev/stdin",
+            },
+            AndroidProotBindMount {
+                resource_id: "android-stdout",
+                source: PathBuf::from("/proc/self/fd/1"),
+                target: "/dev/stdout",
+            },
+            AndroidProotBindMount {
+                resource_id: "android-stderr",
+                source: PathBuf::from("/proc/self/fd/2"),
+                target: "/dev/stderr",
+            },
+            AndroidProotBindMount {
                 resource_id: "android-proc",
                 source: PathBuf::from("/proc"),
                 target: "/proc",
@@ -294,6 +326,18 @@ impl AndroidProotRuntimeConfig {
                 target: "/opt/agnes/cache",
             });
         }
+        if let Some(source) = &self.shared_storage_dir {
+            mounts.push(AndroidProotBindMount {
+                resource_id: "shared-storage",
+                source: source.clone(),
+                target: "/sdcard",
+            });
+            mounts.push(AndroidProotBindMount {
+                resource_id: "shared-storage",
+                source: source.clone(),
+                target: "/storage/emulated/0",
+            });
+        }
         mounts
     }
 
@@ -330,6 +374,9 @@ impl AndroidProotRuntimeConfig {
                     .into_iter()
                     .map(|path| home.join(path)),
             );
+        }
+        if let Some(storage) = &self.shared_storage_dir {
+            roots.push(storage.clone());
         }
         roots
     }
@@ -413,6 +460,8 @@ impl AndroidProotRuntimeConfig {
                 ),
             ),
             ("TERM", OsString::from("dumb")),
+            ("CI", OsString::from("1")),
+            ("DEBIAN_FRONTEND", OsString::from("noninteractive")),
             ("NO_COLOR", OsString::from("1")),
             ("TMPDIR", OsString::from("/tmp")),
             ("LANG", OsString::from("C.UTF-8")),
@@ -612,7 +661,7 @@ pub(crate) async fn execute_hidden(
             Ok(result) => result.map_err(|error| error.to_string()),
             Err(_) => {
                 kill_process_tree(&mut child, pid).await;
-                return Ok(hidden_capture_result(stdout_task, stderr_task, -9, true).await);
+                return Ok(hidden_capture_result(stdout_task, stderr_task, Some(-9), true).await);
             }
         }
     };
@@ -620,14 +669,14 @@ pub(crate) async fn execute_hidden(
     let status =
         wait_result.map_err(|error| AppError::Other(format!("Hidden command failed: {error}")))?;
     cleanup_process_group(pid);
-    let exit_code = status.code().unwrap_or(-1);
+    let exit_code = status.code();
     Ok(hidden_capture_result(stdout_task, stderr_task, exit_code, false).await)
 }
 
 async fn hidden_capture_result(
     stdout_task: Option<tokio::task::JoinHandle<(Vec<u8>, bool)>>,
     stderr_task: Option<tokio::task::JoinHandle<(Vec<u8>, bool)>>,
-    exit_code: i32,
+    exit_code: Option<i32>,
     timed_out: bool,
 ) -> HiddenExecResult {
     let (stdout_bytes, stdout_truncated) = join_capture(stdout_task).await;
@@ -1365,6 +1414,57 @@ pub fn render_captured_output(bytes: Vec<u8>, truncated: bool) -> String {
     output
 }
 
+/// Map process and policy failures to stable categories consumed by the tool
+/// protocol. The original stderr remains available for debugging.
+pub(crate) fn classify_runtime_failure(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if [
+        "sandbox denied",
+        "outside the allowed",
+        "unapproved absolute path",
+        "cannot be safely scoped",
+        "network access is disabled",
+        "requires bubblewrap",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    {
+        return "policy_denied";
+    }
+    if lower.contains("read-only file system") || lower.contains("erofs") {
+        return "filesystem_read_only";
+    }
+    if lower.contains("no such file or directory") || lower.contains("enoent") {
+        return "path_not_found";
+    }
+    if [
+        "cannot create symlink",
+        "failed to create symbolic link",
+        "invalid cross-device link",
+        "operation not permitted",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+        || (lower.contains("permission denied")
+            && (lower.contains("symlink")
+                || lower.contains("symbolic link")
+                || lower.contains(" -> ")))
+    {
+        return "android_filesystem_unsupported";
+    }
+    if lower.contains("permission denied") || lower.contains("eacces") {
+        return "permission_denied";
+    }
+    if lower.contains("android linux runtime")
+        || lower.contains("android proot")
+        || lower.contains("proot loader")
+        || lower.contains("rootfs")
+    {
+        return "runtime_unavailable";
+    }
+    "process_failed"
+}
+
 pub async fn join_capture(
     task: Option<tokio::task::JoinHandle<(Vec<u8>, bool)>>,
 ) -> (Vec<u8>, bool) {
@@ -1791,6 +1891,16 @@ mod tests {
             "-b".into(),
             "/dev:/dev".into(),
             "-b".into(),
+            "/dev/pts:/dev/pts".into(),
+            "-b".into(),
+            "/proc/self/fd:/dev/fd".into(),
+            "-b".into(),
+            "/proc/self/fd/0:/dev/stdin".into(),
+            "-b".into(),
+            "/proc/self/fd/1:/dev/stdout".into(),
+            "-b".into(),
+            "/proc/self/fd/2:/dev/stderr".into(),
+            "-b".into(),
             "/proc:/proc".into(),
             "-b".into(),
             "/sys:/sys".into(),
@@ -1829,6 +1939,21 @@ mod tests {
             .env
             .iter()
             .any(|(name, value)| { name == "UV_LINK_MODE" && value == "copy" }));
+        assert!(command
+            .env
+            .iter()
+            .any(|(name, value)| { name == "CI" && value == "1" }));
+        assert!(command
+            .env
+            .iter()
+            .any(|(name, value)| { name == "DEBIAN_FRONTEND" && value == "noninteractive" }));
+        assert!(command.env.iter().any(|(name, value)| {
+            name == "PATH"
+                && value
+                    .to_string_lossy()
+                    .split(':')
+                    .any(|path| path == "/usr/games")
+        }));
         assert!(command
             .env
             .iter()
@@ -1988,11 +2113,62 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 ("android-dev", "/dev"),
+                ("android-dev-pts", "/dev/pts"),
+                ("android-dev-fd", "/dev/fd"),
+                ("android-stdin", "/dev/stdin"),
+                ("android-stdout", "/dev/stdout"),
+                ("android-stderr", "/dev/stderr"),
                 ("android-proc", "/proc"),
                 ("android-sys", "/sys"),
                 ("runtime-tmp", "/tmp"),
                 ("runtime-shm", "/dev/shm"),
             ]
+        );
+    }
+
+    #[test]
+    fn android_shared_storage_has_both_guest_aliases() {
+        let config = AndroidProotRuntimeConfig::new(
+            PathBuf::from("/proot"),
+            PathBuf::from("/loader"),
+            PathBuf::from("/tmp/proot"),
+            PathBuf::from("/rootfs"),
+            PathBuf::from("/android/workspace"),
+            false,
+        )
+        .with_shared_storage(PathBuf::from("/storage/emulated/0"));
+        let mounts = config.workspace_mounts(Path::new("/workspace"));
+        assert_eq!(
+            mounts
+                .iter()
+                .filter(|mount| mount.resource_id == "shared-storage")
+                .map(|mount| mount.target)
+                .collect::<Vec<_>>(),
+            vec!["/sdcard", "/storage/emulated/0"]
+        );
+    }
+
+    #[test]
+    fn runtime_failure_categories_remain_distinct() {
+        assert_eq!(
+            classify_runtime_failure("Sandbox denied permission to write protected metadata"),
+            "policy_denied"
+        );
+        assert_eq!(
+            classify_runtime_failure("Read-only file system (EROFS)"),
+            "filesystem_read_only"
+        );
+        assert_eq!(
+            classify_runtime_failure("No such file or directory"),
+            "path_not_found"
+        );
+        assert_eq!(
+            classify_runtime_failure("ln: failed to create symbolic link: Permission denied"),
+            "android_filesystem_unsupported"
+        );
+        assert_eq!(
+            classify_runtime_failure("bash: ./tool: Permission denied"),
+            "permission_denied"
         );
     }
 
@@ -2007,6 +2183,7 @@ mod tests {
         let environments = runtime_data.join("environments");
         let cache = runtime_data.join("cache");
         let proot_tmp = temp.path().join("proot-tmp");
+        let shared_storage = temp.path().join("storage/emulated/0");
         for path in [
             rootfs.join("etc"),
             workspace.clone(),
@@ -2015,6 +2192,7 @@ mod tests {
             environments.clone(),
             cache.clone(),
             proot_tmp.join("shm"),
+            shared_storage.clone(),
         ] {
             std::fs::create_dir_all(path).unwrap();
         }
@@ -2029,7 +2207,8 @@ mod tests {
                 false,
             )
             .with_runtime_mounts(runtime_data.clone(), environments.clone(), cache)
-            .with_user_home(home.clone()),
+            .with_user_home(home.clone())
+            .with_shared_storage(shared_storage.clone()),
         ));
         let sandbox = PolicySandbox::new_with_process_runtime(
             &ToolPolicy::default(),
@@ -2065,9 +2244,29 @@ mod tests {
                 .0,
             environments.join("project")
         );
+        assert_eq!(
+            sandbox
+                .resolve_guest_path("/sdcard/source.py", Some(&workspace))
+                .unwrap()
+                .0,
+            shared_storage.join("source.py")
+        );
+        assert_eq!(
+            sandbox
+                .resolve_guest_path("/storage/emulated/0/source.py", Some(&workspace))
+                .unwrap()
+                .0,
+            shared_storage.join("source.py")
+        );
         assert!(sandbox.check_read(&rootfs.join("etc/os-release")).is_ok());
         assert!(sandbox.check_write(&proot_tmp.join("build")).is_ok());
         assert!(sandbox.check_write(&home.join(".cache/uv")).is_ok());
+        assert!(sandbox
+            .check_read(&shared_storage.join("source.py"))
+            .is_ok());
+        assert!(sandbox
+            .check_write(&shared_storage.join("source.py"))
+            .is_ok());
         assert!(sandbox.check_write(&rootfs.join("etc/override")).is_err());
     }
 
@@ -2190,7 +2389,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.exit_code, Some(0));
         assert!(!result.timed_out);
         assert!(result.output_requests_input);
         assert!(result.stderr.contains("Do you want to continue?"));
@@ -2225,7 +2424,7 @@ mod tests {
         .unwrap();
 
         assert!(result.timed_out);
-        assert_eq!(result.exit_code, -9);
+        assert_eq!(result.exit_code, Some(-9));
         assert!(result.output_truncated);
         assert!(result.stdout.contains("output truncated"));
     }

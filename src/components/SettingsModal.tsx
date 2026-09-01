@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { X, ArrowLeft, User, UserCircle, Camera, Database, Sliders, ShieldCheck, ShieldSlash, Key, Plus, Trash, PencilSimple, Check, Lightning, HardDrives, DownloadSimple, Eye, EyeSlash, Terminal, Gear, MagnifyingGlass, ArrowsClockwise, GitDiff, Laptop, Cloud, LockKey, Copy, FileLock, ArrowUp, ArrowDown, GlobeHemisphereWest, ChartBar, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, PuzzlePiece, Play, Stop, CircleNotch } from "@phosphor-icons/react";
+import { X, ArrowLeft, User, UserCircle, Camera, Database, Sliders, ShieldCheck, ShieldSlash, Key, Plus, Trash, PencilSimple, Check, Lightning, HardDrives, DownloadSimple, Eye, EyeSlash, Terminal, Gear, MagnifyingGlass, ArrowsClockwise, GitDiff, Laptop, Cloud, LockKey, Copy, FileLock, ArrowUp, ArrowDown, GlobeHemisphereWest, ChartBar, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, PuzzlePiece, Play, Stop, CircleNotch, FolderOpen } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAgentStore } from "../store/useAgentStore";
@@ -50,6 +50,7 @@ import {
   rollbackAndroidRuntime,
   startAgentRuntime,
   stopAgentRuntime,
+  requestAndroidSharedStorageAccess,
 } from "../lib/ipc";
 import {
   announceUIPreferenceChange,
@@ -6093,6 +6094,15 @@ const RuntimeTab: React.FC = () => {
     }
   };
 
+  const requestSharedStorage = async () => {
+    setError(null);
+    try {
+      await requestAndroidSharedStorageAccess();
+    } catch (reason) {
+      setError(String(reason));
+    }
+  };
+
   const isAndroid = status?.platform === "android";
   const isRunning = ["service-running", "starting", "ready"].includes(status?.state ?? "");
   const canStart = isAndroid
@@ -6152,6 +6162,12 @@ const RuntimeTab: React.FC = () => {
               {status?.bundledRuntimeAvailable && status?.prootAvailable ? "完整 Runtime" : "未包含"}
             </dd>
           </div>
+          {isAndroid && (
+            <div>
+              <dt className="text-stone-400">共享存储</dt>
+              <dd className="mt-1 text-stone-700">{status?.sharedStorageAvailable ? "已授权" : "未授权"}</dd>
+            </div>
+          )}
         </dl>
       </section>
 
@@ -6192,6 +6208,17 @@ const RuntimeTab: React.FC = () => {
             <DownloadSimple className="h-4 w-4" />
             {busyAction === "install" ? "安装中" : status?.runtimeVersion ? "从 ZIP 安装新版本" : "从 ZIP 安装"}
           </button>
+          {!status?.sharedStorageAvailable && (
+            <button
+              type="button"
+              onClick={() => void requestSharedStorage()}
+              disabled={busyAction !== null}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-xs font-semibold text-stone-700 hover:bg-stone-50 disabled:opacity-40"
+            >
+              <FolderOpen className="h-4 w-4" />
+              授权共享存储
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void rollbackPackage()}

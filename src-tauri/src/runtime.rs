@@ -57,6 +57,7 @@ pub struct AgentRuntimeStatus {
     pub abi: Option<String>,
     pub bundled_runtime_available: bool,
     pub proot_available: bool,
+    pub shared_storage_available: bool,
 }
 
 pub trait AgentRuntime: Send + Sync {
@@ -82,6 +83,10 @@ pub trait AgentRuntime: Send + Sync {
 
     fn stop(&self) -> AppResult<AgentRuntimeStatus> {
         Ok(self.status())
+    }
+
+    fn request_shared_storage_access(&self) -> AppResult<()> {
+        Err(AppError::Other("当前平台不支持共享存储授权".into()))
     }
 
     fn user_terminal_list(&self) -> AppResult<Vec<UserTerminalInfo>> {
@@ -163,6 +168,7 @@ impl AgentRuntime for DesktopSidecarRuntime {
             abi: None,
             bundled_runtime_available: false,
             proot_available: false,
+            shared_storage_available: false,
         }
     }
 }
@@ -208,6 +214,8 @@ struct NativeRuntimeEnvironment {
     proot_loader_available: bool,
     proot_loader_path: String,
     dns_servers: Vec<String>,
+    shared_storage_available: bool,
+    shared_storage_path: Option<String>,
 }
 
 #[cfg(target_os = "android")]
@@ -240,6 +248,7 @@ struct AndroidFilesystemCapabilities {
     environment_store: FilesystemCapabilities,
     home_workspace: FilesystemCapabilities,
     project_workspace: FilesystemCapabilities,
+    shared_storage: Option<FilesystemCapabilities>,
 }
 
 #[cfg(target_os = "android")]
@@ -571,6 +580,9 @@ impl AgentRuntime for AndroidLinuxRuntime {
             proot_available: environment
                 .as_ref()
                 .is_some_and(|value| value.proot_available),
+            shared_storage_available: environment
+                .as_ref()
+                .is_some_and(|value| value.shared_storage_available),
         }
     }
 
@@ -711,6 +723,22 @@ impl AgentRuntime for AndroidLinuxRuntime {
         )
         .with_user_workspace(android_workspace_root.clone())
         .with_user_home(user_home);
+        let proot_config = match (
+            environment.shared_storage_available,
+            environment.shared_storage_path.as_deref(),
+        ) {
+            (true, Some(path)) => {
+                let storage = PathBuf::from(path);
+                if storage.is_absolute() && storage.is_dir() {
+                    proot_config.with_shared_storage(storage)
+                } else {
+                    return Err(AppError::Other(
+                        "Android 共享存储授权路径无效，Runtime 未启动".into(),
+                    ));
+                }
+            }
+            (false, _) | (true, None) => proot_config,
+        };
         let proot_probe = probe_android_rootfs(&proot_config)?;
         let capability_profile = AndroidRuntimeCapabilityProfile {
             schema_version: 1,
@@ -722,6 +750,13 @@ impl AgentRuntime for AndroidLinuxRuntime {
                 environment_store: probe_filesystem_capabilities(&environment_store),
                 home_workspace: probe_filesystem_capabilities(&self.home_workspace_dir),
                 project_workspace: probe_filesystem_capabilities(&android_workspace_root),
+                shared_storage: environment
+                    .shared_storage_path
+                    .as_deref()
+                    .filter(|_| environment.shared_storage_available)
+                    .map(Path::new)
+                    .filter(|path| path.is_dir())
+                    .map(probe_filesystem_capabilities),
             },
         };
         persist_android_runtime_capabilities(&self.root_dir, &capability_profile)?;
@@ -756,6 +791,11 @@ impl AgentRuntime for AndroidLinuxRuntime {
         self.agent.shutdown();
         let _: serde_json::Value = self.run_native_command("stop")?;
         Ok(self.status())
+    }
+
+    fn request_shared_storage_access(&self) -> AppResult<()> {
+        let _: serde_json::Value = self.run_native_command("requestSharedStorageAccess")?;
+        Ok(())
     }
 
     fn user_terminal_list(&self) -> AppResult<Vec<UserTerminalInfo>> {

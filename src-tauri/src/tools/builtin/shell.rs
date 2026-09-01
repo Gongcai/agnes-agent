@@ -326,15 +326,17 @@ async fn complete_tool_call(
     poll: &crate::tools::terminal::TerminalPoll,
 ) -> AppResult<Value> {
     let stdout = render_terminal_output(poll);
-    let exit_code = poll.exit_code.unwrap_or(0);
+    let exit_code = poll.exit_code;
     ctx.update_complete(
         "done",
         Some(if poll.running { "running" } else { "exit" }),
-        (!poll.running).then_some(exit_code),
+        exit_code,
         Some(stdout.clone()),
         None,
     )
     .await?;
+    let error_code = (!poll.running && exit_code != Some(0))
+        .then(|| crate::tools::sandbox::classify_runtime_failure(&stdout));
     Ok(json!({
         "session_id": poll.session_id,
         "status": if poll.running { "running" } else { "exited" },
@@ -343,6 +345,7 @@ async fn complete_tool_call(
         "stderr": "",
         "truncated": poll.truncated,
         "signal": poll.signal,
+        "error_code": error_code,
     }))
 }
 
@@ -369,11 +372,13 @@ async fn complete_hidden_tool_call(
     ctx.update_complete(
         status,
         Some(result_kind),
-        Some(result.exit_code),
+        result.exit_code,
         Some(result.stdout.clone()),
         Some(result.stderr.clone()),
     )
     .await?;
+    let error_code = (result.exit_code != Some(0) && !result.timed_out)
+        .then(|| crate::tools::sandbox::classify_runtime_failure(&result.stderr));
     Ok(json!({
         "status": status,
         "session_id": Value::Null,
@@ -382,6 +387,7 @@ async fn complete_hidden_tool_call(
         "stderr": result.stderr,
         "truncated": result.output_truncated,
         "requires_interactive_terminal": requires_interactive_terminal,
+        "error_code": error_code,
     }))
 }
 

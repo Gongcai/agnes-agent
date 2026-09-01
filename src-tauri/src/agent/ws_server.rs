@@ -765,7 +765,9 @@ async fn handle_conn<R: tauri::Runtime>(
                             msg_type::TOOL_RESULT,
                             json!({
                                 "id": tc_id,
-                                "exit_code": -2,
+                                "exit_code": null,
+                                "result_kind": "tool_error",
+                                "error_code": "policy_denied",
                                 "stdout": "",
                                 "stderr": "User rejected tool execution",
                             }),
@@ -847,7 +849,9 @@ async fn handle_conn<R: tauri::Runtime>(
 
                             json!({
                                 "id": tc_id,
-                                "exit_code": val.get("exit_code").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
+                                "exit_code": val.get("exit_code").cloned().unwrap_or(serde_json::Value::Null),
+                                "result_kind": val.get("result_kind").cloned().unwrap_or_else(|| serde_json::Value::String("tool_result".into())),
+                                "error_code": val.get("error_code").cloned().unwrap_or(serde_json::Value::Null),
                                 "stdout": stdout,
                                 "stderr": val.get("stderr").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                             })
@@ -870,6 +874,7 @@ async fn handle_conn<R: tauri::Runtime>(
                                 "id": tc_id,
                                 "exit_code": null,
                                 "result_kind": "tool_error",
+                                "error_code": crate::tools::sandbox::classify_runtime_failure(&err_str),
                                 "stdout": "",
                                 "stderr": err_str,
                             })
