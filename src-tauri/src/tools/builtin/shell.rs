@@ -101,9 +101,13 @@ impl BuiltinTool for ShellTool {
             return Err(AppError::Other(error));
         }
         if ctx.policy.shell.deny_write_outside_workspace {
-            if let Err(error) =
-                validate_shell_write_scope(command_str, &cwd_absolute, ctx.sandbox, 0)
-            {
+            if let Err(error) = validate_shell_write_scope(
+                command_str,
+                &cwd_absolute,
+                ctx.workspace_cwd.as_deref(),
+                ctx.sandbox,
+                0,
+            ) {
                 ctx.record_failure(&error).await?;
                 return Err(AppError::Other(error));
             }
@@ -343,6 +347,7 @@ async fn fail<T>(ctx: &ToolCtx<'_>, message: &str) -> AppResult<T> {
 pub(crate) fn validate_shell_write_scope(
     command: &str,
     cwd: &Path,
+    workspace_root: Option<&Path>,
     sandbox: &dyn crate::tools::sandbox::SandboxGuard,
     depth: usize,
 ) -> Result<(), String> {
@@ -350,13 +355,13 @@ pub(crate) fn validate_shell_write_scope(
         return Err("Nested shell command exceeds the safety inspection limit".to_string());
     }
     let tokens = shell_tokens(command)?;
-    validate_stateful_shell_tokens(&tokens, cwd, Some(sandbox))?;
+    validate_stateful_shell_tokens(&tokens, cwd, workspace_root, Some(sandbox))?;
     for (index, token) in tokens.iter().enumerate() {
         if token == ">" || token == ">>" {
             let target = tokens
                 .get(index + 1)
                 .ok_or_else(|| "Output redirection is missing a target".to_string())?;
-            validate_write_target(target, cwd, sandbox)?;
+            validate_write_target(target, cwd, workspace_root, sandbox)?;
         }
     }
 
@@ -371,7 +376,7 @@ pub(crate) fn validate_shell_write_scope(
                     .iter()
                     .filter(|argument| !argument.starts_with('-'))
                 {
-                    validate_write_target(target, cwd, sandbox)?;
+                    validate_write_target(target, cwd, workspace_root, sandbox)?;
                 }
             }
             "cp" | "install" => {
@@ -380,13 +385,13 @@ pub(crate) fn validate_shell_write_scope(
                     .rev()
                     .find(|argument| !argument.starts_with('-'))
                 {
-                    validate_write_target(target, cwd, sandbox)?;
+                    validate_write_target(target, cwd, workspace_root, sandbox)?;
                 }
             }
             "dd" => {
                 for argument in arguments {
                     if let Some(target) = argument.strip_prefix("of=") {
-                        validate_write_target(target, cwd, sandbox)?;
+                        validate_write_target(target, cwd, workspace_root, sandbox)?;
                     }
                 }
             }
@@ -396,12 +401,12 @@ pub(crate) fn validate_shell_write_scope(
                     .rev()
                     .take_while(|argument| !argument.starts_with('-'))
                 {
-                    validate_write_target(target, cwd, sandbox)?;
+                    validate_write_target(target, cwd, workspace_root, sandbox)?;
                 }
             }
             "find" if arguments.iter().any(|argument| argument == "-delete") => {
                 if let Some(target) = arguments.first() {
-                    validate_write_target(target, cwd, sandbox)?;
+                    validate_write_target(target, cwd, workspace_root, sandbox)?;
                 }
             }
             "bash" | "sh" | "zsh" => {
@@ -409,7 +414,7 @@ pub(crate) fn validate_shell_write_scope(
                     let nested = arguments.get(flag_index + 1).ok_or_else(|| {
                         "Nested shell `-c` invocation is missing its command".to_string()
                     })?;
-                    validate_shell_write_scope(nested, cwd, sandbox, depth + 1)?;
+                    validate_shell_write_scope(nested, cwd, workspace_root, sandbox, depth + 1)?;
                 }
             }
             _ => {}
@@ -471,9 +476,10 @@ pub(super) fn command_is_write(command: &str) -> bool {
 fn validate_write_target(
     target: &str,
     cwd: &Path,
+    workspace_root: Option<&Path>,
     sandbox: &dyn crate::tools::sandbox::SandboxGuard,
 ) -> Result<(), String> {
-    match resolve_write_target(target, cwd)? {
+    match resolve_write_target(target, cwd, workspace_root)? {
         Some(path) => match sandbox.check_write(&path) {
             Ok(()) => Ok(()),
             Err(original) if target == "~" || target.starts_with("~/") => {
@@ -492,7 +498,11 @@ fn validate_write_target(
     }
 }
 
-fn resolve_write_target(target: &str, cwd: &Path) -> Result<Option<std::path::PathBuf>, String> {
+fn resolve_write_target(
+    target: &str,
+    cwd: &Path,
+    workspace_root: Option<&Path>,
+) -> Result<Option<std::path::PathBuf>, String> {
     if target.starts_with('&') || target == "/dev/null" {
         return Ok(None);
     }
@@ -505,27 +515,11 @@ fn resolve_write_target(target: &str, cwd: &Path) -> Result<Option<std::path::Pa
             "Cannot safely resolve dynamic shell write target `{target}`"
         ));
     }
-    let expanded = if cfg!(target_os = "android") && (target == "~" || target.starts_with("~/")) {
-        if target == "~" {
-            std::path::PathBuf::from("/root")
-        } else {
-            std::path::PathBuf::from("/root").join(&target[2..])
-        }
-    } else {
-        crate::tools::policy::expand_home(target)
-    };
-    if target == "/workspace" {
-        return Ok(Some(cwd.to_path_buf()));
-    }
-    if let Some(relative) = target.strip_prefix("/workspace/") {
-        return Ok(Some(cwd.join(relative)));
-    }
-    let path = if expanded.is_absolute() {
-        expanded
-    } else {
-        cwd.join(expanded)
-    };
-    Ok(Some(crate::tools::builtin::normalize_path(&path)))
+    let resolver = crate::tools::builtin::GuestPathResolver::new(workspace_root, None);
+    let resolved = resolver.resolve_from_cwd(target, Some(cwd));
+    Ok(Some(crate::tools::builtin::normalize_path(
+        &resolved.host_path,
+    )))
 }
 
 /// Return statically identifiable shell write targets for a one-call scoped
@@ -534,20 +528,21 @@ fn resolve_write_target(target: &str, cwd: &Path) -> Result<Option<std::path::Pa
 pub(crate) fn shell_write_targets(
     command: &str,
     cwd: &Path,
+    workspace_root: Option<&Path>,
     depth: usize,
 ) -> Result<Vec<std::path::PathBuf>, String> {
     if depth > 3 {
         return Err("Nested shell command exceeds the safety inspection limit".to_string());
     }
     let tokens = shell_tokens(command)?;
-    validate_stateful_shell_tokens(&tokens, cwd, None)?;
+    validate_stateful_shell_tokens(&tokens, cwd, workspace_root, None)?;
     let mut targets = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         if token == ">" || token == ">>" {
             let target = tokens
                 .get(index + 1)
                 .ok_or_else(|| "Output redirection is missing a target".to_string())?;
-            if let Some(path) = resolve_write_target(target, cwd)? {
+            if let Some(path) = resolve_write_target(target, cwd, workspace_root)? {
                 targets.push(path);
             }
         }
@@ -564,7 +559,7 @@ pub(crate) fn shell_write_targets(
                     .iter()
                     .filter(|argument| !argument.starts_with('-'))
                 {
-                    if let Some(path) = resolve_write_target(target, cwd)? {
+                    if let Some(path) = resolve_write_target(target, cwd, workspace_root)? {
                         targets.push(path);
                     }
                 }
@@ -575,7 +570,7 @@ pub(crate) fn shell_write_targets(
                     .rev()
                     .find(|argument| !argument.starts_with('-'))
                 {
-                    if let Some(path) = resolve_write_target(target, cwd)? {
+                    if let Some(path) = resolve_write_target(target, cwd, workspace_root)? {
                         targets.push(path);
                     }
                 }
@@ -583,7 +578,7 @@ pub(crate) fn shell_write_targets(
             "dd" => {
                 for argument in arguments {
                     if let Some(target) = argument.strip_prefix("of=") {
-                        if let Some(path) = resolve_write_target(target, cwd)? {
+                        if let Some(path) = resolve_write_target(target, cwd, workspace_root)? {
                             targets.push(path);
                         }
                     }
@@ -595,14 +590,14 @@ pub(crate) fn shell_write_targets(
                     .rev()
                     .take_while(|argument| !argument.starts_with('-'))
                 {
-                    if let Some(path) = resolve_write_target(target, cwd)? {
+                    if let Some(path) = resolve_write_target(target, cwd, workspace_root)? {
                         targets.push(path);
                     }
                 }
             }
             "find" if arguments.iter().any(|argument| argument == "-delete") => {
                 if let Some(target) = arguments.first() {
-                    if let Some(path) = resolve_write_target(target, cwd)? {
+                    if let Some(path) = resolve_write_target(target, cwd, workspace_root)? {
                         targets.push(path);
                     }
                 }
@@ -612,7 +607,7 @@ pub(crate) fn shell_write_targets(
                     let nested = arguments.get(flag_index + 1).ok_or_else(|| {
                         "Nested shell `-c` invocation is missing its command".to_string()
                     })?;
-                    targets.extend(shell_write_targets(nested, cwd, depth + 1)?);
+                    targets.extend(shell_write_targets(nested, cwd, workspace_root, depth + 1)?);
                 }
             }
             _ => {}
@@ -626,6 +621,7 @@ pub(crate) fn shell_write_targets(
 fn validate_stateful_shell_tokens(
     tokens: &[String],
     cwd: &Path,
+    workspace_root: Option<&Path>,
     sandbox: Option<&dyn crate::tools::sandbox::SandboxGuard>,
 ) -> Result<(), String> {
     if tokens.iter().any(|token| {
@@ -648,7 +644,7 @@ fn validate_stateful_shell_tokens(
                 .find(|argument| !argument.starts_with('-'))
                 .map(String::as_str)
                 .unwrap_or(".");
-            let target = resolve_shell_cwd_target(target, cwd, sandbox.is_none())?;
+            let target = resolve_shell_cwd_target(target, cwd, workspace_root, sandbox.is_none())?;
             if let Some(sandbox) = sandbox {
                 sandbox.check_cwd(&target)?;
             }
@@ -664,6 +660,7 @@ fn validate_stateful_shell_tokens(
 fn resolve_shell_cwd_target(
     target: &str,
     cwd: &Path,
+    workspace_root: Option<&Path>,
     scope_only: bool,
 ) -> Result<std::path::PathBuf, String> {
     if target.is_empty()
@@ -675,31 +672,18 @@ fn resolve_shell_cwd_target(
             "Cannot safely resolve dynamic shell cwd `{target}`"
         ));
     }
-    if target == "/workspace" {
-        return Ok(cwd.to_path_buf());
-    }
-    if let Some(relative) = target.strip_prefix("/workspace/") {
-        return Ok(cwd.join(relative));
-    }
-    if scope_only && target.starts_with('/') && !target.starts_with("/tmp/") {
+    let resolver = crate::tools::builtin::GuestPathResolver::new(workspace_root, None);
+    let resolved = resolver.resolve_from_cwd(target, Some(cwd));
+    if scope_only
+        && target.starts_with('/')
+        && resolved.resource_id != "workspace"
+        && !target.starts_with("/tmp/")
+    {
         return Err(format!(
             "Shell command `cd` targets an unapproved absolute path `{target}`"
         ));
     }
-    let expanded = if cfg!(target_os = "android") && (target == "~" || target.starts_with("~/")) {
-        if target == "~" {
-            std::path::PathBuf::from("/root")
-        } else {
-            std::path::PathBuf::from("/root").join(&target[2..])
-        }
-    } else {
-        crate::tools::policy::expand_home(target)
-    };
-    Ok(if expanded.is_absolute() {
-        expanded
-    } else {
-        cwd.join(expanded)
-    })
+    Ok(resolved.host_path)
 }
 
 fn command_creates_workspace_venv(command: &str, cwd: &Path, workspace: Option<&Path>) -> bool {
@@ -893,18 +877,43 @@ mod tests {
 
     #[test]
     fn rejects_stateful_commands_from_static_scope_analysis() {
+        let workspace = Path::new("/workspace");
         assert!(
-            shell_write_targets("cd /etc && touch marker", Path::new("/workspace"), 0).is_err()
+            shell_write_targets("cd /etc && touch marker", workspace, Some(workspace), 0).is_err()
         );
-        assert!(shell_write_targets("cd . && echo ok", Path::new("/workspace"), 0).is_ok());
+        assert!(shell_write_targets("cd . && echo ok", workspace, Some(workspace), 0).is_ok());
         assert!(
-            shell_write_targets("( cd /workspace; echo ok )", Path::new("/workspace"), 0).is_ok()
+            shell_write_targets("( cd /workspace; echo ok )", workspace, Some(workspace), 0)
+                .is_ok()
         );
-        assert!(shell_write_targets("rm -f *.deb", Path::new("/workspace"), 0).is_ok());
-        assert!(shell_write_targets("echo x > ./*.txt", Path::new("/workspace"), 0).is_ok());
+        assert!(shell_write_targets("rm -f *.deb", workspace, Some(workspace), 0).is_ok());
+        assert!(shell_write_targets("echo x > ./*.txt", workspace, Some(workspace), 0).is_ok());
         assert!(
-            shell_write_targets("HOME=/etc touch ~/marker", Path::new("/workspace"), 0).is_err()
+            shell_write_targets("HOME=/etc touch ~/marker", workspace, Some(workspace), 0).is_err()
         );
-        assert!(shell_write_targets("echo ok > ~root/marker", Path::new("/workspace"), 0).is_err());
+        assert!(
+            shell_write_targets("echo ok > ~root/marker", workspace, Some(workspace), 0).is_err()
+        );
+    }
+
+    #[test]
+    fn workspace_aliases_resolve_from_the_workspace_root_not_the_cwd() {
+        let workspace = Path::new("/workspace");
+        let cwd = Path::new("/workspace/packages/app");
+        let targets = shell_write_targets(
+            "touch /workspace/root.txt /root/workspace/project.txt relative.txt",
+            cwd,
+            Some(workspace),
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            targets,
+            vec![
+                Path::new("/workspace/packages/app/relative.txt").to_path_buf(),
+                Path::new("/workspace/project.txt").to_path_buf(),
+                Path::new("/workspace/root.txt").to_path_buf(),
+            ]
+        );
     }
 }

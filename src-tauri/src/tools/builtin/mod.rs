@@ -150,37 +150,136 @@ pub fn builtin_tools() -> Vec<Box<dyn BuiltinTool>> {
     ]
 }
 
-/// Resolve a file argument relative to the current workspace.
-pub fn resolve_path(ctx: &ToolCtx<'_>, path: &str) -> PathBuf {
-    let expanded = crate::tools::policy::expand_home(path);
-    // Android exposes the selected host directory under this stable guest
-    // alias. File tools execute on the host side, so resolve the alias before
-    // touching the filesystem instead of attempting to access host `/workspace`.
-    if let Some(workspace) = ctx.workspace_cwd.as_deref() {
-        let guest_workspace = Path::new("/workspace");
-        if expanded == guest_workspace {
-            return workspace.to_path_buf();
+/// A path resolved in both the guest namespace and the host resource namespace.
+/// Host paths remain internal to Rust; the stable resource ID is what policy and
+/// audit code should use when it needs to identify a mounted resource.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedGuestPath {
+    pub host_path: PathBuf,
+    pub guest_path: PathBuf,
+    pub resource_id: String,
+}
+
+/// Shared guest/host path resolver for all built-in tools and policy helpers.
+#[derive(Clone, Debug)]
+pub struct GuestPathResolver {
+    workspace_root: Option<PathBuf>,
+    fallback_root: PathBuf,
+}
+
+impl GuestPathResolver {
+    pub fn new(workspace_root: Option<&Path>, fallback_root: Option<&Path>) -> Self {
+        Self {
+            workspace_root: workspace_root.map(Path::to_path_buf),
+            fallback_root: fallback_root
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(".")),
         }
-        if let Ok(relative) = expanded.strip_prefix(guest_workspace) {
-            return workspace.join(relative);
-        }
-    }
-    if expanded.is_absolute() {
-        return expanded;
     }
 
-    let base = ctx
-        .workspace_cwd
-        .clone()
-        .or_else(|| {
+    pub fn from_context(ctx: &ToolCtx<'_>) -> Self {
+        Self::new(
+            ctx.workspace_cwd.as_deref(),
             ctx.policy
                 .shell
                 .allowed_cwd
                 .first()
-                .map(|path| crate::tools::policy::expand_home(path))
-        })
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join(expanded)
+                .map(|path| Path::new(path)),
+        )
+    }
+
+    /// Resolve a model-supplied path into the host path used by native tools.
+    pub fn resolve(&self, raw: &str) -> ResolvedGuestPath {
+        self.resolve_from_cwd(raw, self.workspace_root.as_deref())
+    }
+
+    /// Resolve a path relative to an explicit host cwd while preserving guest
+    /// aliases such as `/workspace` and `/root/workspace`.
+    pub fn resolve_from_cwd(&self, raw: &str, cwd: Option<&Path>) -> ResolvedGuestPath {
+        let raw_path = Path::new(raw);
+        let guest_workspace = Path::new("/workspace");
+        let guest_project = Path::new("/root/workspace");
+        let guest_home = Path::new("/root");
+
+        if let Some(workspace) = self.workspace_root.as_deref() {
+            if raw_path == guest_workspace || raw_path == guest_project {
+                return ResolvedGuestPath {
+                    host_path: workspace.to_path_buf(),
+                    guest_path: raw_path.to_path_buf(),
+                    resource_id: "workspace".into(),
+                };
+            }
+            if let Ok(relative) = raw_path.strip_prefix(guest_workspace) {
+                return ResolvedGuestPath {
+                    host_path: workspace.join(relative),
+                    guest_path: raw_path.to_path_buf(),
+                    resource_id: "workspace".into(),
+                };
+            }
+            if let Ok(relative) = raw_path.strip_prefix(guest_project) {
+                return ResolvedGuestPath {
+                    host_path: workspace.join(relative),
+                    guest_path: raw_path.to_path_buf(),
+                    resource_id: "workspace".into(),
+                };
+            }
+        }
+
+        if raw == "~" || raw.starts_with("~/") {
+            let relative = raw.strip_prefix("~/").unwrap_or_default();
+            return ResolvedGuestPath {
+                host_path: crate::tools::policy::expand_home(raw),
+                guest_path: if relative.is_empty() {
+                    guest_home.to_path_buf()
+                } else {
+                    guest_home.join(relative)
+                },
+                resource_id: "guest-home".into(),
+            };
+        }
+
+        if raw_path.is_absolute() {
+            return ResolvedGuestPath {
+                host_path: raw_path.to_path_buf(),
+                guest_path: raw_path.to_path_buf(),
+                resource_id: format!("host:{}", raw_path.display()),
+            };
+        }
+
+        let base = cwd
+            .or(self.workspace_root.as_deref())
+            .unwrap_or(&self.fallback_root);
+        ResolvedGuestPath {
+            host_path: base.join(raw_path),
+            guest_path: guest_workspace.join(raw_path),
+            resource_id: self
+                .workspace_root
+                .as_deref()
+                .is_some_and(|workspace| base.starts_with(workspace))
+                .then_some("workspace")
+                .unwrap_or("host")
+                .into(),
+        }
+    }
+
+    pub fn resolve_host(&self, raw: &str) -> PathBuf {
+        self.resolve(raw).host_path
+    }
+}
+
+/// Resolve a file argument relative to the current workspace.
+pub fn resolve_path(ctx: &ToolCtx<'_>, path: &str) -> PathBuf {
+    GuestPathResolver::from_context(ctx).resolve_host(path)
+}
+
+/// Resolve a path with the same fallback rules as built-in tools, without a
+/// live tool context. Used by approval and review code before execution.
+pub fn resolve_path_from_workspace(
+    path: &str,
+    workspace_cwd: Option<&Path>,
+    fallback_root: Option<&Path>,
+) -> ResolvedGuestPath {
+    GuestPathResolver::new(workspace_cwd, fallback_root).resolve(path)
 }
 
 /// Resolve a path as far as possible without requiring the leaf to exist.
@@ -318,6 +417,35 @@ pub fn needs_approval(tool: &str, args: &Value, policy: &ToolPolicy) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn guest_workspace_aliases_share_one_resource_identity() {
+        let workspace = Path::new("/tmp/agnes-workspace");
+        let resolver = GuestPathResolver::new(Some(workspace), None);
+        let relative = resolver.resolve("src/lib.rs");
+        let workspace_alias = resolver.resolve("/workspace/src/lib.rs");
+        let project_alias = resolver.resolve("/root/workspace/src/lib.rs");
+
+        assert_eq!(relative.host_path, workspace.join("src/lib.rs"));
+        assert_eq!(relative.host_path, workspace_alias.host_path);
+        assert_eq!(relative.host_path, project_alias.host_path);
+        assert_eq!(relative.resource_id, "workspace");
+        assert_eq!(workspace_alias.resource_id, "workspace");
+        assert_eq!(project_alias.resource_id, "workspace");
+    }
+
+    #[test]
+    fn explicit_cwd_does_not_change_workspace_alias_resolution() {
+        let workspace = Path::new("/tmp/agnes-workspace");
+        let resolver = GuestPathResolver::new(Some(workspace), None);
+        let resolved = resolver.resolve_from_cwd(
+            "/workspace/README.md",
+            Some(&workspace.join("packages/app")),
+        );
+
+        assert_eq!(resolved.host_path, workspace.join("README.md"));
+        assert_eq!(resolved.resource_id, "workspace");
+    }
 
     #[test]
     fn risk_drives_on_risk_approval() {

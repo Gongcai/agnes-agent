@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::tools::builtin::normalize_path;
-use crate::tools::policy::{expand_home, ToolPolicy};
+use crate::tools::policy::ToolPolicy;
 
 const MAX_PREVIEW_CHARS: usize = 32_000;
 const MAX_SOURCE_CHARS: usize = 512_000;
@@ -97,23 +97,10 @@ async fn read_preview_file(path: &Path) -> Option<String> {
 }
 
 fn preview_path(path: &str, workspace_cwd: Option<&Path>, policy: &ToolPolicy) -> Option<PathBuf> {
-    let expanded = expand_home(path);
-    let resolved = if expanded.is_absolute() {
-        expanded
-    } else {
-        workspace_cwd
-            .map(Path::to_path_buf)
-            .or_else(|| {
-                policy
-                    .shell
-                    .allowed_cwd
-                    .first()
-                    .map(|path| expand_home(path))
-            })
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(expanded)
-    };
-    Some(normalize_path(&resolved))
+    let fallback_root = policy.shell.allowed_cwd.first().map(Path::new);
+    let resolved =
+        crate::tools::builtin::resolve_path_from_workspace(path, workspace_cwd, fallback_root);
+    Some(normalize_path(&resolved.host_path))
 }
 
 fn allowed_path(policy: &ToolPolicy, workspace_cwd: Option<&Path>, path: &Path) -> bool {
@@ -170,6 +157,32 @@ mod tests {
         let preview = preview_tool_call(
             "file_edit",
             &json!({"path": "notes.txt", "old_string": "before", "new_string": "after"}),
+            Some(&root),
+            &policy_for(&root),
+        )
+        .await
+        .unwrap();
+
+        assert!(preview.contains("before"));
+        assert!(preview.contains("after"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "before\n");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn previews_workspace_guest_aliases_from_the_host_workspace() {
+        let root = std::env::temp_dir().join(format!("agnes-review-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("notes.txt");
+        std::fs::write(&path, "before\n").unwrap();
+
+        let preview = preview_tool_call(
+            "file_edit",
+            &json!({
+                "path": "/root/workspace/notes.txt",
+                "old_string": "before",
+                "new_string": "after"
+            }),
             Some(&root),
             &policy_for(&root),
         )

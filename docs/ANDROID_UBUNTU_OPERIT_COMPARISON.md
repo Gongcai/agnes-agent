@@ -496,10 +496,13 @@ PRoot `-0` 只改变 guest 观察到的身份，不提供 Android 提权；同�
 
 ### P1：统一 namespace
 
-- 引入 mount table 和 `GuestPathResolver`。
-- file/read/write/search/patch/git/shell cwd 全部迁移到 resolver。
-- 移除散落的 `/workspace`、`/root` 和宿主 HOME 特判。
-- 建立 EROFS、EACCES、ENOENT、policy denied 的结构化错误映射。
+- [x] 引入首个 `GuestPathResolver`，将相对路径、`/workspace` 与
+  `/root/workspace` 收敛为同一个 workspace resource ID。
+- [x] file/read/write/search/patch/git/shell cwd、审批预览及 shell 静态写目标均通过
+  resolver 解析；`/workspace` 不再错误依赖当前子目录 cwd。
+- [ ] 将 Runtime bind mounts 显式建模为完整 mount table，并接入 rootfs、guest HOME、`/tmp` 和
+  environment store 的 host resource 映射。
+- [ ] 建立 EROFS、EACCES、ENOENT、policy denied 的结构化错误映射。
 
 ### P2：执行平面分离
 

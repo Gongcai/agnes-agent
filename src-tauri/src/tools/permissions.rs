@@ -147,7 +147,8 @@ pub fn sandbox_escalation_for_tool_call(
             let outside_cwd = policy.check_shell(&cwd.to_string_lossy()).is_err()
                 || sandbox.check_cwd(&cwd).is_err();
             let mut writable_roots = Vec::new();
-            let write_targets = crate::tools::builtin::shell::shell_write_targets(command, &cwd, 0);
+            let write_targets =
+                crate::tools::builtin::shell::shell_write_targets(command, &cwd, workspace_cwd, 0);
             if policy.shell.deny_write_outside_workspace {
                 match &write_targets {
                     Ok(targets) => {
@@ -295,23 +296,10 @@ fn existing_git_root(cwd: &Path) -> Option<PathBuf> {
 }
 
 fn resolve_tool_path(path: &str, workspace_cwd: Option<&Path>, policy: &ToolPolicy) -> PathBuf {
-    let expanded = crate::tools::policy::expand_home(path);
-    let resolved = if expanded.is_absolute() {
-        expanded
-    } else {
-        workspace_cwd
-            .map(Path::to_path_buf)
-            .or_else(|| {
-                policy
-                    .shell
-                    .allowed_cwd
-                    .first()
-                    .map(|path| crate::tools::policy::expand_home(path))
-            })
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(expanded)
-    };
-    crate::tools::builtin::normalize_path(&resolved)
+    let fallback_root = policy.shell.allowed_cwd.first().map(Path::new);
+    let resolved =
+        crate::tools::builtin::resolve_path_from_workspace(path, workspace_cwd, fallback_root);
+    crate::tools::builtin::normalize_path(&resolved.host_path)
 }
 
 /// Resolve human approval for the active session mode.
@@ -522,6 +510,20 @@ mod tests {
             .check_write(Path::new("/opt/agnes/output.txt"))
             .is_ok());
         assert!(sandbox.check_write(Path::new("/opt/other.txt")).is_err());
+    }
+
+    #[test]
+    fn workspace_guest_alias_does_not_request_an_external_write_scope() {
+        let workspace = Path::new("/workspace");
+        let policy = ToolPolicy::default();
+        let escalation = sandbox_escalation_for_tool_call(
+            "file_write",
+            &serde_json::json!({"path": "/root/workspace/result.txt", "content": "ok"}),
+            &policy,
+            Some(workspace),
+        );
+
+        assert_eq!(escalation, None);
     }
 
     #[test]
