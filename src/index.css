@@ -702,7 +702,8 @@ pre,
   border-radius: 8px !important;
   background: transparent !important;
   color: var(--claude-ink) !important;
-  font-size: 12px;
+  /* rem-based so sidebar entries follow the font-scale preference (root font-size). */
+  font-size: 0.75rem;
   font-weight: 500;
   transition: background-color 120ms ease, transform 120ms ease;
 }
