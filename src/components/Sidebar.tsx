@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { ENABLED_APP_FEATURES, type AppFeatureId, type ChatMode } from "../lib/features";
 import { searchSessionsByTitle } from "../lib/sessionSearch";
+import { subscribeUIPreferenceChanges } from "../lib/uiPreferences";
 import { calculateMenuPosition, viewportRectToLocalRect } from "../lib/zoomGeometry";
 import { useAgentStore } from "../store/useAgentStore";
 import { NotificationCenter, type AppNotification } from "./NotificationCenter";
@@ -224,7 +225,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
     let frame = 0;
     let stopped = false;
-    const startedAt = performance.now();
+    let startedAt = performance.now();
 
     const measure = () => {
       if (stopped) return;
@@ -252,16 +253,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (timestamp - startedAt < 360) frame = requestAnimationFrame(followLayoutTransition);
     };
 
-    frame = requestAnimationFrame(followLayoutTransition);
+    // Row geometry is rem-based, so a font-scale change needs a fresh measurement.
+    const startFollowing = () => {
+      cancelAnimationFrame(frame);
+      startedAt = performance.now();
+      frame = requestAnimationFrame(followLayoutTransition);
+    };
+
+    startFollowing();
     const resizeObserver = new ResizeObserver(measure);
     resizeObserver.observe(sidebar);
     window.addEventListener("resize", measure);
+    const unsubscribePreferences = subscribeUIPreferenceChanges((change) => {
+      if (change.fontScale !== undefined) startFollowing();
+    });
 
     return () => {
       stopped = true;
       cancelAnimationFrame(frame);
       resizeObserver.disconnect();
       window.removeEventListener("resize", measure);
+      unsubscribePreferences();
     };
   }, [activeFeature, isOpen]);
 
