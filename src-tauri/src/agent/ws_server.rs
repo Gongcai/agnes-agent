@@ -36,8 +36,8 @@ pub struct ActiveRun {
     pub pending_thought_tag: String,
 }
 
-const THOUGHT_OPEN_TAG: &str = "<thought>";
-const THOUGHT_CLOSE_TAG: &str = "</thought>";
+const THOUGHT_OPEN_TAGS: [&str; 4] = ["<thought>", "<think>", "<thinking>", "<analysis>"];
+const THOUGHT_CLOSE_TAGS: [&str; 4] = ["</thought>", "</think>", "</thinking>", "</analysis>"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct AssistantDeltaSegment {
@@ -69,28 +69,36 @@ fn push_assistant_delta_segment(
 }
 
 fn trailing_thought_tag_prefix_len(value: &str) -> usize {
-    let max_len = THOUGHT_CLOSE_TAG.len().max(THOUGHT_OPEN_TAG.len());
+    let max_len = THOUGHT_OPEN_TAGS
+        .iter()
+        .chain(THOUGHT_CLOSE_TAGS.iter())
+        .map(|tag| tag.len())
+        .max()
+        .unwrap_or(0);
     for len in (1..=max_len.min(value.len())).rev() {
         let start = value.len() - len;
         if !value.is_char_boundary(start) {
             continue;
         }
         let suffix = &value[start..];
-        if THOUGHT_OPEN_TAG.starts_with(suffix) || THOUGHT_CLOSE_TAG.starts_with(suffix) {
+        if THOUGHT_OPEN_TAGS
+            .iter()
+            .chain(THOUGHT_CLOSE_TAGS.iter())
+            .any(|tag| tag.starts_with(suffix))
+        {
             return len;
         }
     }
     0
 }
 
-fn next_thought_tag(value: &str) -> Option<(usize, bool)> {
-    match (value.find(THOUGHT_OPEN_TAG), value.find(THOUGHT_CLOSE_TAG)) {
-        (Some(open), Some(close)) if open <= close => Some((open, true)),
-        (Some(_), Some(close)) => Some((close, false)),
-        (Some(open), None) => Some((open, true)),
-        (None, Some(close)) => Some((close, false)),
-        (None, None) => None,
-    }
+fn next_thought_tag(value: &str) -> Option<(usize, bool, usize)> {
+    THOUGHT_OPEN_TAGS
+        .iter()
+        .map(|tag| (tag, true))
+        .chain(THOUGHT_CLOSE_TAGS.iter().map(|tag| (tag, false)))
+        .filter_map(|(tag, open)| value.find(tag).map(|index| (index, open, tag.len())))
+        .min_by_key(|(index, _, _)| *index)
 }
 
 fn route_assistant_delta(run: &mut ActiveRun, content: &str) -> Vec<AssistantDeltaSegment> {
@@ -105,15 +113,14 @@ fn route_assistant_delta(run: &mut ActiveRun, content: &str) -> Vec<AssistantDel
         } else {
             "text"
         };
-        if let Some((index, is_open)) = next_thought_tag(remaining) {
+        if let Some((index, is_open, tag_len)) = next_thought_tag(remaining) {
             push_assistant_delta_segment(run, &mut segments, kind, &remaining[..index]);
             if is_open {
                 run.thought_depth = run.thought_depth.saturating_add(1);
-                remaining = &remaining[index + THOUGHT_OPEN_TAG.len()..];
             } else {
                 run.thought_depth = run.thought_depth.saturating_sub(1);
-                remaining = &remaining[index + THOUGHT_CLOSE_TAG.len()..];
             }
+            remaining = &remaining[index + tag_len..];
             continue;
         }
 
@@ -1344,6 +1351,41 @@ mod tests {
         assert!(!run.in_thought);
         assert_eq!(run.accumulated_thought, "private reasoning");
         assert_eq!(run.accumulated_text, "public answer");
+    }
+
+    #[test]
+    fn gemini_style_thought_tags_are_routed_as_reasoning() {
+        let mut run = test_run();
+
+        let segments = route_assistant_delta(
+            &mut run,
+            "<think>private</think>answer<analysis>more</analysis>done",
+        );
+
+        assert_eq!(
+            segments,
+            vec![
+                AssistantDeltaSegment {
+                    kind: "thought",
+                    content: "private".into(),
+                },
+                AssistantDeltaSegment {
+                    kind: "text",
+                    content: "answer".into(),
+                },
+                AssistantDeltaSegment {
+                    kind: "thought",
+                    content: "more".into(),
+                },
+                AssistantDeltaSegment {
+                    kind: "text",
+                    content: "done".into(),
+                },
+            ]
+        );
+        assert_eq!(run.accumulated_thought, "privatemore");
+        assert_eq!(run.accumulated_text, "answerdone");
+        assert!(!run.in_thought);
     }
 
     #[test]

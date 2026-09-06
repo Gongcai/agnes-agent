@@ -154,28 +154,30 @@ export interface StreamingDeltaSegment {
   content: string;
 }
 
-const THOUGHT_OPEN_TAG = "<thought>";
-const THOUGHT_CLOSE_TAG = "</thought>";
+const THOUGHT_OPEN_TAGS = ["<thought>", "<think>", "<thinking>", "<analysis>"] as const;
+const THOUGHT_CLOSE_TAGS = ["</thought>", "</think>", "</thinking>", "</analysis>"] as const;
 
 function trailingThoughtTagPrefixLength(value: string): number {
-  const maxLength = Math.max(THOUGHT_OPEN_TAG.length, THOUGHT_CLOSE_TAG.length);
+  const tags = [...THOUGHT_OPEN_TAGS, ...THOUGHT_CLOSE_TAGS];
+  const maxLength = Math.max(...tags.map((tag) => tag.length));
   for (let length = Math.min(maxLength, value.length); length > 0; length -= 1) {
     const suffix = value.slice(-length);
-    if (THOUGHT_OPEN_TAG.startsWith(suffix) || THOUGHT_CLOSE_TAG.startsWith(suffix)) {
+    if (tags.some((tag) => tag.startsWith(suffix))) {
       return length;
     }
   }
   return 0;
 }
 
-function nextThoughtTag(value: string): { index: number; open: boolean } | null {
-  const openIndex = value.indexOf(THOUGHT_OPEN_TAG);
-  const closeIndex = value.indexOf(THOUGHT_CLOSE_TAG);
-  if (openIndex < 0 && closeIndex < 0) return null;
-  if (openIndex >= 0 && (closeIndex < 0 || openIndex <= closeIndex)) {
-    return { index: openIndex, open: true };
-  }
-  return { index: closeIndex, open: false };
+function nextThoughtTag(value: string): { index: number; open: boolean; length: number } | null {
+  const matches = [
+    ...THOUGHT_OPEN_TAGS.map((tag) => ({ tag, open: true })),
+    ...THOUGHT_CLOSE_TAGS.map((tag) => ({ tag, open: false })),
+  ]
+    .map(({ tag, open }) => ({ index: value.indexOf(tag), open, length: tag.length }))
+    .filter((match) => match.index >= 0)
+    .sort((left, right) => left.index - right.index);
+  return matches[0] ?? null;
 }
 
 function parseCompleteThoughtTaggedContent(
@@ -204,10 +206,10 @@ function parseCompleteThoughtTaggedContent(
     append(kind, remaining.slice(0, tag.index));
     if (tag.open) {
       thoughtDepth += 1;
-      remaining = remaining.slice(tag.index + THOUGHT_OPEN_TAG.length);
+      remaining = remaining.slice(tag.index + tag.length);
     } else {
       thoughtDepth = Math.max(0, thoughtDepth - 1);
-      remaining = remaining.slice(tag.index + THOUGHT_CLOSE_TAG.length);
+      remaining = remaining.slice(tag.index + tag.length);
     }
   }
 }
@@ -218,7 +220,7 @@ export function normalizePersistedAssistantThoughtTags(message: Message): Messag
   const parts = message.parts.flatMap((part) => {
     if (
       (part.kind !== "text" && part.kind !== "thought")
-      || (!part.content.includes(THOUGHT_OPEN_TAG) && !part.content.includes(THOUGHT_CLOSE_TAG))
+      || (![...THOUGHT_OPEN_TAGS, ...THOUGHT_CLOSE_TAGS].some((tag) => part.content.includes(tag)))
     ) {
       return [part];
     }
@@ -1252,10 +1254,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           appendKind(kind, remaining.slice(0, tag.index));
           if (tag.open) {
             thoughtDepth += 1;
-            remaining = remaining.slice(tag.index + THOUGHT_OPEN_TAG.length);
+            remaining = remaining.slice(tag.index + tag.length);
           } else {
             thoughtDepth = Math.max(0, thoughtDepth - 1);
-            remaining = remaining.slice(tag.index + THOUGHT_CLOSE_TAG.length);
+            remaining = remaining.slice(tag.index + tag.length);
           }
           continue;
         }

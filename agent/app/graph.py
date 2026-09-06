@@ -160,6 +160,31 @@ def _read_usage(usage: Any) -> Dict[str, int]:
         or _usage_field(usage, "output_tokens"),
     }
 
+
+def _read_reasoning_delta(delta: Any) -> Optional[str]:
+    """Read reasoning from LiteLLM's OpenAI-compatible and Gemini fields."""
+    reasoning = (
+        getattr(delta, "reasoning_content", None)
+        or getattr(delta, "reasoning", None)
+    )
+    if reasoning:
+        return reasoning
+
+    thinking_blocks = getattr(delta, "thinking_blocks", None)
+    if not isinstance(thinking_blocks, (list, tuple)):
+        return None
+    parts: List[str] = []
+    for block in thinking_blocks:
+        text = (
+            block.get("thinking")
+            if isinstance(block, dict)
+            else getattr(block, "thinking", None)
+        )
+        if isinstance(text, str) and text:
+            parts.append(text)
+    return "".join(parts) or None
+
+
 def get_available_tools(
     tool_policy: Dict[str, Any],
     dynamic_tools: Optional[List[Dict[str, Any]]] = None,
@@ -949,10 +974,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
-                reasoning_text = (
-                    getattr(delta, "reasoning_content", None)
-                    or getattr(delta, "reasoning", None)
-                )
+                reasoning_text = _read_reasoning_delta(delta)
                 if reasoning_text:
                     attempt_had_activity = True
                     if not reasoning_started:

@@ -214,6 +214,16 @@ def test_stream_usage_options_are_limited_to_native_openai_endpoints():
     )
 
 
+def test_reasoning_delta_reads_gemini_thinking_blocks():
+    assert graph_module._read_reasoning_delta(
+        SimpleNamespace(
+            reasoning_content=None,
+            reasoning=None,
+            thinking_blocks=[{"thinking": "first"}, {"thinking": " second"}],
+        )
+    ) == "first second"
+
+
 def test_completion_replays_deepseek_reasoning_and_fills_only_missing_turns(monkeypatch):
     captured = {}
 

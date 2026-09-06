@@ -318,4 +318,33 @@ describe("assistant delta routing", () => {
 
     useAgentStore.setState({ activeSessionId: null, isStreaming: false, messages: [] });
   });
+
+  it("routes Gemini-style think and analysis tags to thought parts", () => {
+    const streamingAssistant: Message = {
+      ...assistant,
+      id: "assistant-gemini-thought",
+      status: "streaming",
+      parts: [],
+    };
+    useAgentStore.setState({
+      activeSessionId: "session-1",
+      isStreaming: true,
+      messages: [user, streamingAssistant],
+    });
+
+    useAgentStore.getState().appendStreamingDelta("<thi");
+    useAgentStore.getState().appendStreamingDelta("nk>private</think>answer");
+    useAgentStore.getState().appendStreamingDelta("<analysis>more</analysis>done");
+
+    const streamed = useAgentStore.getState().messages.at(-1)!;
+    expect(streamed.parts).toMatchObject([
+      { kind: "thought", content: "private" },
+      { kind: "text", content: "answer" },
+      { kind: "thought", content: "more" },
+      { kind: "text", content: "done" },
+    ]);
+    expect(streamed.parts.some((part) => /<\/?(?:think|analysis)>/.test(part.content))).toBe(false);
+
+    useAgentStore.setState({ activeSessionId: null, isStreaming: false, messages: [] });
+  });
 });
