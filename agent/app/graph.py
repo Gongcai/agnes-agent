@@ -886,6 +886,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
         state.get("dynamic_tools", []),
     )
     tools_arg = available_tools if available_tools else None
+    tools_disabled_for_request = False
     
     async def emit(content: str) -> None:
         if send_delta_fn:
@@ -931,10 +932,11 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
             completion_kwargs: Dict[str, Any] = {}
             if supports_stream_usage_options(llm_config):
                 completion_kwargs["stream_options"] = {"include_usage": True}
+            request_tools = None if tools_disabled_for_request else tools_arg
             response = completion(
                 model=selected_model,
                 messages=messages,
-                tools=tools_arg,
+                tools=request_tools,
                 stream=True,
                 llm_config=llm_config,
                 **completion_kwargs,
@@ -1003,7 +1005,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
             if attempt_usage["input_tokens"] == 0:
                 attempt_usage["input_tokens"] = count_tokens(
                     json.dumps(
-                        {"messages": messages, "tools": tools_arg},
+                        {"messages": messages, "tools": request_tools},
                         ensure_ascii=False,
                     ),
                     selected_model,
@@ -1022,6 +1024,17 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
             break
         except Exception as error:
             failure = classify_llm_error(error)
+            if (
+                failure.category == "invalid_request"
+                and not attempt_had_activity
+                and request_tools
+                and not tools_disabled_for_request
+            ):
+                # Some OpenAI-compatible models reject the whole request when
+                # they do not implement function calling. Retry once without
+                # tools; a partial stream is never retried.
+                tools_disabled_for_request = True
+                continue
             has_next = active_index + 1 < len(candidates)
             can_fallback = (
                 not fallback_locked

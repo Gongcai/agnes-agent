@@ -538,6 +538,41 @@ def test_call_llm_omits_stream_usage_options_for_compatible_provider(monkeypatch
     assert result["messages"][-1]["content"] == "ok"
 
 
+def test_call_llm_retries_without_tools_after_a_zero_output_bad_request(monkeypatch):
+    calls = []
+
+    class BadRequestError(Exception):
+        pass
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs.get("tools"))
+        if len(calls) == 1:
+            raise BadRequestError("Invalid request")
+        return iter([_text_chunk("tool-free answer")])
+
+    monkeypatch.setattr(graph_module, "completion", fake_completion)
+    state = {
+        **_fallback_test_state(),
+        "llm_config": {
+            "provider": "openai_compatible",
+            "model": "primary-model",
+            "litellmModel": "primary-model",
+        },
+        "fallback_configs": [],
+        "dynamic_tools": [],
+        "pending_tool_calls": [],
+        "finished": False,
+    }
+
+    result = asyncio.run(
+        graph_module.call_llm_node(state, {"configurable": {}})
+    )
+
+    assert calls[0]
+    assert calls[1] is None
+    assert result["messages"][-1]["content"] == "tool-free answer"
+
+
 def test_zero_output_timeout_uses_configured_fallback(monkeypatch):
     calls = []
 
