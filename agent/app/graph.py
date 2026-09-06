@@ -10,6 +10,7 @@ from .models import (
     LlmConfig,
     classify_llm_error,
     completion,
+    supports_stream_usage_options,
 )
 from .prompt import count_tokens
 
@@ -927,13 +928,16 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
         attempt_usage = {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
 
         try:
+            completion_kwargs: Dict[str, Any] = {}
+            if supports_stream_usage_options(llm_config):
+                completion_kwargs["stream_options"] = {"include_usage": True}
             response = completion(
                 model=selected_model,
                 messages=messages,
                 tools=tools_arg,
                 stream=True,
                 llm_config=llm_config,
-                stream_options={"include_usage": True},
+                **completion_kwargs,
             )
 
             for chunk in response:

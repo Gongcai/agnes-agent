@@ -35,6 +35,7 @@ from app.models import (
     completion,
     embed_texts,
     get_max_context_tokens,
+    supports_stream_usage_options,
 )
 
 
@@ -194,6 +195,23 @@ def test_completion_accepts_a_shorter_task_timeout(monkeypatch):
     completion("test-model", [{"role": "user", "content": "Hi"}], timeout=15)
 
     assert captured["timeout"] == 15
+
+
+def test_stream_usage_options_are_limited_to_native_openai_endpoints():
+    assert supports_stream_usage_options(None)
+    assert supports_stream_usage_options(LlmConfig(provider="openai"))
+    assert supports_stream_usage_options(
+        LlmConfig(provider="openai", api_base="https://api.openai.com/v1")
+    )
+    assert not supports_stream_usage_options(
+        LlmConfig(
+            provider="openai_compatible",
+            api_base="https://api.example.test/v1",
+        )
+    )
+    assert not supports_stream_usage_options(
+        LlmConfig(provider="ollama", api_base="http://localhost:11434")
+    )
 
 
 def test_completion_replays_deepseek_reasoning_and_fills_only_missing_turns(monkeypatch):
@@ -488,6 +506,36 @@ def _fallback_test_state():
         "active_llm_index": 0,
         "fallback_locked": False,
     }
+
+
+def test_call_llm_omits_stream_usage_options_for_compatible_provider(monkeypatch):
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return iter([_text_chunk("ok")])
+
+    monkeypatch.setattr(graph_module, "completion", fake_completion)
+    state = {
+        **_fallback_test_state(),
+        "llm_config": {
+            "provider": "openai_compatible",
+            "apiBase": "https://api.example.test/v1",
+            "model": "primary-model",
+            "litellmModel": "primary-model",
+        },
+        "fallback_configs": [],
+        "dynamic_tools": [],
+        "pending_tool_calls": [],
+        "finished": False,
+    }
+
+    result = asyncio.run(
+        graph_module.call_llm_node(state, {"configurable": {}})
+    )
+
+    assert "stream_options" not in captured
+    assert result["messages"][-1]["content"] == "ok"
 
 
 def test_zero_output_timeout_uses_configured_fallback(monkeypatch):

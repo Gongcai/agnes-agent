@@ -142,6 +142,22 @@ def get_max_context_tokens(model_name: str) -> int:
             return limit
     return DEFAULT_CONTEXT_LIMIT
 
+
+def supports_stream_usage_options(llm_config: Optional[LlmConfig]) -> bool:
+    """Return whether the endpoint is expected to accept OpenAI stream_options."""
+    if llm_config is None:
+        return True
+
+    if llm_config.provider.lower() != "openai":
+        return False
+
+    if not llm_config.api_base:
+        return True
+
+    hostname = (urlparse(llm_config.api_base).hostname or "").lower()
+    return hostname in {"api.openai.com", "api.chatgpt.com"}
+
+
 def build_thinking_kwargs(
     mode: str,
     litellm_model: str,
