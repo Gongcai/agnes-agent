@@ -1048,6 +1048,7 @@ impl SandboxGuard for PolicySandbox {
 
     fn check_cwd(&self, path: &Path) -> Result<(), String> {
         check_under_roots(path, &self.cwd_roots, "working-directory")
+            .or_else(|_| check_under_roots(path, &self.read_roots, "readable working-directory"))
     }
 
     fn resolve_guest_path(&self, raw: &str, cwd: Option<&Path>) -> AppResult<(PathBuf, PathBuf)> {
@@ -1826,6 +1827,17 @@ mod tests {
         assert!(sandbox.check_write(&temp_file).is_ok());
 
         let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn read_only_shell_can_use_a_workspace_external_cwd() {
+        let policy = ToolPolicy::default();
+        let sandbox = PolicySandbox::new(&policy, Some(Path::new("/tmp/agnes-workspace")));
+
+        assert!(sandbox.check_cwd(Path::new("/usr/share")).is_ok());
+        assert!(sandbox
+            .check_write(Path::new("/usr/share/agnes-output"))
+            .is_err());
     }
 
     #[test]

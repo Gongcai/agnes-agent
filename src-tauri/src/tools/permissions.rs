@@ -128,7 +128,7 @@ pub fn sandbox_escalation_for_tool_call_with_runtime(
     let sandbox =
         PolicySandbox::new_with_process_runtime(policy, workspace_cwd, process_runtime.clone());
     match tool {
-        "file_write" | "file_edit" => {
+        "file_write" | "write_file" | "file_edit" => {
             let target =
                 resolve_tool_path(args.get("path")?.as_str()?, workspace_cwd, policy, &sandbox);
             sandbox.check_write(&target).err().map(|_| {
@@ -230,7 +230,9 @@ pub fn sandbox_escalation_for_tool_call_with_runtime(
                 policy,
                 &sandbox,
             );
-            let outside_cwd = sandbox.check_cwd(&cwd).is_err();
+            // Git updates repository metadata, so an external cwd must be
+            // writable even when it is already readable by the process.
+            let outside_cwd = sandbox.check_write(&cwd).is_err();
             if outside_cwd {
                 let writable_roots = existing_git_root(&cwd)
                     .or_else(|| existing_write_root(&cwd))
@@ -376,6 +378,7 @@ pub fn approval_decision(mode: PermissionMode, tool: &str, risk: Risk) -> Approv
                     | "list_files"
                     | "grep"
                     | "file_write"
+                    | "write_file"
                     | "file_edit"
                     | "apply_patch"
                     | "memory_list"
@@ -650,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_outside_cwd_gets_a_readable_but_not_writable_process_scope() {
+    fn shell_outside_cwd_is_readable_but_not_writable_without_escalation() {
         let mut policy = ToolPolicy::default();
         policy.shell.allowed_cwd = vec!["/workspace".into()];
         let args = serde_json::json!({
@@ -663,18 +666,33 @@ mod tests {
             &policy,
             Some(Path::new("/workspace")),
         );
-        assert_eq!(
-            escalation,
-            Some(SandboxEscalation::ProcessRoots {
-                cwd: Some(PathBuf::from("/opt")),
-                writable_roots: Vec::new(),
-            })
-        );
-
-        apply_sandbox_escalation(&mut policy, escalation.as_ref().unwrap());
+        assert_eq!(escalation, None);
         let sandbox = PolicySandbox::new(&policy, Some(Path::new("/workspace")));
         assert!(sandbox.check_cwd(Path::new("/opt")).is_ok());
         assert!(sandbox.check_write(Path::new("/opt/agnes-output")).is_err());
+    }
+
+    #[test]
+    fn write_file_alias_uses_file_write_policy_and_scope() {
+        let policy = ToolPolicy::default();
+        assert_eq!(
+            policy.approval_for("write_file"),
+            policy.approval_for("file_write")
+        );
+        assert_eq!(
+            sandbox_escalation_for_tool_call(
+                "write_file",
+                &serde_json::json!({"path": "/opt/agnes/output.txt", "content": "ok"}),
+                &policy,
+                Some(Path::new("/workspace")),
+            ),
+            sandbox_escalation_for_tool_call(
+                "file_write",
+                &serde_json::json!({"path": "/opt/agnes/output.txt", "content": "ok"}),
+                &policy,
+                Some(Path::new("/workspace")),
+            )
+        );
     }
 
     #[test]

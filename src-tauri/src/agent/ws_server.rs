@@ -558,12 +558,13 @@ async fn handle_conn<R: tauri::Runtime>(
                         .and_then(|x| x.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let tool_name = env
-                        .payload
-                        .get("tool")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                    let tool_name = crate::tools::builtin::canonical_tool_name(
+                        env.payload
+                            .get("tool")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or(""),
+                    )
+                    .to_string();
                     let args = env
                         .payload
                         .get("arguments")
@@ -856,7 +857,9 @@ async fn handle_conn<R: tauri::Runtime>(
 
                             json!({
                                 "id": tc_id,
-                                "exit_code": val.get("exit_code").cloned().unwrap_or(serde_json::Value::Null),
+                                // Structured built-in results may omit process fields;
+                                // every successful tool call still has exit code zero.
+                                "exit_code": val.get("exit_code").cloned().unwrap_or_else(|| serde_json::Value::from(0)),
                                 "result_kind": val.get("result_kind").cloned().unwrap_or_else(|| serde_json::Value::String("tool_result".into())),
                                 "error_code": val.get("error_code").cloned().unwrap_or(serde_json::Value::Null),
                                 "stdout": stdout,

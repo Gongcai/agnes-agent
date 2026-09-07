@@ -471,6 +471,7 @@ pub fn normalize_guest_path(path: &Path) -> PathBuf {
 
 /// Compute the risk of a registered tool call.
 pub fn compute_risk(tool: &str, args: &Value) -> Risk {
+    let tool = canonical_tool_name(tool);
     for impl_ in builtin_tools() {
         if impl_.name() == tool {
             return impl_.risk(args);
@@ -481,6 +482,7 @@ pub fn compute_risk(tool: &str, args: &Value) -> Risk {
 
 /// 判断操作是否为写操作（用于 OnWrite tier）。
 pub fn is_write_op(tool: &str, args: &Value) -> bool {
+    let tool = canonical_tool_name(tool);
     match tool {
         "file_write"
         | "file_edit"
@@ -554,6 +556,14 @@ pub fn is_write_op(tool: &str, args: &Value) -> bool {
             .unwrap_or(false)
         }
         _ => false,
+    }
+}
+
+/// Map compatibility aliases to the canonical tool name used by the executor.
+pub fn canonical_tool_name(tool: &str) -> &str {
+    match tool {
+        "write_file" => "file_write",
+        _ => tool,
     }
 }
 

@@ -318,6 +318,21 @@ def get_available_tools(
         tools.append({
             "type": "function",
             "function": {
+                "name": "write_file",
+                "description": "Alias for file_write: write text content to a file on the local filesystem. Overwrites the file if it exists.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Absolute or relative path to the target file."},
+                        "content": {"type": "string", "description": "Text content to write."}
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        })
+        tools.append({
+            "type": "function",
+            "function": {
                 "name": "file_edit",
                 "description": "Replace an exact string in a UTF-8 file. The old string must be unique unless replace_all is true.",
                 "parameters": {

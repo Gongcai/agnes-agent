@@ -1343,6 +1343,7 @@ def test_get_available_tools():
     assert "stop_terminal" in tool_names
     assert "file_read" not in tool_names
     assert "file_write" not in tool_names
+    assert "write_file" not in tool_names
     assert "file_edit" not in tool_names
     assert "list_files" not in tool_names
     assert "grep" not in tool_names
@@ -1373,6 +1374,7 @@ def test_get_available_tools():
         "stop_terminal",
         "file_read",
         "file_write",
+        "write_file",
         "file_edit",
         "list_files",
         "grep",

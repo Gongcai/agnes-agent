@@ -416,9 +416,15 @@ impl ToolPolicy {
             .map(|path| path.to_string_lossy().to_string())
             .collect::<Vec<_>>();
         if !is_path_under_roots(&cwd_path, &self.shell.allowed_cwd)
+            && !is_path_under_roots(&cwd_path, &self.file.allowed_roots)
             && !is_path_under_roots(&cwd_path, &self.sandbox.writable_roots)
             && !is_path_under_roots(&cwd_path, &temporary_roots)
         {
+            // Read-only shell commands may inspect directories outside the
+            // workspace when the sandbox explicitly permits those reads.
+            if self.sandbox.allow_read_outside_workspace {
+                return Ok(());
+            }
             return Err(format!(
                 "工作目录 `{}` 不在 workspace、额外可写目录或系统临时目录内",
                 cwd
@@ -511,6 +517,7 @@ impl ToolPolicy {
 
     /// Return the approval tier for a tool. Unknown tools fail closed.
     pub fn approval_for(&self, tool: &str) -> ApprovalTier {
+        let tool = crate::tools::builtin::canonical_tool_name(tool);
         if tool.starts_with("mcp__") {
             return self.mcp.approval;
         }
@@ -596,6 +603,21 @@ mod tests {
         .unwrap();
         assert_eq!(boolean.shell.approval, ApprovalTier::Always);
         assert_eq!(boolean.file.approval, ApprovalTier::Never);
+    }
+
+    #[test]
+    fn read_outside_workspace_allows_shell_working_directory() {
+        let policy = ToolPolicy::default();
+        assert!(policy.check_shell("/usr/share").is_ok());
+    }
+
+    #[test]
+    fn explicitly_allowed_read_root_allows_shell_working_directory() {
+        let mut policy = ToolPolicy::default();
+        policy.sandbox.allow_read_outside_workspace = false;
+        policy.file.allowed_roots = vec!["/usr/share".into()];
+
+        assert!(policy.check_shell("/usr/share").is_ok());
     }
 
     #[test]

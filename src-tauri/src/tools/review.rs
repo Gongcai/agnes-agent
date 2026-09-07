@@ -39,7 +39,9 @@ pub async fn preview_tool_call_with_runtime(
             .and_then(Value::as_str)
             .map(str::to_string),
         "file_edit" => preview_file_edit(args, workspace_cwd, policy, &sandbox).await,
-        "file_write" => preview_file_write(args, workspace_cwd, policy, &sandbox).await,
+        "file_write" | "write_file" => {
+            preview_file_write(args, workspace_cwd, policy, &sandbox).await
+        }
         _ => None,
     }?;
     Some(bound_preview(preview))

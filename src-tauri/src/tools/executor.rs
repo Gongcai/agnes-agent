@@ -110,6 +110,7 @@ impl ToolExecutor {
         permission_mode: PermissionMode,
         sandbox_escalation: Option<SandboxEscalation>,
     ) -> AppResult<serde_json::Value> {
+        let tool = crate::tools::builtin::canonical_tool_name(tool);
         let public_arguments = crate::tools::audit_arguments(tool, arguments);
 
         // A. Resolve the Code binding or app-managed shared Home workspace.
@@ -664,7 +665,11 @@ mod tests {
                 &policy,
             )
             .await;
-        assert!(shell_err.is_err());
+        assert!(shell_err.is_ok());
+        assert!(shell_err.unwrap()["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("Bad"));
 
         let allowed_shell_write = json!({"command": "echo allowed > shell-write.txt"});
         executor
