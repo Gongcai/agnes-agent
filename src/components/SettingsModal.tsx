@@ -2950,28 +2950,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           关闭/自动由模型决定；轻度~深度控制思考深度。预算交由服务商默认参数，无需手动设置。
                         </p>
                       </div>
-                      <div className="flex items-center justify-between rounded-lg border border-stone-200/60 bg-stone-50 px-3 py-2.5">
+                      <div className="rounded-lg border border-stone-200/60 bg-stone-50 px-3 py-2.5">
                         <div className="min-w-0">
                           <p className="text-[11px] font-semibold text-stone-600">流式输出</p>
                           <p className="mt-0.5 text-[10px] text-stone-400">
                             关闭后整段返回，用于不支持 SSE 流式或流式异常的端点。
                           </p>
                         </div>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={agentForm.streaming}
-                          onClick={() => setAgentForm((f) => ({ ...f, streaming: !f.streaming }))}
-                          className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
-                            agentForm.streaming ? "bg-[#8CA38A]" : "bg-stone-300"
-                          }`}
-                        >
-                          <span
-                            className={`agnes-toggle-thumb absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
-                              agentForm.streaming ? "agnes-toggle-thumb--on" : "agnes-toggle-thumb--off"
-                            }`}
-                          />
-                        </button>
+                        <div className="mt-2 grid grid-cols-2 gap-1.5">
+                          {[
+                            { value: true, label: "流式" },
+                            { value: false, label: "整段" },
+                          ].map((opt) => (
+                            <button
+                              key={String(opt.value)}
+                              type="button"
+                              onClick={() => setAgentForm((f) => ({ ...f, streaming: opt.value }))}
+                              className={`px-2 py-1.5 rounded-lg text-[11px] font-semibold transition-colors border ${
+                                agentForm.streaming === opt.value
+                                  ? "bg-indigo-50 text-indigo-700 border-indigo-300"
+                                  : "bg-stone-50 text-stone-500 border-stone-200/60 hover:bg-stone-100"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                       <div>
                         <label className="font-semibold text-stone-500 block mb-1">标签 (逗号分隔)</label>

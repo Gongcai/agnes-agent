@@ -1647,28 +1647,32 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           ))}
                         </div>
                       </div>
-                      <div className="mt-2 flex items-center gap-2 border-t border-stone-100 px-1 pt-2">
-                        <label className="min-w-0 flex-1 text-[10px] font-semibold text-stone-500">
+                      <div className="mt-2 border-t border-stone-100 px-1 pt-2">
+                        <div className="mb-1 text-[10px] font-semibold text-stone-500">
                           流式输出
-                        </label>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={currentStreaming}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            applySessionLlm(effectiveModel, currentThinkingMode, 0, currentMaxTokens, !currentStreaming);
-                          }}
-                          className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
-                            currentStreaming ? "bg-[#8CA38A]" : "bg-stone-300"
-                          }`}
-                        >
-                          <span
-                            className={`agnes-toggle-thumb absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
-                              currentStreaming ? "agnes-toggle-thumb--on" : "agnes-toggle-thumb--off"
-                            }`}
-                          />
-                        </button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1">
+                          {[
+                            { value: true, label: "流式" },
+                            { value: false, label: "整段" },
+                          ].map((opt) => (
+                            <button
+                              key={String(opt.value)}
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                applySessionLlm(effectiveModel, currentThinkingMode, 0, currentMaxTokens, opt.value);
+                              }}
+                              className={`px-1 py-1 rounded-md text-[10px] font-semibold transition-colors border ${
+                                currentStreaming === opt.value
+                                  ? "bg-[#8CA38A]/15 text-[#5F735D] border-[#8CA38A]/40"
+                                  : "bg-stone-50 text-stone-500 border-stone-200/60 hover:bg-stone-100"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                       <div className="mt-2 flex items-center gap-2 border-t border-stone-100 px-1 pt-2">
                         <label htmlFor="session-max-tokens" className="min-w-0 flex-1 text-[10px] font-semibold text-stone-500">
