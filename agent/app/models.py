@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import math
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 import litellm
@@ -99,7 +100,8 @@ def classify_llm_error(error: BaseException) -> LlmFailure:
 @dataclass
 class LlmConfig:
     """LLM connection configuration resolved by Rust from model_providers."""
-    provider: str = "openai"           # openai / anthropic / ollama / openai_compatible / google
+    # openai / anthropic / ollama / openai_compatible / google / openai_responses
+    provider: str = "openai"
     api_base: Optional[str] = None     # Custom API endpoint URL
     api_key: Optional[str] = None      # API key (injected by Rust, never persisted in Python)
     model: str = "gpt-4o"              # Raw model name
@@ -147,6 +149,10 @@ def supports_stream_usage_options(llm_config: Optional[LlmConfig]) -> bool:
     """Return whether the endpoint is expected to accept OpenAI stream_options."""
     if llm_config is None:
         return True
+
+    # The Responses API has no stream_options parameter.
+    if llm_config.provider.lower() == RESPONSES_API_PROVIDER:
+        return False
 
     if llm_config.provider.lower() != "openai":
         return False
@@ -269,6 +275,333 @@ def _prepare_completion_messages(
     return prepared
 
 
+RESPONSES_API_PROVIDER = "openai_responses"
+
+
+def _responses_field(value: Any, name: str) -> Any:
+    """Read a field from either a dict or an attribute-style object."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _responses_content_part(part: Any) -> Optional[Dict[str, Any]]:
+    """Convert one chat-completions content part into a Responses input part."""
+    part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+    if part_type == "text":
+        text = _responses_field(part, "text")
+        if isinstance(text, str):
+            return {"type": "input_text", "text": text}
+        return None
+    if part_type == "image_url":
+        image = _responses_field(part, "image_url")
+        url = image.get("url") if isinstance(image, dict) else None
+        if isinstance(url, str) and url:
+            converted: Dict[str, Any] = {"type": "input_image", "image_url": url}
+            detail = image.get("detail") if isinstance(image, dict) else None
+            if isinstance(detail, str) and detail:
+                converted["detail"] = detail
+            return converted
+        return None
+    return None
+
+
+def _chat_messages_to_responses_input(
+    messages: List[Dict[str, Any]],
+) -> tuple[Optional[str], List[Dict[str, Any]]]:
+    """Translate chat-completions messages into Responses API (instructions, input)."""
+    instructions: Optional[str] = None
+    items: List[Dict[str, Any]] = []
+
+    for message in messages:
+        role = message.get("role")
+        content = message.get("content")
+
+        if role == "system":
+            text = content if isinstance(content, str) else ""
+            if instructions is None:
+                instructions = text
+            elif text:
+                items.append({"role": "system", "content": text})
+            continue
+
+        if role == "tool":
+            output = content if isinstance(content, str) else str(content or "")
+            items.append({
+                "type": "function_call_output",
+                "call_id": str(message.get("tool_call_id") or ""),
+                "output": output,
+            })
+            continue
+
+        if role == "assistant":
+            text = content if isinstance(content, str) else None
+            if text:
+                items.append({"role": "assistant", "content": text})
+            for tool_call in message.get("tool_calls") or []:
+                function = tool_call.get("function") or {}
+                items.append({
+                    "type": "function_call",
+                    "call_id": str(tool_call.get("id") or ""),
+                    "name": str(function.get("name") or ""),
+                    "arguments": str(function.get("arguments") or ""),
+                })
+            continue
+
+        # user (default)
+        if isinstance(content, str):
+            items.append({"role": "user", "content": content})
+        elif isinstance(content, list):
+            converted = [
+                part for part in (_responses_content_part(p) for p in content) if part
+            ]
+            if converted:
+                items.append({"role": "user", "content": converted})
+        else:
+            items.append({"role": "user", "content": content})
+
+    return instructions, items
+
+
+def _chat_tools_to_responses_tools(
+    tools: Optional[List[Dict[str, Any]]],
+) -> Optional[List[Dict[str, Any]]]:
+    """Flatten chat tool definitions into the Responses API function tool shape."""
+    converted: List[Dict[str, Any]] = []
+    for tool in tools or []:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            continue
+        function = tool.get("function") or {}
+        name = function.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        entry: Dict[str, Any] = {"type": "function", "name": name}
+        if isinstance(function.get("description"), str) and function["description"]:
+            entry["description"] = function["description"]
+        if isinstance(function.get("parameters"), dict):
+            entry["parameters"] = function["parameters"]
+        converted.append(entry)
+    return converted or None
+
+
+def _responses_reasoning(mode: str) -> Optional[Dict[str, Any]]:
+    """Map the thinking-mode setting to the Responses API reasoning parameter."""
+    if not mode or mode == "off":
+        return None
+    effort = {"low": "low", "medium": "medium", "high": "high", "auto": "medium"}.get(mode)
+    if not effort:
+        return None
+    return {"effort": effort, "summary": "auto"}
+
+
+def _responses_usage_to_chat(usage: Any) -> Optional[SimpleNamespace]:
+    """Normalize Responses usage into the chat-completions usage shape."""
+    if usage is None:
+        return None
+
+    input_tokens = _responses_field(usage, "prompt_tokens") or _responses_field(
+        usage, "input_tokens"
+    )
+    output_tokens = _responses_field(usage, "completion_tokens") or _responses_field(
+        usage, "output_tokens"
+    )
+    details = _responses_field(usage, "prompt_tokens_details") or _responses_field(
+        usage, "input_tokens_details"
+    )
+    cached = _responses_field(usage, "cache_read_input_tokens") or _responses_field(
+        usage, "cached_tokens"
+    )
+    if not cached:
+        cached = _responses_field(details, "cached_tokens")
+
+    try:
+        input_tokens = max(0, int(input_tokens or 0))
+        output_tokens = max(0, int(output_tokens or 0))
+        cached = max(0, int(cached or 0))
+    except (TypeError, ValueError):
+        input_tokens, output_tokens, cached = 0, 0, 0
+    return SimpleNamespace(
+        prompt_tokens=input_tokens,
+        completion_tokens=output_tokens,
+        cached_tokens=cached,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=cached),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+
+
+def _chat_stream_chunk(
+    content: Optional[str] = None,
+    reasoning: Optional[str] = None,
+    tool_calls: Optional[List[SimpleNamespace]] = None,
+    usage: Optional[SimpleNamespace] = None,
+) -> SimpleNamespace:
+    """Build a chat-completions-shaped chunk from Responses stream data."""
+    delta = SimpleNamespace(
+        content=content,
+        reasoning_content=reasoning,
+        tool_calls=tool_calls,
+    )
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)], usage=usage)
+
+
+def _responses_stream_error(event: Any) -> RuntimeError:
+    """Turn a failure event into an exception classifiable by classify_llm_error."""
+    response = _responses_field(event, "response")
+    error = _responses_field(response, "error") or _responses_field(event, "error")
+    code = _responses_field(error, "code")
+    message = _responses_field(error, "message")
+    if not message:
+        message = _responses_field(event, "message")
+    detail = f"Responses API stream failed: {message or 'unknown error'}"
+    if code:
+        detail = f"{detail} (code: {code})"
+    return RuntimeError(detail)
+
+
+def _iter_responses_events_as_chat_chunks(event_stream: Any) -> Any:
+    """Yield chat-completions chunks synthesized from Responses API stream events."""
+    for event in event_stream:
+        event_type = getattr(event, "type", None)
+
+        if event_type == "response.output_text.delta":
+            text = getattr(event, "delta", None)
+            if text:
+                yield _chat_stream_chunk(content=text)
+
+        elif event_type == "response.reasoning_summary_text.delta":
+            text = getattr(event, "delta", None)
+            if text:
+                yield _chat_stream_chunk(reasoning=text)
+
+        elif event_type == "response.output_item.added":
+            item = getattr(event, "item", None)
+            if getattr(item, "type", None) == "function_call":
+                yield _chat_stream_chunk(tool_calls=[SimpleNamespace(
+                    index=getattr(event, "output_index", 0) or 0,
+                    id=getattr(item, "call_id", None),
+                    function=SimpleNamespace(
+                        name=getattr(item, "name", None),
+                        arguments=None,
+                    ),
+                )])
+
+        elif event_type == "response.function_call_arguments.delta":
+            text = getattr(event, "delta", None)
+            if text:
+                yield _chat_stream_chunk(tool_calls=[SimpleNamespace(
+                    index=getattr(event, "output_index", 0) or 0,
+                    id=None,
+                    function=SimpleNamespace(name=None, arguments=text),
+                )])
+
+        elif event_type == "response.completed":
+            response = getattr(event, "response", None)
+            usage = _responses_usage_to_chat(getattr(response, "usage", None))
+            if usage is not None:
+                yield _chat_stream_chunk(usage=usage)
+
+        elif event_type in ("response.failed", "error"):
+            raise _responses_stream_error(event)
+
+
+def _responses_final_to_chat_response(response: Any) -> SimpleNamespace:
+    """Build a chat-completions-shaped response from a final Responses object."""
+    text_parts: List[str] = []
+    tool_calls: List[Dict[str, Any]] = []
+    for item in getattr(response, "output", None) or []:
+        item_type = getattr(item, "type", None)
+        if item_type == "message":
+            for part in getattr(item, "content", None) or []:
+                if getattr(part, "type", None) == "output_text":
+                    text = getattr(part, "text", None)
+                    if isinstance(text, str):
+                        text_parts.append(text)
+        elif item_type == "function_call":
+            tool_calls.append({
+                "id": getattr(item, "call_id", None) or "",
+                "type": "function",
+                "function": {
+                    "name": getattr(item, "name", None) or "",
+                    "arguments": getattr(item, "arguments", None) or "",
+                },
+            })
+    message = SimpleNamespace(
+        content="".join(text_parts) or None,
+        tool_calls=tool_calls or None,
+    )
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=message,
+            finish_reason="tool_calls" if tool_calls else "stop",
+        )],
+        usage=_responses_usage_to_chat(getattr(response, "usage", None)),
+    )
+
+
+def responses_completion(
+    model: str,
+    messages: List[Dict[str, Any]],
+    tools: Optional[List[Dict[str, Any]]] = None,
+    stream: bool = False,
+    llm_config: Optional[LlmConfig] = None,
+    **kwargs: Any
+) -> Any:
+    """Chat-completions-compatible wrapper around litellm.responses().
+
+    Converts chat messages/tools into Responses API format and converts the
+    streamed events (or final object) back into the chat-completions shapes
+    consumed by graph.py, title.py, and image.py.
+    """
+    instructions, input_items = _chat_messages_to_responses_input(messages)
+
+    call_model = model
+    request_kwargs: Dict[str, Any] = {}
+    if llm_config:
+        call_model = llm_config.litellm_model or model
+        if llm_config.api_base:
+            request_kwargs["api_base"] = llm_config.api_base
+        if llm_config.api_key:
+            request_kwargs["api_key"] = llm_config.api_key
+        reasoning = _responses_reasoning(llm_config.thinking_mode)
+        if reasoning:
+            request_kwargs["reasoning"] = reasoning
+
+    responses_tools = _chat_tools_to_responses_tools(tools)
+    if responses_tools:
+        request_kwargs["tools"] = responses_tools
+
+    request_timeout = kwargs.pop("timeout", MODEL_REQUEST_TIMEOUT_SECONDS)
+    max_tokens = kwargs.pop(
+        "max_tokens",
+        llm_config.max_tokens if llm_config else DEFAULT_MAX_OUTPUT_TOKENS,
+    )
+    kwargs.pop("stream_options", None)
+    # The chat "thinking" toggle has no Responses API equivalent; keep other
+    # extra_body entries (if any) transparent.
+    extra_body = kwargs.pop("extra_body", None)
+    if isinstance(extra_body, dict):
+        extra_body = {key: value for key, value in extra_body.items() if key != "thinking"}
+        if extra_body:
+            request_kwargs["extra_body"] = extra_body
+
+    response = litellm.responses(
+        model=call_model,
+        input=input_items if input_items else "",
+        instructions=instructions,
+        stream=stream,
+        timeout=request_timeout,
+        max_output_tokens=max_tokens,
+        **request_kwargs,
+        **kwargs,
+    )
+    if stream:
+        return _iter_responses_events_as_chat_chunks(response)
+    return _responses_final_to_chat_response(response)
+
+
 def completion(
     model: str,
     messages: List[Dict[str, Any]],
@@ -278,6 +611,17 @@ def completion(
     **kwargs: Any
 ) -> Any:
     """Wrapper around litellm.completion with provider config support."""
+    # OpenAI Responses API providers go through the dedicated adapter.
+    if llm_config and llm_config.provider.lower() == RESPONSES_API_PROVIDER:
+        return responses_completion(
+            model=model,
+            messages=messages,
+            tools=tools,
+            stream=stream,
+            llm_config=llm_config,
+            **kwargs,
+        )
+
     # Inject API Keys if they exist in environment variables (passed by Rust)
     # LiteLLM automatically picks up standard env variables like OPENAI_API_KEY, etc.
     call_model = model

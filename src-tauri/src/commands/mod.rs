@@ -1188,6 +1188,9 @@ pub async fn get_debug_prompt(
         "anthropic" => model_name.clone(),
         "ollama" => format!("ollama/{}", model_name),
         "openai_compatible" => format!("openai/{}", model_name),
+        // litellm.responses() needs an explicit provider prefix so the request
+        // routes to the OpenAI Responses handler and honours api_base.
+        "openai_responses" => format!("openai/{}", model_name),
         "google" => format!("gemini/{}", model_name),
         _ => model_name.clone(),
     };
@@ -1898,6 +1901,7 @@ async fn resolve_routed_llm_config(
         "openai" | "anthropic" => model_name.to_string(),
         "ollama" => format!("ollama/{model_name}"),
         "openai_compatible" => format!("openai/{model_name}"),
+        "openai_responses" => format!("openai/{model_name}"),
         "google" => format!("gemini/{model_name}"),
         _ => model_name.to_string(),
     };
@@ -2066,6 +2070,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         "anthropic" => model_name.clone(),
         "ollama" => format!("ollama/{}", model_name),
         "openai_compatible" => format!("openai/{}", model_name),
+        "openai_responses" => format!("openai/{}", model_name),
         "google" => format!("gemini/{}", model_name),
         _ => model_name.clone(),
     };
@@ -5938,7 +5943,7 @@ pub async fn test_provider(
             }
 
             let base = p.api_base.as_deref().unwrap_or(match p.kind.as_str() {
-                "openai" => "https://api.openai.com/v1",
+                "openai" | "openai_responses" => "https://api.openai.com/v1",
                 "ollama" => "http://127.0.0.1:11434",
                 _ => {
                     return Ok(TestProviderResult {
@@ -6025,11 +6030,14 @@ pub async fn fetch_provider_models(
         },
     };
 
-    if kind == "openai" || kind == "openai_compatible" {
+    if kind == "openai" || kind == "openai_compatible" || kind == "openai_responses" {
         let base = api_base.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
         // Handle trailing slashes gracefully
         let mut url = base.trim_end_matches('/').to_string();
-        if !url.ends_with("/v1") && !url.contains("/v1") && kind == "openai" {
+        if !url.ends_with("/v1")
+            && !url.contains("/v1")
+            && (kind == "openai" || kind == "openai_responses")
+        {
             url.push_str("/v1");
         }
         url.push_str("/models");

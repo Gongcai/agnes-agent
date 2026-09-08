@@ -336,13 +336,20 @@ function formatSyncDeviceTime(value: number | null): string {
   }).format(new Date(value));
 }
 
-type ProviderKind = "openai" | "anthropic" | "ollama" | "openai_compatible" | "google";
+type ProviderKind =
+  | "openai"
+  | "anthropic"
+  | "ollama"
+  | "openai_compatible"
+  | "openai_responses"
+  | "google";
 
 const KIND_OPTIONS: { value: ProviderKind; label: string }[] = [
   { value: "openai", label: "OpenAI" },
   { value: "anthropic", label: "Anthropic" },
   { value: "ollama", label: "Ollama" },
   { value: "openai_compatible", label: "OpenAI 兼容" },
+  { value: "openai_responses", label: "OpenAI Responses" },
   { value: "google", label: "Google" },
 ];
 
@@ -351,6 +358,7 @@ const KIND_BADGE_COLORS: Record<string, { bg: string; text: string; border: stri
   anthropic: { bg: "bg-violet-50", text: "text-violet-700", border: "border-violet-200/60" },
   ollama: { bg: "bg-amber-50", text: "text-amber-700", border: "border-amber-200/60" },
   openai_compatible: { bg: "bg-blue-50", text: "text-blue-700", border: "border-blue-200/60" },
+  openai_responses: { bg: "bg-teal-50", text: "text-teal-700", border: "border-teal-200/60" },
   google: { bg: "bg-red-50", text: "text-red-600", border: "border-red-200/60" },
 };
 
@@ -359,6 +367,7 @@ const KIND_LABELS: Record<string, string> = {
   anthropic: "Anthropic",
   ollama: "Ollama",
   openai_compatible: "OpenAI 兼容",
+  openai_responses: "OpenAI Responses",
   google: "Google",
 };
 
@@ -367,6 +376,7 @@ const KIND_PLACEHOLDER_URL: Record<string, string> = {
   anthropic: "https://api.anthropic.com (默认)",
   ollama: "http://localhost:11434",
   openai_compatible: "输入自定义 API 地址...",
+  openai_responses: "https://api.openai.com/v1 (默认)",
   google: "https://generativelanguage.googleapis.com (默认)",
 };
 
@@ -375,6 +385,7 @@ const KIND_EXAMPLE_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-20250514, claude-3-5-haiku-20241022",
   ollama: "llama3, mistral, codellama",
   openai_compatible: "模型名称取决于服务商",
+  openai_responses: "gpt-5, gpt-5-mini, o4-mini",
   google: "gemini-2.5-pro, gemini-2.5-flash",
 };
 
@@ -3876,7 +3887,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <label className="text-xs font-semibold text-stone-500">可用模型</label>
                         <button
                           onClick={handleFetchModels}
-                          disabled={isFetchingModels || (formValues.kind !== "openai" && formValues.kind !== "openai_compatible" && formValues.kind !== "ollama")}
+                          disabled={isFetchingModels || !["openai", "openai_compatible", "openai_responses", "ollama"].includes(formValues.kind)}
                           className="text-[10px] flex items-center gap-1 text-[#8CA38A] hover:text-[#6C806A] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           title="尝试从接口自动获取模型列表"
                         >
