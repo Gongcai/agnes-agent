@@ -445,6 +445,41 @@ def test_streaming_toggle_keeps_streaming_when_enabled(monkeypatch):
     assert list(stream)[0].choices[0].delta.content == "hi"
 
 
+def test_streaming_registers_unknown_models_as_native_streaming(monkeypatch):
+    """litellm must not fake-stream models missing from its cost map.
+
+    A streaming Responses request for an unknown model name registers it as
+    native-streaming so litellm keeps ``stream=True`` on the wire instead of
+    silently downgrading to a single-shot request.
+    """
+    import litellm
+    from litellm.utils import supports_native_streaming
+    from app.models import _registered_native_streaming_models
+
+    monkeypatch.setattr(
+        "app.models.litellm.responses",
+        lambda **_kwargs: _event_stream(
+            SimpleNamespace(type="response.output_text.delta", delta="hi"),
+        ),
+    )
+    model_name = "agnes-native-streaming-test"
+
+    stream = responses_completion(
+        f"openai/{model_name}",
+        [{"role": "user", "content": "Hi"}],
+        stream=True,
+        llm_config=_config(model=model_name, litellm_model=f"openai/{model_name}"),
+    )
+
+    assert list(stream)[0].choices[0].delta.content == "hi"
+    assert supports_native_streaming(model_name, "openai")
+    assert supports_native_streaming(f"openai/{model_name}", None)
+
+    litellm.model_cost.pop(model_name, None)
+    _registered_native_streaming_models.discard(model_name)
+    _registered_native_streaming_models.discard(f"openai/{model_name}")
+
+
 def test_graph_consumes_responses_stream_end_to_end(monkeypatch):
     """The synthesized chunks must drive the real graph loop, tools included."""
     from app import graph as graph_module

@@ -717,6 +717,33 @@ def _extract_reasoning_items_from_output(response: Any) -> List[Dict[str, Any]]:
     return list(collected.values())
 
 
+_registered_native_streaming_models: set = set()
+
+
+def _ensure_responses_native_streaming(model: str) -> None:
+    """Opt litellm-unknown models out of litellm's Responses fake-stream path.
+
+    ``OpenAIResponsesAPIConfig.should_fake_stream`` treats any model missing
+    from litellm's cost map as non-streamable (``supports_native_streaming``
+    returns False when the model lookup raises) and then issues a single-shot
+    request, replaying the finished response as one burst. Custom api_base
+    endpoints use model names litellm has never heard of, so streaming was
+    silently broken for them even with the streaming toggle enabled. Register
+    such models as native-streaming; the ``LlmConfig.streaming`` toggle stays
+    the only authority for downgrading to single-shot.
+    """
+    if model in _registered_native_streaming_models:
+        return
+    _registered_native_streaming_models.add(model)
+    try:
+        litellm.get_model_info(model=model)
+    except Exception:
+        try:
+            litellm.register_model({model: {"supports_native_streaming": True}})
+        except Exception:
+            pass
+
+
 def responses_completion(
     model: str,
     messages: List[Dict[str, Any]],
@@ -783,6 +810,7 @@ def responses_completion(
         return litellm.responses(**params)
 
     if stream:
+        _ensure_responses_native_streaming(call_model)
         return ResponsesStream(
             stream_factory=lambda: call(reasoning_replay=True),
             retry_factory=lambda: call(False),
