@@ -124,6 +124,7 @@ pub struct SessionDto {
     pub model: String,
     pub thinking_mode: String,
     pub thinking_budget: i64,
+    pub streaming: Option<bool>,
     pub max_tokens: i64,
     pub context_limit: Option<i64>,
     pub compress_threshold: f64,
@@ -620,6 +621,7 @@ pub async fn create_session(
         } else {
             Some(default_thinking_budget)
         },
+        streaming: None,
         permission_mode: "auto".to_string(),
         workspace_id,
         origin_device_id: None,
@@ -650,6 +652,7 @@ pub async fn list_sessions(
             model: r.model.unwrap_or_default(),
             thinking_mode: r.thinking_mode.unwrap_or_default(),
             thinking_budget: r.thinking_budget.unwrap_or(0),
+            streaming: r.streaming,
             max_tokens: r
                 .reserved_output_tokens
                 .unwrap_or(default_max_output_tokens),
@@ -769,6 +772,7 @@ pub async fn set_session_llm(
     thinking_mode: String,
     thinking_budget: i64,
     max_tokens: i64,
+    streaming: Option<bool>,
 ) -> AppResult<()> {
     if !(128..=MAX_OUTPUT_TOKENS).contains(&max_tokens) {
         return Err(AppError::Other(format!(
@@ -783,6 +787,7 @@ pub async fn set_session_llm(
             thinking_mode,
             thinking_budget,
             max_tokens,
+            streaming,
         )
         .await?;
     state.sync.schedule();
@@ -1161,6 +1166,10 @@ pub async fn get_debug_prompt(
         .and_then(|s| s.thinking_budget)
         .or(Some(agent.thinking_budget))
         .unwrap_or(0);
+    let effective_streaming = session_opt
+        .as_ref()
+        .and_then(|s| s.streaming)
+        .unwrap_or(agent.streaming);
     let default_max_output_tokens = load_default_max_output_tokens(&state).await?;
     let effective_max_tokens = session_opt
         .as_ref()
@@ -1325,7 +1334,7 @@ pub async fn get_debug_prompt(
                 "litellmModel": litellm_model,
                 "maxTokens": effective_max_tokens,
                 "supportsImageInput": model_descriptor_supports_image_input(provider.as_ref(), &model_name),
-                "streaming": agent.streaming,
+                "streaming": effective_streaming,
                 "thinking": {
                     "mode": effective_thinking_mode,
                     "budget": effective_thinking_budget
@@ -1818,6 +1827,7 @@ struct ResolvedLlm {
     thinking_budget: i64,
     max_tokens: i64,
     supports_image_input: bool,
+    streaming: bool,
     task_llm_configs: serde_json::Value,
     fallback_llm_configs: serde_json::Value,
 }
@@ -2123,6 +2133,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         .thinking_budget
         .or(Some(agent.thinking_budget))
         .unwrap_or(0);
+    let streaming = session.streaming.unwrap_or(agent.streaming);
     let default_max_output_tokens = load_default_max_output_tokens(state).await?;
     let max_tokens = session
         .reserved_output_tokens
@@ -2154,6 +2165,7 @@ async fn resolve_llm(state: &AppState, session_id: &str) -> AppResult<ResolvedLl
         thinking_budget,
         max_tokens,
         supports_image_input,
+        streaming,
         task_llm_configs,
         fallback_llm_configs,
     })
@@ -2391,7 +2403,7 @@ async fn start_agent_run(
                 "litellmModel": cfg.litellm_model,
                 "maxTokens": cfg.max_tokens,
                 "supportsImageInput": cfg.supports_image_input,
-                "streaming": cfg.agent.streaming,
+                "streaming": cfg.streaming,
                 "thinking": {
                     "mode": cfg.thinking_mode,
                     "budget": cfg.thinking_budget
@@ -3846,6 +3858,7 @@ pub async fn open_reading_book_conversation(
             model: None,
             thinking_mode: None,
             thinking_budget: None,
+            streaming: None,
             permission_mode: "auto".into(),
             workspace_id: None,
             origin_device_id: None,
@@ -3920,6 +3933,7 @@ pub async fn new_reading_book_conversation(
             model: None,
             thinking_mode: None,
             thinking_budget: None,
+            streaming: None,
             permission_mode: "auto".into(),
             workspace_id: None,
             origin_device_id: None,

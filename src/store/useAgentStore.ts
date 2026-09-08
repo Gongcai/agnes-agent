@@ -399,6 +399,7 @@ export interface Session {
   model: string;
   thinking_mode: string;
   thinking_budget: number;
+  streaming?: boolean;
   max_tokens: number;
   context_limit: number | null;
   compress_threshold: number;
@@ -413,6 +414,7 @@ export interface DraftSession {
   model?: string;
   thinkingMode?: string;
   thinkingBudget?: number;
+  streaming?: boolean;
   maxTokens?: number;
   permissionMode?: PermissionMode;
   compressThreshold?: number;
@@ -521,7 +523,7 @@ interface AgentState {
   approveTool: (toolCallId: string, approved: boolean) => Promise<void>;
   setActiveAgentId: (agentId: string) => Promise<void>;
   setActiveSessionId: (sessionId: string, persist?: boolean) => Promise<void>;
-  setSessionLlm: (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number, maxTokens: number) => Promise<void>;
+  setSessionLlm: (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number, maxTokens: number, streaming?: boolean) => Promise<void>;
   setSessionCompressThreshold: (sessionId: string, compressThreshold: number) => Promise<void>;
   setSessionPermissionMode: (sessionId: string, permissionMode: PermissionMode) => Promise<void>;
   switchVersion: (messageId: string, direction: "prev" | "next") => Promise<void>;
@@ -984,13 +986,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  setSessionLlm: async (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number, maxTokens: number) => {
+  setSessionLlm: async (sessionId: string, model: string, thinkingMode: string, thinkingBudget: number, maxTokens: number, streaming?: boolean) => {
     try {
-      await invoke("set_session_llm", { sessionId, model, thinkingMode, thinkingBudget, maxTokens });
+      await invoke("set_session_llm", { sessionId, model, thinkingMode, thinkingBudget, maxTokens, streaming });
       // 立即更新本地会话状态，避免等待列表刷新
       const sessions = get().sessions.map((s) =>
         s.id === sessionId
-          ? { ...s, model, thinking_mode: thinkingMode, thinking_budget: thinkingBudget, max_tokens: maxTokens }
+          ? { ...s, model, thinking_mode: thinkingMode, thinking_budget: thinkingBudget, max_tokens: maxTokens, streaming }
           : s
       );
       set({ sessions });

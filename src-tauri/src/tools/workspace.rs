@@ -142,6 +142,7 @@ mod tests {
             model: None,
             thinking_mode: None,
             thinking_budget: None,
+            streaming: None,
             permission_mode: "auto".into(),
             workspace_id: workspace_id.map(str::to_string),
             origin_device_id: None,

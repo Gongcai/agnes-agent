@@ -853,6 +853,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   // 当前生效的思考模式（会话级优先，回退角色卡）
   const currentThinkingMode = draftSession?.thinkingMode
     ?? (activeSession?.thinking_mode || activeAgent?.thinking_mode || "off");
+  // 当前生效的流式开关（会话级优先，回退角色卡默认，默认开启）
+  const currentStreaming = draftSession?.streaming
+    ?? (activeSession?.streaming ?? activeAgent?.streaming ?? true);
   const currentMaxTokens = draftSession?.maxTokens ?? activeSession?.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const contextLimit = activeSession?.context_limit ?? currentModel?.descriptor?.context_window ?? DEFAULT_CONTEXT_LIMIT;
   const currentCompressThreshold = draftSession?.compressThreshold ?? activeSession?.compress_threshold ?? 0.85;
@@ -876,13 +879,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     thinkingMode: string,
     thinkingBudget: number,
     maxTokens = currentMaxTokens,
+    streaming?: boolean,
   ) => {
     if (activeSessionId) {
-      setSessionLlm(activeSessionId, model, thinkingMode, thinkingBudget, maxTokens).catch(console.error);
+      setSessionLlm(activeSessionId, model, thinkingMode, thinkingBudget, maxTokens, streaming).catch(console.error);
       return;
     }
     if (draftSession) {
-      updateDraftSession({ model, thinkingMode, thinkingBudget, maxTokens });
+      updateDraftSession({ model, thinkingMode, thinkingBudget, maxTokens, streaming });
     }
   };
 
@@ -1642,6 +1646,29 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                             </button>
                           ))}
                         </div>
+                      </div>
+                      <div className="mt-2 flex items-center gap-2 border-t border-stone-100 px-1 pt-2">
+                        <label className="min-w-0 flex-1 text-[10px] font-semibold text-stone-500">
+                          流式输出
+                        </label>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={currentStreaming}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            applySessionLlm(effectiveModel, currentThinkingMode, 0, currentMaxTokens, !currentStreaming);
+                          }}
+                          className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+                            currentStreaming ? "bg-[#8CA38A]" : "bg-stone-300"
+                          }`}
+                        >
+                          <span
+                            className={`agnes-toggle-thumb absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                              currentStreaming ? "agnes-toggle-thumb--on" : "agnes-toggle-thumb--off"
+                            }`}
+                          />
+                        </button>
                       </div>
                       <div className="mt-2 flex items-center gap-2 border-t border-stone-100 px-1 pt-2">
                         <label htmlFor="session-max-tokens" className="min-w-0 flex-1 text-[10px] font-semibold text-stone-500">

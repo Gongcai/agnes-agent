@@ -485,6 +485,7 @@ pub enum DbCommand {
         thinking_mode: String,
         thinking_budget: i64,
         max_tokens: i64,
+        streaming: Option<bool>,
         resp: oneshot::Sender<AppResult<()>>,
     },
     UpdateSessionCompressThreshold {
@@ -1896,6 +1897,7 @@ impl DbActorHandle {
         thinking_mode: String,
         thinking_budget: i64,
         max_tokens: i64,
+        streaming: Option<bool>,
     ) -> AppResult<()> {
         let (resp, rx) = oneshot::channel();
         self.send(DbCommand::UpdateSessionLlm {
@@ -1904,6 +1906,7 @@ impl DbActorHandle {
             thinking_mode,
             thinking_budget,
             max_tokens,
+            streaming,
             resp,
         })?;
         rx.await
@@ -3178,6 +3181,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                     thinking_mode,
                     thinking_budget,
                     max_tokens,
+                    streaming,
                     resp,
                 } => {
                     let _ = resp.send(repo::sessions::update_llm(
@@ -3187,6 +3191,7 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                         &thinking_mode,
                         thinking_budget,
                         max_tokens,
+                        streaming,
                     ));
                 }
                 DbCommand::UpdateSessionCompressThreshold {
@@ -3718,6 +3723,7 @@ mod tests {
             model: None,
             thinking_mode: None,
             thinking_budget: None,
+            streaming: None,
             permission_mode: "auto".into(),
             workspace_id: None,
             origin_device_id: None,

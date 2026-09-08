@@ -91,6 +91,7 @@ pub fn project(entity_type: SyncEntityType, source: &Value) -> AppResult<Value> 
             "model",
             "thinking_mode",
             "thinking_budget",
+            "streaming",
             "workspace_id",
             "selected_root_id",
             "summary",

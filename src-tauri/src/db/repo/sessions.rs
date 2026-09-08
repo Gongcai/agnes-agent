@@ -18,6 +18,7 @@ pub struct SessionRow {
     pub model: Option<String>,
     pub thinking_mode: Option<String>,
     pub thinking_budget: Option<i64>,
+    pub streaming: Option<bool>,
     pub permission_mode: String,
     pub workspace_id: Option<String>,
     pub selected_root_id: Option<String>,
@@ -43,6 +44,7 @@ pub struct NewSession {
     pub model: Option<String>,
     pub thinking_mode: Option<String>,
     pub thinking_budget: Option<i64>,
+    pub streaming: Option<bool>,
     pub permission_mode: String,
     pub workspace_id: Option<String>,
     pub origin_device_id: Option<String>,
@@ -61,6 +63,7 @@ pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, title, context_limit, compress_threshold, recency_window, \
          reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
+         streaming, \
          permission_mode, workspace_id, selected_root_id, summary, summary_updated_at, \
          created_at, updated_at, version, deleted_at, origin_device_id, pinned \
          FROM sessions \
@@ -81,17 +84,18 @@ pub fn list(conn: &Connection, agent_id: &str) -> AppResult<Vec<SessionRow>> {
             model: r.get(8)?,
             thinking_mode: r.get(9)?,
             thinking_budget: r.get(10)?,
-            permission_mode: r.get(11)?,
-            workspace_id: r.get(12)?,
-            selected_root_id: r.get(13)?,
-            summary: r.get(14)?,
-            summary_updated_at: r.get(15)?,
-            created_at: r.get(16)?,
-            updated_at: r.get(17)?,
-            version: r.get(18)?,
-            deleted_at: r.get(19)?,
-            origin_device_id: r.get(20)?,
-            pinned: r.get(21)?,
+            streaming: r.get::<_, Option<i64>>(11)?.map(|value| value != 0),
+            permission_mode: r.get(12)?,
+            workspace_id: r.get(13)?,
+            selected_root_id: r.get(14)?,
+            summary: r.get(15)?,
+            summary_updated_at: r.get(16)?,
+            created_at: r.get(17)?,
+            updated_at: r.get(18)?,
+            version: r.get(19)?,
+            deleted_at: r.get(20)?,
+            origin_device_id: r.get(21)?,
+            pinned: r.get(22)?,
         })
     })?;
 
@@ -107,6 +111,7 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_id, title, context_limit, compress_threshold, recency_window, \
          reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
+         streaming, \
          permission_mode, workspace_id, selected_root_id, summary, summary_updated_at, \
          created_at, updated_at, version, deleted_at, origin_device_id, pinned \
          FROM sessions \
@@ -127,17 +132,18 @@ pub fn get(conn: &Connection, id: &str) -> AppResult<Option<SessionRow>> {
                 model: r.get(8)?,
                 thinking_mode: r.get(9)?,
                 thinking_budget: r.get(10)?,
-                permission_mode: r.get(11)?,
-                workspace_id: r.get(12)?,
-                selected_root_id: r.get(13)?,
-                summary: r.get(14)?,
-                summary_updated_at: r.get(15)?,
-                created_at: r.get(16)?,
-                updated_at: r.get(17)?,
-                version: r.get(18)?,
-                deleted_at: r.get(19)?,
-                origin_device_id: r.get(20)?,
-                pinned: r.get(21)?,
+                streaming: r.get::<_, Option<i64>>(11)?.map(|value| value != 0),
+                permission_mode: r.get(12)?,
+                workspace_id: r.get(13)?,
+                selected_root_id: r.get(14)?,
+                summary: r.get(15)?,
+                summary_updated_at: r.get(16)?,
+                created_at: r.get(17)?,
+                updated_at: r.get(18)?,
+                version: r.get(19)?,
+                deleted_at: r.get(20)?,
+                origin_device_id: r.get(21)?,
+                pinned: r.get(22)?,
             })
         })
         .optional()?;
@@ -158,8 +164,9 @@ pub fn insert(conn: &mut Connection, s: &NewSession) -> AppResult<String> {
     tx.execute(
         "INSERT INTO sessions (id, agent_id, title, context_limit, compress_threshold, \
          recency_window, reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, \
+         streaming, \
          permission_mode, workspace_id, created_at, updated_at, version, origin_device_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 1, ?16)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1, ?17)",
         params![
             s.id,
             s.agent_id,
@@ -172,6 +179,7 @@ pub fn insert(conn: &mut Connection, s: &NewSession) -> AppResult<String> {
             s.model,
             s.thinking_mode,
             s.thinking_budget,
+            s.streaming.map(|value| if value { 1 } else { 0 }),
             s.permission_mode,
             s.workspace_id,
             now_str,
@@ -194,19 +202,22 @@ pub fn update_llm(
     thinking_mode: &str,
     thinking_budget: i64,
     max_tokens: i64,
+    streaming: Option<bool>,
 ) -> AppResult<()> {
     let now_str = now();
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let device_id = super::sync::device_id(&tx)?;
     let changed = tx.execute(
         "UPDATE sessions SET model = ?1, thinking_mode = ?2, thinking_budget = ?3, \
-         reserved_output_tokens = ?4, updated_at = ?5, version = version + 1, origin_device_id = ?6 \
-         WHERE id = ?7 AND deleted_at IS NULL",
+         reserved_output_tokens = ?4, streaming = ?5, \
+         updated_at = ?6, version = version + 1, origin_device_id = ?7 \
+         WHERE id = ?8 AND deleted_at IS NULL",
         params![
             model,
             thinking_mode,
             thinking_budget,
             max_tokens,
+            streaming.map(|value| if value { 1 } else { 0 }),
             now_str,
             device_id,
             id
@@ -420,6 +431,7 @@ mod tests {
             model: None,
             thinking_mode: None,
             thinking_budget: None,
+            streaming: None,
             permission_mode: "auto".into(),
             workspace_id: Some("local-workspace".into()),
             origin_device_id,
@@ -573,6 +585,7 @@ mod tests {
             "medium",
             4096,
             8192,
+            Some(false),
         )
         .unwrap();
 
@@ -581,6 +594,7 @@ mod tests {
         assert_eq!(session.thinking_mode.as_deref(), Some("medium"));
         assert_eq!(session.thinking_budget, Some(4096));
         assert_eq!(session.reserved_output_tokens, Some(8192));
+        assert_eq!(session.streaming, Some(false));
 
         let payload: String = conn
             .query_row(

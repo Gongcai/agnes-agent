@@ -394,6 +394,7 @@ mod tests {
             model: None,
             thinking_mode: None,
             thinking_budget: None,
+            streaming: None,
             permission_mode: "auto".into(),
             workspace_id: Some("workspace-1".into()),
             origin_device_id: None,

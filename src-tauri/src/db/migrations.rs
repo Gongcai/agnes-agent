@@ -636,6 +636,18 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         )?;
     }
 
+    // 为已存在的 sessions 表补充会话级流式开关列（幂等，兼容老库）
+    let has_session_streaming: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'streaming'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_session_streaming {
+        conn.execute("ALTER TABLE sessions ADD COLUMN streaming INTEGER", [])?;
+    }
+
     // Add the session-level tool permission mode for existing databases.
     let has_permission_mode: bool = conn
         .query_row(
