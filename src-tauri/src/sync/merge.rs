@@ -23,6 +23,7 @@ const SESSION_HLC_FIELDS: &[&str] = &[
     "model",
     "thinking_mode",
     "thinking_budget",
+    "streaming",
     "workspace_id",
     "selected_root_id",
     "pinned",
@@ -313,6 +314,29 @@ mod tests {
             )
             .unwrap(),
             MergeOutcome::Conflict(vec!["summary".into()])
+        );
+    }
+
+    #[test]
+    fn session_streaming_override_uses_hlc_order() {
+        let base = json!({"id": "session-1", "streaming": null});
+        let local = json!({"id": "session-1", "streaming": false});
+        let remote = json!({"id": "session-1", "streaming": true});
+
+        assert_eq!(
+            merge_entity(
+                "session",
+                Some(&base),
+                &local,
+                &remote,
+                "1000-0002-device-a",
+                "1000-0001-device-z",
+            )
+            .unwrap(),
+            MergeOutcome::Merged {
+                payload: json!({"id": "session-1", "streaming": false}),
+                resolved_fields: vec!["streaming".into()],
+            }
         );
     }
 

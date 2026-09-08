@@ -3962,6 +3962,50 @@ mod tests {
         assert_eq!(status(&conn).unwrap().pending_count, 0);
     }
 
+    #[test]
+    fn remote_session_streaming_override_applies_without_sync_echo() {
+        let mut conn = setup();
+        let mut payload = session_payload("session-1", "agent-1", "workspace-1");
+        payload["streaming"] = json!(false);
+
+        apply_bootstrap_page(
+            &mut conn,
+            "required",
+            &[
+                remote(
+                    "agent",
+                    "agent-1",
+                    1,
+                    1,
+                    agent_payload("agent-1", "Agent", 1),
+                ),
+                remote(
+                    "workspace",
+                    "workspace-1",
+                    1,
+                    2,
+                    workspace_payload("workspace-1", "agent-1"),
+                ),
+                remote("session", "session-1", 1, 3, payload),
+            ],
+            3,
+            None,
+            false,
+            2_000,
+        )
+        .unwrap();
+
+        let streaming: Option<i64> = conn
+            .query_row(
+                "SELECT streaming FROM sessions WHERE id = 'session-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(streaming, Some(0));
+        assert_eq!(status(&conn).unwrap().pending_count, 0);
+    }
+
     fn synced_agent_with_local_model_change() -> (Connection, OutboxRow) {
         let mut conn = setup();
         crate::db::repo::agents::insert(
