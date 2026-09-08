@@ -276,6 +276,129 @@ def test_non_streaming_response_is_converted_to_chat_shape():
     assert converted.usage.prompt_tokens == 10
 
 
+def test_output_items_may_arrive_as_plain_dicts():
+    """litellm returns some output items as dicts, not attribute objects."""
+    response = SimpleNamespace(
+        output=[
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "你好！"}],
+            },
+        ],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1, input_tokens_details=None),
+    )
+
+    converted = _responses_final_to_chat_response(response)
+
+    assert converted.choices[0].message.content == "你好！"
+
+
+def test_reasoning_text_content_is_kept_as_thinking():
+    """Providers with an empty ``summary`` carry thinking in ``content``.
+
+    Domestic reasoning models return ``summary: []`` plus a ``reasoning_text``
+    content block, so reading only OpenAI's ``summary`` drops the whole chain
+    of thought.
+    """
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_1",
+                summary=[],
+                content=[SimpleNamespace(
+                    type="reasoning_text",
+                    text="The user greeted me. I should answer warmly.",
+                )],
+            ),
+            SimpleNamespace(type="message", content=[
+                SimpleNamespace(type="output_text", text="你好！"),
+            ]),
+        ],
+        usage=SimpleNamespace(input_tokens=7, output_tokens=175, input_tokens_details=None),
+    )
+
+    converted = _responses_final_to_chat_response(response)
+
+    assert converted.choices[0].message.reasoning_content == (
+        "The user greeted me. I should answer warmly."
+    )
+    assert converted.choices[0].message.content == "你好！"
+
+
+def test_stream_falls_back_to_reasoning_item_text_when_no_deltas_arrive():
+    """Endpoints that skip reasoning deltas must still yield the thinking."""
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        id="rs_1",
+        summary=[],
+        content=[SimpleNamespace(type="reasoning_text", text="Thinking hard.")],
+    )
+    events = [
+        SimpleNamespace(type="response.output_item.done", item=reasoning_item),
+        SimpleNamespace(type="response.output_text.delta", delta="答案"),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(
+            output=[reasoning_item],
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1, input_tokens_details=None),
+        )),
+    ]
+
+    chunks = list(_iter_responses_events_as_chat_chunks(_event_stream(*events)))
+
+    reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks)
+    assert reasoning == "Thinking hard."
+    assert "".join(c.choices[0].delta.content or "" for c in chunks) == "答案"
+
+
+def test_stream_does_not_duplicate_reasoning_that_arrived_as_deltas():
+    """Incremental deltas and the finished item must not both be emitted."""
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        id="rs_1",
+        summary=[],
+        content=[SimpleNamespace(type="reasoning_text", text="A然后B")],
+    )
+    events = [
+        SimpleNamespace(
+            type="response.reasoning_text.delta", item_id="rs_1", delta="A",
+        ),
+        SimpleNamespace(
+            type="response.reasoning_text.delta", item_id="rs_1", delta="然后B",
+        ),
+        SimpleNamespace(type="response.output_item.done", item=reasoning_item),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(
+            output=[reasoning_item],
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1, input_tokens_details=None),
+        )),
+    ]
+
+    chunks = list(_iter_responses_events_as_chat_chunks(_event_stream(*events)))
+
+    reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks)
+    assert reasoning == "A然后B"
+
+
+def test_completed_response_reasoning_is_used_when_nothing_else_streamed():
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        id="rs_1",
+        summary=[],
+        content=[SimpleNamespace(type="reasoning_text", text="只在结束时给")],
+    )
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="答案"),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(
+            output=[reasoning_item],
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1, input_tokens_details=None),
+        )),
+    ]
+
+    chunks = list(_iter_responses_events_as_chat_chunks(_event_stream(*events)))
+
+    reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks)
+    assert reasoning == "只在结束时给"
+
+
 def test_responses_completion_builds_a_responses_api_request(monkeypatch):
     captured = {}
 

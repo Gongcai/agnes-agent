@@ -504,6 +504,39 @@ def _reasoning_item_dict(item: Any) -> Optional[Dict[str, Any]]:
     }
 
 
+# Event types that carry an incremental piece of the chain of thought. OpenAI
+# only uses the first one; compatible endpoints emit their own spellings, and
+# litellm passes unknown event types through untouched, so accept the common
+# variants instead of dropping thinking silently.
+_REASONING_DELTA_EVENTS = frozenset({
+    "response.reasoning_summary_text.delta",
+    "response.reasoning_text.delta",
+    "response.reasoning.delta",
+    "response.reasoning_content.delta",
+})
+
+
+def _reasoning_item_text(item: Any) -> str:
+    """Read the visible chain of thought from a Responses reasoning item.
+
+    OpenAI puts it in ``summary`` blocks typed ``summary_text``. Several
+    OpenAI-compatible providers (domestic reasoning models in particular)
+    return an empty ``summary`` and carry the plain-text chain of thought in
+    ``content`` blocks typed ``reasoning_text`` instead. Both shapes are read
+    here so thinking is never lost just because of the provider's flavour.
+    """
+    parts: List[str] = []
+    for key, allowed_type in (("summary", "summary_text"), ("content", "reasoning_text")):
+        for part in _responses_field(item, key) or []:
+            part_type = _responses_field(part, "type")
+            if part_type is not None and part_type != allowed_type:
+                continue
+            text = _responses_field(part, "text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+    return "".join(parts)
+
+
 def _iter_responses_events_as_chat_chunks(
     event_stream: Any,
     reasoning_sink: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -513,6 +546,13 @@ def _iter_responses_events_as_chat_chunks(
     When ``reasoning_sink`` is provided, reasoning items are recorded there (keyed
     by item id, in stream order) so the caller can replay them on later turns.
     """
+    # Endpoints that never emit reasoning deltas still return the finished
+    # reasoning item, so remember which items already streamed incrementally
+    # and only then fall back to their complete text (never both, or the UI
+    # would show the chain of thought twice).
+    streamed_reasoning_items: set = set()
+    streamed_any_reasoning = False
+
     for event in event_stream:
         event_type = getattr(event, "type", None)
 
@@ -521,9 +561,13 @@ def _iter_responses_events_as_chat_chunks(
             if text:
                 yield _chat_stream_chunk(content=text)
 
-        elif event_type == "response.reasoning_summary_text.delta":
-            text = getattr(event, "delta", None)
+        elif event_type in _REASONING_DELTA_EVENTS:
+            text = getattr(event, "delta", None) or getattr(event, "text", None)
             if text:
+                item_id = getattr(event, "item_id", None)
+                if item_id:
+                    streamed_reasoning_items.add(item_id)
+                streamed_any_reasoning = True
                 yield _chat_stream_chunk(reasoning=text)
 
         elif event_type in ("response.output_item.added", "response.output_item.done"):
@@ -538,10 +582,20 @@ def _iter_responses_events_as_chat_chunks(
                             arguments=None,
                         ),
                     )])
-            elif getattr(item, "type", None) == "reasoning" and reasoning_sink is not None:
-                captured = _reasoning_item_dict(item)
-                if captured:
-                    reasoning_sink[captured["id"]] = captured
+            elif getattr(item, "type", None) == "reasoning":
+                if reasoning_sink is not None:
+                    captured = _reasoning_item_dict(item)
+                    if captured:
+                        reasoning_sink[captured["id"]] = captured
+                if (
+                    event_type == "response.output_item.done"
+                    and getattr(item, "id", None) not in streamed_reasoning_items
+                ):
+                    text = _reasoning_item_text(item)
+                    if text:
+                        streamed_reasoning_items.add(getattr(item, "id", None))
+                        streamed_any_reasoning = True
+                        yield _chat_stream_chunk(reasoning=text)
 
         elif event_type == "response.function_call_arguments.delta":
             text = getattr(event, "delta", None)
@@ -557,6 +611,16 @@ def _iter_responses_events_as_chat_chunks(
             usage = _responses_usage_to_chat(getattr(response, "usage", None))
             if usage is not None:
                 yield _chat_stream_chunk(usage=usage)
+            # Last resort: endpoints that stream no reasoning at all still ship
+            # the finished reasoning items in the completed response.
+            if not streamed_any_reasoning:
+                for item in _responses_field(response, "output") or []:
+                    if _responses_field(item, "type") != "reasoning":
+                        continue
+                    text = _reasoning_item_text(item)
+                    if text:
+                        streamed_any_reasoning = True
+                        yield _chat_stream_chunk(reasoning=text)
 
         elif event_type in ("response.failed", "error"):
             raise _responses_stream_error(event)
@@ -568,28 +632,28 @@ def _responses_final_to_chat_response(response: Any) -> SimpleNamespace:
     reasoning_parts: List[str] = []
     tool_calls: List[Dict[str, Any]] = []
     for item in getattr(response, "output", None) or []:
-        item_type = getattr(item, "type", None)
+        # litellm hands some output items back as plain dicts, so read every
+        # field through the dict/attribute helper instead of getattr.
+        item_type = _responses_field(item, "type")
         if item_type == "message":
-            for part in getattr(item, "content", None) or []:
-                if getattr(part, "type", None) == "output_text":
-                    text = getattr(part, "text", None)
+            for part in _responses_field(item, "content") or []:
+                if _responses_field(part, "type") == "output_text":
+                    text = _responses_field(part, "text")
                     if isinstance(text, str):
                         text_parts.append(text)
         elif item_type == "function_call":
             tool_calls.append({
-                "id": getattr(item, "call_id", None) or "",
+                "id": _responses_field(item, "call_id") or "",
                 "type": "function",
                 "function": {
-                    "name": getattr(item, "name", None) or "",
-                    "arguments": getattr(item, "arguments", None) or "",
+                    "name": _responses_field(item, "name") or "",
+                    "arguments": _responses_field(item, "arguments") or "",
                 },
             })
         elif item_type == "reasoning":
-            for part in getattr(item, "summary", None) or []:
-                if getattr(part, "type", None) == "summary_text":
-                    text = getattr(part, "text", None)
-                    if isinstance(text, str):
-                        reasoning_parts.append(text)
+            text = _reasoning_item_text(item)
+            if text:
+                reasoning_parts.append(text)
     message = SimpleNamespace(
         content="".join(text_parts) or None,
         reasoning_content="".join(reasoning_parts) or None,
