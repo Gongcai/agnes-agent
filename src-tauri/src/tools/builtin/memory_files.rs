@@ -98,6 +98,40 @@ impl BuiltinTool for MemoryListTool {
     }
 }
 
+// Some models ignore the `oneOf` schema and pass the path array as a
+// JSON-encoded string (e.g. "[\"/profile.md\", \"/topics/x.md\"]").
+// Detect that shape and decode it instead of failing with a confusing
+// "must end in .md" error from the path validator.
+fn parse_read_paths(args: &Value) -> AppResult<Vec<String>> {
+    match args.get("path") {
+        Some(Value::String(path)) => {
+            let trimmed = path.trim();
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                match serde_json::from_str::<Vec<String>>(trimmed) {
+                    Ok(paths) if !paths.is_empty() => Ok(paths),
+                    _ => Err(AppError::Other(
+                        "`path` must be a single \"/dir/name.md\" string or an array of such strings, not a JSON-encoded string".into(),
+                    )),
+                }
+            } else {
+                Ok(vec![path.clone()])
+            }
+        }
+        Some(Value::Array(paths)) => paths
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| AppError::Other("All memory paths must be strings".into()))
+            })
+            .collect(),
+        _ => Err(AppError::Other(
+            "Missing or invalid `path` argument: pass a single \"/dir/name.md\" string or an array of up to 20 such strings".into(),
+        )),
+    }
+}
+
 pub struct MemoryReadTool;
 
 #[async_trait]
@@ -111,7 +145,7 @@ impl BuiltinTool for MemoryReadTool {
             "type": "function",
             "function": {
                 "name": self.name(),
-                "description": "Read one or up to 20 complete virtual memory files for the current agent. Returns opaque version tokens required for edits.",
+                "description": "Read one or up to 20 complete virtual memory files for the current agent. Returns opaque version tokens required for edits. Pass multiple paths as a JSON array of strings, e.g. [\"/profile.md\", \"/topics/x.md\"].",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -134,18 +168,9 @@ impl BuiltinTool for MemoryReadTool {
     }
 
     async fn execute(&self, ctx: &ToolCtx<'_>) -> AppResult<Value> {
-        let paths = match ctx.args.get("path") {
-            Some(Value::String(path)) => vec![path.clone()],
-            Some(Value::Array(paths)) => paths
-                .iter()
-                .map(|value| {
-                    value
-                        .as_str()
-                        .map(str::to_string)
-                        .ok_or_else(|| AppError::Other("All memory paths must be strings".into()))
-                })
-                .collect::<AppResult<Vec<_>>>()?,
-            _ => return fail(ctx, "Missing `path` argument").await,
+        let paths = match parse_read_paths(ctx.args) {
+            Ok(paths) => paths,
+            Err(error) => return fail(ctx, &error.to_string()).await,
         };
         let agent_id = agent_id(ctx).await?;
         begin(ctx, &agent_id, paths.first().map(String::as_str)).await?;
@@ -334,4 +359,78 @@ fn mutation_schema(name: &str, description: &str, properties: Value, required: &
 async fn fail<T>(ctx: &ToolCtx<'_>, message: &str) -> AppResult<T> {
     ctx.record_failure(message).await?;
     Err(AppError::Other(message.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_read_paths_accepts_single_string() {
+        let args = json!({"path": "/profile.md"});
+        assert_eq!(
+            parse_read_paths(&args).unwrap(),
+            vec!["/profile.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_read_paths_accepts_array() {
+        let args = json!({"path": ["/profile.md", "/topics/dev-tooling.md"]});
+        assert_eq!(
+            parse_read_paths(&args).unwrap(),
+            vec![
+                "/profile.md".to_string(),
+                "/topics/dev-tooling.md".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_read_paths_decodes_json_encoded_array_string() {
+        let args = json!({"path": "[\"/profile.md\", \"/preferences.md\", \"/topics/reading.md\"]"});
+        assert_eq!(
+            parse_read_paths(&args).unwrap(),
+            vec![
+                "/profile.md".to_string(),
+                "/preferences.md".to_string(),
+                "/topics/reading.md".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_read_paths_rejects_malformed_encoded_array() {
+        let args = json!({"path": "[123, 456]"});
+        let error = parse_read_paths(&args).unwrap_err().to_string();
+        assert!(error.contains("JSON-encoded string"), "{error}");
+    }
+
+    #[test]
+    fn parse_read_paths_treats_unclosed_bracket_as_single_path() {
+        // "[not json" does not end with ']' so it is treated as a literal
+        // path string and rejected later by the path validator.
+        let args = json!({"path": "[not json"});
+        assert_eq!(
+            parse_read_paths(&args).unwrap(),
+            vec!["[not json".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_read_paths_rejects_empty_encoded_array() {
+        let args = json!({"path": "[]"});
+        assert!(parse_read_paths(&args).is_err());
+    }
+
+    #[test]
+    fn parse_read_paths_rejects_non_string_array_items() {
+        let args = json!({"path": ["/profile.md", 42]});
+        assert!(parse_read_paths(&args).is_err());
+    }
+
+    #[test]
+    fn parse_read_paths_rejects_missing_path() {
+        assert!(parse_read_paths(&json!({})).is_err());
+    }
 }

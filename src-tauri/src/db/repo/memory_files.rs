@@ -198,7 +198,10 @@ fn parse_path(path: &str) -> Result<(String, String), DomainError> {
         || path.contains("..")
         || path.contains('%')
     {
-        return Err(DomainError::new("INVALID_PATH", "Invalid memory path"));
+        return Err(DomainError::new(
+            "INVALID_PATH",
+            format!("Invalid memory path {path:?}: forbidden characters"),
+        ));
     }
     let (kind, stem) = match path {
         USER_MD_PATH => ("profile", "USER"),
@@ -207,18 +210,31 @@ fn parse_path(path: &str) -> Result<(String, String), DomainError> {
         _ => {
             let without_suffix = path
                 .strip_suffix(".md")
-                .ok_or_else(|| DomainError::new("INVALID_PATH", "Memory paths must end in .md"))?;
+                .ok_or_else(|| {
+                    DomainError::new(
+                        "INVALID_PATH",
+                        format!(
+                            "Invalid memory path {path:?}: memory paths must end in .md \
+                             (pass an array of paths to read multiple files)"
+                        ),
+                    )
+                })?;
             let mut parts = without_suffix.split('/');
             if parts.next() != Some("") {
                 return Err(DomainError::new(
                     "INVALID_PATH",
-                    "Memory paths must be absolute virtual paths",
+                    format!(
+                        "Invalid memory path {path:?}: memory paths must be absolute virtual paths starting with /"
+                    ),
                 ));
             }
             let directory = parts.next().unwrap_or_default();
             let stem = parts.next().unwrap_or_default();
             if parts.next().is_some() || stem.is_empty() || !valid_slug(stem) {
-                return Err(DomainError::new("INVALID_PATH", "Invalid memory path slug"));
+                return Err(DomainError::new(
+                    "INVALID_PATH",
+                    format!("Invalid memory path {path:?}: bad slug (expected /<dir>/<slug>.md)"),
+                ));
             }
             let kind = match directory {
                 "topics" => "topic",
@@ -227,7 +243,10 @@ fn parse_path(path: &str) -> Result<(String, String), DomainError> {
                 _ => {
                     return Err(DomainError::new(
                         "INVALID_PATH",
-                        "Memory path must be profile, preferences, topics, areas, or people",
+                        format!(
+                            "Invalid memory path {path:?}: must be /profile.md, /preferences.md, \
+                             or under /topics/, /areas/, /people/"
+                        ),
                     ))
                 }
             };
