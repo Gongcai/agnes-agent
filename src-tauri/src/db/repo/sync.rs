@@ -140,12 +140,18 @@ struct AgentPayload {
     tags: String,
     thinking_mode: String,
     thinking_budget: i64,
+    #[serde(default = "default_streaming")]
+    streaming: bool,
     created_at: String,
     updated_at: String,
     version: i64,
     deleted_at: Option<String>,
     #[serde(rename = "origin_device_id")]
     _origin_device_id: Option<String>,
+}
+
+fn default_streaming() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -1357,13 +1363,15 @@ fn apply_remote_agent(
     tx.execute(
         "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, \
          example_dialogue, model, tool_policy, avatar, tags, thinking_mode, thinking_budget, \
+         streaming, \
          created_at, updated_at, version, deleted_at, origin_device_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', ?10, ?11, ?12, ?13, ?14, ?15, NULL, ?16) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, ?17) \
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, persona = excluded.persona, \
          scenario = excluded.scenario, system_prompt = excluded.system_prompt, \
          greeting = excluded.greeting, example_dialogue = excluded.example_dialogue, \
          model = excluded.model, tool_policy = excluded.tool_policy, tags = excluded.tags, \
          thinking_mode = excluded.thinking_mode, thinking_budget = excluded.thinking_budget, \
+         streaming = excluded.streaming, \
          created_at = excluded.created_at, updated_at = excluded.updated_at, \
          version = excluded.version, deleted_at = NULL, origin_device_id = excluded.origin_device_id",
         params![
@@ -1379,6 +1387,7 @@ fn apply_remote_agent(
             payload.tags,
             payload.thinking_mode,
             payload.thinking_budget,
+            if payload.streaming { 1 } else { 0 },
             payload.created_at,
             payload.updated_at,
             payload.version,
@@ -3646,6 +3655,7 @@ mod tests {
                 tags: String::new(),
                 thinking_mode: "off".into(),
                 thinking_budget: 0,
+                streaming: true,
             },
         )
         .unwrap();
@@ -3702,6 +3712,7 @@ mod tests {
                 tags: String::new(),
                 thinking_mode: "off".into(),
                 thinking_budget: 0,
+                streaming: true,
             },
         )
         .unwrap();
@@ -3749,6 +3760,7 @@ mod tests {
                 tags: String::new(),
                 thinking_mode: "off".into(),
                 thinking_budget: 0,
+                streaming: true,
             },
         )
         .unwrap();
@@ -3964,6 +3976,7 @@ mod tests {
                 tags: "test".into(),
                 thinking_mode: "off".into(),
                 thinking_budget: 0,
+                streaming: true,
             },
         )
         .unwrap();

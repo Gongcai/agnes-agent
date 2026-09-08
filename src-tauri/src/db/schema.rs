@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS agents (
   tags TEXT,
   thinking_mode TEXT,              -- 思考模式/强度: off|auto|low|medium|high
   thinking_budget INTEGER,         -- 思考预算(token)，Claude 的 budget_tokens，0 = 按强度预设
+  streaming INTEGER,               -- 是否使用流式输出: 1=流式(默认), 0=整段返回
   created_at TEXT,
   updated_at TEXT,
   version INTEGER NOT NULL DEFAULT 1,

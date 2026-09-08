@@ -2,11 +2,23 @@
 from __future__ import annotations
 import os
 import math
+import warnings
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 import litellm
+
+# litellm 1.92 replaces the Responses API usage object with a chat-style dict
+# during its streaming logging path, which makes pydantic emit a noisy
+# "Pydantic serializer warnings" UserWarning per completed stream. It is a
+# litellm-internal logging artifact with no public flag to disable; suppress
+# only that exact warning so our own pydantic models still surface theirs.
+warnings.filterwarnings(
+    "ignore",
+    message=r"Pydantic serializer warnings",
+    category=UserWarning,
+)
 
 
 MAX_EMBEDDING_DIMS = 8192
@@ -110,6 +122,7 @@ class LlmConfig:
     thinking_mode: str = "off"         # off | auto | low | medium | high
     thinking_budget: int = 0           # 思考预算(token)：Claude 的 budget_tokens，0 = 按强度预设
     max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    streaming: bool = True             # False = 整段返回（部分端点不支持 SSE 流式）
 
     @classmethod
     def from_dict(cls, d: dict) -> "LlmConfig":
@@ -126,6 +139,7 @@ class LlmConfig:
             model_ref=d.get("modelRef"),
             thinking_mode=thinking.get("mode", d.get("thinkingMode", "off")) or "off",
             thinking_budget=int(thinking.get("budget", d.get("thinkingBudget", 0)) or 0),
+            streaming=bool(d.get("streaming", True)),
             max_tokens=max(
                 128,
                 min(
@@ -337,6 +351,18 @@ def _chat_messages_to_responses_input(
             continue
 
         if role == "assistant":
+            # Replay opaque reasoning items so the model keeps its chain of
+            # thought across tool loops (stateless reasoning replay).
+            provider_fields = message.get("provider_specific_fields")
+            reasoning_items = (
+                provider_fields.get("responses_reasoning")
+                if isinstance(provider_fields, dict)
+                else None
+            )
+            if isinstance(reasoning_items, list):
+                for reasoning_item in reasoning_items:
+                    if isinstance(reasoning_item, dict) and reasoning_item.get("type") == "reasoning":
+                        items.append(reasoning_item)
             text = content if isinstance(content, str) else None
             if text:
                 items.append({"role": "assistant", "content": text})
@@ -386,14 +412,19 @@ def _chat_tools_to_responses_tools(
     return converted or None
 
 
-def _responses_reasoning(mode: str) -> Optional[Dict[str, Any]]:
-    """Map the thinking-mode setting to the Responses API reasoning parameter."""
-    if not mode or mode == "off":
-        return None
-    effort = {"low": "low", "medium": "medium", "high": "high", "auto": "medium"}.get(mode)
-    if not effort:
-        return None
-    return {"effort": effort, "summary": "auto"}
+def _responses_reasoning(mode: str) -> Dict[str, Any]:
+    """Map the thinking-mode setting to the Responses API reasoning parameter.
+
+    Reasoning summaries are always requested: without ``summary`` the endpoint
+    never emits ``response.reasoning_summary_text.delta``, so the UI shows no
+    thinking at all for models that always reason (gpt-5 and friends). The
+    effort level is only pinned when the user picked a strength.
+    """
+    reasoning: Dict[str, Any] = {"summary": "auto"}
+    effort = {"low": "low", "medium": "medium", "high": "high", "auto": "medium"}.get(mode or "")
+    if effort:
+        reasoning["effort"] = effort
+    return reasoning
 
 
 def _responses_usage_to_chat(usage: Any) -> Optional[SimpleNamespace]:
@@ -461,8 +492,27 @@ def _responses_stream_error(event: Any) -> RuntimeError:
     return RuntimeError(detail)
 
 
-def _iter_responses_events_as_chat_chunks(event_stream: Any) -> Any:
-    """Yield chat-completions chunks synthesized from Responses API stream events."""
+def _reasoning_item_dict(item: Any) -> Optional[Dict[str, Any]]:
+    """Extract the replayable fields of a Responses reasoning item."""
+    item_id = getattr(item, "id", None)
+    if not item_id:
+        return None
+    return {
+        "type": "reasoning",
+        "id": item_id,
+        "encrypted_content": getattr(item, "encrypted_content", None),
+    }
+
+
+def _iter_responses_events_as_chat_chunks(
+    event_stream: Any,
+    reasoning_sink: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Any:
+    """Yield chat-completions chunks synthesized from Responses API stream events.
+
+    When ``reasoning_sink`` is provided, reasoning items are recorded there (keyed
+    by item id, in stream order) so the caller can replay them on later turns.
+    """
     for event in event_stream:
         event_type = getattr(event, "type", None)
 
@@ -476,17 +526,22 @@ def _iter_responses_events_as_chat_chunks(event_stream: Any) -> Any:
             if text:
                 yield _chat_stream_chunk(reasoning=text)
 
-        elif event_type == "response.output_item.added":
+        elif event_type in ("response.output_item.added", "response.output_item.done"):
             item = getattr(event, "item", None)
             if getattr(item, "type", None) == "function_call":
-                yield _chat_stream_chunk(tool_calls=[SimpleNamespace(
-                    index=getattr(event, "output_index", 0) or 0,
-                    id=getattr(item, "call_id", None),
-                    function=SimpleNamespace(
-                        name=getattr(item, "name", None),
-                        arguments=None,
-                    ),
-                )])
+                if event_type == "response.output_item.added":
+                    yield _chat_stream_chunk(tool_calls=[SimpleNamespace(
+                        index=getattr(event, "output_index", 0) or 0,
+                        id=getattr(item, "call_id", None),
+                        function=SimpleNamespace(
+                            name=getattr(item, "name", None),
+                            arguments=None,
+                        ),
+                    )])
+            elif getattr(item, "type", None) == "reasoning" and reasoning_sink is not None:
+                captured = _reasoning_item_dict(item)
+                if captured:
+                    reasoning_sink[captured["id"]] = captured
 
         elif event_type == "response.function_call_arguments.delta":
             text = getattr(event, "delta", None)
@@ -510,6 +565,7 @@ def _iter_responses_events_as_chat_chunks(event_stream: Any) -> Any:
 def _responses_final_to_chat_response(response: Any) -> SimpleNamespace:
     """Build a chat-completions-shaped response from a final Responses object."""
     text_parts: List[str] = []
+    reasoning_parts: List[str] = []
     tool_calls: List[Dict[str, Any]] = []
     for item in getattr(response, "output", None) or []:
         item_type = getattr(item, "type", None)
@@ -528,8 +584,15 @@ def _responses_final_to_chat_response(response: Any) -> SimpleNamespace:
                     "arguments": getattr(item, "arguments", None) or "",
                 },
             })
+        elif item_type == "reasoning":
+            for part in getattr(item, "summary", None) or []:
+                if getattr(part, "type", None) == "summary_text":
+                    text = getattr(part, "text", None)
+                    if isinstance(text, str):
+                        reasoning_parts.append(text)
     message = SimpleNamespace(
         content="".join(text_parts) or None,
+        reasoning_content="".join(reasoning_parts) or None,
         tool_calls=tool_calls or None,
     )
     return SimpleNamespace(
@@ -539,6 +602,119 @@ def _responses_final_to_chat_response(response: Any) -> SimpleNamespace:
         )],
         usage=_responses_usage_to_chat(getattr(response, "usage", None)),
     )
+
+
+def _chat_response_to_chunks(response: Any) -> Any:
+    """Wrap a final (non-streaming) chat response as chunk-iterable for graph.py."""
+    message = response.choices[0].message
+    tool_calls = []
+    for index, tc in enumerate(getattr(message, "tool_calls", None) or []):
+        function = getattr(tc, "function", None)
+        tool_calls.append(SimpleNamespace(
+            index=getattr(tc, "index", index) or 0,
+            id=getattr(tc, "id", None),
+            function=SimpleNamespace(
+                name=getattr(function, "name", None) if function else None,
+                arguments=getattr(function, "arguments", None) if function else None,
+            ),
+        ))
+    delta = SimpleNamespace(
+        content=getattr(message, "content", None),
+        reasoning_content=getattr(message, "reasoning_content", None),
+        tool_calls=tool_calls or None,
+    )
+    yield SimpleNamespace(choices=[SimpleNamespace(delta=delta)], usage=None)
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(
+                content=None, reasoning_content=None, tool_calls=None,
+            ))],
+            usage=usage,
+        )
+
+
+def _strip_reasoning_items(input_items: Any) -> Any:
+    """Drop replayed reasoning items from an input list (fallback requests)."""
+    if not isinstance(input_items, list):
+        return input_items
+    return [
+        item for item in input_items
+        if not (isinstance(item, dict) and item.get("type") == "reasoning")
+    ]
+
+
+def _is_reasoning_retryable(error: BaseException) -> bool:
+    """Return whether a request error is worth one retry without reasoning state."""
+    message = str(error).lower()
+    if any(marker in message for marker in (
+        "invalid_encrypted_content",
+        "encrypted content",
+        "encrypted_content",
+    )):
+        return True
+    return classify_llm_error(error).category == "invalid_request"
+
+
+class ResponsesChunkStream:
+    """Iterable of chat chunks carrying the reasoning items captured for replay."""
+
+    def __init__(self, iterator: Any, reasoning_items: List[Dict[str, Any]]):
+        self._iterator = iterator
+        self.reasoning_items = reasoning_items
+
+    def __iter__(self) -> Any:
+        return iter(self._iterator)
+
+
+class ResponsesStream:
+    """Streaming variant that captures reasoning items as it is consumed.
+
+    ``stream_factory`` returns the litellm stream (deferred so a synchronous
+    request error can be retried). ``retry_factory`` re-issues the request
+    without reasoning replay and without the ``include``/``store`` flags when
+    the endpoint rejects them.
+    """
+
+    def __init__(self, stream_factory: Any, retry_factory: Optional[Any] = None):
+        self._stream_factory = stream_factory
+        self._retry_factory = retry_factory
+        self.reasoning_items: List[Dict[str, Any]] = []
+
+    def __iter__(self) -> Any:
+        reasoning: Dict[str, Dict[str, Any]] = {}
+        yielded = False
+        try:
+            stream = self._stream_factory()
+        except Exception as error:
+            if self._retry_factory is None or not _is_reasoning_retryable(error):
+                raise
+            stream = self._retry_factory()
+        try:
+            for chunk in _iter_responses_events_as_chat_chunks(stream, reasoning):
+                yielded = True
+                yield chunk
+        except Exception as error:
+            if not yielded and self._retry_factory is not None and _is_reasoning_retryable(error):
+                for chunk in _iter_responses_events_as_chat_chunks(
+                    self._retry_factory(), reasoning
+                ):
+                    yield chunk
+                return
+            raise
+        finally:
+            self.reasoning_items = list(reasoning.values())
+
+
+def _extract_reasoning_items_from_output(response: Any) -> List[Dict[str, Any]]:
+    """Collect reasoning items from a final (non-streaming) Responses object."""
+    collected: Dict[str, Dict[str, Any]] = {}
+    for item in getattr(response, "output", None) or []:
+        if getattr(item, "type", None) == "reasoning":
+            captured = _reasoning_item_dict(item)
+            if captured:
+                collected[captured["id"]] = captured
+    return list(collected.values())
 
 
 def responses_completion(
@@ -553,7 +729,8 @@ def responses_completion(
 
     Converts chat messages/tools into Responses API format and converts the
     streamed events (or final object) back into the chat-completions shapes
-    consumed by graph.py, title.py, and image.py.
+    consumed by graph.py, title.py, and image.py. Reasoning items are captured
+    and replayed so the model keeps its chain of thought across tool loops.
     """
     instructions, input_items = _chat_messages_to_responses_input(messages)
 
@@ -587,19 +764,40 @@ def responses_completion(
         if extra_body:
             request_kwargs["extra_body"] = extra_body
 
-    response = litellm.responses(
-        model=call_model,
-        input=input_items if input_items else "",
-        instructions=instructions,
-        stream=stream,
-        timeout=request_timeout,
-        max_output_tokens=max_tokens,
-        **request_kwargs,
-        **kwargs,
-    )
+    def call(reasoning_replay: bool) -> Any:
+        params: Dict[str, Any] = dict(
+            model=call_model,
+            instructions=instructions,
+            stream=stream,
+            timeout=request_timeout,
+            max_output_tokens=max_tokens,
+            **request_kwargs,
+            **kwargs,
+        )
+        if reasoning_replay:
+            params["input"] = input_items if input_items else ""
+            params["include"] = ["reasoning.encrypted_content"]
+            params["store"] = False
+        else:
+            params["input"] = _strip_reasoning_items(input_items) or ""
+        return litellm.responses(**params)
+
     if stream:
-        return _iter_responses_events_as_chat_chunks(response)
-    return _responses_final_to_chat_response(response)
+        return ResponsesStream(
+            stream_factory=lambda: call(reasoning_replay=True),
+            retry_factory=lambda: call(False),
+        )
+
+    try:
+        response = call(reasoning_replay=True)
+    except Exception as error:
+        if _is_reasoning_retryable(error):
+            response = call(reasoning_replay=False)
+        else:
+            raise
+    result = _responses_final_to_chat_response(response)
+    result.reasoning_items = _extract_reasoning_items_from_output(response)
+    return result
 
 
 def completion(
@@ -611,16 +809,30 @@ def completion(
     **kwargs: Any
 ) -> Any:
     """Wrapper around litellm.completion with provider config support."""
+    # A streaming request is downgraded to a single-shot request when the
+    # agent's streaming toggle is off (some endpoints lack SSE streaming).
+    effective_stream = bool(stream) and (llm_config is None or llm_config.streaming)
+
     # OpenAI Responses API providers go through the dedicated adapter.
     if llm_config and llm_config.provider.lower() == RESPONSES_API_PROVIDER:
-        return responses_completion(
+        result = responses_completion(
             model=model,
             messages=messages,
             tools=tools,
-            stream=stream,
+            stream=effective_stream,
             llm_config=llm_config,
             **kwargs,
         )
+        if effective_stream:
+            return result
+        if stream:
+            # Streaming was requested but the toggle disabled it: wrap the
+            # final response as chunks while preserving the captured reasoning.
+            return ResponsesChunkStream(
+                _chat_response_to_chunks(result),
+                getattr(result, "reasoning_items", []) or [],
+            )
+        return result
 
     # Inject API Keys if they exist in environment variables (passed by Rust)
     # LiteLLM automatically picks up standard env variables like OPENAI_API_KEY, etc.
@@ -648,16 +860,28 @@ def completion(
         llm_config.max_tokens if llm_config else DEFAULT_MAX_OUTPUT_TOKENS,
     )
     prepared_messages = _prepare_completion_messages(messages, call_model, llm_config)
-    return litellm.completion(
+    if effective_stream:
+        return litellm.completion(
+            model=call_model,
+            messages=prepared_messages,
+            tools=tools,
+            stream=True,
+            timeout=request_timeout,
+            max_tokens=max_tokens,
+            **extra_kwargs,
+            **kwargs,
+        )
+    result = litellm.completion(
         model=call_model,
         messages=prepared_messages,
         tools=tools,
-        stream=stream,
+        stream=False,
         timeout=request_timeout,
         max_tokens=max_tokens,
         **extra_kwargs,
         **kwargs,
     )
+    return _chat_response_to_chunks(result) if stream else result
 
 
 def embed_texts(

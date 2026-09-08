@@ -952,6 +952,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
     full_text = ""
     full_reasoning = ""
     pending_tool_calls: List[Dict[str, Any]] = []
+    reasoning_items: List[Dict[str, Any]] = []
     selected_model = candidates[active_index][0]
     selected_raw = candidates[active_index][1]
     attempt_had_activity = False
@@ -1038,6 +1039,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
                 full_text += trailing_text
                 await emit(trailing_text)
 
+            reasoning_items = list(getattr(response, "reasoning_items", None) or [])
             pending_tool_calls = list(tool_calls_accumulator.values())
             if attempt_usage["input_tokens"] == 0:
                 attempt_usage["input_tokens"] = count_tokens(
@@ -1123,6 +1125,10 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
         # subsequent request in the same tool loop. Keep it as protocol metadata;
         # the UI receives the separately tagged stream above.
         assistant_msg["reasoning_content"] = full_reasoning
+    if reasoning_items:
+        # Responses API stateless reasoning replay: keep the opaque reasoning
+        # items so the next tool-loop request can feed them back verbatim.
+        assistant_msg["provider_specific_fields"] = {"responses_reasoning": reasoning_items}
     if pending_tool_calls:
         assistant_msg["tool_calls"] = pending_tool_calls
         

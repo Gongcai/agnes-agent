@@ -109,6 +109,7 @@ pub struct AgentSummary {
     pub tags: String,
     pub thinking_mode: String,
     pub thinking_budget: i64,
+    pub streaming: bool,
 }
 
 #[derive(Serialize)]
@@ -477,6 +478,7 @@ pub async fn list_agents(state: tauri::State<'_, AppState>) -> AppResult<Vec<Age
             tags: r.tags,
             thinking_mode: r.thinking_mode,
             thinking_budget: r.thinking_budget,
+            streaming: r.streaming,
         })
         .collect())
 }
@@ -508,6 +510,12 @@ pub struct UpsertAgentPayload {
     pub tags: String,
     pub thinking_mode: String,
     pub thinking_budget: i64,
+    #[serde(default = "default_streaming")]
+    pub streaming: bool,
+}
+
+fn default_streaming() -> bool {
+    true
 }
 
 /// 创建或更新角色卡：id 为空则新建（生成 uuid），否则全量更新。
@@ -531,6 +539,7 @@ pub async fn upsert_agent(
                 tags: payload.tags,
                 thinking_mode: payload.thinking_mode,
                 thinking_budget: payload.thinking_budget,
+                streaming: payload.streaming,
             };
             state.db.update_agent(id.clone(), changes).await?;
             state.sync.schedule();
@@ -552,6 +561,7 @@ pub async fn upsert_agent(
                 tags: payload.tags,
                 thinking_mode: payload.thinking_mode,
                 thinking_budget: payload.thinking_budget,
+                streaming: payload.streaming,
             };
             let id = state.db.insert_agent(row).await?;
             state.sync.schedule();
@@ -1315,6 +1325,7 @@ pub async fn get_debug_prompt(
                 "litellmModel": litellm_model,
                 "maxTokens": effective_max_tokens,
                 "supportsImageInput": model_descriptor_supports_image_input(provider.as_ref(), &model_name),
+                "streaming": agent.streaming,
                 "thinking": {
                     "mode": effective_thinking_mode,
                     "budget": effective_thinking_budget
@@ -2380,6 +2391,7 @@ async fn start_agent_run(
                 "litellmModel": cfg.litellm_model,
                 "maxTokens": cfg.max_tokens,
                 "supportsImageInput": cfg.supports_image_input,
+                "streaming": cfg.agent.streaming,
                 "thinking": {
                     "mode": cfg.thinking_mode,
                     "budget": cfg.thinking_budget

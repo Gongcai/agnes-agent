@@ -141,13 +141,15 @@ def test_chat_tools_are_flattened_into_responses_function_tools():
     assert _chat_tools_to_responses_tools([{"type": "function", "function": {}}]) is None
 
 
-def test_reasoning_effort_maps_thinking_modes():
-    assert _responses_reasoning("off") is None
-    assert _responses_reasoning("") is None
+def test_reasoning_requests_summaries_and_pins_effort_only_when_chosen():
+    # Summaries must always be on: without them reasoning models stream no
+    # thinking deltas and the UI shows nothing.
+    assert _responses_reasoning("off") == {"summary": "auto"}
+    assert _responses_reasoning("") == {"summary": "auto"}
     assert _responses_reasoning("low") == {"effort": "low", "summary": "auto"}
     assert _responses_reasoning("high") == {"effort": "high", "summary": "auto"}
     assert _responses_reasoning("auto") == {"effort": "medium", "summary": "auto"}
-    assert _responses_reasoning("unknown") is None
+    assert _responses_reasoning("unknown") == {"summary": "auto"}
 
 
 def test_stream_events_become_chat_chunks_with_text_reasoning_and_tool_calls():
@@ -399,6 +401,50 @@ def test_stream_usage_options_are_disabled_for_responses_providers():
     assert supports_stream_usage_options(LlmConfig(provider="openai"))
 
 
+def test_streaming_toggle_downgrades_to_single_shot_for_responses(monkeypatch):
+    captured = {}
+
+    def fake_responses(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            output=[SimpleNamespace(type="message", content=[
+                SimpleNamespace(type="output_text", text="整段返回"),
+            ])],
+            usage=SimpleNamespace(input_tokens=5, output_tokens=2, input_tokens_details=None),
+        )
+
+    monkeypatch.setattr("app.models.litellm.responses", fake_responses)
+
+    chunks = list(completion(
+        "openai/gpt-5",
+        [{"role": "user", "content": "Hi"}],
+        stream=True,
+        llm_config=_config(streaming=False),
+    ))
+
+    assert captured["stream"] is False
+    assert chunks[0].choices[0].delta.content == "整段返回"
+    assert chunks[1].usage.prompt_tokens == 5
+
+
+def test_streaming_toggle_keeps_streaming_when_enabled(monkeypatch):
+    monkeypatch.setattr(
+        "app.models.litellm.responses",
+        lambda **_kwargs: _event_stream(
+            SimpleNamespace(type="response.output_text.delta", delta="hi"),
+        ),
+    )
+
+    stream = completion(
+        "openai/gpt-5",
+        [{"role": "user", "content": "Hi"}],
+        stream=True,
+        llm_config=_config(streaming=True),
+    )
+
+    assert list(stream)[0].choices[0].delta.content == "hi"
+
+
 def test_graph_consumes_responses_stream_end_to_end(monkeypatch):
     """The synthesized chunks must drive the real graph loop, tools included."""
     from app import graph as graph_module
@@ -513,3 +559,269 @@ def test_graph_consumes_responses_stream_end_to_end(monkeypatch):
         "output_tokens": 30,
         "context_tokens": 170,
     }
+
+
+def test_graph_replays_reasoning_items_across_the_tool_loop(monkeypatch):
+    """The graph must capture reasoning items and replay them on the next call."""
+    from app import graph as graph_module
+
+    calls = []
+
+    def fake_responses(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return _event_stream(
+                SimpleNamespace(
+                    type="response.output_item.added",
+                    output_index=0,
+                    item=SimpleNamespace(type="reasoning", id="rs-1", encrypted_content="enc-1"),
+                ),
+                SimpleNamespace(type="response.reasoning_summary_text.delta", delta="Listing files."),
+                SimpleNamespace(type="response.output_text.delta", delta="Checking now. "),
+                SimpleNamespace(
+                    type="response.output_item.added",
+                    output_index=2,
+                    item=SimpleNamespace(type="function_call", call_id="call-1", name="list_files"),
+                ),
+                SimpleNamespace(
+                    type="response.function_call_arguments.delta",
+                    output_index=2,
+                    delta='{"path":"."}',
+                ),
+                SimpleNamespace(type="response.completed", response=SimpleNamespace(usage=None)),
+            )
+        return _event_stream(
+            SimpleNamespace(type="response.output_text.delta", delta="README.md exists."),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(usage=None)),
+        )
+
+    monkeypatch.setattr("app.models.litellm.responses", fake_responses)
+    emitted = []
+
+    async def emit(value):
+        emitted.append(value)
+
+    async def execute_tool(_tool_call_id, _tool_name, _arguments):
+        return "README.md"
+
+    state = {
+        "messages": [{"role": "user", "content": "Inspect the repository"}],
+        "system_prompt": "You are Agnes.",
+        "model": "openai/gpt-5",
+        "tool_policy": {"shell": {"enabled": True}},
+        "dynamic_tools": [{
+            "type": "function",
+            "function": {"name": "list_files", "parameters": {"type": "object"}},
+        }],
+        "pending_tool_calls": [],
+        "finished": False,
+        "llm_config": {
+            "provider": RESPONSES_API_PROVIDER,
+            "model": "gpt-5",
+            "litellmModel": "openai/gpt-5",
+            "apiBase": "https://api.openai.com/v1",
+            "apiKey": "sk-test",
+            "thinking": {"mode": "high", "budget": 0},
+            "maxTokens": 2048,
+        },
+        "fallback_configs": [],
+        "active_llm_index": 0,
+        "active_llm_config": None,
+        "active_model": "openai/gpt-5",
+        "fallback_locked": False,
+        "token_usage": {},
+    }
+
+    result = asyncio.run(
+        graph_module.build_graph().ainvoke(state, config={"configurable": {
+            "send_delta_fn": emit,
+            "execute_tool_fn": execute_tool,
+        }})
+    )
+
+    assert result["messages"][-1]["content"] == "README.md exists."
+    # The reasoning item captured on turn 1 must be replayed on turn 2, before
+    # the function_call_output it produced.
+    second_input = calls[1]["input"]
+    replayed = [item for item in second_input if item.get("type") == "reasoning"]
+    assert replayed == [{"type": "reasoning", "id": "rs-1", "encrypted_content": "enc-1"}]
+    assert second_input.index(replayed[0]) < second_input.index({
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": "README.md",
+    })
+
+
+def test_reasoning_items_are_captured_from_stream_events():
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(type="reasoning", id="rs-1", encrypted_content="enc-1"),
+        ),
+        SimpleNamespace(type="response.reasoning_summary_text.delta", delta="Thinking"),
+        SimpleNamespace(type="response.output_text.delta", delta="Answer"),
+        SimpleNamespace(
+            type="response.output_item.done",
+            output_index=0,
+            item=SimpleNamespace(type="reasoning", id="rs-1", encrypted_content="enc-1"),
+        ),
+    ]
+
+    chunks = list(_iter_responses_events_as_chat_chunks(_event_stream(*events), {}))
+
+    assert [c.choices[0].delta.content for c in chunks if c.choices[0].delta.content] == ["Answer"]
+
+
+def test_responses_stream_exposes_captured_reasoning_items():
+    from app.models import ResponsesStream
+
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(type="reasoning", id="rs-1", encrypted_content="enc-1"),
+        ),
+        SimpleNamespace(type="response.output_text.delta", delta="Answer"),
+    ]
+    stream = ResponsesStream(lambda: _event_stream(*events))
+
+    chunks = list(stream)
+
+    assert chunks[0].choices[0].delta.content == "Answer"
+    assert stream.reasoning_items == [{
+        "type": "reasoning",
+        "id": "rs-1",
+        "encrypted_content": "enc-1",
+    }]
+
+
+def test_assistant_reasoning_items_are_replayed_before_the_turn():
+    messages = [
+        {"role": "user", "content": "Run the check"},
+        {
+            "role": "assistant",
+            "content": "Running.",
+            "provider_specific_fields": {
+                "responses_reasoning": [
+                    {"type": "reasoning", "id": "rs-1", "encrypted_content": "enc-1"},
+                ],
+            },
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "shell", "arguments": '{"cmd":"ls"}'},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "ok"},
+    ]
+
+    _, items = _chat_messages_to_responses_input(messages)
+
+    assert items[0] == {"role": "user", "content": "Run the check"}
+    assert items[1] == {"type": "reasoning", "id": "rs-1", "encrypted_content": "enc-1"}
+    assert items[2] == {"role": "assistant", "content": "Running."}
+    assert items[3]["type"] == "function_call"
+    assert items[4] == {
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": "ok",
+    }
+
+
+def test_responses_completion_requests_reasoning_replay_flags(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        "app.models.litellm.responses",
+        lambda **kwargs: captured.update(kwargs) or SimpleNamespace(output=[], usage=None),
+    )
+
+    responses_completion(
+        "openai/gpt-5",
+        [{"role": "user", "content": "Hi"}],
+        llm_config=_config(),
+    )
+
+    assert captured["include"] == ["reasoning.encrypted_content"]
+    assert captured["store"] is False
+    assert captured["input"] == [{"role": "user", "content": "Hi"}]
+
+
+def test_non_streaming_response_exposes_reasoning_items(monkeypatch):
+    monkeypatch.setattr(
+        "app.models.litellm.responses",
+        lambda **_kwargs: SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    id="rs-1",
+                    encrypted_content="enc-1",
+                    summary=[SimpleNamespace(type="summary_text", text="Thinking")],
+                ),
+                SimpleNamespace(type="message", content=[
+                    SimpleNamespace(type="output_text", text="Answer"),
+                ]),
+            ],
+            usage=None,
+        ),
+    )
+
+    response = responses_completion(
+        "openai/gpt-5",
+        [{"role": "user", "content": "Hi"}],
+        llm_config=_config(),
+    )
+
+    assert response.choices[0].message.content == "Answer"
+    assert response.choices[0].message.reasoning_content == "Thinking"
+    assert response.reasoning_items == [{
+        "type": "reasoning",
+        "id": "rs-1",
+        "encrypted_content": "enc-1",
+    }]
+
+
+def test_streaming_reasoning_replay_retries_without_reasoning_on_invalid_request(monkeypatch):
+    calls = []
+
+    def fake_responses(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("include"):
+            raise ValueError("400 invalid_encrypted_content: could not be verified")
+        return _event_stream(
+            SimpleNamespace(type="response.output_text.delta", delta="fallback"),
+        )
+
+    monkeypatch.setattr("app.models.litellm.responses", fake_responses)
+
+    stream = responses_completion(
+        "openai/gpt-5",
+        [
+            {"role": "user", "content": "Hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "provider_specific_fields": {
+                    "responses_reasoning": [
+                        {"type": "reasoning", "id": "rs-1", "encrypted_content": "enc-1"},
+                    ],
+                },
+            },
+        ],
+        stream=True,
+        llm_config=_config(),
+    )
+
+    chunks = list(stream)
+
+    assert chunks[0].choices[0].delta.content == "fallback"
+    assert len(calls) == 2
+    assert calls[0]["include"] == ["reasoning.encrypted_content"]
+    assert calls[1].get("include") is None
+    # The retry stripped the replayed reasoning item from the input.
+    assert all(
+        item.get("type") != "reasoning"
+        for item in calls[1]["input"]
+        if isinstance(item, dict)
+    )

@@ -452,6 +452,7 @@ export interface AgentSummary {
   tags: string;
   thinking_mode: string;
   thinking_budget: number;
+  streaming?: boolean;
 }
 
 export interface AgentConfig {
@@ -547,6 +548,7 @@ interface AgentState {
     tags: string;
     thinking_mode: string;
     thinking_budget: number;
+    streaming?: boolean;
   }) => Promise<string>;
   deleteAgent: (agentId: string) => Promise<void>;
   

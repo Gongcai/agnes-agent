@@ -125,6 +125,7 @@ mod tests {
             tags: String::new(),
             thinking_mode: "off".into(),
             thinking_budget: 0,
+            streaming: true,
         }
     }
 

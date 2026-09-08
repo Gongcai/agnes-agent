@@ -19,6 +19,7 @@ pub struct AgentRow {
     pub tags: String,
     pub thinking_mode: String,
     pub thinking_budget: i64,
+    pub streaming: bool,
     pub created_at: String,
     pub updated_at: String,
     pub version: i64,
@@ -40,6 +41,7 @@ pub struct NewAgent {
     pub tags: String,
     pub thinking_mode: String,
     pub thinking_budget: i64,
+    pub streaming: bool,
 }
 
 /// 角色卡可编辑字段（不含 id）。
@@ -56,12 +58,14 @@ pub struct AgentUpdate {
     pub tags: String,
     pub thinking_mode: String,
     pub thinking_budget: i64,
+    pub streaming: bool,
 }
 
 pub fn list(conn: &Connection) -> AppResult<Vec<AgentRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, persona, scenario, system_prompt, greeting, \
          example_dialogue, model, tool_policy, avatar, tags, thinking_mode, thinking_budget, \
+         streaming, \
          created_at, updated_at, version, deleted_at, origin_device_id \
          FROM agents WHERE deleted_at IS NULL ORDER BY created_at",
     )?;
@@ -80,11 +84,12 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentRow>> {
             tags: r.get(10)?,
             thinking_mode: r.get(11)?,
             thinking_budget: r.get(12)?,
-            created_at: r.get(13)?,
-            updated_at: r.get(14)?,
-            version: r.get(15)?,
-            deleted_at: r.get(16)?,
-            origin_device_id: r.get(17)?,
+            streaming: r.get::<_, Option<i64>>(13)?.unwrap_or(1) != 0,
+            created_at: r.get(14)?,
+            updated_at: r.get(15)?,
+            version: r.get(16)?,
+            deleted_at: r.get(17)?,
+            origin_device_id: r.get(18)?,
         })
     })?;
     let mut out = Vec::new();
@@ -101,26 +106,28 @@ pub fn insert(conn: &mut Connection, a: &NewAgent) -> AppResult<String> {
     tx.execute(
         "INSERT INTO agents (id, name, persona, scenario, system_prompt, greeting, \
          example_dialogue, model, tool_policy, avatar, tags, thinking_mode, thinking_budget, \
+         streaming, \
          created_at, updated_at, version, origin_device_id) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,1,?16)",
-        (
-            &a.id,
-            &a.name,
-            &a.persona,
-            &a.scenario,
-            &a.system_prompt,
-            &a.greeting,
-            &a.example_dialogue,
-            &a.model,
-            &a.tool_policy,
-            &a.avatar,
-            &a.tags,
-            &a.thinking_mode,
-            &a.thinking_budget,
-            &now,
-            &now,
-            &device_id,
-        ),
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,1,?17)",
+        rusqlite::params![
+            a.id,
+            a.name,
+            a.persona,
+            a.scenario,
+            a.system_prompt,
+            a.greeting,
+            a.example_dialogue,
+            a.model,
+            a.tool_policy,
+            a.avatar,
+            a.tags,
+            a.thinking_mode,
+            a.thinking_budget,
+            if a.streaming { 1 } else { 0 },
+            now,
+            now,
+            device_id,
+        ],
     )?;
     enqueue_current(&tx, &a.id)?;
     tx.commit()?;
@@ -135,8 +142,9 @@ pub fn update(conn: &mut Connection, id: &str, c: &AgentUpdate) -> AppResult<()>
         "UPDATE agents SET name = ?1, persona = ?2, scenario = ?3, system_prompt = ?4, \
          greeting = ?5, example_dialogue = ?6, model = ?7, tool_policy = ?8, \
          avatar = ?9, tags = ?10, thinking_mode = ?11, thinking_budget = ?12, \
-         updated_at = ?13, version = version + 1, origin_device_id = ?14 \
-         WHERE id = ?15 AND deleted_at IS NULL",
+         streaming = ?13, \
+         updated_at = ?14, version = version + 1, origin_device_id = ?15 \
+         WHERE id = ?16 AND deleted_at IS NULL",
         (
             &c.name,
             &c.persona,
@@ -150,6 +158,7 @@ pub fn update(conn: &mut Connection, id: &str, c: &AgentUpdate) -> AppResult<()>
             &c.tags,
             &c.thinking_mode,
             &c.thinking_budget,
+            if c.streaming { 1 } else { 0 },
             &now,
             &device_id,
             id,
@@ -198,7 +207,8 @@ pub fn delete(conn: &mut Connection, id: &str) -> AppResult<()> {
 fn get_any(conn: &Connection, id: &str) -> AppResult<Option<AgentRow>> {
     conn.query_row(
         "SELECT id, name, persona, scenario, system_prompt, greeting, example_dialogue, \
-         model, tool_policy, avatar, tags, thinking_mode, thinking_budget, created_at, \
+         model, tool_policy, avatar, tags, thinking_mode, thinking_budget, streaming, \
+         created_at, \
          updated_at, version, deleted_at, origin_device_id FROM agents WHERE id = ?1",
         [id],
         |r| {
@@ -216,11 +226,12 @@ fn get_any(conn: &Connection, id: &str) -> AppResult<Option<AgentRow>> {
                 tags: r.get(10)?,
                 thinking_mode: r.get(11)?,
                 thinking_budget: r.get(12)?,
-                created_at: r.get(13)?,
-                updated_at: r.get(14)?,
-                version: r.get(15)?,
-                deleted_at: r.get(16)?,
-                origin_device_id: r.get(17)?,
+                streaming: r.get::<_, Option<i64>>(13)?.unwrap_or(1) != 0,
+                created_at: r.get(14)?,
+                updated_at: r.get(15)?,
+                version: r.get(16)?,
+                deleted_at: r.get(17)?,
+                origin_device_id: r.get(18)?,
             })
         },
     )
@@ -276,6 +287,7 @@ mod tests {
             tags: String::new(),
             thinking_mode: "off".into(),
             thinking_budget: 0,
+            streaming: true,
         }
     }
 

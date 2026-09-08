@@ -601,6 +601,21 @@ pub fn apply(conn: &mut Connection) -> AppResult<()> {
         )?;
     }
 
+    // 为已存在的 agents 表补充流式输出开关列（幂等，兼容老库）
+    let has_streaming: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'streaming'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_streaming {
+        conn.execute(
+            "ALTER TABLE agents ADD COLUMN streaming INTEGER DEFAULT 1",
+            [],
+        )?;
+    }
+
     // 为已存在的 sessions 表补充会话级模型/思考配置列（幂等，兼容老库）
     let has_session_model: bool = conn
         .query_row(

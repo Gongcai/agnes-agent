@@ -561,6 +561,7 @@ interface AgentFormValues {
   avatar: string;
   thinkingMode: string;
   thinkingBudget: number;
+  streaming: boolean;
   toolPolicy: {
     shell: AgentToolToggle;
     file: AgentToolToggle;
@@ -651,6 +652,7 @@ const EMPTY_AGENT_FORM: AgentFormValues = {
   avatar: "",
   thinkingMode: "off",
   thinkingBudget: 0,
+  streaming: true,
   toolPolicy: DEFAULT_TOOL_POLICY,
 };
 
@@ -921,6 +923,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       avatar: agent.avatar || "",
       thinkingMode: agent.thinking_mode || "off",
       thinkingBudget: agent.thinking_budget || 0,
+      streaming: agent.streaming !== false,
       toolPolicy: parseToolPolicy(agent.tool_policy),
     });
     setEditingAgentId(agent.id);
@@ -948,6 +951,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         tags: agentForm.tags,
         thinking_mode: agentForm.thinkingMode,
         thinking_budget: agentForm.thinkingBudget,
+        streaming: agentForm.streaming,
       });
       closeAgentEditor();
       if (agentForm.id === null) {
@@ -2945,6 +2949,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <p className="mt-1 text-[10px] text-stone-400">
                           关闭/自动由模型决定；轻度~深度控制思考深度。预算交由服务商默认参数，无需手动设置。
                         </p>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg border border-stone-200/60 bg-stone-50 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-semibold text-stone-600">流式输出</p>
+                          <p className="mt-0.5 text-[10px] text-stone-400">
+                            关闭后整段返回，用于不支持 SSE 流式或流式异常的端点。
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={agentForm.streaming}
+                          onClick={() => setAgentForm((f) => ({ ...f, streaming: !f.streaming }))}
+                          className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+                            agentForm.streaming ? "bg-[#8CA38A]" : "bg-stone-300"
+                          }`}
+                        >
+                          <span
+                            className={`agnes-toggle-thumb absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                              agentForm.streaming ? "agnes-toggle-thumb--on" : "agnes-toggle-thumb--off"
+                            }`}
+                          />
+                        </button>
                       </div>
                       <div>
                         <label className="font-semibold text-stone-500 block mb-1">标签 (逗号分隔)</label>

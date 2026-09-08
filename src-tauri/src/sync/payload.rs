@@ -73,6 +73,7 @@ pub fn project(entity_type: SyncEntityType, source: &Value) -> AppResult<Value> 
             "tags",
             "thinking_mode",
             "thinking_budget",
+            "streaming",
             "created_at",
             "updated_at",
             "version",
