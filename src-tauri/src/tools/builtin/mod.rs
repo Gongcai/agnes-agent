@@ -14,6 +14,7 @@ use crate::tools::terminal::TerminalManager;
 
 pub mod apply_patch;
 pub mod clock;
+pub mod conversation;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
@@ -120,6 +121,8 @@ pub trait BuiltinTool: Send + Sync {
 pub fn builtin_tools() -> Vec<Box<dyn BuiltinTool>> {
     vec![
         Box::new(clock::GetCurrentTimeTool),
+        Box::new(conversation::ConversationSearchTool),
+        Box::new(conversation::ConversationReadTool),
         Box::new(shell::ShellTool),
         Box::new(shell::WriteStdinTool),
         Box::new(shell::StopTerminalTool),
@@ -503,8 +506,19 @@ pub fn is_write_op(tool: &str, args: &Value) -> bool {
         | "storage_file_upload"
         | "storage_files_move"
         | "storage_files_trash" => true,
-        "file_read" | "read_image" | "list_files" | "grep" | "memory_list" | "memory_read"
-        | "web_search" | "web_fetch" | "browser_open" | "calendar_list" | "task_list"
+        "file_read"
+        | "read_image"
+        | "list_files"
+        | "grep"
+        | "memory_list"
+        | "memory_read"
+        | "conversation_search"
+        | "conversation_read"
+        | "web_search"
+        | "web_fetch"
+        | "browser_open"
+        | "calendar_list"
+        | "task_list"
         | "get_current_time" => false,
         "storage_accounts_list"
         | "storage_files_list"
@@ -723,6 +737,8 @@ mod tests {
             names,
             vec![
                 "get_current_time",
+                "conversation_search",
+                "conversation_read",
                 "shell",
                 "write_stdin",
                 "stop_terminal",

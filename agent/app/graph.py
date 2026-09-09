@@ -558,7 +558,94 @@ def get_available_tools(
             },
         ])
 
-    # 5. Read-only public web research tools
+    # 5. Agent-scoped historical conversation tools
+    conversation_policy = tool_policy.get("conversation", {})
+    if isinstance(conversation_policy, bool):
+        conversation_enabled = conversation_policy
+    elif isinstance(conversation_policy, dict):
+        conversation_enabled = conversation_policy.get("enabled", True)
+    else:
+        conversation_enabled = True
+    if conversation_enabled:
+        tools.extend([
+            {
+                "type": "function",
+                "function": {
+                    "name": "conversation_search",
+                    "description": "Search completed visible text in past conversations belonging to the current agent. Use the returned session_id and message_id with conversation_read to retrieve surrounding messages. Reasoning, tool calls, tool results, deleted messages, and other agents' sessions are never returned.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200,
+                                "description": "A keyword or exact phrase to find in visible user/assistant messages.",
+                            },
+                            "session_id": {
+                                "type": ["string", "null"],
+                                "description": "Optional session ID from a previous result to limit the search.",
+                            },
+                            "role": {
+                                "type": "string",
+                                "enum": ["any", "user", "assistant"],
+                                "description": "Optional message role filter; defaults to any.",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 20,
+                                "description": "Maximum number of matching messages; defaults to 8.",
+                            },
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "conversation_read",
+                    "description": "Read visible user/assistant text from one historical conversation. Pass a session_id from conversation_search and optionally a message_id to read that match with nearby context. Without message_id, returns the latest bounded messages in the session. Reasoning and tool activity are excluded.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "description": "Session ID returned by conversation_search.",
+                            },
+                            "message_id": {
+                                "type": ["string", "null"],
+                                "description": "Optional message ID returned by conversation_search.",
+                            },
+                            "before": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10,
+                                "description": "Messages before message_id to include; defaults to 2.",
+                            },
+                            "after": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10,
+                                "description": "Messages after message_id to include; defaults to 2.",
+                            },
+                            "max_messages": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 30,
+                                "description": "Hard cap on returned messages; defaults to 12.",
+                            },
+                        },
+                        "required": ["session_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        ])
+
+    # 6. Read-only public web research tools
     web_enabled = tool_policy.get("web", {}).get("enabled", True)
     network_allowed = tool_policy.get("network", {}).get("allow", True)
     if web_enabled and network_allowed:

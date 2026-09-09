@@ -530,6 +530,23 @@ pub enum DbCommand {
             >,
         >,
     },
+    SearchConversations {
+        agent_id: String,
+        session_id: Option<String>,
+        query: String,
+        role: Option<String>,
+        limit: usize,
+        resp: oneshot::Sender<AppResult<Vec<repo::messages::ConversationSearchResult>>>,
+    },
+    ReadConversation {
+        agent_id: String,
+        session_id: String,
+        message_id: Option<String>,
+        before: usize,
+        after: usize,
+        max_messages: usize,
+        resp: oneshot::Sender<AppResult<Option<repo::messages::ConversationReadResult>>>,
+    },
     InsertMessage {
         msg: repo::messages::NewMessage,
         parts: Vec<repo::messages::NewMessagePart>,
@@ -1999,6 +2016,50 @@ impl DbActorHandle {
             .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
     }
 
+    pub async fn search_conversations(
+        &self,
+        agent_id: String,
+        session_id: Option<String>,
+        query: String,
+        role: Option<String>,
+        limit: usize,
+    ) -> AppResult<Vec<repo::messages::ConversationSearchResult>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::SearchConversations {
+            agent_id,
+            session_id,
+            query,
+            role,
+            limit,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
+    pub async fn read_conversation(
+        &self,
+        agent_id: String,
+        session_id: String,
+        message_id: Option<String>,
+        before: usize,
+        after: usize,
+        max_messages: usize,
+    ) -> AppResult<Option<repo::messages::ConversationReadResult>> {
+        let (resp, rx) = oneshot::channel();
+        self.send(DbCommand::ReadConversation {
+            agent_id,
+            session_id,
+            message_id,
+            before,
+            after,
+            max_messages,
+            resp,
+        })?;
+        rx.await
+            .map_err(|_| AppError::Other("db actor 已丢弃".into()))?
+    }
+
     pub async fn insert_message(
         &self,
         msg: repo::messages::NewMessage,
@@ -3233,6 +3294,42 @@ pub fn spawn(db_path: PathBuf) -> DbActorHandle {
                 }
                 DbCommand::ListMessagesWithParts { session_id, resp } => {
                     let _ = resp.send(repo::messages::list_with_parts(&conn, &session_id));
+                }
+                DbCommand::SearchConversations {
+                    agent_id,
+                    session_id,
+                    query,
+                    role,
+                    limit,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::messages::search_conversation(
+                        &conn,
+                        &agent_id,
+                        session_id.as_deref(),
+                        &query,
+                        role.as_deref(),
+                        limit,
+                    ));
+                }
+                DbCommand::ReadConversation {
+                    agent_id,
+                    session_id,
+                    message_id,
+                    before,
+                    after,
+                    max_messages,
+                    resp,
+                } => {
+                    let _ = resp.send(repo::messages::read_conversation(
+                        &conn,
+                        &agent_id,
+                        &session_id,
+                        message_id.as_deref(),
+                        before,
+                        after,
+                        max_messages,
+                    ));
                 }
                 DbCommand::InsertMessage { msg, parts, resp } => {
                     let transaction_res = (|| -> AppResult<()> {

@@ -1318,6 +1318,8 @@ def test_debug_prompt_payload_includes_effective_tool_schemas():
         "memory_str_replace",
         "memory_append",
         "memory_delete",
+        "conversation_search",
+        "conversation_read",
     ]
     assert preview["tools"][0]["function"]["description"]
     assert "## memory_filesystem" in preview["system_prompt"]
@@ -1394,6 +1396,8 @@ def test_get_available_tools():
         "memory_str_replace",
         "memory_append",
         "memory_delete",
+        "conversation_search",
+        "conversation_read",
         "web_search",
         "web_fetch",
         "browser_open",

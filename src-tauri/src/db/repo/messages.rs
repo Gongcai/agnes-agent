@@ -48,6 +48,34 @@ pub struct TokenUsageDay {
     pub output_tokens: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationSearchResult {
+    pub session_id: String,
+    pub session_title: String,
+    pub message_id: String,
+    pub role: String,
+    pub seq: i32,
+    pub created_at: String,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationMessageResult {
+    pub id: String,
+    pub session_id: String,
+    pub role: String,
+    pub seq: i32,
+    pub created_at: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationReadResult {
+    pub session_id: String,
+    pub session_title: String,
+    pub messages: Vec<ConversationMessageResult>,
+}
+
 pub struct NewMessage {
     pub id: String,
     pub session_id: String,
@@ -186,6 +214,171 @@ pub fn list_with_parts(
         out.push((msg, parts));
     }
     Ok(out)
+}
+
+/// Search completed visible text for sessions owned by one Agent.
+pub fn search_conversation(
+    conn: &Connection,
+    agent_id: &str,
+    session_id: Option<&str>,
+    query: &str,
+    role: Option<&str>,
+    limit: usize,
+) -> AppResult<Vec<ConversationSearchResult>> {
+    let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
+    let mut stmt = conn.prepare(
+        "SELECT m.id, m.session_id, COALESCE(s.title, ''), m.role, m.seq, m.created_at, \
+         GROUP_CONCAT(p.content, char(10) || char(10)) \
+         FROM messages m \
+         JOIN sessions s ON s.id = m.session_id \
+         JOIN message_parts p ON p.message_id = m.id AND p.kind = 'text' \
+         WHERE s.agent_id = ?1 \
+           AND s.deleted_at IS NULL \
+           AND m.deleted_at IS NULL \
+           AND m.status = 'complete' \
+           AND (?2 IS NULL OR m.session_id = ?2) \
+           AND (?3 IS NULL OR m.role = ?3) \
+           AND (EXISTS (\
+             SELECT 1 FROM message_parts_fts f \
+             WHERE f.rowid = p.rowid AND f.content MATCH ?4\
+           ) OR instr(lower(COALESCE(p.content, '')), lower(?5)) > 0) \
+         GROUP BY m.id, m.session_id, s.title, m.role, m.seq, m.created_at \
+         ORDER BY m.updated_at DESC, m.seq DESC, m.id DESC \
+         LIMIT ?6",
+    )?;
+
+    let rows = stmt.query_map(
+        params![agent_id, session_id, role, fts_query, query, limit as i64],
+        |row| {
+            let content = row.get::<_, Option<String>>(6)?.unwrap_or_default();
+            Ok(ConversationSearchResult {
+                session_id: row.get(1)?,
+                session_title: row.get(2)?,
+                message_id: row.get(0)?,
+                role: row.get(3)?,
+                seq: row.get(4)?,
+                created_at: row.get(5)?,
+                snippet: conversation_snippet(&content, query),
+            })
+        },
+    )?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Read visible text around a search result, or the latest messages in a session.
+pub fn read_conversation(
+    conn: &Connection,
+    agent_id: &str,
+    session_id: &str,
+    message_id: Option<&str>,
+    before: usize,
+    after: usize,
+    max_messages: usize,
+) -> AppResult<Option<ConversationReadResult>> {
+    let session_title = conn
+        .query_row(
+            "SELECT COALESCE(s.title, '') FROM sessions s \
+             WHERE s.id = ?1 AND s.agent_id = ?2 AND s.deleted_at IS NULL",
+            params![session_id, agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(session_title) = session_title else {
+        return Ok(None);
+    };
+
+    let mut stmt = conn.prepare(
+        "SELECT m.id, m.session_id, m.role, m.seq, m.created_at, p.content \
+         FROM messages m \
+         JOIN sessions s ON s.id = m.session_id \
+         LEFT JOIN message_parts p ON p.message_id = m.id \
+           AND p.kind = 'text' AND p.content IS NOT NULL AND trim(p.content) <> '' \
+         WHERE s.id = ?1 AND s.agent_id = ?2 \
+           AND s.deleted_at IS NULL AND m.deleted_at IS NULL \
+           AND m.status = 'complete' \
+         ORDER BY m.seq ASC, m.id ASC, p.ordinal ASC",
+    )?;
+    let rows = stmt.query_map(params![session_id, agent_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i32>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, Option<String>>(5)?,
+        ))
+    })?;
+
+    let mut messages = Vec::<ConversationMessageResult>::new();
+    for row in rows {
+        let (id, message_session_id, role, seq, created_at, content) = row?;
+        let Some(content) = content else {
+            continue;
+        };
+        if let Some(previous) = messages.last_mut().filter(|message| message.id == id) {
+            previous.content.push_str("\n\n");
+            previous.content.push_str(&content);
+        } else {
+            messages.push(ConversationMessageResult {
+                id,
+                session_id: message_session_id,
+                role,
+                seq,
+                created_at,
+                content,
+            });
+        }
+    }
+
+    let (start, end) = if let Some(message_id) = message_id {
+        let Some(anchor) = messages.iter().position(|message| message.id == message_id) else {
+            return Ok(None);
+        };
+        let mut start = anchor.saturating_sub(before);
+        let mut end = (anchor + after + 1).min(messages.len());
+        if end.saturating_sub(start) > max_messages {
+            start = anchor.saturating_sub(max_messages / 2);
+            end = (start + max_messages).min(messages.len());
+            if end <= anchor {
+                end = anchor + 1;
+                start = end.saturating_sub(max_messages);
+            }
+        }
+        (start, end)
+    } else {
+        (messages.len().saturating_sub(max_messages), messages.len())
+    };
+
+    Ok(Some(ConversationReadResult {
+        session_id: session_id.to_string(),
+        session_title,
+        messages: messages[start..end].to_vec(),
+    }))
+}
+
+fn conversation_snippet(content: &str, query: &str) -> String {
+    const MAX_CHARS: usize = 360;
+    let content = content.trim();
+    if content.is_empty() {
+        return String::new();
+    }
+
+    let total_chars = content.chars().count();
+    let match_char = content
+        .find(query)
+        .map(|byte_index| content[..byte_index].chars().count())
+        .unwrap_or(0);
+    let mut start = match_char.saturating_sub(96);
+    if total_chars > MAX_CHARS {
+        start = start.min(total_chars - MAX_CHARS);
+    } else {
+        start = 0;
+    }
+    let snippet: String = content.chars().skip(start).take(MAX_CHARS).collect();
+    let prefix = if start > 0 { "..." } else { "" };
+    let end = start + snippet.chars().count();
+    let suffix = if end < total_chars { "..." } else { "" };
+    format!("{prefix}{snippet}{suffix}")
 }
 
 /// 插入一条新消息。
@@ -1221,6 +1414,180 @@ mod tests {
         assert_eq!(
             list_parts(&conn, "message-streaming").unwrap()[0].content,
             "（回复在完成前中断，请重新发送）"
+        );
+    }
+
+    #[test]
+    fn conversation_search_is_agent_scoped_and_excludes_non_visible_parts() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO agents (id, name) VALUES ('agent-2', 'Other Agent')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, title) VALUES ('session-2', 'agent-2', 'Other Session')",
+            [],
+        )
+        .unwrap();
+
+        for (id, session_id, role, seq, kind, content) in [
+            (
+                "history-user",
+                "session-1",
+                "user",
+                1,
+                "text",
+                "Remember the release keyword",
+            ),
+            (
+                "history-reasoning",
+                "session-1",
+                "assistant",
+                2,
+                "reasoning",
+                "The release keyword is private reasoning",
+            ),
+            (
+                "other-agent",
+                "session-2",
+                "user",
+                1,
+                "text",
+                "Remember the release keyword",
+            ),
+        ] {
+            insert(
+                &conn,
+                &NewMessage {
+                    id: id.into(),
+                    session_id: session_id.into(),
+                    role: role.into(),
+                    seq,
+                    status: "complete".into(),
+                    model: None,
+                    token_count: None,
+                    metadata: None,
+                    parent_id: None,
+                    selected_child_id: None,
+                },
+            )
+            .unwrap();
+            insert_part(
+                &conn,
+                &NewMessagePart {
+                    id: format!("{id}-part"),
+                    message_id: id.into(),
+                    kind: kind.into(),
+                    ordinal: 0,
+                    mime_type: None,
+                    tool_call_id: None,
+                    content: content.into(),
+                    metadata: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let results =
+            search_conversation(&conn, "agent-1", None, "release keyword", None, 20).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].message_id, "history-user");
+        assert_eq!(results[0].session_id, "session-1");
+
+        for message_id in ["history-user", "history-reasoning", "other-agent"] {
+            delete_parts(&conn, message_id).unwrap();
+        }
+        insert_part(
+            &conn,
+            &NewMessagePart {
+                id: "replacement-part".into(),
+                message_id: "history-user".into(),
+                kind: "text".into(),
+                ordinal: 0,
+                mime_type: None,
+                tool_call_id: None,
+                content: "Fresh content".into(),
+                metadata: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            search_conversation(&conn, "agent-1", None, "release keyword", None, 20)
+                .unwrap()
+                .is_empty()
+        );
+        let replacement =
+            search_conversation(&conn, "agent-1", None, "Fresh content", None, 20).unwrap();
+        assert_eq!(replacement.len(), 1);
+        assert_eq!(replacement[0].message_id, "history-user");
+    }
+
+    #[test]
+    fn conversation_read_returns_bounded_visible_context() {
+        let conn = setup();
+        for (id, role, seq, content) in [
+            ("read-user-1", "user", 1, "First question"),
+            ("read-assistant", "assistant", 2, "A useful answer"),
+            ("read-user-2", "user", 3, "Follow-up question"),
+        ] {
+            insert(
+                &conn,
+                &NewMessage {
+                    id: id.into(),
+                    session_id: "session-1".into(),
+                    role: role.into(),
+                    seq,
+                    status: "complete".into(),
+                    model: None,
+                    token_count: None,
+                    metadata: None,
+                    parent_id: None,
+                    selected_child_id: None,
+                },
+            )
+            .unwrap();
+            insert_part(
+                &conn,
+                &NewMessagePart {
+                    id: format!("{id}-part"),
+                    message_id: id.into(),
+                    kind: "text".into(),
+                    ordinal: 0,
+                    mime_type: None,
+                    tool_call_id: None,
+                    content: content.into(),
+                    metadata: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let result = read_conversation(
+            &conn,
+            "agent-1",
+            "session-1",
+            Some("read-assistant"),
+            1,
+            1,
+            3,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.messages.len(), 3);
+        assert_eq!(result.messages[1].id, "read-assistant");
+        assert!(result.messages[1].content.contains("useful answer"));
+
+        let latest = read_conversation(&conn, "agent-1", "session-1", None, 0, 0, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            latest
+                .messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["read-assistant", "read-user-2"]
         );
     }
 }

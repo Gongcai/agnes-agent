@@ -442,6 +442,7 @@ mod tests {
                 timeout_sec: 5,
             },
             memory: Default::default(),
+            conversation: Default::default(),
             planner: Default::default(),
             web: Default::default(),
             mcp: Default::default(),

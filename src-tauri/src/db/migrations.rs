@@ -500,9 +500,26 @@ fn migrate_legacy_documents(conn: &mut Connection) -> AppResult<()> {
     Ok(())
 }
 
+fn ensure_conversation_search_index(conn: &Connection) -> AppResult<()> {
+    // The FTS table was added after existing databases already contained
+    // message parts. Backfill only missing rowids so this remains idempotent.
+    conn.execute(
+        "INSERT INTO message_parts_fts(rowid, part_id, message_id, content) \
+         SELECT p.rowid, p.id, p.message_id, p.content \
+         FROM message_parts p \
+         WHERE p.kind = 'text' AND p.content IS NOT NULL \
+           AND NOT EXISTS (\
+             SELECT 1 FROM message_parts_fts f WHERE f.rowid = p.rowid\
+           )",
+        [],
+    )?;
+    Ok(())
+}
+
 /// 应用 DB 建表与预置数据。
 pub fn apply(conn: &mut Connection) -> AppResult<()> {
     conn.execute_batch(crate::db::schema::SCHEMA)?;
+    ensure_conversation_search_index(conn)?;
     drop_legacy_memory_storage(conn)?;
     ensure_planner_task_metadata(conn)?;
     ensure_planner_sync_metadata(conn)?;

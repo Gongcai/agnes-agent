@@ -568,6 +568,7 @@ interface AgentFormValues {
     read_image: AgentToolToggle;
     git: AgentToolToggle;
     memory: AgentToolToggle;
+    conversation: AgentToolToggle;
     planner: AgentToolToggle;
     web: AgentToolToggle & { search_provider: WebSearchProvider; timeout_sec?: number };
     mcp: AgentToolToggle & { server_ids: string[] };
@@ -612,6 +613,7 @@ const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
   read_image: { enabled: true, approval: "never" },
   git: { enabled: true, approval: "on_risk" },
   memory: { enabled: true, approval: "on_write" },
+  conversation: { enabled: true, approval: "never" },
   planner: { enabled: true, approval: "always" },
   web: { enabled: true, approval: "never", search_provider: "auto", timeout_sec: 15 },
   mcp: { enabled: false, approval: "always", server_ids: [] },
@@ -665,23 +667,28 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
   try {
     const obj = JSON.parse(json);
     if (obj && typeof obj === "object") {
-      const knownKeys = new Set(["shell", "file", "read_image", "git", "memory", "planner", "web", "mcp", "network", "sandbox"]);
+      const knownKeys = new Set(["shell", "file", "read_image", "git", "memory", "conversation", "planner", "web", "mcp", "network", "sandbox"]);
       Object.entries(obj).forEach(([key, value]) => {
         if (!knownKeys.has(key)) base[key] = value;
       });
     }
-    (["shell", "file", "git", "memory", "planner", "web", "mcp"] as const).forEach((k) => {
+    (["shell", "file", "git", "memory", "conversation", "planner", "web", "mcp"] as const).forEach((k) => {
       const t = obj?.[k];
+      const legacyDefaults: Record<typeof k, ApprovalTier> = {
+        shell: "on_risk",
+        file: "on_write",
+        git: "on_risk",
+        memory: "on_write",
+        conversation: "never",
+        planner: "always",
+        web: "never",
+        mcp: "always",
+      };
+      if (k === "conversation" && typeof t === "boolean") {
+        base.conversation = { ...base.conversation, enabled: t, approval: "never" };
+        return;
+      }
       if (t && typeof t === "object") {
-        const legacyDefaults: Record<typeof k, ApprovalTier> = {
-          shell: "on_risk",
-          file: "on_write",
-          git: "on_risk",
-          memory: "on_write",
-          planner: "always",
-          web: "never",
-          mcp: "always",
-        };
         const rawApproval = t.approval;
         let approval = legacyDefaults[k];
         if (rawApproval === true || rawApproval === "always") approval = "always";
@@ -987,7 +994,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   // Render capability and approval controls for one tool group.
-  const renderToolToggle = (key: "shell" | "file" | "git" | "memory" | "planner" | "web" | "mcp", label: string) => (
+  const renderToolToggle = (key: "shell" | "file" | "git" | "memory" | "conversation" | "planner" | "web" | "mcp", label: string) => (
     <div className="flex items-center justify-between py-1.5 border-b border-stone-100 last:border-0">
       <span className="text-xs text-stone-700">{label}</span>
       <div className="flex items-center gap-2">
@@ -3027,6 +3034,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {renderCapabilityToggle("read_image", "图片读取（视觉）")}
                           {renderToolToggle("git", "Git 操作")}
                           {renderToolToggle("memory", "长期记忆")}
+                          {renderToolToggle("conversation", "历史对话检索")}
                           {renderToolToggle("planner", "日历与待办")}
                           {renderToolToggle("web", "联网搜索与网页读取")}
                           {renderToolToggle("mcp", "MCP 外部工具")}

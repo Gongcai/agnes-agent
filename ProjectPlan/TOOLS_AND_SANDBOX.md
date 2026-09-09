@@ -317,3 +317,12 @@ diff，再批准或拒绝整次工具调用；预览本身不写文件，也不�
 
 当前版本按整次工具调用批准或拒绝，不提供逐 hunk 选择。Shell、Git 和 MCP 可能产生的任意文件副作用无法在
 执行前可靠预测，因此不生成虚假的变更预览；它们继续依赖风险审批、沙箱与执行后审计。
+
+## 十四、历史对话工具
+
+角色卡可以单独启用 conversation_search 和 conversation_read。工具只访问当前 Agent 所属的已完成会话：
+
+- conversation_search 按可见的用户/助手文本查找历史消息，返回会话 ID、消息 ID、标题和受长度限制的片段。
+- conversation_read 根据会话 ID 及可选消息 ID 读取有限上下文。
+- reasoning、tool call、tool result、软删除消息和其他 Agent 的会话不会返回。
+- 消息正文在本地 SQLite FTS 索引中检索，并保留 LIKE 回退以支持中文和特殊字符；索引不参与云端同步。

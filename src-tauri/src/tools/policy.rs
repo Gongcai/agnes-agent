@@ -16,6 +16,8 @@ pub struct ToolPolicy {
     #[serde(default)]
     pub memory: MemoryPolicy,
     #[serde(default)]
+    pub conversation: ConversationPolicy,
+    #[serde(default)]
     pub planner: PlannerPolicy,
     #[serde(default)]
     pub web: WebPolicy,
@@ -186,6 +188,49 @@ pub struct MemoryPolicy {
     pub approval: ApprovalTier,
 }
 
+#[derive(Serialize, Debug, Clone)]
+pub struct ConversationPolicy {
+    pub enabled: bool,
+    pub approval: ApprovalTier,
+}
+
+impl<'de> Deserialize<'de> for ConversationPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Fields {
+            #[serde(default = "default_enabled")]
+            enabled: bool,
+            #[serde(default = "default_conversation_approval")]
+            approval: ApprovalTier,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Value {
+            Enabled(bool),
+            Fields(Fields),
+        }
+
+        match Value::deserialize(deserializer)? {
+            Value::Enabled(enabled) => Ok(Self {
+                enabled,
+                approval: ApprovalTier::Never,
+            }),
+            Value::Fields(fields) => Ok(Self {
+                enabled: fields.enabled,
+                approval: fields.approval,
+            }),
+        }
+    }
+}
+
+fn default_conversation_approval() -> ApprovalTier {
+    ApprovalTier::Never
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct PlannerPolicy {
@@ -237,6 +282,15 @@ impl Default for MemoryPolicy {
         Self {
             enabled: true,
             approval: ApprovalTier::OnWrite,
+        }
+    }
+}
+
+impl Default for ConversationPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            approval: ApprovalTier::Never,
         }
     }
 }
@@ -582,6 +636,14 @@ impl ToolPolicy {
         Ok(())
     }
 
+    /// Validate whether historical conversation tools are available.
+    pub fn check_conversation(&self) -> Result<(), String> {
+        if !self.conversation.enabled {
+            return Err("Historical conversation tools are disabled for this agent".into());
+        }
+        Ok(())
+    }
+
     /// Validate whether read-only web research is available to this agent.
     pub fn check_web(&self) -> Result<(), String> {
         if !self.web.enabled {
@@ -627,6 +689,7 @@ impl ToolPolicy {
             "memory_write" | "memory_str_replace" | "memory_append" | "memory_delete" => {
                 self.memory.approval
             }
+            "conversation_search" | "conversation_read" => self.conversation.approval,
             "web_search" | "web_fetch" | "browser_open" => self.web.approval,
             "storage_accounts_list"
             | "storage_files_list"
@@ -810,6 +873,22 @@ mod tests {
         assert!(policy.check_planner().is_ok());
         policy.planner.enabled = false;
         assert!(policy.check_planner().is_err());
+    }
+
+    #[test]
+    fn conversation_policy_accepts_legacy_boolean_values() {
+        let disabled: ToolPolicy = serde_json::from_value(serde_json::json!({
+            "conversation": false
+        }))
+        .unwrap();
+        assert!(!disabled.conversation.enabled);
+
+        let enabled: ToolPolicy = serde_json::from_value(serde_json::json!({
+            "conversation": true
+        }))
+        .unwrap();
+        assert!(enabled.conversation.enabled);
+        assert_eq!(enabled.conversation.approval, ApprovalTier::Never);
     }
 
     #[test]
