@@ -14,6 +14,7 @@ import type {
 } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
 import { AnimatedDisclosure } from "./AnimatedDisclosure";
+import { ChatScrollNav } from "./ChatScrollNav";
 import { ContextUsageRing } from "./ContextUsageRing";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ModifyMemoryModal } from "./ModifyMemoryModal";
@@ -466,6 +467,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const mobileInputRef = useRef<HTMLTextAreaElement>(null);
   const mobileInputBlurTimerRef = useRef<number | null>(null);
   const messageEndRef = useRef<HTMLDivElement>(null);
+  const chatStageRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [attachmentPicker, setAttachmentPicker] = useState<"menu" | "knowledge" | "skill" | null>(null);
@@ -905,6 +909,20 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     messageEndRef.current?.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" });
   }, [messages, isStreaming, autoFollowStreaming]);
 
+  // Expose the composer height so the floating scroll nav can stay clear of it.
+  useEffect(() => {
+    const stage = chatStageRef.current;
+    const composer = composerRef.current;
+    if (!stage || !composer) return;
+    const applyHeight = () => {
+      stage.style.setProperty("--agnes-composer-h", `${composer.offsetHeight}px`);
+    };
+    applyHeight();
+    const observer = new ResizeObserver(applyHeight);
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, []);
+
   const handleSend = async () => {
     if (
       (!inputVal.trim() && attachments.length === 0)
@@ -926,9 +944,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
   return (
     <main className="agnes-chat-workspace flex flex-1 flex-col bg-[#FAF9F5] relative h-full">
-      <div className="agnes-chat-stage relative min-h-0 flex-1 overflow-hidden">
+      <div ref={chatStageRef} className="agnes-chat-stage relative min-h-0 flex-1 overflow-hidden">
       {/* Message Panel list */}
       <div
+        ref={messagesContainerRef}
         className={`agnes-chat-messages absolute inset-0 mx-auto w-full max-w-4xl space-y-6 overflow-y-auto p-6 ${
           isEmptyConversation
             ? "pointer-events-none transition-[opacity,transform] duration-500 ease-out motion-reduce:transition-none translate-y-4 opacity-0"
@@ -956,6 +975,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           return (
             <div
               key={message._renderKey ?? message.id}
+              data-mid={message.id}
               className={`agnes-message-row group flex gap-4 animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out ${isUser ? "justify-end" : "justify-start"}`}
             >
               {!isUser && activeAgent && (
@@ -1224,6 +1244,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
       {/* Input box */}
       <div
+        ref={composerRef}
         className={`agnes-chat-composer absolute inset-x-0 z-20 border-t border-stone-200 bg-[#FAF9F5] p-4 transition-[bottom,transform,background-color] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
           mobileInputActive ? "agnes-chat-composer--mobile-hidden" : ""
         } ${
@@ -1769,6 +1790,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           </div>
         </div>
       </div>
+
+      <ChatScrollNav
+        containerRef={messagesContainerRef}
+        messages={messages}
+        visible={!isEmptyConversation}
+      />
 
       </div>
 

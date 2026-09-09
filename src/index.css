@@ -1001,6 +1001,145 @@ pre,
   padding: 36px 32px 170px !important;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  /* Native scrollbar replaced by the floating ChatScrollNav. */
+  scrollbar-width: none;
+}
+
+.agnes-chat-messages::-webkit-scrollbar {
+  display: none;
+}
+
+/* Floating scroll navigation (custom scrollbar + message anchors) */
+.agnes-scroll-nav {
+  position: absolute;
+  top: 12px;
+  bottom: calc(var(--agnes-composer-h, 150px) + 12px);
+  right: 5px;
+  z-index: 30;
+  display: flex;
+  justify-content: flex-end;
+  width: 20px;
+  opacity: 0;
+  transition: opacity 220ms ease;
+  pointer-events: none;
+}
+
+.agnes-scroll-nav--shown {
+  opacity: 1;
+}
+
+.agnes-scroll-nav-track {
+  position: relative;
+  width: 6px;
+  height: 100%;
+  border-radius: 9999px;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: width 160ms ease, background 160ms ease;
+}
+
+.agnes-scroll-nav--shown .agnes-scroll-nav-track {
+  background: var(--claude-border);
+}
+
+.agnes-scroll-nav-track:hover,
+.agnes-scroll-nav--dragging .agnes-scroll-nav-track {
+  width: 11px;
+  background: var(--claude-border);
+}
+
+.agnes-scroll-nav-thumb {
+  position: absolute;
+  right: 0;
+  width: 100%;
+  border-radius: 9999px;
+  background: var(--claude-muted-soft);
+  cursor: grab;
+  touch-action: none;
+  transition: background 140ms ease;
+}
+
+.agnes-scroll-nav-thumb:hover,
+.agnes-scroll-nav--dragging .agnes-scroll-nav-thumb {
+  background: var(--claude-muted);
+}
+
+.agnes-scroll-nav--dragging .agnes-scroll-nav-thumb {
+  cursor: grabbing;
+}
+
+.agnes-scroll-nav-marker {
+  position: absolute;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 5px;
+  height: 5px;
+  padding: 0;
+  border: none;
+  border-radius: 9999px;
+  background: var(--claude-muted-soft);
+  cursor: pointer;
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.agnes-scroll-nav-marker--user {
+  width: 7px;
+  height: 7px;
+  background: var(--claude-clay);
+}
+
+.agnes-scroll-nav-marker:hover {
+  transform: translate(-50%, -50%) scale(1.6);
+}
+
+.agnes-scroll-nav-marker--user:hover {
+  background: var(--claude-clay-dark);
+}
+
+.agnes-scroll-nav-tooltip {
+  position: absolute;
+  right: 26px;
+  max-width: 260px;
+  transform: translateY(-50%);
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--claude-ink);
+  color: var(--claude-canvas);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  box-shadow: 0 6px 20px rgba(28, 25, 23, 0.18);
+}
+
+/* Flash highlight when jumping to a message from an anchor. */
+@keyframes agnes-message-flash {
+  0% {
+    background-color: var(--claude-clay-soft);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.agnes-message-row--flash {
+  border-radius: 12px;
+  animation: agnes-message-flash 1.2s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agnes-message-row--flash {
+    animation: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .agnes-scroll-nav {
+    right: 2px;
+  }
 }
 
 .agnes-chat-messages .agnes-message-row {
