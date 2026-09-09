@@ -28,7 +28,10 @@ android-runtime/
 原生库目录。`libagnes_proot_loader.so` 是同 ABI 的静态 ELF loader，运行时通过
 `PROOT_LOADER` 直接使用，避免 PRoot 从应用私有临时目录提取 loader。
 
-Android 的 Shell 和 Git 工具会复用 Agent 启动时的 PRoot rootfs。用户终端和 Agent 工具共享同一份
+Android 的 Shell 和 Git 工具会复用 Agent 启动时的 PRoot rootfs。stdio MCP server 也在同一
+Ubuntu guest 内启动：命令按 guest PATH（或 rootfs 内绝对路径）解析，缺失程序会在连接时返回
+明确的预装提示；server 进程使用与 Agent 工具相同的 mount table、干净环境和 `/root` 起始目录，
+密钥环境变量经 SecretStore 在启动时注入。用户终端和 Agent 工具共享同一份
 Runtime launch spec，但不会共享 stdin、输出流或取消信号。Rust 会先完成工作区、cwd、
 写入边界和审批检查，再将工作区映射为 Linux 内的 `/workspace`；工具不会获得其他 Android
 应用私有目录或未授权路径。Agent 主进程和 Rust 发起的 Shell/Git/Python 工具进程都会将持久项目

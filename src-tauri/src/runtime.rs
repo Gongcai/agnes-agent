@@ -923,6 +923,10 @@ impl AgentRuntime for AndroidLinuxRuntime {
         let proot_config =
             proot_config.with_link2symlink_enabled(capability_profile.link2symlink_enabled);
         let _: serde_json::Value = self.run_native_command("start")?;
+        self.mcp
+            .set_process_runtime(crate::tools::sandbox::ToolProcessRuntime::AndroidProot(
+                crate::tools::sandbox::AndroidProotProcessRuntime::new(proot_config.clone()),
+            ));
         if let Err(error) = self.agent.start_android(
             self.db.clone(),
             self.app_handle.clone(),

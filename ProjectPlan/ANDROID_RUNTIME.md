@@ -454,7 +454,9 @@ Android 有两种执行模式：
 - 应用私有工作区、SAF 工作区和可选宽共享存储；
 - Android Bridge 的最小系统能力；
 - 后台任务、崩溃恢复和运行状态恢复；
-- Skills/MCP 按 Android 资源和权限边界逐项接入。
+- [x] stdio MCP server 在 PRoot Ubuntu guest 内启动：命令按 guest PATH/rootfs 解析、共享 Runtime
+  mount table 与干净环境、密钥 env 经 SecretStore 注入、缺失程序返回预装提示；Streamable HTTP
+  传输双端行为一致；rootfs 预装 Node.js 与 Skills 逐项接入仍属后续工作。
 
 ### A3：跨设备与移动制品能力
 

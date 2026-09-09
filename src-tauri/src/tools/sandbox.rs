@@ -507,6 +507,21 @@ impl AndroidProotRuntimeConfig {
         .map(|(name, value)| (OsString::from(name), value))
         .collect()
     }
+    /// Whether a guest program can be resolved inside the rootfs: bare names
+    /// are looked up in the guest PATH directories, absolute guest paths are
+    /// checked directly under the rootfs.
+    pub(crate) fn guest_program_available(&self, program: &str) -> bool {
+        let path = Path::new(program);
+        if path.is_absolute() {
+            return self
+                .rootfs_dir
+                .join(path.strip_prefix("/").unwrap_or(path))
+                .is_file();
+        }
+        ["usr/local/bin", "usr/bin", "bin", "usr/sbin", "sbin"]
+            .iter()
+            .any(|dir| self.rootfs_dir.join(dir).join(program).is_file())
+    }
 }
 
 fn append_bind_mount(args: &mut Vec<OsString>, mount: &AndroidProotBindMount) {
@@ -596,6 +611,42 @@ impl AndroidProotProcessRuntime {
             set_environment(&mut env, name, value);
         }
 
+        Ok(SandboxCommand {
+            program: self.config.proot_path.clone().into_os_string(),
+            args: proot_args,
+            env,
+        })
+    }
+
+    /// Build the PRoot command for an MCP stdio server inside the Ubuntu
+    /// guest. Bare commands resolve through the guest PATH; the server starts
+    /// in the guest home with the shared Runtime mount table and clean env.
+    pub(crate) fn mcp_command_spec(
+        &self,
+        program: &str,
+        args: &[String],
+        extra_env: Vec<(OsString, OsString)>,
+    ) -> AppResult<SandboxCommand> {
+        self.config.validate()?;
+        if !self.config.guest_program_available(program) {
+            return Err(AppError::Other(format!(
+                "MCP 命令 `{program}` 不在 Android Linux Runtime 中；请先在 Runtime 中安装对应工具（例如 Node.js），或改用 Streamable HTTP 传输"
+            )));
+        }
+        let workspace = self
+            .config
+            .user_workspace_dir
+            .clone()
+            .unwrap_or_else(|| self.config.android_workspace_root.clone());
+        let mut proot_args = self.config.base_args();
+        self.config
+            .append_workspace_args(&mut proot_args, &workspace, Path::new("/root"));
+        proot_args.extend([OsString::from("/usr/bin/env"), OsString::from(program)]);
+        proot_args.extend(args.iter().map(OsString::from));
+        let mut env = self.config.environment();
+        for (name, value) in extra_env {
+            set_environment(&mut env, name, value);
+        }
         Ok(SandboxCommand {
             program: self.config.proot_path.clone().into_os_string(),
             args: proot_args,
@@ -1919,6 +1970,93 @@ mod tests {
             .env
             .iter()
             .all(|(name, _)| safe_environment_name(name)));
+    }
+
+    #[test]
+    fn android_mcp_command_runs_inside_guest_with_runtime_env() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        let proot = temp.path().join("proot");
+        let loader = temp.path().join("loader");
+        let proot_tmp = temp.path().join("proot-tmp");
+        let android_workspace_root = temp.path().join("user/workspace");
+        std::fs::create_dir_all(rootfs.join("usr/bin")).unwrap();
+        std::fs::create_dir_all(&android_workspace_root).unwrap();
+        std::fs::create_dir_all(proot_tmp.join("shm")).unwrap();
+        for path in [
+            &rootfs.join("usr/bin/env"),
+            &rootfs.join("usr/bin/node"),
+            &proot,
+            &loader,
+        ] {
+            std::fs::write(path, "test").unwrap();
+        }
+
+        let runtime = AndroidProotProcessRuntime::new(AndroidProotRuntimeConfig::new(
+            proot,
+            loader,
+            proot_tmp,
+            rootfs,
+            android_workspace_root,
+            false,
+        ));
+        let command = runtime
+            .mcp_command_spec(
+                "node",
+                &["server.js".into()],
+                vec![(
+                    OsString::from("MCP_API_KEY"),
+                    OsString::from("resolved-secret"),
+                )],
+            )
+            .unwrap();
+        let args = command
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(args.windows(2).any(|window| window == ["-w", "/root"]));
+        assert_eq!(
+            args[args.len() - 3..],
+            ["/usr/bin/env", "node", "server.js"]
+        );
+        assert!(command
+            .env
+            .iter()
+            .any(|(name, value)| name == "MCP_API_KEY" && value == "resolved-secret"));
+        assert!(command
+            .env
+            .iter()
+            .any(|(name, _)| name == "PROOT_LOADER"));
+    }
+
+    #[test]
+    fn android_mcp_command_requires_program_in_rootfs() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        let proot = temp.path().join("proot");
+        let loader = temp.path().join("loader");
+        let proot_tmp = temp.path().join("proot-tmp");
+        let android_workspace_root = temp.path().join("user/workspace");
+        std::fs::create_dir_all(rootfs.join("usr/bin")).unwrap();
+        std::fs::create_dir_all(&android_workspace_root).unwrap();
+        std::fs::create_dir_all(proot_tmp.join("shm")).unwrap();
+        for path in [&rootfs.join("usr/bin/env"), &proot, &loader] {
+            std::fs::write(path, "test").unwrap();
+        }
+
+        let runtime = AndroidProotProcessRuntime::new(AndroidProotRuntimeConfig::new(
+            proot,
+            loader,
+            proot_tmp,
+            rootfs,
+            android_workspace_root,
+            false,
+        ));
+        let error = runtime
+            .mcp_command_spec("definitely-missing", &[], Vec::new())
+            .unwrap_err();
+        assert!(error.to_string().contains("不在 Android Linux Runtime"));
     }
 
     #[test]

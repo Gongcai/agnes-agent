@@ -37,7 +37,7 @@ Filesystem layout:
 - `/root`: persistent home. `/root/workspace/<project>` holds persistent user projects that survive runtime upgrades; `/workspace` usually points into the same storage.
 - `/sdcard` and `/storage/emulated/0`: two aliases for the same user-granted Android shared storage, absent if the user has not granted it. It is FUSE-backed: symlinks and hardlinks may fail and scripts may not execute in place, so copy files into `/root` or `/workspace` before building or running them.
 - The rootfs `/` is writable under fake-root: `apt`, `dpkg`, and system config edits work and persist inside the guest, but this is not Android root. You cannot touch Android system files or other apps' data.
-- `/dev/shm` is available for Python multiprocessing. `/proc` is mounted but some nodes may be unreadable; `/sys` is not mounted.
+- `/dev/shm` is available for Python multiprocessing. `/proc` and `/sys` are mounted from Android, but some nodes may be unreadable.
 
 Python and packages:
 - `python3` (3.12), `pip`, `uv`, `git`, `ssh`, `bash`, and `apt` are preinstalled.
@@ -46,7 +46,8 @@ Python and packages:
 Environment and limits:
 - Processes start with a clean environment: `HOME=/root`, `TMPDIR=/tmp`, `LANG=C.UTF-8`; Android host variables are not inherited.
 - There is no systemd, cron, real root, namespaces, or cgroups. Background processes live under the app's foreground service and may be killed when the runtime stops; do not assume they survive across sessions.
-- Your shell runs inside a persistent PTY. Long-running commands return a `session_id`; use `write_stdin` to poll output or send input (including answers to interactive prompts) and `stop_terminal` to stop a session. `DEBIAN_FRONTEND=noninteractive` is preset, but interactive commands like `ssh` or `apt` without `-y` still work through `write_stdin`."#;
+- Your shell runs inside a persistent PTY. Long-running commands return a `session_id`; use `write_stdin` to poll output or send input (including answers to interactive prompts) and `stop_terminal` to stop a session. `DEBIAN_FRONTEND=noninteractive` is preset, but interactive commands like `ssh` or `apt` without `-y` still work through `write_stdin`.
+- MCP stdio servers also run inside this guest: their `command` resolves through the guest PATH, so tools like `node` must be preinstalled in the Runtime rootfs."#;
 
 /// Append platform-specific runtime context to the agent system prompt.
 /// Desktop builds run the agent on the host and need no extra briefing.

@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use futures_util::future::join_all;
@@ -20,6 +20,7 @@ use crate::db::DbActorHandle;
 use crate::error::{AppError, AppResult};
 use crate::secrets::SharedSecretStore;
 use crate::state::AppState;
+use crate::tools::sandbox::ToolProcessRuntime;
 use crate::tools::ToolPolicy;
 
 const MCP_SERVERS_SETTING_KEY: &str = "mcp:servers:v1";
@@ -144,6 +145,7 @@ pub struct McpManager {
     db: DbActorHandle,
     secrets: SharedSecretStore,
     connections: Mutex<HashMap<String, Arc<Mutex<ConnectedServer>>>>,
+    process_runtime: StdMutex<ToolProcessRuntime>,
 }
 
 impl McpManager {
@@ -152,7 +154,25 @@ impl McpManager {
             db,
             secrets,
             connections: Mutex::new(HashMap::new()),
+            process_runtime: StdMutex::new(ToolProcessRuntime::default()),
         }
+    }
+
+    /// Point stdio MCP launches at the active process runtime. Android sets
+    /// this to the PRoot runtime when the Linux Runtime starts; desktop keeps
+    /// the default host runtime.
+    pub fn set_process_runtime(&self, runtime: ToolProcessRuntime) {
+        *self
+            .process_runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = runtime;
+    }
+
+    fn process_runtime(&self) -> ToolProcessRuntime {
+        self.process_runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     async fn load_configs(&self) -> AppResult<Vec<McpServerConfig>> {
@@ -548,31 +568,57 @@ impl McpManager {
     ) -> AppResult<ConnectedServer> {
         let service = match &config.transport {
             McpTransportConfig::Stdio { command, args, env } => {
-                let mut process = tokio::process::Command::new(command);
-                process.args(args).env_clear();
-                for name in [
-                    "PATH",
-                    "HOME",
-                    "LANG",
-                    "LC_ALL",
-                    "TMPDIR",
-                    "TEMP",
-                    "TMP",
-                    "SYSTEMROOT",
-                    "PATHEXT",
-                ] {
-                    if let Some(value) = std::env::var_os(name) {
-                        process.env(name, value);
-                    }
-                }
+                // Resolve secret-backed env values up front so both runtimes
+                // receive them through the same path.
+                let mut resolved_env = Vec::with_capacity(env.len());
                 for name in env {
                     let value = self
                         .secrets
                         .get(&mcp_env_secret_id(&config.id, name))
                         .await?
                         .ok_or_else(|| AppError::Other(format!("MCP 环境变量 {name} 缺少值")))?;
-                    process.env(name, value);
+                    resolved_env.push((name.clone(), value));
                 }
+                let process = match self.process_runtime() {
+                    ToolProcessRuntime::Host => {
+                        let mut process = tokio::process::Command::new(command);
+                        process.args(args).env_clear();
+                        for name in [
+                            "PATH",
+                            "HOME",
+                            "LANG",
+                            "LC_ALL",
+                            "TMPDIR",
+                            "TEMP",
+                            "TMP",
+                            "SYSTEMROOT",
+                            "PATHEXT",
+                        ] {
+                            if let Some(value) = std::env::var_os(name) {
+                                process.env(name, value);
+                            }
+                        }
+                        for (name, value) in resolved_env {
+                            process.env(name, value);
+                        }
+                        process
+                    }
+                    ToolProcessRuntime::AndroidProot(runtime) => {
+                        // Stdio servers run inside the Ubuntu guest; rmcp
+                        // reconfigures stdio to piped when spawning.
+                        let spec = runtime.mcp_command_spec(
+                            command,
+                            args,
+                            resolved_env
+                                .into_iter()
+                                .map(|(name, value)| {
+                                    (std::ffi::OsString::from(name), std::ffi::OsString::from(value))
+                                })
+                                .collect(),
+                        )?;
+                        spec.into_tokio()
+                    }
+                };
                 let transport = TokioChildProcess::new(process)
                     .map_err(|error| AppError::Other(format!("无法启动 MCP 子进程: {error}")))?;
                 tokio::time::timeout(CONNECT_TIMEOUT, ().serve(transport))
