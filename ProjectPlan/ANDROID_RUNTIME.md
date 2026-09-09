@@ -1,7 +1,7 @@
 # Android 本地 Agent 与 Linux Runtime 设计
 
-> 状态：A1 开发中；x86_64 Ubuntu 24.04.4 完整 Runtime 已在模拟器完成内置安装、Agent Protocol 握手和模型流式回复验证，用户可见 Linux PTY 的 Rust/UI 接线与挂载边界已完成；ARM64 实机制品、真机验收、PTY 原始字节协议与 Ubuntu rootfs 全自动构建流水线待完成
-> 更新时间：2026-09-01
+> 状态：A1 开发中；x86_64 Ubuntu 24.04.4 完整 Runtime 已在模拟器完成内置安装、Agent Protocol 握手和模型流式回复验证，用户可见 Linux PTY 的 Rust/UI 接线与挂载边界已完成；Agent shell 已与桌面端对齐为 PTY 会话（stdin、轮询、停止、后台化）；ARM64 实机制品、真机验收、PTY 原始字节协议与 Ubuntu rootfs 全自动构建流水线待完成
+> 更新时间：2026-09-09
 > 关联文档：`PROJECT.md`、`architecture.md`、`CLOUDFLARE_SYNC.md`、`TOOLS_AND_SANDBOX.md`、`OPERIT_ANDROID_RUNTIME_REFERENCE.md`
 
 > 产品决策（2026-09-01）：Android 继续采用 Agnes 的 Agent-first 模型，但用户不是 Agent 的附属审批者。
@@ -54,7 +54,7 @@ PRoot 是用户态路径转换和系统调用拦截机制，不是强安全边�
 │ Android Runtime Service             │
 │  Foreground Service                 │
 │  Runtime supervisor                 │
-│  User PTY + hidden exec lifecycle  │
+│  User PTY + Agent PTY lifecycle  │
 │  SAF / Keystore / notification      │
 └────────────────┬───────────────────┘
                  │ authenticated local IPC
@@ -84,7 +84,7 @@ Python Agent 仍然只负责 prompt、模型推理、上下文和工具选择。
 Android Runtime Service 负责跨 Activity 生命周期维护运行时：
 
 - 启动、停止、重启和健康检查 PRoot 会话；
-- 管理用户可见 PTY、Agent hidden exec 和长任务；两者使用独立的 session namespace、stdin、输出流和取消信号；
+- 管理用户可见 PTY、Agent PTY 会话和长任务；两者使用独立的 session namespace、stdin、输出流和取消信号；
 - 应用退到后台时保持已授权任务运行；
 - 进程被系统回收后记录状态，并在下一次启动时恢复或明确标记未完成任务；
 - 通过 Binder/AIDL 风格的原生 IPC 暴露最小的生命周期和事件接口。具体实现可使用 Tauri Android plugin；不得把任意 Shell 接口暴露给其他应用。
@@ -110,12 +110,12 @@ resize 更新同一 PTY 的窗口大小，不能通过模拟另一条 shell 命�
 重放用户输入；Runtime 重启或进程被系统回收后，旧会话标记为 interrupted，UI 必须明确显示并允许
 创建新会话。
 
-用户终端与 Agent hidden exec 的边界如下：
+用户终端与 Agent 终端的边界如下：
 
 | 执行平面 | 入口 | stdin/输出 | 生命周期 | 权限语义 |
 |---|---|---|---|---|
 | User terminal | 用户终端 UI | 独占 PTY 字节流 | 由用户打开、重连、关闭 | 与 Agent 共享用户选择的 Runtime 能力，仍受 Android/SAF 边界 |
-| Agent hidden exec | Agent `shell`/工具调用 | 默认无 stdin，结构化输出 | timeout、取消和进程组清理 | 使用同一基础 Linux 能力；保留审计、取消和资源上限，不另设人为工具禁区 |
+| Agent terminal | Agent `shell`/`write_stdin`/`stop_terminal` 工具调用 | 独占 PTY 会话，与桌面端行为一致 | yield 超时后转后台轮询，timeout、取消（`stop_run`）和进程组清理 | 使用同一基础 Linux 能力；保留审计、取消和资源上限，不另设人为工具禁区 |
 
 用户主动输入的终端命令不重复走 Agent 工具审批，但不能绕过 Android 应用沙箱、用户选择的 Runtime
 挂载边界、资源配额和网络边界。用户对自己的 Ubuntu 实例拥有完整开发控制，可以直接安装或删除系统包、
@@ -124,9 +124,7 @@ resize 更新同一 PTY 的窗口大小，不能通过模拟另一条 shell 命�
 属于当前用户 Runtime 的可变层，升级前记录包清单和关键配置；恢复内置 Runtime 时必须让用户选择
 保留、导出或丢弃这些变更，不能静默覆盖。
 
-Agent hidden exec 默认使用非交互协议，但拥有与用户终端一致的 Ubuntu 基础命令、包管理、网络和
-文件能力；它不应因为是 Agent 就被强制切换到另一套工具或依赖模型。需要输入时必须返回
-`requires_interactive_terminal`，经用户明确批准后才创建或绑定 handoff 会话，不能偷偷接管用户已有终端。
+Agent 终端与桌面端使用同一条 PTY 代码路径（共享 `TerminalManager`），拥有与用户终端一致的 Ubuntu 基础命令、包管理、网络和文件能力；它不应因为是 Agent 就被强制切换到另一套工具或依赖模型。Agent 会话与用户终端会话使用独立的 session namespace，互不共享 stdin、输出流、取消信号或 session ID；Agent 不能接管用户已有终端。
 
 ## 4. Linux 用户空间
 
@@ -316,7 +314,7 @@ URI 字符串伪装成普通路径。
 - Android 授权前不可用，Runtime 首次设置时主动提供并解释其读取、修改和删除范围；随时可以撤销；
 - 不挂载整个 `/data/data`、`/data/user` 或其他应用私有目录；Agnes runtime data 使用精确子目录映射，
   `/data/local/tmp` 仅在 probe 成功且用户启用兼容挂载时加入；
-- 默认可以同时供用户终端、Agent hidden exec 和 MCP 使用；用户可按 resource ID 撤销某类会话，
+- 默认可以同时供用户终端、Agent terminal 和 MCP 使用；用户可按 resource ID 撤销某类会话，
   但不提供与 Linux 基础能力无关的强制 workspace 隔离；
 - 启动时探测 read/write/rename、symlink、direct exec 和 case sensitivity，按实际能力报告；共享存储
   通常不适合 venv、原生构建输出或密钥，app-private execution store 作为推荐位置但不强制；
@@ -327,7 +325,7 @@ URI 字符串伪装成普通路径。
 
 当前实现已提供 Android 系统授权入口，并且只在系统确认授权后，将 primary user 的 emulated
 storage 作为同一 `shared-storage` resource 同时绑定到 `/sdcard` 和
-`/storage/emulated/0`；Agent hidden exec、用户 PTY 和 Rust 文件工具复用该 mount table。
+`/storage/emulated/0`；Agent terminal、用户 PTY 和 Rust 文件工具复用该 mount table。
 宽挂载要求 Android 11（API 30）或更高版本；授权变化在下一次 Runtime 启动时生效。SAF directory
 binding、多 Android user target 和 Runtime 文件浏览仍属于后续 A2 工作，不能用这条宽挂载替代。
 
@@ -432,9 +430,9 @@ Android 有两种执行模式：
 - [x] Rust Core 与 Agent 的本地认证 WS IPC 接线；
 - [x] PRoot `-0` fake-root、共享启动配置和条件 `--link2symlink` capability probe；
 - [x] rootfs/workspace/environment store 文件系统能力档案与旧全局 pip override 迁移；
-- [x] Agent hidden exec 使用独立非交互管道、空 stdin、超时、输出上限和进程组清理；交互命令返回 `requires_interactive_terminal`；
+- [x] Agent shell 与桌面端对齐为 PTY 会话：独立 session namespace、stdin（`write_stdin`）、yield 轮询后台化、`stop_terminal` 与 `stop_run` 进程组清理；原 hidden exec 非交互平面与 `requires_interactive_terminal` 契约已移除；
 - [x] 完成现有 Agent Protocol 握手和模型流式回复；取消流程待单独验收。
-- [x] Runtime Service 建立 user terminal 与 Agent hidden exec 的独立 session namespace，以及可按 cursor 补读的 PTY 输出 API；事件订阅优化待补充。
+- [x] Runtime Service 建立 user terminal 与 Agent terminal 的独立 session namespace，以及可按 cursor 补读的 PTY 输出 API；事件订阅优化待补充。
 
 ### A2：Android 本地完整 Agent
 
@@ -443,7 +441,7 @@ Android 有两种执行模式：
 - [x] 从 Android UI 随时创建、列出、重连和关闭用户可见 Linux PTY；
 - [x] 支持 UTF-8 输入、按 cursor 输出订阅、当前 cwd、窗口 resize、Ctrl+C、退出状态和中断原因展示；原始字节协议待替换 UTF-8 bridge。
 - [ ] 用户终端可直接运行 `bash`、`apt`、`dpkg`、`python3`、`git` 和 `ssh`，并遵守 Runtime 资源与网络边界；
-- [x] user terminal 与 Agent hidden exec 不共享 stdin、输出流、取消信号或 session ID；
+- [x] user terminal 与 Agent terminal 不共享 stdin、输出流、取消信号或 session ID；
 - [x] Shell、文件读写、Git、Python、SSH、MCP 和用户 PTY 共用完整 Runtime mount table；
 - [ ] User terminal 与 Agent 默认可修改 guest rootfs、home 和 runtime data，并可直接安装依赖、
   编辑文件、打开目录和运行脚本；
@@ -484,7 +482,7 @@ Runtime 原型必须先满足：
 - UI 与 Runtime 断开后可以重连并恢复运行状态。
 - 用户无需经过 Agent handoff 即可打开内置 Ubuntu PTY；终端可完成输入、输出、resize、Ctrl+C、
   apt/dpkg 交互和 shell 退出，并在重连后保持会话状态可追踪；
-- user terminal 与 Agent hidden exec 的 session ID、stdin、输出和取消不会互相混淆；
+- user terminal 与 Agent terminal 的 session ID、stdin、输出和取消不会互相混淆；
 
 双设备同步、R2 制品和最终跨设备验收在 Android 主体完成后统一执行。当前远端只有测试数据，开发阶段允许按测试策略清理和重建，但验收仍必须覆盖完整协议行为。
 

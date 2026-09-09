@@ -167,7 +167,7 @@ pub fn sandbox_escalation_for_tool_call_with_runtime(
                 .get("command")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("");
-            let outside_cwd = (!sandbox.is_non_interactive()
+            let outside_cwd = (!sandbox.uses_guest_paths()
                 && policy.check_shell(&cwd.to_string_lossy()).is_err())
                 || sandbox.check_cwd(&cwd).is_err();
             let mut writable_roots = Vec::new();

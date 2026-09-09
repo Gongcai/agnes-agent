@@ -56,16 +56,6 @@ pub struct AndroidProotProcessRuntime {
     config: AndroidProotRuntimeConfig,
 }
 
-#[derive(Debug)]
-pub(crate) struct HiddenExecResult {
-    pub(crate) stdout: String,
-    pub(crate) stderr: String,
-    pub(crate) exit_code: Option<i32>,
-    pub(crate) timed_out: bool,
-    pub(crate) output_truncated: bool,
-    pub(crate) output_requests_input: bool,
-}
-
 /// A bind mount in the Android guest namespace. The resource ID is kept next
 /// to the paths so launchers and host-side policy code can refer to the same
 /// logical resource without exposing Android implementation paths to agents.
@@ -681,109 +671,6 @@ impl SandboxCommand {
     }
 }
 
-/// Execute an Agent command without a PTY or an input channel. This is the
-/// execution plane for Android hidden calls; user terminals use TerminalManager
-/// and must never share its session, stdin, or output state.
-pub(crate) async fn execute_hidden(
-    command: SandboxCommand,
-    cwd: &Path,
-    max_output_bytes: usize,
-    timeout_sec: u32,
-) -> AppResult<HiddenExecResult> {
-    let stream_limit = (max_output_bytes.max(2) / 2).max(1);
-    let mut child = command
-        .into_tokio()
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .spawn()
-        .map_err(|error| AppError::Other(format!("Unable to spawn hidden command: {error}")))?;
-
-    let pid = child.id().and_then(|pid| i32::try_from(pid).ok());
-    let stdout_task = child
-        .stdout
-        .take()
-        .map(|stdout| tokio::spawn(read_stream_capped(stdout, stream_limit)));
-    let stderr_task = child
-        .stderr
-        .take()
-        .map(|stderr| tokio::spawn(read_stream_capped(stderr, stream_limit)));
-
-    let wait_result = if timeout_sec == 0 {
-        child.wait().await.map_err(|error| error.to_string())
-    } else {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_sec as u64),
-            child.wait(),
-        )
-        .await
-        {
-            Ok(result) => result.map_err(|error| error.to_string()),
-            Err(_) => {
-                kill_process_tree(&mut child, pid).await;
-                return Ok(hidden_capture_result(stdout_task, stderr_task, Some(-9), true).await);
-            }
-        }
-    };
-
-    let status =
-        wait_result.map_err(|error| AppError::Other(format!("Hidden command failed: {error}")))?;
-    cleanup_process_group(pid);
-    let exit_code = status.code();
-    Ok(hidden_capture_result(stdout_task, stderr_task, exit_code, false).await)
-}
-
-async fn hidden_capture_result(
-    stdout_task: Option<tokio::task::JoinHandle<(Vec<u8>, bool)>>,
-    stderr_task: Option<tokio::task::JoinHandle<(Vec<u8>, bool)>>,
-    exit_code: Option<i32>,
-    timed_out: bool,
-) -> HiddenExecResult {
-    let (stdout_bytes, stdout_truncated) = join_capture(stdout_task).await;
-    let (stderr_bytes, stderr_truncated) = join_capture(stderr_task).await;
-    let stdout = render_captured_output(stdout_bytes, stdout_truncated);
-    let stderr = render_captured_output(stderr_bytes, stderr_truncated);
-    let output_requests_input = output_requests_input(&stdout) || output_requests_input(&stderr);
-    HiddenExecResult {
-        stdout,
-        stderr,
-        exit_code,
-        timed_out,
-        output_truncated: stdout_truncated || stderr_truncated,
-        output_requests_input,
-    }
-}
-
-async fn kill_process_tree(child: &mut tokio::process::Child, pid: Option<i32>) {
-    cleanup_process_group(pid);
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-}
-
-fn cleanup_process_group(pid: Option<i32>) {
-    #[cfg(unix)]
-    if let Some(pid) = pid {
-        use nix::sys::signal::{killpg, Signal};
-        use nix::unistd::Pid;
-        let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
-    }
-}
-
-fn output_requests_input(output: &str) -> bool {
-    let lower = output.to_ascii_lowercase();
-    [
-        "[y/n]",
-        "[y/n/?]",
-        "password:",
-        "passphrase:",
-        "press enter",
-        "continue?",
-        "do you want to continue",
-        "enter value",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
-}
-
 enum ProcessIsolation {
     Allowed,
     Bubblewrap {
@@ -795,7 +682,10 @@ enum ProcessIsolation {
 }
 
 pub trait SandboxGuard: Send + Sync {
-    fn is_non_interactive(&self) -> bool {
+    /// Whether policy paths and tool-facing paths use a guest (PRoot) path
+    /// namespace instead of host paths. This only affects path semantics;
+    /// both runtimes execute shell commands in interactive PTY sessions.
+    fn uses_guest_paths(&self) -> bool {
         false
     }
 
@@ -1044,7 +934,7 @@ impl PolicySandbox {
 }
 
 impl SandboxGuard for PolicySandbox {
-    fn is_non_interactive(&self) -> bool {
+    fn uses_guest_paths(&self) -> bool {
         self.process_runtime.is_android_proot()
     }
 
@@ -2512,64 +2402,6 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("cannot contain `..`"));
-    }
-
-    #[tokio::test]
-    async fn hidden_exec_uses_null_stdin_and_reports_interactive_output() {
-        let result = execute_hidden(
-            SandboxCommand::direct(
-                "/bin/bash".to_string(),
-                vec![
-                    "-c".to_string(),
-                    "printf 'Do you want to continue? [Y/n]' >&2".to_string(),
-                ],
-                Vec::new(),
-            ),
-            Path::new("."),
-            1024,
-            5,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(result.exit_code, Some(0));
-        assert!(!result.timed_out);
-        assert!(result.output_requests_input);
-        assert!(result.stderr.contains("Do you want to continue?"));
-    }
-
-    #[test]
-    fn hidden_exec_detects_commands_that_need_a_terminal() {
-        assert!(crate::tools::builtin::shell::command_likely_interactive(
-            "apt install jq"
-        ));
-        assert!(!crate::tools::builtin::shell::command_likely_interactive(
-            "apt-get install -y jq"
-        ));
-        assert!(crate::tools::builtin::shell::command_likely_interactive(
-            "read answer"
-        ));
-    }
-
-    #[tokio::test]
-    async fn hidden_exec_times_out_and_caps_output() {
-        let result = execute_hidden(
-            SandboxCommand::direct(
-                "/bin/bash".to_string(),
-                vec!["-c".to_string(), "printf 123456789; sleep 5".to_string()],
-                Vec::new(),
-            ),
-            Path::new("."),
-            4,
-            1,
-        )
-        .await
-        .unwrap();
-
-        assert!(result.timed_out);
-        assert_eq!(result.exit_code, Some(-9));
-        assert!(result.output_truncated);
-        assert!(result.stdout.contains("output truncated"));
     }
 
     #[cfg(unix)]

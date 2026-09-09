@@ -148,7 +148,7 @@ fn allowed_path(
     if !policy.file.enabled {
         return false;
     }
-    if sandbox.is_non_interactive() {
+    if sandbox.uses_guest_paths() {
         return policy.sandbox.allow_read_outside_workspace
             || sandbox.check_read(path).is_ok()
             || workspace_cwd.is_some_and(|root| path_under_root(path, root));

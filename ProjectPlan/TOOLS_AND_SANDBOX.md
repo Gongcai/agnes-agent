@@ -33,11 +33,10 @@
 | `grep` | 递归内容搜索（只读，ripgrep 风式） | Low |
 | `apply_patch` | 统一 diff 补丁应用（codex 风格，多段一次性改） | Medium |
 
-桌面端 Shell 使用 PTY 会话运行，短命令返回完整输出，长命令返回 `session_id`；模型可通过
+桌面端与 Android 的 Agent Shell 均使用 PTY 会话运行，短命令返回完整输出，长命令返回 `session_id`；模型可通过
 `write_stdin` 增量轮询或发送输入，并通过 `stop_terminal` 终止会话及其进程组。Android Runtime
-中的 Agent `shell` 默认使用独立的 hidden non-interactive exec；用户直接使用的 Linux PTY 由
-Runtime Service 的 user terminal API 管理，两者不能共享 stdin、输出流、取消信号或 session ID。每个
-会话输出均有策略上限，超出部分保留截断标记。
+中的 Agent `shell` 与用户直接使用的 Linux PTY 由 Runtime Service 分别管理，两者不能共享 stdin、
+输出流、取消信号或 session ID。每个会话输出均有策略上限，超出部分保留截断标记。
 
 > 新持久记忆系统使用 `memory_list/read/write/str_replace/append/delete` 六个虚拟文件工具，工具边界见 `MEMORY_SYSTEM.md`；只读 `web_search/web_fetch/browser_open` 见 `WEB_AND_MCP.md`，有状态浏览器操作与 `ssh` 仍留待后续单独设计。
 

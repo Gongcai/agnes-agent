@@ -71,7 +71,7 @@ workspace 隔离，也不把 Agent 限制在当前 workspace；具体挂载与 A
 │  Chat UI + Rust Core         │
 │  SQLite + Sync + E2EE        │
 │  Android Runtime Service     │
-│  User PTY + hidden exec      │
+│  User PTY + Agent PTY        │
 │  PRoot + Ubuntu + Python Agent│
 │  Optional: SSH 桌面远程模式  │
 └─────────────────────────────┘
@@ -209,7 +209,7 @@ Home 普通会话共享一个设备本地的通用工作区，首选系统 Docum
 - 项目定位是"带 Agent 能力的酒馆式多角色聊天"，不是纯 Agent 工具：核心是可创建多个 AGENTS（角色卡），每个有独立人设/系统提示词/工具权限/长期记忆。
 - session 与 AGENTS 多对一；长期记忆虚拟文件系统按 Agent 隔离，不是全局单一记忆，也不隐式继承全局画像。
 - 桌面端和安卓端都可以是执行器；安卓端通过独立 Linux Runtime 运行完整 Agent，第一版可以先交付轻客户端能力。
-- Android 的 PRoot/Ubuntu Runtime、Service 生命周期、用户可见 Linux PTY、工作区互通和验收按 `ANDROID_RUNTIME.md` 分阶段实施；Android Local 同时支持 Agent hidden exec 与用户直接操作的终端。
+- Android 的 PRoot/Ubuntu Runtime、Service 生命周期、用户可见 Linux PTY、工作区互通和验收按 `ANDROID_RUNTIME.md` 分阶段实施；Android Local 同时支持 Agent PTY 会话与用户直接操作的终端。
 - 向量库本地优先，不跨端同步；云端只同步文本与用户数据。
 - 上一条中“向量不跨端同步”专指原始向量行不进 D1/服务端检索；大型 RAG 允许以客户端加密、指纹完全匹配的便携制品存入 R2/Google Drive。
 - Provider API Key、同步凭证和 E2EE 主密钥只进入 OS Keyring / Android Keystore，不进入 SQLite、renderer 明文 IPC 或同步 payload。

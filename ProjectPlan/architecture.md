@@ -14,7 +14,7 @@ Presentation Plane  (React)
   通过 Tauri IPC 与 Rust 通信，绝不碰本地系统
 
 Execution + Data Plane (Rust / src-tauri)   ← 唯一资源拥有者
-  唯一拥有：SQLite / 文件 / shell / user PTY / hidden exec / SSH / 工具执行 / Agent Runtime 生命周期 / 同步
+  唯一拥有：SQLite / 文件 / shell / user PTY / agent PTY / SSH / 工具执行 / Agent Runtime 生命周期 / 同步
   内部：DbActor（DB 单写者）、ToolExecutor（工具执行+审计）、AgentManager（桌面 sidecar 生命周期）、RuntimeManager（Android Linux Runtime 生命周期）
 
 Reasoning Plane (Python sidecar / agent)
@@ -189,7 +189,7 @@ Python 本轮内只做：prompt 拼装 / 模型调用 / 工具决策。持久记
     BundledBinLauncher → 发布态加载 externalBin（agentd 二进制）
   ```
 
-  Android 通过 `RuntimeManager` 连接原生 Android Runtime Service。Service 负责 Foreground Service 生命周期、PRoot/Ubuntu rootfs、用户可见 PTY、Agent hidden exec 和受控进程；两类会话使用独立的 stdin、输出流、取消信号和 session namespace。Python Agent 仍通过相同 Agent Protocol 连接 Rust，不直接访问 Android 数据层。
+  Android 通过 `RuntimeManager` 连接原生 Android Runtime Service。Service 负责 Foreground Service 生命周期、PRoot/Ubuntu rootfs、用户可见 PTY、Agent PTY 会话和受控进程；两类会话使用独立的 stdin、输出流、取消信号和 session namespace。Python Agent 仍通过相同 Agent Protocol 连接 Rust，不直接访问 Android 数据层。
 - `tools/`：`ToolExecutor` + 每工具模块（shell/file/git/ssh/memory/browser），统一 trait；MCP 外部工具 V0.5 以同类 trait 接入。
 - `storage/`：网盘领域 DTO、`FileSourceProvider / FileUploadProvider / FileManagementProvider / ObjectStorageProvider / QuotaProvider / ProviderFactory` 窄端口、Keyring 凭证 adapter、开放注册表与 `StorageService`。`ProviderFactory` 同时提供可选的一次性授权和 challenge/poll 两阶段授权，凭证结果不经过 renderer。`google_drive` 通过官方 API 实现 Desktop OAuth + PKCE、Drive v3 文件源/断点上传、用户文件移入回收站及 `appDataFolder` 对象存储；`quark_drive` 通过 community HTTP adapter 实现文本/JSON Cookie 与二维码授权、文件源、分片上传、配额和移入回收站，但不实现应用对象存储。业务层和 renderer 不依赖任一服务商 API 类型。
 - `memory/`：实现按 Agent 隔离的虚拟 Markdown 记忆文件系统、frontmatter/事实标签校验、目录 listing、版本 CAS、有限修订与冲突恢复（见 §8 和 `MEMORY_SYSTEM.md`）。

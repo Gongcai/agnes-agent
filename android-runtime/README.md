@@ -22,7 +22,7 @@ android-runtime/
 ```
 
 `runtime.zip` 包含 Ubuntu 用户空间和 Agnes Python Agent。Runtime 同时承载两个执行平面：用户直接
-操作的可见 Linux PTY，以及供 Agent 和后台任务使用的 hidden non-interactive exec；两者必须使用
+操作的可见 Linux PTY，以及供 Agent 工具使用的 PTY 会话（与桌面端同一代码路径）；两者必须使用
 独立会话和事件流。`libagnes_proot.so` 是 Android
 宿主侧的 PRoot 可执行文件；使用原生库命名后，Android 会把它安装到应用只读、可执行的
 原生库目录。`libagnes_proot_loader.so` 是同 ABI 的静态 ELF loader，运行时通过
@@ -78,15 +78,11 @@ Agent 失败时才出现的 handoff 界面。
 重连和关闭。输出订阅必须可从序号继续，重连不得重放用户输入；Runtime 或进程被回收后，会话标记
 为 `interrupted`，不得假装仍在运行。
 
-Agent hidden exec 使用独立的 session namespace，默认无 stdin，通过 marker/结构化事件返回结果，
-并由 timeout、取消和进程组清理控制生命周期。它遇到交互输入时返回
-`requires_interactive_terminal`；只有用户明确批准后，才创建或绑定 handoff 会话。用户终端命令
-不重复走 Agent 工具审批，但仍受 Android 沙箱、PRoot 挂载、网络策略、资源配额和 provisioning
-边界约束，并写入可审计的运行事件。
-
-当前 Rust 工具执行器已将 Android PRoot 下的 Agent `shell` 接入该 hidden exec 平面：stdin 固定为
-`/dev/null`，stdout/stderr 各自受策略上限约束，超时会回收进程组；`write_stdin` 和
-`stop_terminal` 不会接管 hidden exec，而是明确要求使用用户终端。
+Agent 终端使用独立的 session namespace，与桌面端共用同一条 PTY 代码路径：`shell` 在持久 PTY
+会话中执行，yield 超时后返回 session id 转后台轮询，`write_stdin` 发送输入或补读输出，
+`stop_terminal` 与 run 取消（`stop_run`）负责进程组清理。用户终端命令不重复走 Agent 工具审批，
+但仍受 Android 沙箱、PRoot 挂载、网络策略、资源配额和 provisioning 边界约束，并写入可审计的
+运行事件。Agent 会话不能接管用户已有终端，两类会话互不共享 stdin、输出流、取消信号或 session ID。
 
 当前 Rust Core 和 Android UI 已接入独立用户 PTY：终端使用 `user-terminal-*` 会话 ID、独立 registry、
 cursor 输出补读、输入、resize、Ctrl+C、退出状态和重连列表；Runtime 停止时会回收全部用户 PTY。

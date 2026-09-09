@@ -25,6 +25,45 @@ const MAX_OUTPUT_TOKENS: i64 = 1_048_576;
 const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 131_072;
 const DEFAULT_MAX_OUTPUT_TOKENS_SETTING: &str = "ui:default_max_output_tokens";
 
+/// Environment briefing for the PRoot Ubuntu guest, injected only on Android
+/// builds so the model does not have to infer the runtime layout from tool
+/// errors. Keep it factual and in sync with `AndroidProotRuntimeConfig`.
+#[cfg(target_os = "android")]
+const ANDROID_RUNTIME_PROMPT: &str = r#"# Android Linux Runtime
+You are running inside a full Ubuntu 24.04 userland on Android, executed through PRoot (user-mode path translation, not a VM or container). All paths in your tools are Linux guest paths; Android host paths such as `/data/data/...` are not mounted and must not be used.
+
+Filesystem layout:
+- `/workspace`: current session workspace, the same files the user sees in the app.
+- `/root`: persistent home. `/root/workspace/<project>` holds persistent user projects that survive runtime upgrades; `/workspace` usually points into the same storage.
+- `/sdcard` and `/storage/emulated/0`: two aliases for the same user-granted Android shared storage, absent if the user has not granted it. It is FUSE-backed: symlinks and hardlinks may fail and scripts may not execute in place, so copy files into `/root` or `/workspace` before building or running them.
+- The rootfs `/` is writable under fake-root: `apt`, `dpkg`, and system config edits work and persist inside the guest, but this is not Android root. You cannot touch Android system files or other apps' data.
+- `/dev/shm` is available for Python multiprocessing. `/proc` is mounted but some nodes may be unreadable; `/sys` is not mounted.
+
+Python and packages:
+- `python3` (3.12), `pip`, `uv`, `git`, `ssh`, `bash`, and `apt` are preinstalled.
+- System Python enforces PEP 668: prefer `uv venv` plus `uv pip install` for project dependencies. `UV_LINK_MODE=copy` is preset and uv caches persist across sessions.
+
+Environment and limits:
+- Processes start with a clean environment: `HOME=/root`, `TMPDIR=/tmp`, `LANG=C.UTF-8`; Android host variables are not inherited.
+- There is no systemd, cron, real root, namespaces, or cgroups. Background processes live under the app's foreground service and may be killed when the runtime stops; do not assume they survive across sessions.
+- Your shell runs inside a persistent PTY. Long-running commands return a `session_id`; use `write_stdin` to poll output or send input (including answers to interactive prompts) and `stop_terminal` to stop a session. `DEBIAN_FRONTEND=noninteractive` is preset, but interactive commands like `ssh` or `apt` without `-y` still work through `write_stdin`."#;
+
+/// Append platform-specific runtime context to the agent system prompt.
+/// Desktop builds run the agent on the host and need no extra briefing.
+fn with_platform_runtime_prompt(system_prompt: &str) -> String {
+    #[cfg(target_os = "android")]
+    {
+        if system_prompt.trim().is_empty() {
+            return ANDROID_RUNTIME_PROMPT.to_string();
+        }
+        return format!("{system_prompt}\n\n{ANDROID_RUNTIME_PROMPT}");
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        system_prompt.to_string()
+    }
+}
+
 fn format_reqwest_error(error: &reqwest::Error) -> String {
     let mut details = vec![error.to_string()];
     let mut source = std::error::Error::source(error);
@@ -1329,7 +1368,7 @@ pub async fn get_debug_prompt(
             "agent": {
                 "name": agent.name,
                 "persona": agent.persona,
-                "systemPrompt": agent.system_prompt,
+                "systemPrompt": with_platform_runtime_prompt(&agent.system_prompt),
                 "model": agent_model_str,
                 "toolPolicy": tool_policy_json,
                 "permissionMode": permission_mode.as_str()
@@ -2399,7 +2438,7 @@ async fn start_agent_run(
             "agent": {
                 "name": cfg.agent.name,
                 "persona": cfg.agent.persona,
-                "systemPrompt": cfg.agent.system_prompt,
+                "systemPrompt": with_platform_runtime_prompt(&cfg.agent.system_prompt),
                 "model": cfg.effective_model,
                 "toolPolicy": tool_policy_json,
                 "permissionMode": permission_mode.as_str()

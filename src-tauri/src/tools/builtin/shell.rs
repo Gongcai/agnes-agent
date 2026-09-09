@@ -97,20 +97,18 @@ impl BuiltinTool for ShellTool {
             }
         };
 
-        let (cwd_absolute, guest_cwd) = resolve_cwd(ctx);
-        let policy_cwd = if ctx.sandbox.is_non_interactive() {
-            &guest_cwd
-        } else {
-            &cwd_absolute
-        };
+        let (cwd_absolute, _) = resolve_cwd(ctx);
 
         if !ctx.policy.shell.enabled {
             let error = "Shell 执行工具已被禁用";
             ctx.record_failure(error).await?;
             return Err(AppError::Other(error.into()));
         }
-        if !ctx.sandbox.is_non_interactive() {
-            if let Err(e) = ctx.policy.check_shell(&policy_cwd.to_string_lossy()) {
+        if !ctx.sandbox.uses_guest_paths() {
+            // Guest-path policies (Android PRoot) store guest roots, so the
+            // host cwd cannot be checked against them; `sandbox.check_cwd`
+            // below already covers the mounted roots.
+            if let Err(e) = ctx.policy.check_shell(&cwd_absolute.to_string_lossy()) {
                 ctx.record_failure(&e).await?;
                 return Err(AppError::Other(e));
             }
@@ -152,18 +150,6 @@ impl BuiltinTool for ShellTool {
             .and_then(Value::as_u64)
             .map(|value| value.min(86_400) as u32)
             .unwrap_or(ctx.policy.shell.timeout_sec);
-
-        if ctx.sandbox.is_non_interactive() {
-            let likely_interactive = command_likely_interactive(command_str);
-            let result = crate::tools::sandbox::execute_hidden(
-                command,
-                &cwd_absolute,
-                ctx.policy.shell.max_output_bytes as usize,
-                timeout_sec,
-            )
-            .await?;
-            return complete_hidden_tool_call(ctx, &result, likely_interactive).await;
-        }
 
         let run_id = ctx.run_id.unwrap_or(ctx.tool_call_id);
         let terminal_id = match ctx.terminals.spawn(
@@ -233,13 +219,6 @@ impl BuiltinTool for WriteStdinTool {
         if !ctx.policy.shell.enabled {
             return fail(ctx, "Shell execution tools are disabled").await;
         }
-        if ctx.sandbox.is_non_interactive() {
-            return fail(
-                ctx,
-                "Android hidden shell execution has no stdin; use the user Linux terminal for interactive input",
-            )
-            .await;
-        }
         let terminal_id = required_string(ctx, "session_id").await?;
         let chars = ctx.args.get("chars").and_then(Value::as_str).unwrap_or("");
         if chars.len() > 64 * 1024 {
@@ -292,13 +271,6 @@ impl BuiltinTool for StopTerminalTool {
         if !ctx.policy.shell.enabled {
             return fail(ctx, "Shell execution tools are disabled").await;
         }
-        if ctx.sandbox.is_non_interactive() {
-            return fail(
-                ctx,
-                "Android hidden shell execution has no terminal session; use the user Linux terminal to stop interactive work",
-            )
-            .await;
-        }
         let terminal_id = required_string(ctx, "session_id").await?;
         ctx.update_running(&terminal_id).await?;
         if let Err(error) = ctx.terminals.stop(&terminal_id, ctx.session_id) {
@@ -347,110 +319,6 @@ async fn complete_tool_call(
         "signal": poll.signal,
         "error_code": error_code,
     }))
-}
-
-async fn complete_hidden_tool_call(
-    ctx: &ToolCtx<'_>,
-    result: &crate::tools::sandbox::HiddenExecResult,
-    likely_interactive: bool,
-) -> AppResult<Value> {
-    let requires_interactive_terminal = result.output_requests_input || likely_interactive;
-    let status = if result.timed_out {
-        "cancelled"
-    } else if requires_interactive_terminal {
-        "requires_interactive_terminal"
-    } else {
-        "done"
-    };
-    let result_kind = if result.timed_out {
-        "timeout"
-    } else if requires_interactive_terminal {
-        "requires_interactive_terminal"
-    } else {
-        "exit"
-    };
-    ctx.update_complete(
-        status,
-        Some(result_kind),
-        result.exit_code,
-        Some(result.stdout.clone()),
-        Some(result.stderr.clone()),
-    )
-    .await?;
-    let error_code = (result.exit_code != Some(0) && !result.timed_out)
-        .then(|| crate::tools::sandbox::classify_runtime_failure(&result.stderr));
-    Ok(json!({
-        "status": status,
-        "session_id": Value::Null,
-        "exit_code": result.exit_code,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "truncated": result.output_truncated,
-        "requires_interactive_terminal": requires_interactive_terminal,
-        "error_code": error_code,
-    }))
-}
-
-pub(crate) fn command_likely_interactive(command: &str) -> bool {
-    let Ok(tokens) = shell_tokens(command) else {
-        return true;
-    };
-    for segment in shell_segments(&tokens) {
-        let Some((command_index, program)) = segment_command(segment) else {
-            continue;
-        };
-        let arguments = &segment[command_index + 1..];
-        if matches!(
-            program.as_str(),
-            "read"
-                | "select"
-                | "passwd"
-                | "su"
-                | "top"
-                | "htop"
-                | "less"
-                | "more"
-                | "vim"
-                | "vi"
-                | "nano"
-                | "emacs"
-                | "ftp"
-                | "sftp"
-        ) {
-            return true;
-        }
-        if matches!(program.as_str(), "ssh" | "scp") {
-            let batch_mode = arguments
-                .iter()
-                .any(|argument| argument == "-n" || argument == "-oBatchMode=yes")
-                || arguments
-                    .windows(2)
-                    .any(|pair| pair[0] == "-o" && pair[1] == "BatchMode=yes");
-            if !batch_mode {
-                return true;
-            }
-        }
-        if matches!(program.as_str(), "apt" | "apt-get")
-            && arguments.iter().any(|argument| {
-                matches!(
-                    argument.as_str(),
-                    "install"
-                        | "remove"
-                        | "purge"
-                        | "upgrade"
-                        | "full-upgrade"
-                        | "dist-upgrade"
-                        | "autoremove"
-                )
-            })
-            && !arguments
-                .iter()
-                .any(|argument| argument == "-y" || argument == "--assume-yes")
-        {
-            return true;
-        }
-    }
-    false
 }
 
 fn render_terminal_output(poll: &crate::tools::terminal::TerminalPoll) -> String {
