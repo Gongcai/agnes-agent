@@ -325,4 +325,4 @@ diff，再批准或拒绝整次工具调用；预览本身不写文件，也不�
 - conversation_search 按可见的用户/助手文本查找历史消息，返回会话 ID、消息 ID、标题和受长度限制的片段。
 - conversation_read 根据会话 ID 及可选消息 ID 读取有限上下文。
 - reasoning、tool call、tool result、软删除消息和其他 Agent 的会话不会返回。
-- 消息正文在本地 SQLite FTS 索引中检索，并保留 LIKE 回退以支持中文和特殊字符；索引不参与云端同步。
+- 消息正文使用本地 SQLite FTS5 检索：普通短词使用 unicode61，三字符及以上子串使用 trigram；更短或特殊查询才回退到本地字符串匹配。索引不参与云端同步。

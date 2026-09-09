@@ -2,7 +2,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -225,12 +225,103 @@ pub fn search_conversation(
     role: Option<&str>,
     limit: usize,
 ) -> AppResult<Vec<ConversationSearchResult>> {
+    let can_use_substring_fts = query.chars().count() >= 3
+        && query
+            .chars()
+            .all(|character| !character.is_control() && character != '"')
+        && query.chars().any(char::is_alphanumeric);
     let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
+    if can_use_substring_fts {
+        return search_conversation_with_fts(
+            conn,
+            "message_parts_fts_substring",
+            agent_id,
+            session_id,
+            role,
+            &fts_query,
+            query,
+            limit,
+        );
+    }
+
+    let can_use_fts = query
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character.is_ascii_whitespace())
+        && query
+            .chars()
+            .any(|character| character.is_ascii_alphanumeric());
+    if can_use_fts && !can_use_substring_fts {
+        let results = search_conversation_with_fts(
+            conn,
+            "message_parts_fts",
+            agent_id,
+            session_id,
+            role,
+            &fts_query,
+            query,
+            limit,
+        )?;
+        if !results.is_empty() {
+            return Ok(results);
+        }
+    }
+
+    // Short terms and unusual token boundaries still need the substring fallback.
+    search_conversation_by_substring(conn, agent_id, session_id, query, role, limit)
+}
+
+fn search_conversation_with_fts(
+    conn: &Connection,
+    fts_table: &str,
+    agent_id: &str,
+    session_id: Option<&str>,
+    role: Option<&str>,
+    fts_query: &str,
+    query: &str,
+    limit: usize,
+) -> AppResult<Vec<ConversationSearchResult>> {
+    // The table name is selected only by private call sites; message content
+    // remains a bound parameter and never becomes SQL.
+    let sql = format!(
+        "SELECT m.id, m.session_id, COALESCE(s.title, ''), m.role, m.seq, m.created_at, \
+         GROUP_CONCAT(p.content, char(10) || char(10)) \
+         FROM {fts_table} f \
+         JOIN message_parts p ON p.rowid = f.rowid AND p.kind = 'text' \
+         JOIN messages m ON m.id = p.message_id \
+         JOIN sessions s ON s.id = m.session_id \
+         WHERE s.agent_id = ?1 \
+           AND s.deleted_at IS NULL \
+           AND m.deleted_at IS NULL \
+           AND m.status = 'complete' \
+           AND (?2 IS NULL OR m.session_id = ?2) \
+           AND (?3 IS NULL OR m.role = ?3) \
+           AND f.content MATCH ?4 \
+         GROUP BY m.id, m.session_id, s.title, m.role, m.seq, m.created_at \
+         ORDER BY m.updated_at DESC, m.seq DESC, m.id DESC \
+         LIMIT ?5"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+
+    let rows = stmt.query_map(
+        params![agent_id, session_id, role, fts_query, limit as i64],
+        |row| conversation_search_row(row, query),
+    )?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn search_conversation_by_substring(
+    conn: &Connection,
+    agent_id: &str,
+    session_id: Option<&str>,
+    query: &str,
+    role: Option<&str>,
+    limit: usize,
+) -> AppResult<Vec<ConversationSearchResult>> {
     let mut stmt = conn.prepare(
         "SELECT m.id, m.session_id, COALESCE(s.title, ''), m.role, m.seq, m.created_at, \
          GROUP_CONCAT(p.content, char(10) || char(10)) \
-         FROM messages m \
-         JOIN sessions s ON s.id = m.session_id \
+         FROM sessions s \
+         JOIN messages m ON m.session_id = s.id \
          JOIN message_parts p ON p.message_id = m.id AND p.kind = 'text' \
          WHERE s.agent_id = ?1 \
            AND s.deleted_at IS NULL \
@@ -238,31 +329,33 @@ pub fn search_conversation(
            AND m.status = 'complete' \
            AND (?2 IS NULL OR m.session_id = ?2) \
            AND (?3 IS NULL OR m.role = ?3) \
-           AND (EXISTS (\
-             SELECT 1 FROM message_parts_fts f \
-             WHERE f.rowid = p.rowid AND f.content MATCH ?4\
-           ) OR instr(lower(COALESCE(p.content, '')), lower(?5)) > 0) \
+           AND instr(lower(COALESCE(p.content, '')), lower(?4)) > 0 \
          GROUP BY m.id, m.session_id, s.title, m.role, m.seq, m.created_at \
          ORDER BY m.updated_at DESC, m.seq DESC, m.id DESC \
-         LIMIT ?6",
+         LIMIT ?5",
     )?;
 
     let rows = stmt.query_map(
-        params![agent_id, session_id, role, fts_query, query, limit as i64],
-        |row| {
-            let content = row.get::<_, Option<String>>(6)?.unwrap_or_default();
-            Ok(ConversationSearchResult {
-                session_id: row.get(1)?,
-                session_title: row.get(2)?,
-                message_id: row.get(0)?,
-                role: row.get(3)?,
-                seq: row.get(4)?,
-                created_at: row.get(5)?,
-                snippet: conversation_snippet(&content, query),
-            })
-        },
+        params![agent_id, session_id, role, query, limit as i64],
+        |row| conversation_search_row(row, query),
     )?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn conversation_search_row(
+    row: &Row<'_>,
+    query: &str,
+) -> rusqlite::Result<ConversationSearchResult> {
+    let content = row.get::<_, Option<String>>(6)?.unwrap_or_default();
+    Ok(ConversationSearchResult {
+        session_id: row.get(1)?,
+        session_title: row.get(2)?,
+        message_id: row.get(0)?,
+        role: row.get(3)?,
+        seq: row.get(4)?,
+        created_at: row.get(5)?,
+        snippet: conversation_snippet(&content, query),
+    })
 }
 
 /// Read visible text around a search result, or the latest messages in a session.
@@ -287,53 +380,134 @@ pub fn read_conversation(
         return Ok(None);
     };
 
-    let mut stmt = conn.prepare(
-        "SELECT m.id, m.session_id, m.role, m.seq, m.created_at, p.content \
-         FROM messages m \
-         JOIN sessions s ON s.id = m.session_id \
-         LEFT JOIN message_parts p ON p.message_id = m.id \
-           AND p.kind = 'text' AND p.content IS NOT NULL AND trim(p.content) <> '' \
-         WHERE s.id = ?1 AND s.agent_id = ?2 \
-           AND s.deleted_at IS NULL AND m.deleted_at IS NULL \
-           AND m.status = 'complete' \
-         ORDER BY m.seq ASC, m.id ASC, p.ordinal ASC",
-    )?;
-    let rows = stmt.query_map(params![session_id, agent_id], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, i32>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, Option<String>>(5)?,
-        ))
-    })?;
-
-    let mut messages = Vec::<ConversationMessageResult>::new();
-    for row in rows {
-        let (id, message_session_id, role, seq, created_at, content) = row?;
-        let Some(content) = content else {
-            continue;
-        };
-        if let Some(previous) = messages.last_mut().filter(|message| message.id == id) {
-            previous.content.push_str("\n\n");
-            previous.content.push_str(&content);
-        } else {
-            messages.push(ConversationMessageResult {
-                id,
-                session_id: message_session_id,
-                role,
-                seq,
-                created_at,
-                content,
-            });
-        }
-    }
-
-    let (start, end) = if let Some(message_id) = message_id {
-        let Some(anchor) = messages.iter().position(|message| message.id == message_id) else {
+    let (messages, anchor) = if let Some(message_id) = message_id {
+        let anchor_seq = conn
+            .query_row(
+                "SELECT m.seq FROM messages m \
+                 JOIN sessions s ON s.id = m.session_id \
+                 WHERE m.id = ?1 AND s.id = ?2 AND s.agent_id = ?3 \
+                   AND s.deleted_at IS NULL AND m.deleted_at IS NULL \
+                   AND m.status = 'complete' \
+                   AND EXISTS (\
+                     SELECT 1 FROM message_parts p \
+                     WHERE p.message_id = m.id AND p.kind = 'text' \
+                       AND p.content IS NOT NULL AND trim(p.content) <> ''\
+                   )",
+                params![message_id, session_id, agent_id],
+                |row| row.get::<_, i32>(0),
+            )
+            .optional()?;
+        let Some(anchor_seq) = anchor_seq else {
             return Ok(None);
         };
+
+        let mut before_stmt = conn.prepare(
+            r#"
+            WITH selected_messages AS (
+              SELECT m.id, m.session_id, m.role, m.seq, m.created_at
+              FROM messages m
+              JOIN sessions s ON s.id = m.session_id
+              WHERE s.id = ?1 AND s.agent_id = ?2
+                AND s.deleted_at IS NULL AND m.deleted_at IS NULL
+                AND m.status = 'complete'
+                AND (m.seq < ?3 OR (m.seq = ?3 AND m.id < ?4))
+                AND EXISTS (
+                  SELECT 1 FROM message_parts p
+                  WHERE p.message_id = m.id AND p.kind = 'text'
+                    AND p.content IS NOT NULL AND trim(p.content) <> ''
+                )
+              ORDER BY m.seq DESC, m.id DESC
+              LIMIT ?5
+            )
+            SELECT v.id, v.session_id, v.role, v.seq, v.created_at, p.content
+            FROM selected_messages v
+            JOIN message_parts p ON p.message_id = v.id
+              AND p.kind = 'text' AND p.content IS NOT NULL AND trim(p.content) <> ''
+            ORDER BY v.seq DESC, v.id DESC, p.ordinal ASC
+            "#,
+        )?;
+        let before_rows = before_stmt.query_map(
+            params![session_id, agent_id, anchor_seq, message_id, before as i64],
+            conversation_message_row,
+        )?;
+        let mut before_messages = collect_conversation_messages(before_rows)?;
+        before_messages.reverse();
+
+        let mut after_stmt = conn.prepare(
+            r#"
+            WITH selected_messages AS (
+              SELECT m.id, m.session_id, m.role, m.seq, m.created_at
+              FROM messages m
+              JOIN sessions s ON s.id = m.session_id
+              WHERE s.id = ?1 AND s.agent_id = ?2
+                AND s.deleted_at IS NULL AND m.deleted_at IS NULL
+                AND m.status = 'complete'
+                AND (m.seq > ?3 OR (m.seq = ?3 AND m.id >= ?4))
+                AND EXISTS (
+                  SELECT 1 FROM message_parts p
+                  WHERE p.message_id = m.id AND p.kind = 'text'
+                    AND p.content IS NOT NULL AND trim(p.content) <> ''
+                )
+              ORDER BY m.seq ASC, m.id ASC
+              LIMIT ?5
+            )
+            SELECT v.id, v.session_id, v.role, v.seq, v.created_at, p.content
+            FROM selected_messages v
+            JOIN message_parts p ON p.message_id = v.id
+              AND p.kind = 'text' AND p.content IS NOT NULL AND trim(p.content) <> ''
+            ORDER BY v.seq ASC, v.id ASC, p.ordinal ASC
+            "#,
+        )?;
+        let after_rows = after_stmt.query_map(
+            params![
+                session_id,
+                agent_id,
+                anchor_seq,
+                message_id,
+                after.saturating_add(1) as i64
+            ],
+            conversation_message_row,
+        )?;
+        let mut messages = before_messages;
+        let anchor = Some(messages.len());
+        messages.extend(collect_conversation_messages(after_rows)?);
+        (messages, anchor)
+    } else {
+        let mut stmt = conn.prepare(
+            r#"
+            WITH selected_messages AS (
+              SELECT m.id, m.session_id, m.role, m.seq, m.created_at
+              FROM messages m
+              JOIN sessions s ON s.id = m.session_id
+              WHERE s.id = ?1 AND s.agent_id = ?2
+                AND s.deleted_at IS NULL AND m.deleted_at IS NULL
+                AND m.status = 'complete'
+                AND EXISTS (
+                  SELECT 1 FROM message_parts p
+                  WHERE p.message_id = m.id AND p.kind = 'text'
+                    AND p.content IS NOT NULL AND trim(p.content) <> ''
+                )
+              ORDER BY m.seq DESC, m.id DESC
+              LIMIT ?3
+            )
+            SELECT v.id, v.session_id, v.role, v.seq, v.created_at, p.content
+            FROM selected_messages v
+            JOIN message_parts p ON p.message_id = v.id
+              AND p.kind = 'text' AND p.content IS NOT NULL AND trim(p.content) <> ''
+            ORDER BY v.seq DESC, v.id DESC, p.ordinal ASC
+            "#,
+        )?;
+        let rows = stmt.query_map(
+            params![session_id, agent_id, max_messages as i64],
+            conversation_message_row,
+        )?;
+        let mut messages = collect_conversation_messages(rows)?;
+        messages.reverse();
+        let anchor = None;
+        (messages, anchor)
+    };
+
+    let (start, end) = if let Some(anchor) = anchor {
         let mut start = anchor.saturating_sub(before);
         let mut end = (anchor + after + 1).min(messages.len());
         if end.saturating_sub(start) > max_messages {
@@ -354,6 +528,43 @@ pub fn read_conversation(
         session_title,
         messages: messages[start..end].to_vec(),
     }))
+}
+
+fn conversation_message_row(
+    row: &Row<'_>,
+) -> rusqlite::Result<(String, String, String, i32, String, String)> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+    ))
+}
+
+fn collect_conversation_messages<I>(rows: I) -> AppResult<Vec<ConversationMessageResult>>
+where
+    I: Iterator<Item = rusqlite::Result<(String, String, String, i32, String, String)>>,
+{
+    let mut messages = Vec::<ConversationMessageResult>::new();
+    for row in rows {
+        let (id, session_id, role, seq, created_at, content) = row?;
+        if let Some(previous) = messages.last_mut().filter(|message| message.id == id) {
+            previous.content.push_str("\n\n");
+            previous.content.push_str(&content);
+        } else {
+            messages.push(ConversationMessageResult {
+                id,
+                session_id,
+                role,
+                seq,
+                created_at,
+                content,
+            });
+        }
+    }
+    Ok(messages)
 }
 
 fn conversation_snippet(content: &str, query: &str) -> String {
@@ -1456,6 +1667,14 @@ mod tests {
                 "text",
                 "Remember the release keyword",
             ),
+            (
+                "history-chinese",
+                "session-1",
+                "user",
+                3,
+                "text",
+                "历史中的天气预报",
+            ),
         ] {
             insert(
                 &conn,
@@ -1495,7 +1714,21 @@ mod tests {
         assert_eq!(results[0].message_id, "history-user");
         assert_eq!(results[0].session_id, "session-1");
 
-        for message_id in ["history-user", "history-reasoning", "other-agent"] {
+        let chinese_results =
+            search_conversation(&conn, "agent-1", None, "天气", None, 20).unwrap();
+        assert_eq!(chinese_results.len(), 1);
+        assert_eq!(chinese_results[0].message_id, "history-chinese");
+        let chinese_phrase_results =
+            search_conversation(&conn, "agent-1", None, "天气预报", None, 20).unwrap();
+        assert_eq!(chinese_phrase_results.len(), 1);
+        assert_eq!(chinese_phrase_results[0].message_id, "history-chinese");
+
+        for message_id in [
+            "history-user",
+            "history-reasoning",
+            "other-agent",
+            "history-chinese",
+        ] {
             delete_parts(&conn, message_id).unwrap();
         }
         insert_part(
@@ -1563,6 +1796,21 @@ mod tests {
             .unwrap();
         }
 
+        insert_part(
+            &conn,
+            &NewMessagePart {
+                id: "read-assistant-part-2".into(),
+                message_id: "read-assistant".into(),
+                kind: "text".into(),
+                ordinal: 1,
+                mime_type: None,
+                tool_call_id: None,
+                content: "With a second text part".into(),
+                metadata: None,
+            },
+        )
+        .unwrap();
+
         let result = read_conversation(
             &conn,
             "agent-1",
@@ -1576,7 +1824,10 @@ mod tests {
         .unwrap();
         assert_eq!(result.messages.len(), 3);
         assert_eq!(result.messages[1].id, "read-assistant");
-        assert!(result.messages[1].content.contains("useful answer"));
+        assert_eq!(
+            result.messages[1].content,
+            "A useful answer\n\nWith a second text part"
+        );
 
         let latest = read_conversation(&conn, "agent-1", "session-1", None, 0, 0, 2)
             .unwrap()

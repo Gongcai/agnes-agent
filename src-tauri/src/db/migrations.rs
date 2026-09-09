@@ -513,6 +513,16 @@ fn ensure_conversation_search_index(conn: &Connection) -> AppResult<()> {
            )",
         [],
     )?;
+    conn.execute(
+        "INSERT INTO message_parts_fts_substring(rowid, part_id, message_id, content) \
+         SELECT p.rowid, p.id, p.message_id, p.content \
+         FROM message_parts p \
+         WHERE p.kind = 'text' AND p.content IS NOT NULL \
+           AND NOT EXISTS (\
+             SELECT 1 FROM message_parts_fts_substring f WHERE f.rowid = p.rowid\
+           )",
+        [],
+    )?;
     Ok(())
 }
 

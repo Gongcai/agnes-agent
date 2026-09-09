@@ -108,11 +108,24 @@ CREATE VIRTUAL TABLE IF NOT EXISTS message_parts_fts USING fts5(
   tokenize='unicode61'
 );
 
-CREATE TRIGGER IF NOT EXISTS message_parts_fts_insert
+-- Trigram search keeps substring queries fast for languages without whitespace
+-- tokenization, such as Chinese. Queries shorter than three characters use the
+-- fallback query in the messages repository.
+CREATE VIRTUAL TABLE IF NOT EXISTS message_parts_fts_substring USING fts5(
+  part_id UNINDEXED,
+  message_id UNINDEXED,
+  content,
+  tokenize='trigram'
+);
+
+DROP TRIGGER IF EXISTS message_parts_fts_insert;
+CREATE TRIGGER message_parts_fts_insert
 AFTER INSERT ON message_parts
 WHEN NEW.kind = 'text' AND NEW.content IS NOT NULL
 BEGIN
   INSERT INTO message_parts_fts(rowid, part_id, message_id, content)
+  VALUES (NEW.rowid, NEW.id, NEW.message_id, NEW.content);
+  INSERT INTO message_parts_fts_substring(rowid, part_id, message_id, content)
   VALUES (NEW.rowid, NEW.id, NEW.message_id, NEW.content);
 END;
 
@@ -126,6 +139,7 @@ AFTER UPDATE OF kind, content, message_id ON message_parts
 WHEN OLD.kind = 'text' AND OLD.content IS NOT NULL
 BEGIN
   DELETE FROM message_parts_fts WHERE rowid = OLD.rowid;
+  DELETE FROM message_parts_fts_substring WHERE rowid = OLD.rowid;
 END;
 
 CREATE TRIGGER message_parts_fts_update_insert
@@ -134,6 +148,8 @@ WHEN NEW.kind = 'text' AND NEW.content IS NOT NULL
 BEGIN
   INSERT INTO message_parts_fts(rowid, part_id, message_id, content)
   VALUES (NEW.rowid, NEW.id, NEW.message_id, NEW.content);
+  INSERT INTO message_parts_fts_substring(rowid, part_id, message_id, content)
+  VALUES (NEW.rowid, NEW.id, NEW.message_id, NEW.content);
 END;
 
 CREATE TRIGGER message_parts_fts_delete
@@ -141,12 +157,17 @@ AFTER DELETE ON message_parts
 WHEN OLD.kind = 'text' AND OLD.content IS NOT NULL
 BEGIN
   DELETE FROM message_parts_fts WHERE rowid = OLD.rowid;
+  DELETE FROM message_parts_fts_substring WHERE rowid = OLD.rowid;
 END;
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_seq
   ON messages(session_id, seq, id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_session_status_seq
+  ON messages(session_id, status, seq, id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_message_parts_message_kind
   ON message_parts(message_id, kind, ordinal);
+CREATE INDEX IF NOT EXISTS idx_sessions_agent_active
+  ON sessions(agent_id, id) WHERE deleted_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS memory_files (
   id TEXT PRIMARY KEY,
