@@ -727,6 +727,7 @@ mod tests {
                 "write_stdin",
                 "stop_terminal",
                 "file_read",
+                "read_image",
                 "file_write",
                 "file_edit",
                 "list_files",

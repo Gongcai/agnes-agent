@@ -10,7 +10,7 @@ use crate::tools::policy::Risk;
 
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 
-fn image_media_type(path: &Path, bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn detect_image_media_type(path: &Path, bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Some("image/png");
     }
@@ -137,7 +137,7 @@ impl BuiltinTool for ReadImageTool {
             ctx.record_failure(&message).await?;
             return Err(AppError::Other(message));
         }
-        let Some(media_type) = image_media_type(&path, &bytes) else {
+        let Some(media_type) = detect_image_media_type(&path, &bytes) else {
             let message =
                 "文件不是支持的图片格式（支持 PNG、JPEG、GIF、WebP、BMP、TIFF、AVIF、HEIC）";
             ctx.record_failure(message).await?;

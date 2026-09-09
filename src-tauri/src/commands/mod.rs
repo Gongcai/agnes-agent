@@ -2918,14 +2918,6 @@ fn cache_chat_attachment_with_source_bytes(
         .and_then(|value| value.to_str())
         .unwrap_or("attachment");
     let name = sanitize_attachment_name(attachment.name.as_deref().unwrap_or(fallback_name));
-    let media_type = attachment
-        .media_type
-        .as_deref()
-        .filter(|value| value.len() <= 128 && value.contains('/') && value.is_ascii())
-        .map(str::to_string)
-        .or_else(|| mime_guess::from_path(&name).first_raw().map(str::to_string))
-        .unwrap_or_else(|| "application/octet-stream".into());
-
     let bytes = match (source_path.as_deref(), attachment.data_base64.as_deref()) {
         (Some(path), None) => {
             if let Some(bytes) = source_bytes {
@@ -2959,6 +2951,29 @@ fn cache_chat_attachment_with_source_bytes(
             MAX_LOCAL_CHAT_ATTACHMENT_BYTES / 1024 / 1024
         )));
     }
+
+    // Android content URIs usually have no extension and may not expose a MIME type.
+    // Inspect the bytes before falling back to the filename so vision models receive
+    // the same image input as they do for desktop paths.
+    let media_type = attachment
+        .media_type
+        .as_deref()
+        .filter(|value| {
+            value.len() <= 128
+                && value.contains('/')
+                && value.is_ascii()
+                && !value.eq_ignore_ascii_case("application/octet-stream")
+        })
+        .map(str::to_string)
+        .or_else(|| {
+            crate::tools::builtin::read_image::detect_image_media_type(
+                std::path::Path::new(&name),
+                &bytes,
+            )
+            .map(str::to_string)
+        })
+        .or_else(|| mime_guess::from_path(&name).first_raw().map(str::to_string))
+        .unwrap_or_else(|| "application/octet-stream".into());
 
     let relative_path = CHAT_ATTACHMENT_CACHE_PATH
         .iter()
@@ -6614,6 +6629,33 @@ mod tests {
             std::fs::read(workspace.path().join(&cached.relative_path)).unwrap(),
             b"\x89PNG\r\n\x1a\n"
         );
+    }
+
+    #[test]
+    fn local_chat_attachment_detects_image_type_without_extension() {
+        let source = std::env::temp_dir().join(format!(
+            "agnes-chat-attachment-image-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&source, b"\x89PNG\r\n\x1a\n").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let cached = cache_chat_attachment(
+            workspace.path(),
+            ChatAttachmentInput {
+                id: "android-uri-image-1".into(),
+                kind: "local_file".into(),
+                path: Some(source.to_string_lossy().into_owned()),
+                name: None,
+                media_type: None,
+                data_base64: None,
+                collection_id: None,
+                skill_id: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached.media_type, "image/png");
+        assert!(cached.inline_content.is_empty());
+        let _ = std::fs::remove_file(source);
     }
 
     #[test]
