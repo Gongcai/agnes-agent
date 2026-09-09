@@ -40,14 +40,14 @@ Filesystem layout:
 - `/dev/shm` is available for Python multiprocessing. `/proc` and `/sys` are mounted from Android, but some nodes may be unreadable.
 
 Python and packages:
-- `python3` (3.12), `pip`, `uv`, `git`, `ssh`, `bash`, and `apt` are preinstalled.
+- `python3` (3.12), `pip`, `uv`, `node`/`npm`/`npx` (22 LTS), `git`, `ssh`, `bash`, and `apt` are preinstalled.
 - System Python enforces PEP 668: prefer `uv venv` plus `uv pip install` for project dependencies. `UV_LINK_MODE=copy` is preset and uv caches persist across sessions.
 
 Environment and limits:
 - Processes start with a clean environment: `HOME=/root`, `TMPDIR=/tmp`, `LANG=C.UTF-8`; Android host variables are not inherited.
 - There is no systemd, cron, real root, namespaces, or cgroups. Background processes live under the app's foreground service and may be killed when the runtime stops; do not assume they survive across sessions.
 - Your shell runs inside a persistent PTY. Long-running commands return a `session_id`; use `write_stdin` to poll output or send input (including answers to interactive prompts) and `stop_terminal` to stop a session. `DEBIAN_FRONTEND=noninteractive` is preset, but interactive commands like `ssh` or `apt` without `-y` still work through `write_stdin`.
-- MCP stdio servers also run inside this guest: their `command` resolves through the guest PATH, so tools like `node` must be preinstalled in the Runtime rootfs."#;
+- MCP stdio servers also run inside this guest: their `command` resolves through the guest PATH; `node`/`npx` and `python3` based servers work out of the box."#;
 
 /// Append platform-specific runtime context to the agent system prompt.
 /// Desktop builds run the agent on the host and need no extra briefing.

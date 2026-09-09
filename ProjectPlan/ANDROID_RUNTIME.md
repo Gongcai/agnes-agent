@@ -252,8 +252,10 @@ Android 构建从仓库根目录下未纳入 Git 的 `android-runtime/<abi>/` �
 
 - Python 3.12、`pip`、`uv` 和 venv；
 - Shell、完整基础文件工具、Git、SSH、证书和常用编译工具；
+- Node.js 22 LTS（`node`/`npm`/`npx`，官方 dist 经 `--node-tarball` 注入 `usr/local`，版本与
+  SHA-256 锁定在 `sources.lock.json`；arm64-v8a 制品已预装）；
 - Python Agent 依赖及现有 Agent WebSocket 协议；
-- Runtime 设置提供 Node.js/npm/fnm、Rust/rustup、MCP 进程和更多 Skills 依赖的可选预装入口；它们
+- Runtime 设置提供 Rust/rustup、fnm 和更多 Skills 依赖的可选预装入口；它们
   安装到同一个用户可配置 Ubuntu，不拆成 Agent 专用工具套件。
 
 不把桌面端的 Python sidecar 打包方式直接照搬到 Android。Android 需要维护一个可升级的 Linux Python 环境，但 Agent Protocol 和 Python 业务代码尽量保持同源。
@@ -456,7 +458,7 @@ Android 有两种执行模式：
 - 后台任务、崩溃恢复和运行状态恢复；
 - [x] stdio MCP server 在 PRoot Ubuntu guest 内启动：命令按 guest PATH/rootfs 解析、共享 Runtime
   mount table 与干净环境、密钥 env 经 SecretStore 注入、缺失程序返回预装提示；Streamable HTTP
-  传输双端行为一致；rootfs 预装 Node.js 与 Skills 逐项接入仍属后续工作。
+  传输双端行为一致；arm64-v8a 制品已预装 Node.js 22 LTS，Skills 逐项接入仍属后续工作。
 
 ### A3：跨设备与移动制品能力
 

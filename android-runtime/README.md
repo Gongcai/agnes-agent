@@ -29,9 +29,10 @@ android-runtime/
 `PROOT_LOADER` 直接使用，避免 PRoot 从应用私有临时目录提取 loader。
 
 Android 的 Shell 和 Git 工具会复用 Agent 启动时的 PRoot rootfs。stdio MCP server 也在同一
-Ubuntu guest 内启动：命令按 guest PATH（或 rootfs 内绝对路径）解析，缺失程序会在连接时返回
-明确的预装提示；server 进程使用与 Agent 工具相同的 mount table、干净环境和 `/root` 起始目录，
-密钥环境变量经 SecretStore 在启动时注入。用户终端和 Agent 工具共享同一份
+Ubuntu guest 内启动：命令按 guest PATH（或 rootfs 内绝对路径）解析；发布制品预装
+Node.js 22 LTS（`node`/`npm`/`npx`，锁定版本与 SHA-256 见 `sources.lock.json`），缺失程序会
+在连接时返回明确的预装提示；server 进程使用与 Agent 工具相同的 mount table、干净环境和
+`/root` 起始目录，密钥环境变量经 SecretStore 在启动时注入。用户终端和 Agent 工具共享同一份
 Runtime launch spec，但不会共享 stdin、输出流或取消信号。Rust 会先完成工作区、cwd、
 写入边界和审批检查，再将工作区映射为 Linux 内的 `/workspace`；工具不会获得其他 Android
 应用私有目录或未授权路径。Agent 主进程和 Rust 发起的 Shell/Git/Python 工具进程都会将持久项目
@@ -125,7 +126,14 @@ pnpm build:android-runtime -- --rootfs <rootfs-path> --abi <arm64-v8a|x86_64>
 
 脚本会注入 Agnes Agent，生成 manifest，校验 rootfs 后输出 `runtime.zip`。打包时还会补齐
 `rootfs/dev/shm` 和 `rootfs/tmp`，并将 Python 的 `pip3`/`pip` 入口规范化为可解析的真实
-脚本，拒绝自指软链接。当前 x86_64
+脚本，拒绝自指软链接。
+
+可选传入 `--node-tarball <node-dist.tar.xz>` 把官方 Node.js dist 合并进 `usr/local`
+（版本与 SHA-256 锁定在 `sources.lock.json` 的 `node` 节；脚本会用 readelf 校验二进制
+架构与 `--abi` 匹配，并验证 `usr/local/bin/node` 与 `npm`/`npx`/`corepack` 可解析）。
+当前 arm64-v8a 制品已预装 Node.js 22.20.0。
+
+当前 x86_64
 Ubuntu 24.04.4 完整制品已在 Android 模拟器通过首次安装、PRoot 启动、Agent Protocol 握手和
 模型流式回复验证；
 Ubuntu rootfs 的下载、apt 安装和锁定 Python 依赖安装目前仍是人工制备流程，不能视为完整的

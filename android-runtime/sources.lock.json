@@ -33,5 +33,16 @@
     "commit": "77229f73c20af69ab0f3c96efbb229ff64a9dfe4",
     "repository": "https://github.com/samba-team/samba.git",
     "license": "LGPL-3.0-or-later"
+  },
+  "node": {
+    "version": "22.20.0",
+    "baseUrl": "https://nodejs.org/dist/v22.20.0",
+    "license": "MIT",
+    "architectures": {
+      "arm64-v8a": {
+        "filename": "node-v22.20.0-linux-arm64.tar.xz",
+        "sha256": "06907b9c088ce62305bc1530e5c1ae1510245114645768f7750c349c5b6fe667"
+      }
+    }
   }
 }

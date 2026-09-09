@@ -200,7 +200,56 @@ function ensureNoopSudo(rootfs) {
   chmodSync(sudo, 0o755);
 }
 
+function expectedNodeMachine(abi) {
+  if (abi === "arm64-v8a") return "AArch64";
+  if (abi === "x86_64") return "Advanced Micro Devices X86-64";
+  throw new Error(`Unsupported Android ABI: ${abi}`);
+}
+
+function mergeNodeDist(rootfs, tarball, abi, workDir) {
+  const extractDir = join(workDir, "node-dist");
+  mkdirSync(extractDir, { recursive: true });
+  const extract = spawnSync("tar", ["-xJf", tarball, "-C", extractDir], { stdio: "inherit" });
+  if (extract.status !== 0) throw new Error(`tar failed to extract Node.js dist: ${tarball}`);
+  const entries = readdirSync(extractDir).filter((name) => name.startsWith("node-"));
+  if (entries.length !== 1) {
+    throw new Error(`Node.js dist tarball must contain exactly one node-* directory: ${tarball}`);
+  }
+  const dist = join(extractDir, entries[0]);
+
+  const nodeBinary = join(dist, "bin", "node");
+  if (!existsSync(nodeBinary)) {
+    throw new Error(`Node.js dist is missing bin/node: ${tarball}`);
+  }
+  const readelf = spawnSync("readelf", ["-h", nodeBinary], { encoding: "utf8" });
+  if (readelf.status !== 0) throw new Error("readelf failed on Node.js binary");
+  const machine = expectedNodeMachine(abi);
+  if (!readelf.stdout.includes(machine)) {
+    throw new Error(`Node.js binary has the wrong machine type; expected ${machine} for ${abi}`);
+  }
+
+  // Official dist tarballs already use the usr/local layout; merge it into
+  // the guest rootfs so node/npm/npx resolve through the guest PATH.
+  for (const subdir of ["bin", "lib", "include", "share"]) {
+    const source = join(dist, subdir);
+    if (existsSync(source)) {
+      copyTree(source, join(rootfs, "usr", "local", subdir));
+    }
+  }
+  const installedNode = resolveRootfsPath(rootfs, "usr/local/bin/node");
+  if (!lstatSync(installedNode).isFile()) {
+    throw new Error("Installed usr/local/bin/node does not resolve to a regular file");
+  }
+  chmodSync(installedNode, 0o755);
+  for (const alias of ["npm", "npx", "corepack"]) {
+    resolveRootfsPath(rootfs, `usr/local/bin/${alias}`);
+  }
+}
+
 const rootfsInput = resolve(requiredArgument("--rootfs"));
+const nodeTarball = argumentValue("--node-tarball")
+  ? resolve(argumentValue("--node-tarball"))
+  : null;
 const abi = argumentValue("--abi", "arm64-v8a");
 const runtimeVersion = argumentValue("--runtime-version", "ubuntu-24.04.1");
 const agentVersion = argumentValue("--agent-version", packageJson.version);
@@ -213,6 +262,9 @@ const output = resolve(
 
 assertAbi(abi);
 assertSafeVersion(runtimeVersion);
+if (nodeTarball && !existsSync(nodeTarball)) {
+  throw new Error(`Node.js dist tarball does not exist: ${nodeTarball}`);
+}
 if (!existsSync(rootfsInput) || !lstatSync(rootfsInput).isDirectory()) {
   throw new Error(`Rootfs directory does not exist: ${rootfsInput}`);
 }
@@ -230,6 +282,7 @@ try {
   const rootfs = join(packageRoot, "rootfs");
   mkdirSync(rootfs, { recursive: true });
   copyTree(rootfsInput, rootfs);
+  if (nodeTarball) mergeNodeDist(rootfs, nodeTarball, abi, workDir);
   ensureRuntimeDirectories(rootfs);
   normalizePythonEntrypoints(rootfs);
   ensureNoopSudo(rootfs);
