@@ -1311,6 +1311,7 @@ def test_debug_prompt_payload_includes_effective_tool_schemas():
 
     assert tool_names == [
         "get_current_time",
+        "read_image",
         "memory_list",
         "memory_read",
         "memory_write",
@@ -1320,6 +1321,8 @@ def test_debug_prompt_payload_includes_effective_tool_schemas():
     ]
     assert preview["tools"][0]["function"]["description"]
     assert "## memory_filesystem" in preview["system_prompt"]
+    assert "# Image Inspection" in preview["system_prompt"]
+    assert "read_image" in preview["system_prompt"]
 
 def test_graph_compiles():
     graph = build_graph()
@@ -1342,7 +1345,9 @@ def test_get_available_tools():
     assert "write_stdin" in tool_names
     assert "stop_terminal" in tool_names
     assert "file_read" not in tool_names
-    assert "read_image" not in tool_names
+    # Image inspection is independent from ordinary file tools so legacy
+    # agents with file access disabled can still inspect an attached image.
+    assert "read_image" in tool_names
     assert "file_write" not in tool_names
     assert "write_file" not in tool_names
     assert "file_edit" not in tool_names
@@ -1410,6 +1415,15 @@ def test_get_available_tools():
         "storage_files_move",
         "storage_files_trash",
     ]
+
+    image_disabled_names = [
+        tool["function"]["name"]
+        for tool in get_available_tools({
+            "file": {"enabled": False},
+            "read_image": {"enabled": False},
+        })
+    ]
+    assert "read_image" not in image_disabled_names
 
     memory_disabled_names = [
         tool["function"]["name"]

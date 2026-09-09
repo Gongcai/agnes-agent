@@ -248,13 +248,19 @@ pub(crate) fn effective_policy(
             p.shell.allowed_cwd.push(ws_str.clone());
         }
         if !p.file.allowed_roots.contains(&ws_str) {
-            p.file.allowed_roots.push(ws_str);
+            p.file.allowed_roots.push(ws_str.clone());
+        }
+        if !p.read_image.allowed_roots.contains(&ws_str) {
+            p.read_image.allowed_roots.push(ws_str);
         }
     }
     for root in skill_roots {
         let root = root.to_string_lossy().to_string();
         if !p.file.allowed_roots.contains(&root) {
-            p.file.allowed_roots.push(root);
+            p.file.allowed_roots.push(root.clone());
+        }
+        if !p.read_image.allowed_roots.contains(&root) {
+            p.read_image.allowed_roots.push(root);
         }
     }
     p
@@ -309,6 +315,15 @@ mod tests {
                 .count(),
             1
         );
+        assert_eq!(
+            repeated
+                .read_image
+                .allowed_roots
+                .iter()
+                .filter(|path| *path == &workspace)
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -318,6 +333,10 @@ mod tests {
         let effective = effective_policy(&policy, &None, std::slice::from_ref(&skill_root));
         assert!(effective
             .file
+            .allowed_roots
+            .contains(&skill_root.to_string_lossy().to_string()));
+        assert!(effective
+            .read_image
             .allowed_roots
             .contains(&skill_root.to_string_lossy().to_string()));
         assert!(!effective
@@ -416,6 +435,7 @@ mod tests {
                 approval: ApprovalTier::Never,
                 allowed_roots: vec![temp_project.parent().unwrap().to_string_lossy().to_string()],
             },
+            read_image: Default::default(),
             git: GitPolicy {
                 enabled: true,
                 approval: ApprovalTier::Never,

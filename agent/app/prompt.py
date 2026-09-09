@@ -661,6 +661,22 @@ def assemble_prompt(
 
     web_enabled = (tool_policy or {}).get("web", {}).get("enabled", True)
     network_allowed = (tool_policy or {}).get("network", {}).get("allow", True)
+    read_image_policy = (tool_policy or {}).get("read_image", {})
+    read_image_enabled = (
+        read_image_policy
+        if isinstance(read_image_policy, bool)
+        else read_image_policy.get("enabled", True)
+        if isinstance(read_image_policy, dict)
+        else True
+    )
+    if read_image_enabled:
+        system_parts.append(
+            "# Image Inspection\n"
+            "When a user asks you to inspect, describe, compare, or extract visual details from a local image, "
+            "call `read_image` instead of guessing from the filename or using text-only file tools. "
+            "Use the attachment's workspace-relative path from the user-provided context exactly as given; "
+            "the path may have no extension and the tool identifies the image from its file header."
+        )
     if web_enabled and network_allowed:
         system_parts.append(WEB_RESEARCH_INSTRUCTIONS)
 

@@ -10,6 +10,8 @@ pub struct ToolPolicy {
     #[serde(default)]
     pub file: FilePolicy,
     #[serde(default)]
+    pub read_image: ReadImagePolicy,
+    #[serde(default)]
     pub git: GitPolicy,
     #[serde(default)]
     pub memory: MemoryPolicy,
@@ -119,6 +121,62 @@ pub struct FilePolicy {
     pub enabled: bool,
     pub approval: ApprovalTier,
     pub allowed_roots: Vec<String>,
+}
+
+/// Policy for the read-only visual inspection capability.
+///
+/// This is intentionally separate from `FilePolicy`: an agent may be allowed
+/// to inspect images while ordinary text/file editing tools remain disabled.
+#[derive(Serialize, Debug, Clone)]
+pub struct ReadImagePolicy {
+    pub enabled: bool,
+    pub allowed_roots: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for ReadImagePolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Fields {
+            #[serde(default = "default_enabled")]
+            enabled: bool,
+            #[serde(default)]
+            allowed_roots: Vec<String>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Value {
+            Enabled(bool),
+            Fields(Fields),
+        }
+
+        match Value::deserialize(deserializer)? {
+            Value::Enabled(enabled) => Ok(Self {
+                enabled,
+                allowed_roots: Vec::new(),
+            }),
+            Value::Fields(fields) => Ok(Self {
+                enabled: fields.enabled,
+                allowed_roots: fields.allowed_roots,
+            }),
+        }
+    }
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+impl Default for ReadImagePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allowed_roots: Vec::new(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -402,6 +460,11 @@ impl ToolPolicy {
                 *path = "$WORKSPACE".to_string();
             }
         }
+        for path in &mut policy.read_image.allowed_roots {
+            if path == workspace.as_ref() {
+                *path = "$WORKSPACE".to_string();
+            }
+        }
         policy
     }
 
@@ -452,6 +515,40 @@ impl ToolPolicy {
         {
             return Err(format!(
                 "访问的路径 `{}` 不在允许的只读或可写根目录内",
+                path
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate whether the visual inspection capability may read a path.
+    ///
+    /// Include legacy file roots in the boundary so agents created before the
+    /// standalone image capability was introduced keep working in strict mode.
+    pub fn check_image_read(&self, path: &str) -> Result<(), String> {
+        if !self.read_image.enabled {
+            return Err("图片读取工具已被禁用".into());
+        }
+        if self.sandbox.allow_read_outside_workspace {
+            return Ok(());
+        }
+        let file_path = PathBuf::from(path);
+        let temporary_roots = crate::tools::sandbox::temporary_write_paths()
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let mut allowed_roots = self.read_image.allowed_roots.clone();
+        for root in &self.file.allowed_roots {
+            if !allowed_roots.contains(root) {
+                allowed_roots.push(root.clone());
+            }
+        }
+        if !is_path_under_roots(&file_path, &allowed_roots)
+            && !is_path_under_roots(&file_path, &self.sandbox.writable_roots)
+            && !is_path_under_roots(&file_path, &temporary_roots)
+        {
+            return Err(format!(
+                "访问的图片路径 `{}` 不在允许的只读或可写根目录内",
                 path
             ));
         }
@@ -606,6 +703,27 @@ mod tests {
     }
 
     #[test]
+    fn legacy_agents_enable_image_reading_without_file_tools() {
+        let policy: ToolPolicy = serde_json::from_str(r#"{"file":{"enabled":false}}"#).unwrap();
+
+        assert!(!policy.file.enabled);
+        assert!(policy.read_image.enabled);
+        assert!(policy.check_image_read("/tmp/attached-image.png").is_ok());
+    }
+
+    #[test]
+    fn image_read_policy_accepts_legacy_boolean_values() {
+        let disabled: ToolPolicy = serde_json::from_str(r#"{"read_image":false}"#).unwrap();
+        assert!(!disabled.read_image.enabled);
+        assert!(disabled
+            .check_image_read("/tmp/attached-image.png")
+            .is_err());
+
+        let enabled: ToolPolicy = serde_json::from_str(r#"{"read_image":true}"#).unwrap();
+        assert!(enabled.read_image.enabled);
+    }
+
+    #[test]
     fn read_outside_workspace_allows_shell_working_directory() {
         let policy = ToolPolicy::default();
         assert!(policy.check_shell("/usr/share").is_ok());
@@ -625,6 +743,7 @@ mod tests {
         let value = serde_json::to_value(ToolPolicy::default()).unwrap();
         assert_eq!(value["shell"]["approval"], "on_risk");
         assert_eq!(value["file"]["approval"], "on_write");
+        assert_eq!(value["read_image"]["enabled"], true);
         assert_eq!(value["git"]["approval"], "on_risk");
         assert_eq!(value["memory"]["approval"], "on_write");
         assert_eq!(value["planner"]["approval"], "always");
@@ -663,6 +782,26 @@ mod tests {
         policy.sandbox.allow_read_outside_workspace = false;
         assert!(policy.check_file_read("/etc/passwd").is_err());
         assert!(policy.check_file_read("/workspace/README.md").is_ok());
+    }
+
+    #[test]
+    fn image_read_has_its_own_capability_switch_and_legacy_roots() {
+        let root =
+            std::env::temp_dir().join(format!("agnes-image-policy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let image = root.join("image.bin");
+        std::fs::write(&image, b"image").unwrap();
+
+        let mut policy = ToolPolicy::default();
+        policy.sandbox.allow_read_outside_workspace = false;
+        policy.file.enabled = false;
+        policy.file.allowed_roots = vec![root.to_string_lossy().to_string()];
+        assert!(policy.check_image_read(&image.to_string_lossy()).is_ok());
+
+        policy.read_image.enabled = false;
+        assert!(policy.check_image_read(&image.to_string_lossy()).is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

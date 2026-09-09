@@ -34,6 +34,7 @@ impl PermissionMode {
             policy.shell.allowed_cwd = vec!["/".to_string()];
             policy.shell.deny_write_outside_workspace = false;
             policy.file.allowed_roots = vec!["/".to_string()];
+            policy.read_image.allowed_roots = vec!["/".to_string()];
             policy.network.allow = true;
             policy.sandbox.landlock = false;
             policy.sandbox.bwrap = BwrapMode::Disabled;

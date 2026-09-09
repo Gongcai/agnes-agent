@@ -565,6 +565,7 @@ interface AgentFormValues {
   toolPolicy: {
     shell: AgentToolToggle;
     file: AgentToolToggle;
+    read_image: AgentToolToggle;
     git: AgentToolToggle;
     memory: AgentToolToggle;
     planner: AgentToolToggle;
@@ -608,6 +609,7 @@ const THINKING_MODE_OPTIONS: { value: string; label: string; desc: string }[] = 
 const DEFAULT_TOOL_POLICY: AgentFormValues["toolPolicy"] = {
   shell: { enabled: true, approval: "on_risk" },
   file: { enabled: true, approval: "on_write" },
+  read_image: { enabled: true, approval: "never" },
   git: { enabled: true, approval: "on_risk" },
   memory: { enabled: true, approval: "on_write" },
   planner: { enabled: true, approval: "always" },
@@ -663,7 +665,7 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
   try {
     const obj = JSON.parse(json);
     if (obj && typeof obj === "object") {
-      const knownKeys = new Set(["shell", "file", "git", "memory", "planner", "web", "mcp", "network", "sandbox"]);
+      const knownKeys = new Set(["shell", "file", "read_image", "git", "memory", "planner", "web", "mcp", "network", "sandbox"]);
       Object.entries(obj).forEach(([key, value]) => {
         if (!knownKeys.has(key)) base[key] = value;
       });
@@ -689,6 +691,12 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
         base[k] = { ...t, enabled: t.enabled !== false, approval };
       }
     });
+    const readImage = obj?.read_image;
+    base.read_image = {
+      ...(readImage && typeof readImage === "object" ? readImage : {}),
+      enabled: readImage === false ? false : readImage?.enabled !== false,
+      approval: "never",
+    };
     const searchProvider = ["auto", "duckduckgo", "bing", "searxng", "brave"].includes(obj?.web?.search_provider)
       ? obj.web.search_provider as WebSearchProvider
       : "auto";
@@ -1020,6 +1028,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           ))}
         </select>
       </div>
+    </div>
+  );
+
+  const renderCapabilityToggle = (key: "read_image", label: string) => (
+    <div className="flex items-center justify-between py-1.5 border-b border-stone-100 last:border-0">
+      <span className="text-xs text-stone-700">{label}</span>
+      <button
+        type="button"
+        onClick={() =>
+          setAgentForm((f) => ({
+            ...f,
+            toolPolicy: {
+              ...f.toolPolicy,
+              [key]: { ...f.toolPolicy[key], enabled: !f.toolPolicy[key].enabled },
+            },
+          }))
+        }
+        className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors ${
+          agentForm.toolPolicy[key].enabled
+            ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+            : "bg-stone-100 text-stone-400 border border-stone-200"
+        }`}
+      >
+        {agentForm.toolPolicy[key].enabled ? "已启用" : "已禁用"}
+      </button>
     </div>
   );
 
@@ -2991,6 +3024,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <div className="bg-stone-50 rounded-lg border border-stone-200/60 px-3 py-1">
                           {renderToolToggle("shell", "Shell 命令执行")}
                           {renderToolToggle("file", "文件读写")}
+                          {renderCapabilityToggle("read_image", "图片读取（视觉）")}
                           {renderToolToggle("git", "Git 操作")}
                           {renderToolToggle("memory", "长期记忆")}
                           {renderToolToggle("planner", "日历与待办")}

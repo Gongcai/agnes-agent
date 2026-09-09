@@ -73,7 +73,7 @@ impl BuiltinTool for ReadImageTool {
             "type": "function",
             "function": {
                 "name": self.name(),
-                "description": "Read a local image and return it as a multimodal tool result for a vision-capable model. Use this when you need to inspect an image instead of treating it as text. The image is read-only and must be inside the effective file-read boundary.",
+                "description": "Read a local image and return it as a multimodal tool result for a vision-capable model. Use this when you need to inspect an image instead of treating it as text. The image is read-only and must be inside the effective image-read boundary.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -109,7 +109,7 @@ impl BuiltinTool for ReadImageTool {
         let path = crate::tools::builtin::normalize_path(&crate::tools::builtin::resolve_path(
             ctx, path_arg,
         ));
-        if let Err(error) = ctx.policy.check_file_read(&path.to_string_lossy()) {
+        if let Err(error) = ctx.policy.check_image_read(&path.to_string_lossy()) {
             ctx.record_failure(&error).await?;
             return Err(AppError::Other(error));
         }

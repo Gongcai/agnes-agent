@@ -284,6 +284,29 @@ def get_available_tools(
         })
         
     # 2. File Tools
+    read_image_policy = tool_policy.get("read_image", {})
+    if isinstance(read_image_policy, bool):
+        read_image_enabled = read_image_policy
+    elif isinstance(read_image_policy, dict):
+        read_image_enabled = read_image_policy.get("enabled", True)
+    else:
+        read_image_enabled = True
+    read_image_schema = {
+        "type": "function",
+        "function": {
+            "name": "read_image",
+            "description": "Read a local image for visual inspection. Use this when an image must be actively examined. The image must be within the effective image-read boundary.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path or path relative to the workspace."},
+                    "detail": {"type": "string", "enum": ["low", "auto", "high"]},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+    }
     file_enabled = tool_policy.get("file", {}).get("enabled", True)
     if file_enabled:
         tools.append({
@@ -300,22 +323,8 @@ def get_available_tools(
                 }
             }
         })
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": "read_image",
-                "description": "Read a local image for visual inspection. Use this when an image must be actively examined. The image must be within the effective file-read boundary.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Absolute path or path relative to the workspace."},
-                        "detail": {"type": "string", "enum": ["low", "auto", "high"]},
-                    },
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-            },
-        })
+        if read_image_enabled:
+            tools.append(read_image_schema)
         tools.append({
             "type": "function",
             "function": {
@@ -412,6 +421,12 @@ def get_available_tools(
                 }
             }
         })
+
+    # Image inspection is a separate read-only capability. Keep it available
+    # when ordinary file tools are disabled, including for legacy policies that
+    # do not contain the new `read_image` section.
+    if not file_enabled and read_image_enabled:
+        tools.append(read_image_schema)
 
     # 3. Git Tool
     git_enabled = tool_policy.get("git", {}).get("enabled", True)
