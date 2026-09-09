@@ -49,3 +49,7 @@ client_secret_*.apps.googleusercontent.com.json
 
 # os
 .DS_Store
+
+# Android release signing (local only)
+src-tauri/gen/android/keystore.properties
+src-tauri/gen/android/app/*.jks
