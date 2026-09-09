@@ -86,6 +86,15 @@ async fn resolve_effective_tool_policy(
     Ok((effective, permission_mode, workspace_cwd))
 }
 
+fn attachment_root_for_agent(state: &AppState, host_root: &std::path::Path) -> String {
+    state
+        .agent
+        .process_runtime()
+        .guest_path_for_host(host_root, &state.home_workspace_dir)
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -1310,6 +1319,7 @@ pub async fn get_debug_prompt(
     let attachment_root = workspace_cwd
         .clone()
         .unwrap_or_else(|| state.home_workspace_dir.clone());
+    let agent_attachment_root = attachment_root_for_agent(&state, &attachment_root);
     let prompt_tool_policy = effective_tool_policy.redacted_for_prompt(workspace_cwd.as_deref());
     let tool_policy_json = serde_json::to_value(&prompt_tool_policy)?;
     let mcp_tools = state.mcp.dynamic_tools(&effective_tool_policy).await;
@@ -1349,7 +1359,7 @@ pub async fn get_debug_prompt(
             "retrievedKnowledge": retrieved_knowledge,
             "readingContext": reading_book.as_ref().map(reading_prompt_context),
             "workspace": workspace_context,
-            "attachmentRoot": attachment_root.to_string_lossy().to_string(),
+            "attachmentRoot": agent_attachment_root,
             "projectContext": [],
             "attachmentsContext": attachments_context
         }
@@ -2378,6 +2388,7 @@ async fn start_agent_run(
     let attachment_root = workspace_cwd
         .clone()
         .unwrap_or_else(|| state.home_workspace_dir.clone());
+    let agent_attachment_root = attachment_root_for_agent(state, &attachment_root);
     let prompt_tool_policy = effective_tool_policy.redacted_for_prompt(workspace_cwd.as_deref());
     let tool_policy_json = serde_json::to_value(&prompt_tool_policy)?;
     let mcp_tools = state.mcp.dynamic_tools(&effective_tool_policy).await;
@@ -2422,7 +2433,7 @@ async fn start_agent_run(
             "retrievedKnowledge": retrieved_knowledge,
             "readingContext": reading_book.as_ref().map(reading_prompt_context),
             "workspace": workspace_context,
-            "attachmentRoot": attachment_root.to_string_lossy().to_string(),
+            "attachmentRoot": agent_attachment_root,
             "projectContext": [],
             "attachmentsContext": attachments_context
         }
@@ -2856,6 +2867,33 @@ fn sanitize_attachment_name(value: &str) -> String {
     }
 }
 
+fn image_extension_for_media_type(media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        "image/bmp" => Some("bmp"),
+        "image/tiff" => Some("tif"),
+        "image/avif" => Some("avif"),
+        "image/heic" => Some("heic"),
+        _ => None,
+    }
+}
+
+fn ensure_image_attachment_extension(name: String, media_type: &str) -> String {
+    if !media_type.starts_with("image/") || std::path::Path::new(&name).extension().is_some() {
+        return name;
+    }
+    let Some(extension) = image_extension_for_media_type(media_type) else {
+        return name;
+    };
+    let suffix = format!(".{extension}");
+    let max_base_length = 180usize.saturating_sub(suffix.len());
+    let base = name.chars().take(max_base_length).collect::<String>();
+    format!("{base}{suffix}")
+}
+
 fn cache_chat_attachment(
     workspace_root: &std::path::Path,
     attachment: ChatAttachmentInput,
@@ -2974,6 +3012,7 @@ fn cache_chat_attachment_with_source_bytes(
         })
         .or_else(|| mime_guess::from_path(&name).first_raw().map(str::to_string))
         .unwrap_or_else(|| "application/octet-stream".into());
+    let name = ensure_image_attachment_extension(name, &media_type);
 
     let relative_path = CHAT_ATTACHMENT_CACHE_PATH
         .iter()
@@ -6654,8 +6693,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cached.media_type, "image/png");
+        assert!(cached.name.ends_with(".png"));
         assert!(cached.inline_content.is_empty());
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn local_chat_attachment_adds_extension_to_extensionless_image_name() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cached = cache_chat_attachment(
+            workspace.path(),
+            ChatAttachmentInput {
+                id: "android-uri-image-2".into(),
+                kind: "local_file".into(),
+                path: None,
+                name: Some("image_3A264364".into()),
+                media_type: Some("image/jpeg".into()),
+                data_base64: Some("/9j/".into()),
+                collection_id: None,
+                skill_id: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached.name, "image_3A264364.jpg");
+        assert!(workspace.path().join(&cached.relative_path).is_file());
     }
 
     #[test]

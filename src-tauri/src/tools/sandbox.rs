@@ -618,6 +618,27 @@ impl ToolProcessRuntime {
     pub(crate) fn is_android_proot(&self) -> bool {
         matches!(self, Self::AndroidProot(_))
     }
+
+    /// Convert a host path into the stable path visible to the Agent process.
+    /// Android's Agent has a fixed mount table, so it cannot consume a host
+    /// absolute path from a prompt even when the corresponding tool runtime
+    /// can mount that path for a single command.
+    pub(crate) fn guest_path_for_host(
+        &self,
+        host_path: &Path,
+        agent_workspace_root: &Path,
+    ) -> PathBuf {
+        match self {
+            Self::Host => host_path.to_path_buf(),
+            Self::AndroidProot(runtime) => {
+                runtime
+                    .config
+                    .guest_path_resolver(agent_workspace_root)
+                    .resolve_policy_path(&host_path.to_string_lossy())
+                    .guest_path
+            }
+        }
+    }
 }
 
 impl SandboxCommand {
@@ -2173,6 +2194,38 @@ mod tests {
                 ("runtime-tmp", "/tmp"),
                 ("runtime-shm", "/dev/shm"),
             ]
+        );
+    }
+
+    #[test]
+    fn android_agent_paths_use_the_fixed_agent_mount_table() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("Documents/Agnes/Home");
+        let android_workspace_root = temp.path().join("android-runtime/user/workspace");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&android_workspace_root).unwrap();
+
+        let runtime = ToolProcessRuntime::AndroidProot(AndroidProotProcessRuntime::new(
+            AndroidProotRuntimeConfig::new(
+                PathBuf::from("/proot"),
+                PathBuf::from("/loader"),
+                PathBuf::from("/tmp/proot"),
+                PathBuf::from("/rootfs"),
+                android_workspace_root.clone(),
+                false,
+            ),
+        ));
+
+        assert_eq!(
+            runtime.guest_path_for_host(&home.join(".agnes/cache/attachments"), &home),
+            PathBuf::from("/workspace/.agnes/cache/attachments")
+        );
+        assert_eq!(
+            runtime.guest_path_for_host(
+                &android_workspace_root.join("tiny-tool/.agnes/cache/attachments"),
+                &home,
+            ),
+            PathBuf::from("/root/workspace/tiny-tool/.agnes/cache/attachments")
         );
     }
 
