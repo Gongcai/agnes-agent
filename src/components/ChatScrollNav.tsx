@@ -6,7 +6,7 @@ export interface ThumbLayout {
   top: number;
 }
 
-const MIN_THUMB_HEIGHT = 32;
+const MIN_THUMB_HEIGHT = 44;
 const IDLE_HIDE_DELAY = 1200;
 const FLASH_DURATION = 1200;
 const PREVIEW_LENGTH = 30;

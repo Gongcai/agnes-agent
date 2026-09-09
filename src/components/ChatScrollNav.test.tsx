@@ -16,7 +16,7 @@ describe("computeThumbLayout", () => {
 
   it("enforces a minimum thumb height for very long content", () => {
     const { height } = computeThumbLayout(400, 100, 100000, 0);
-    expect(height).toBe(32);
+    expect(height).toBe(44);
   });
 
   it("maps scroll position onto the remaining track", () => {

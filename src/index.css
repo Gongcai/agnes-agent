@@ -1014,11 +1014,11 @@ pre,
   position: absolute;
   top: 12px;
   bottom: calc(var(--agnes-composer-h, 150px) + 12px);
-  right: 5px;
+  right: 4px;
   z-index: 30;
   display: flex;
   justify-content: flex-end;
-  width: 20px;
+  width: 28px;
   opacity: 0;
   transition: opacity 220ms ease;
   pointer-events: none;
@@ -1030,7 +1030,7 @@ pre,
 
 .agnes-scroll-nav-track {
   position: relative;
-  width: 6px;
+  width: 8px;
   height: 100%;
   border-radius: 9999px;
   background: transparent;
@@ -1039,13 +1039,24 @@ pre,
   transition: width 160ms ease, background 160ms ease;
 }
 
+/* Invisible hit area much wider than the visual track, so the bar is
+   easy to grab even before the hover expansion kicks in. */
+.agnes-scroll-nav-track::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -10px;
+  right: -10px;
+}
+
 .agnes-scroll-nav--shown .agnes-scroll-nav-track {
   background: var(--claude-border);
 }
 
 .agnes-scroll-nav-track:hover,
 .agnes-scroll-nav--dragging .agnes-scroll-nav-track {
-  width: 11px;
+  width: 14px;
   background: var(--claude-border);
 }
 
@@ -1073,8 +1084,8 @@ pre,
   position: absolute;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   padding: 0;
   border: none;
   border-radius: 9999px;
@@ -1084,8 +1095,8 @@ pre,
 }
 
 .agnes-scroll-nav-marker--user {
-  width: 7px;
-  height: 7px;
+  width: 9px;
+  height: 9px;
   background: var(--claude-clay);
 }
 
@@ -1099,7 +1110,7 @@ pre,
 
 .agnes-scroll-nav-tooltip {
   position: absolute;
-  right: 26px;
+  right: 34px;
   max-width: 260px;
   transform: translateY(-50%);
   padding: 5px 10px;
