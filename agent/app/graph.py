@@ -161,6 +161,67 @@ def _read_usage(usage: Any) -> Dict[str, int]:
     }
 
 
+def _tool_call_field(value: Any, name: str) -> Any:
+    """Read a tool-call field from LiteLLM objects and dict-shaped responses."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _tool_argument_text(value: Any) -> str:
+    """Normalize tool arguments without discarding structured provider values."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)
+
+
+def _tool_call_index(value: Any, fallback: int) -> int:
+    raw = _tool_call_field(value, "index")
+    try:
+        return int(raw) if raw is not None else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _merge_tool_name(existing: str, incoming: Any) -> str:
+    """Merge both incremental and repeated full function names."""
+    incoming_text = _tool_argument_text(incoming)
+    if not incoming_text or incoming_text == existing:
+        return existing
+    if not existing:
+        return incoming_text
+    if incoming_text.startswith(existing):
+        return incoming_text
+    if existing.startswith(incoming_text):
+        return existing
+    return existing + incoming_text
+
+
+def _parse_tool_arguments(value: Any) -> Dict[str, Any]:
+    """Parse JSON arguments while preserving already-structured provider data."""
+    if isinstance(value, dict):
+        return value
+    argument_text = _tool_argument_text(value)
+    if not argument_text:
+        return {}
+    try:
+        parsed = json.loads(argument_text)
+    except (TypeError, ValueError) as error:
+        return {"raw_args": argument_text, "parse_error": str(error)}
+    if isinstance(parsed, dict):
+        return parsed
+    return {
+        "raw_args": argument_text,
+        "parse_error": "tool arguments must be a JSON object",
+    }
+
+
 def _read_reasoning_delta(delta: Any) -> Optional[str]:
     """Read reasoning from LiteLLM's OpenAI-compatible and Gemini fields."""
     reasoning = (
@@ -658,7 +719,7 @@ def get_available_tools(
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "query": {"type": "string", "description": "A concise search query."},
+                            "query": {"type": "string", "minLength": 1, "maxLength": 512, "description": "A concise search query."},
                             "count": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Maximum results; defaults to 5."},
                             "language": {"type": "string", "description": "Optional BCP 47 language such as zh-CN or en-US; defaults to automatic."},
                             "freshness": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "Optional publication-time filter."},
@@ -1129,24 +1190,38 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
 
                 if delta.tool_calls:
                     attempt_had_activity = True
-                    for tc in delta.tool_calls:
-                        index = tc.index
+                    for fallback_index, tc in enumerate(delta.tool_calls):
+                        index = _tool_call_index(tc, fallback_index)
+                        function = _tool_call_field(tc, "function") or {}
+                        call_id = _tool_call_field(tc, "id")
+                        name = _tool_call_field(function, "name")
+                        argument_text = _tool_argument_text(
+                            _tool_call_field(function, "arguments")
+                        )
+                        arguments_complete = bool(
+                            _tool_call_field(function, "arguments_complete")
+                        )
                         if index not in tool_calls_accumulator:
                             tool_calls_accumulator[index] = {
-                                "id": tc.id or "",
+                                "id": call_id or "",
                                 "type": "function",
                                 "function": {
-                                    "name": tc.function.name or "",
-                                    "arguments": tc.function.arguments or "",
+                                    "name": _tool_argument_text(name),
+                                    "arguments": argument_text,
                                 },
                             }
                         else:
-                            if tc.id:
-                                tool_calls_accumulator[index]["id"] = tc.id
-                            if tc.function.name:
-                                tool_calls_accumulator[index]["function"]["name"] += tc.function.name
-                            if tc.function.arguments:
-                                tool_calls_accumulator[index]["function"]["arguments"] += tc.function.arguments
+                            if call_id:
+                                tool_calls_accumulator[index]["id"] = call_id
+                            accumulated_function = tool_calls_accumulator[index]["function"]
+                            accumulated_function["name"] = _merge_tool_name(
+                                accumulated_function["name"], name
+                            )
+                            if argument_text:
+                                if arguments_complete:
+                                    accumulated_function["arguments"] = argument_text
+                                else:
+                                    accumulated_function["arguments"] += argument_text
 
             if reasoning_started and not reasoning_closed:
                 reasoning_closed = True
@@ -1249,7 +1324,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
         assistant_msg["provider_specific_fields"] = {"responses_reasoning": reasoning_items}
     if pending_tool_calls:
         assistant_msg["tool_calls"] = pending_tool_calls
-        
+
     new_messages = list(state["messages"])
     new_messages.append(assistant_msg)
     
@@ -1286,17 +1361,13 @@ async def execute_tools_node(state: AgentState, config: RunnableConfig) -> Dict[
         }
         
     for tc in state["pending_tool_calls"]:
-        tool_name = tc["function"]["name"]
-        args_str = tc["function"]["arguments"]
-        
-        # Parse arguments safely
-        try:
-            arguments = json.loads(args_str) if args_str else {}
-        except Exception as e:
-            arguments = {"raw_args": args_str, "parse_error": str(e)}
+        function = _tool_call_field(tc, "function") or {}
+        tool_name = _tool_argument_text(_tool_call_field(function, "name"))
+        arguments = _parse_tool_arguments(_tool_call_field(function, "arguments"))
+        tool_call_id = _tool_argument_text(_tool_call_field(tc, "id"))
             
         # Call Rust (async wait for stdout/result)
-        result_content = await execute_tool_fn(tc["id"], tool_name, arguments)
+        result_content = await execute_tool_fn(tool_call_id, tool_name, arguments)
         image = None
         if isinstance(result_content, dict):
             image = result_content.get("image")
@@ -1306,7 +1377,7 @@ async def execute_tools_node(state: AgentState, config: RunnableConfig) -> Dict[
 
         new_messages.append({
             "role": "tool",
-            "tool_call_id": tc["id"],
+            "tool_call_id": tool_call_id,
             "name": tool_name,
             "content": (
                 [{"type": "text", "text": result_content},

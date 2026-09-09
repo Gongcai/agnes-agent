@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import math
+import json
 import warnings
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -301,6 +302,52 @@ def _responses_field(value: Any, name: str) -> Any:
     return getattr(value, name, None)
 
 
+def _tool_arguments_text(value: Any) -> str:
+    """Normalize provider tool arguments to the JSON text expected by chat chunks."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)
+
+
+def _responses_output_index(value: Any, fallback: int = 0) -> int:
+    """Read a Responses output index from either an event or an output item."""
+    raw = _responses_field(value, "output_index")
+    try:
+        return int(raw) if raw is not None else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _tool_argument_update(existing: str, complete: str) -> tuple[str, bool]:
+    """Return the missing suffix of a completed argument value.
+
+    Responses providers commonly emit argument deltas followed by the same full
+    value in a ``done`` event. A complete replacement flag is used only when the
+    two values cannot be reconciled as a prefix, preventing malformed JSON from
+    being created by concatenation.
+    """
+    if not complete:
+        return "", False
+    if not existing:
+        return complete, True
+    if complete == existing:
+        return "", False
+    if complete.startswith(existing):
+        return complete[len(existing):], False
+    if existing.startswith(complete):
+        return "", False
+    try:
+        if json.loads(existing) == json.loads(complete):
+            return "", False
+    except (TypeError, json.JSONDecodeError):
+        pass
+    return complete, True
+
+
 def _responses_content_part(part: Any) -> Optional[Dict[str, Any]]:
     """Convert one chat-completions content part into a Responses input part."""
     part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
@@ -389,7 +436,7 @@ def _chat_messages_to_responses_input(
                     "type": "function_call",
                     "call_id": str(tool_call.get("id") or ""),
                     "name": str(function.get("name") or ""),
-                    "arguments": str(function.get("arguments") or ""),
+                    "arguments": _tool_arguments_text(function.get("arguments")),
                 })
             continue
 
@@ -569,63 +616,134 @@ def _iter_responses_events_as_chat_chunks(
     # would show the chain of thought twice).
     streamed_reasoning_items: set = set()
     streamed_any_reasoning = False
+    tool_arguments: Dict[int, str] = {}
 
     for event in event_stream:
-        event_type = getattr(event, "type", None)
+        event_type = _responses_field(event, "type")
 
         if event_type == "response.output_text.delta":
-            text = getattr(event, "delta", None)
+            text = _responses_field(event, "delta")
             if text:
                 yield _chat_stream_chunk(content=text)
 
         elif event_type in _REASONING_DELTA_EVENTS:
-            text = getattr(event, "delta", None) or getattr(event, "text", None)
+            text = _responses_field(event, "delta") or _responses_field(event, "text")
             if text:
-                item_id = getattr(event, "item_id", None)
+                item_id = _responses_field(event, "item_id")
                 if item_id:
                     streamed_reasoning_items.add(item_id)
                 streamed_any_reasoning = True
                 yield _chat_stream_chunk(reasoning=text)
 
         elif event_type in ("response.output_item.added", "response.output_item.done"):
-            item = getattr(event, "item", None)
-            if getattr(item, "type", None) == "function_call":
-                if event_type == "response.output_item.added":
+            item = _responses_field(event, "item")
+            item_type = _responses_field(item, "type")
+            if item_type == "function_call":
+                index = _responses_output_index(event)
+                call_id = _responses_field(item, "call_id") or _responses_field(item, "id")
+                name = _responses_field(item, "name")
+                complete = _tool_arguments_text(_responses_field(item, "arguments"))
+                argument_text = None
+                arguments_complete = False
+                if complete:
+                    argument_text, arguments_complete = _tool_argument_update(
+                        tool_arguments.get(index, ""), complete
+                    )
+                    if argument_text:
+                        if arguments_complete:
+                            tool_arguments[index] = complete
+                        else:
+                            tool_arguments[index] = tool_arguments.get(index, "") + argument_text
+                if event_type == "response.output_item.added" or argument_text:
                     yield _chat_stream_chunk(tool_calls=[SimpleNamespace(
-                        index=getattr(event, "output_index", 0) or 0,
-                        id=getattr(item, "call_id", None),
+                        index=index,
+                        id=call_id,
                         function=SimpleNamespace(
-                            name=getattr(item, "name", None),
-                            arguments=None,
+                            name=name,
+                            arguments=argument_text,
+                            arguments_complete=arguments_complete,
                         ),
                     )])
-            elif getattr(item, "type", None) == "reasoning":
+            elif item_type == "reasoning":
                 if reasoning_sink is not None:
                     captured = _reasoning_item_dict(item)
                     if captured:
                         reasoning_sink[captured["id"]] = captured
                 if (
                     event_type == "response.output_item.done"
-                    and getattr(item, "id", None) not in streamed_reasoning_items
+                    and _responses_field(item, "id") not in streamed_reasoning_items
                 ):
                     text = _reasoning_item_text(item)
                     if text:
-                        streamed_reasoning_items.add(getattr(item, "id", None))
+                        streamed_reasoning_items.add(_responses_field(item, "id"))
                         streamed_any_reasoning = True
                         yield _chat_stream_chunk(reasoning=text)
 
         elif event_type == "response.function_call_arguments.delta":
-            text = getattr(event, "delta", None)
+            index = _responses_output_index(event)
+            text = _tool_arguments_text(_responses_field(event, "delta"))
             if text:
                 yield _chat_stream_chunk(tool_calls=[SimpleNamespace(
-                    index=getattr(event, "output_index", 0) or 0,
+                    index=index,
                     id=None,
-                    function=SimpleNamespace(name=None, arguments=text),
+                    function=SimpleNamespace(
+                        name=None,
+                        arguments=text,
+                        arguments_complete=False,
+                    ),
+                )])
+                tool_arguments[index] = tool_arguments.get(index, "") + text
+
+        elif event_type == "response.function_call_arguments.done":
+            index = _responses_output_index(event)
+            complete = _tool_arguments_text(_responses_field(event, "arguments"))
+            argument_text, arguments_complete = _tool_argument_update(
+                tool_arguments.get(index, ""), complete
+            )
+            if argument_text:
+                if arguments_complete:
+                    tool_arguments[index] = complete
+                else:
+                    tool_arguments[index] = tool_arguments.get(index, "") + argument_text
+                yield _chat_stream_chunk(tool_calls=[SimpleNamespace(
+                    index=index,
+                    id=None,
+                    function=SimpleNamespace(
+                        name=None,
+                        arguments=argument_text,
+                        arguments_complete=arguments_complete,
+                    ),
                 )])
 
         elif event_type == "response.completed":
-            response = getattr(event, "response", None)
-            usage = _responses_usage_to_chat(getattr(response, "usage", None))
+            response = _responses_field(event, "response")
+            # A few compatible Responses endpoints omit the incremental
+            # argument events and expose the completed function call only here.
+            for output_index, item in enumerate(_responses_field(response, "output") or []):
+                if _responses_field(item, "type") != "function_call":
+                    continue
+                index = _responses_output_index(item, output_index)
+                complete = _tool_arguments_text(_responses_field(item, "arguments"))
+                argument_text, arguments_complete = _tool_argument_update(
+                    tool_arguments.get(index, ""), complete
+                )
+                if complete and argument_text:
+                    if arguments_complete:
+                        tool_arguments[index] = complete
+                    else:
+                        tool_arguments[index] = tool_arguments.get(index, "") + argument_text
+                if argument_text or index not in tool_arguments:
+                    yield _chat_stream_chunk(tool_calls=[SimpleNamespace(
+                        index=index,
+                        id=_responses_field(item, "call_id") or _responses_field(item, "id"),
+                        function=SimpleNamespace(
+                            name=_responses_field(item, "name"),
+                            arguments=argument_text or None,
+                            arguments_complete=arguments_complete,
+                        ),
+                    )])
+
+            usage = _responses_usage_to_chat(_responses_field(response, "usage"))
             if usage is not None:
                 yield _chat_stream_chunk(usage=usage)
             # Last resort: endpoints that stream no reasoning at all still ship
@@ -648,7 +766,7 @@ def _responses_final_to_chat_response(response: Any) -> SimpleNamespace:
     text_parts: List[str] = []
     reasoning_parts: List[str] = []
     tool_calls: List[Dict[str, Any]] = []
-    for item in getattr(response, "output", None) or []:
+    for item in _responses_field(response, "output") or []:
         # litellm hands some output items back as plain dicts, so read every
         # field through the dict/attribute helper instead of getattr.
         item_type = _responses_field(item, "type")
@@ -664,7 +782,7 @@ def _responses_final_to_chat_response(response: Any) -> SimpleNamespace:
                 "type": "function",
                 "function": {
                     "name": _responses_field(item, "name") or "",
-                    "arguments": _responses_field(item, "arguments") or "",
+                    "arguments": _tool_arguments_text(_responses_field(item, "arguments")),
                 },
             })
         elif item_type == "reasoning":
@@ -681,31 +799,33 @@ def _responses_final_to_chat_response(response: Any) -> SimpleNamespace:
             message=message,
             finish_reason="tool_calls" if tool_calls else "stop",
         )],
-        usage=_responses_usage_to_chat(getattr(response, "usage", None)),
+        usage=_responses_usage_to_chat(_responses_field(response, "usage")),
     )
 
 
 def _chat_response_to_chunks(response: Any) -> Any:
     """Wrap a final (non-streaming) chat response as chunk-iterable for graph.py."""
-    message = response.choices[0].message
+    choices = _responses_field(response, "choices") or []
+    message = _responses_field(choices[0], "message")
     tool_calls = []
-    for index, tc in enumerate(getattr(message, "tool_calls", None) or []):
-        function = getattr(tc, "function", None)
+    for index, tc in enumerate(_responses_field(message, "tool_calls") or []):
+        function = _responses_field(tc, "function")
         tool_calls.append(SimpleNamespace(
-            index=getattr(tc, "index", index) or 0,
-            id=getattr(tc, "id", None),
+            index=_responses_field(tc, "index") or index,
+            id=_responses_field(tc, "id"),
             function=SimpleNamespace(
-                name=getattr(function, "name", None) if function else None,
-                arguments=getattr(function, "arguments", None) if function else None,
+                name=_responses_field(function, "name"),
+                arguments=_tool_arguments_text(_responses_field(function, "arguments")),
+                arguments_complete=True,
             ),
         ))
     delta = SimpleNamespace(
-        content=getattr(message, "content", None),
-        reasoning_content=getattr(message, "reasoning_content", None),
+        content=_responses_field(message, "content"),
+        reasoning_content=_responses_field(message, "reasoning_content"),
         tool_calls=tool_calls or None,
     )
     yield SimpleNamespace(choices=[SimpleNamespace(delta=delta)], usage=None)
-    usage = getattr(response, "usage", None)
+    usage = _responses_field(response, "usage")
     if usage is not None:
         yield SimpleNamespace(
             choices=[SimpleNamespace(delta=SimpleNamespace(

@@ -469,6 +469,49 @@ def test_shell_tool_narration_filter_handles_split_arguments_and_followup_text(m
     assert result["messages"][-1]["content"] == "已完成检查。\n接下来继续。"
 
 
+def test_tool_call_arguments_accept_dict_shaped_chunks(monkeypatch):
+    tool_chunk = SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                content=None,
+                reasoning_content=None,
+                reasoning=None,
+                tool_calls=[{
+                    "index": 0,
+                    "id": "tc-dict",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": {"query": "Tavily"},
+                    },
+                }],
+            )
+        )]
+    )
+    monkeypatch.setattr(graph_module, "completion", lambda **_kwargs: iter([tool_chunk]))
+
+    state = {
+        **_tool_stream_state(),
+        "messages": [{"role": "user", "content": "Search Tavily"}],
+        "tool_policy": {"web": {"enabled": True}, "network": {"allow": True}},
+    }
+    result = asyncio.run(graph_module.call_llm_node(state, {"configurable": {}}))
+
+    calls = []
+
+    async def execute_tool(tool_call_id, tool_name, arguments):
+        calls.append((tool_call_id, tool_name, arguments))
+        return "ok"
+
+    asyncio.run(
+        graph_module.execute_tools_node(
+            result,
+            {"configurable": {"execute_tool_fn": execute_tool}},
+        )
+    )
+
+    assert calls == [("tc-dict", "web_search", {"query": "Tavily"})]
+
+
 def test_usage_normalization_supports_openai_and_anthropic_cache_fields():
     openai_usage = SimpleNamespace(
         prompt_tokens=120,

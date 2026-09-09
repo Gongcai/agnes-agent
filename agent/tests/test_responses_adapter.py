@@ -8,6 +8,7 @@ import pytest
 from app.models import (
     LlmConfig,
     RESPONSES_API_PROVIDER,
+    _chat_response_to_chunks,
     _chat_messages_to_responses_input,
     _chat_tools_to_responses_tools,
     _iter_responses_events_as_chat_chunks,
@@ -220,6 +221,72 @@ def test_stream_events_become_chat_chunks_with_text_reasoning_and_tool_calls():
     ) == '{"command":"ls"}'
 
 
+def test_stream_recovers_tool_arguments_from_done_events():
+    """Providers may omit argument deltas and send only the completed value."""
+    events = [
+        {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "type": "function_call",
+                "call_id": "call-search",
+                "name": "web_search",
+                "arguments": "",
+            },
+        },
+        {
+            "type": "response.function_call_arguments.done",
+            "output_index": 0,
+            "arguments": '{"query":"Tavily"}',
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "output": [{
+                    "type": "function_call",
+                    "call_id": "call-search",
+                    "name": "web_search",
+                    "arguments": '{"query":"Tavily"}',
+                }],
+            },
+        },
+    ]
+
+    chunks = list(_iter_responses_events_as_chat_chunks(_event_stream(*events)))
+    tool_deltas = [
+        delta
+        for chunk in chunks
+        if chunk.choices[0].delta.tool_calls
+        for delta in chunk.choices[0].delta.tool_calls
+    ]
+
+    assert tool_deltas[0].function.name == "web_search"
+    assert "".join(
+        delta.function.arguments for delta in tool_deltas if delta.function.arguments
+    ) == '{"query":"Tavily"}'
+
+
+def test_stream_recovers_complete_tool_call_from_output_item_done():
+    events = [{
+        "type": "response.output_item.done",
+        "output_index": 2,
+        "item": {
+            "type": "function_call",
+            "call_id": "call-fetch",
+            "name": "web_fetch",
+            "arguments": {"url": "https://example.com"},
+        },
+    }]
+
+    chunks = list(_iter_responses_events_as_chat_chunks(_event_stream(*events)))
+    tool_call = chunks[0].choices[0].delta.tool_calls[0]
+
+    assert tool_call.index == 2
+    assert tool_call.id == "call-fetch"
+    assert tool_call.function.arguments == '{"url":"https://example.com"}'
+    assert tool_call.function.arguments_complete
+
+
 def test_stream_completion_event_carries_normalized_usage():
     response = SimpleNamespace(usage=SimpleNamespace(
         input_tokens=120,
@@ -295,6 +362,30 @@ def test_non_streaming_response_is_converted_to_chat_shape():
     assert converted.choices[0].finish_reason == "tool_calls"
     assert converted.choices[0].message.tool_calls[0]["id"] == "call-9"
     assert converted.usage.prompt_tokens == 10
+
+
+def test_non_streaming_chat_tool_arguments_accept_dict_responses():
+    response = {
+        "choices": [{
+            "message": {
+                "content": None,
+                "tool_calls": [{
+                    "id": "call-9",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": {"query": "Tavily"},
+                    },
+                }],
+            },
+        }],
+        "usage": None,
+    }
+
+    chunks = list(_chat_response_to_chunks(response))
+    tool_call = chunks[0].choices[0].delta.tool_calls[0]
+
+    assert tool_call.function.arguments == '{"query":"Tavily"}'
+    assert tool_call.function.arguments_complete
 
 
 def test_output_items_may_arrive_as_plain_dicts():

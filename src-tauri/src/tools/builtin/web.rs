@@ -38,7 +38,7 @@ impl BuiltinTool for WebSearchTool {
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "A concise search query."},
+                        "query": {"type": "string", "minLength": 1, "maxLength": 512, "description": "A concise search query."},
                         "count": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Maximum results; defaults to 5."},
                         "language": {"type": "string", "description": "Optional BCP 47 language such as zh-CN or en-US; defaults to automatic."},
                         "freshness": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "Optional publication-time filter."}
