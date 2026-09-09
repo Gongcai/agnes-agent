@@ -303,6 +303,22 @@ def get_available_tools(
         tools.append({
             "type": "function",
             "function": {
+                "name": "read_image",
+                "description": "Read a local image for visual inspection. Use this when an image must be actively examined. The image must be within the effective file-read boundary.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Absolute path or path relative to the workspace."},
+                        "detail": {"type": "string", "enum": ["low", "auto", "high"]},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+        })
+        tools.append({
+            "type": "function",
+            "function": {
                 "name": "file_write",
                 "description": "Write text content to a file on the local filesystem. Overwrites the file if it exists.",
                 "parameters": {
@@ -1179,12 +1195,28 @@ async def execute_tools_node(state: AgentState, config: RunnableConfig) -> Dict[
             
         # Call Rust (async wait for stdout/result)
         result_content = await execute_tool_fn(tc["id"], tool_name, arguments)
-        
+        image = None
+        if isinstance(result_content, dict):
+            image = result_content.get("image")
+            result_content = result_content.get("text") or result_content.get("stdout") or result_content.get("result") or ""
+        if not isinstance(result_content, str):
+            result_content = json.dumps(result_content, ensure_ascii=False)
+
         new_messages.append({
             "role": "tool",
             "tool_call_id": tc["id"],
             "name": tool_name,
-            "content": result_content
+            "content": (
+                [{"type": "text", "text": result_content},
+                 {"type": "image_url", "image_url": {
+                     "url": f"data:{image['media_type']};base64,{image['data_base64']}",
+                     "detail": image.get("detail", "auto"),
+                 }}]
+                if isinstance(image, dict)
+                and isinstance(image.get("media_type"), str)
+                and isinstance(image.get("data_base64"), str)
+                else result_content
+            ),
         })
         
     return {

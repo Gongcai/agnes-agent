@@ -343,6 +343,23 @@ def _chat_messages_to_responses_input(
 
         if role == "tool":
             output = content if isinstance(content, str) else str(content or "")
+            if isinstance(content, list):
+                output_parts: List[Dict[str, Any]] = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text" and isinstance(part.get("text"), str):
+                        output_parts.append({"type": "input_text", "text": part["text"]})
+                    elif part.get("type") == "image_url":
+                        image = part.get("image_url")
+                        url = image.get("url") if isinstance(image, dict) else image
+                        if isinstance(url, str) and url:
+                            item: Dict[str, Any] = {"type": "input_image", "image_url": url}
+                            if isinstance(image, dict) and isinstance(image.get("detail"), str):
+                                item["detail"] = image["detail"]
+                            output_parts.append(item)
+                if output_parts:
+                    output = output_parts
             items.append({
                 "type": "function_call_output",
                 "call_id": str(message.get("tool_call_id") or ""),

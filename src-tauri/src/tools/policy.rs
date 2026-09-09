@@ -523,7 +523,7 @@ impl ToolPolicy {
         }
         match tool {
             "shell" | "write_stdin" | "stop_terminal" => self.shell.approval,
-            "file_read" | "list_files" | "grep" => ApprovalTier::Never,
+            "file_read" | "read_image" | "list_files" | "grep" => ApprovalTier::Never,
             "file_write" | "file_edit" | "apply_patch" => self.file.approval,
             "git" => self.git.approval,
             "memory_list" | "memory_read" => ApprovalTier::Never,

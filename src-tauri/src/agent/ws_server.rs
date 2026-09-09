@@ -864,6 +864,7 @@ async fn handle_conn<R: tauri::Runtime>(
                                 "error_code": val.get("error_code").cloned().unwrap_or(serde_json::Value::Null),
                                 "stdout": stdout,
                                 "stderr": val.get("stderr").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                                "image": val.get("image").cloned().unwrap_or(serde_json::Value::Null),
                             })
                         }
                         Err(e) => {
@@ -910,7 +911,21 @@ async fn handle_conn<R: tauri::Runtime>(
                             mime_type: None,
                             tool_call_id: Some(tc_id.clone()),
                             content: format!("Calling {tool_name} with params: {public_args}"),
-                            metadata: None,
+                            metadata: reply_payload
+                                .get("image")
+                                .filter(|value| value.is_object())
+                                .map(|image| {
+                                    json!({
+                                        "result_kind": "image",
+                                        "image": {
+                                            "media_type": image.get("media_type"),
+                                            "name": image.get("name"),
+                                            "path": image.get("path"),
+                                            "size_bytes": image.get("size_bytes"),
+                                        }
+                                    })
+                                    .to_string()
+                                }),
                         });
                         run.current_ordinal += 1;
 

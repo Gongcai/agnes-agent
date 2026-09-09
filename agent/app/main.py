@@ -108,7 +108,7 @@ async def run_agent_graph(
         )
         await ws.send(fallback_envelope.model_dump_json())
 
-    async def execute_tool(tool_call_id: str, tool_name: str, arguments: Dict[str, Any]) -> str:
+    async def execute_tool(tool_call_id: str, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Send tool request to Rust and wait for the execution result."""
         print(f"[sidecar][tool] Requesting `{tool_name}` (id: {tool_call_id})", flush=True)
         tool_req = make(
@@ -140,6 +140,12 @@ async def run_agent_graph(
                 return f"Tool error:\n{stderr or stdout}"
             if exit_code != 0:
                 return f"Error (Exit Code {exit_code}):\n{stderr or stdout}"
+            image = result_payload.get("image")
+            if isinstance(image, dict):
+                return {
+                    "text": stdout or result_payload.get("result") or "Image read successfully",
+                    "image": image,
+                }
             return stdout or result_payload.get("result") or "Success"
         except asyncio.CancelledError:
             print(f"[sidecar][tool] Tool execution cancelled for (id: {tool_call_id})", flush=True)

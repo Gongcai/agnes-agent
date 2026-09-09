@@ -121,6 +121,27 @@ def test_vision_content_parts_are_converted_to_responses_input_parts():
     }]
 
 
+def test_tool_image_result_is_converted_to_responses_input_image():
+    _, items = _chat_messages_to_responses_input([{
+        "role": "tool",
+        "tool_call_id": "call-image",
+        "content": [
+            {"type": "text", "text": "已读取"},
+            {"type": "image_url", "image_url": {
+                "url": "data:image/png;base64,AAA", "detail": "high"
+            }},
+        ],
+    }])
+    assert items == [{
+        "type": "function_call_output",
+        "call_id": "call-image",
+        "output": [
+            {"type": "input_text", "text": "已读取"},
+            {"type": "input_image", "image_url": "data:image/png;base64,AAA", "detail": "high"},
+        ],
+    }]
+
+
 def test_chat_tools_are_flattened_into_responses_function_tools():
     tools = _chat_tools_to_responses_tools([{
         "type": "function",

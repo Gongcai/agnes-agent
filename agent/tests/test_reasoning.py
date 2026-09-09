@@ -1342,6 +1342,7 @@ def test_get_available_tools():
     assert "write_stdin" in tool_names
     assert "stop_terminal" in tool_names
     assert "file_read" not in tool_names
+    assert "read_image" not in tool_names
     assert "file_write" not in tool_names
     assert "write_file" not in tool_names
     assert "file_edit" not in tool_names
@@ -1367,12 +1368,14 @@ def test_get_available_tools():
     all_tool_names = [
         tool["function"]["name"] for tool in get_available_tools({})
     ]
+    assert "read_image" in all_tool_names
     assert all_tool_names == [
         "get_current_time",
         "shell",
         "write_stdin",
         "stop_terminal",
         "file_read",
+        "read_image",
         "file_write",
         "write_file",
         "file_edit",

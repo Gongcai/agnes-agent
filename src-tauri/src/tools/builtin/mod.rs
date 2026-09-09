@@ -22,6 +22,7 @@ pub mod grep;
 pub mod list_files;
 pub mod memory_files;
 pub mod planner;
+pub mod read_image;
 pub mod shell;
 pub mod storage;
 pub mod web;
@@ -123,6 +124,7 @@ pub fn builtin_tools() -> Vec<Box<dyn BuiltinTool>> {
         Box::new(shell::WriteStdinTool),
         Box::new(shell::StopTerminalTool),
         Box::new(file_read::FileReadTool),
+        Box::new(read_image::ReadImageTool),
         Box::new(file_write::FileWriteTool),
         Box::new(file_edit::FileEditTool),
         Box::new(list_files::ListFilesTool),
@@ -501,10 +503,9 @@ pub fn is_write_op(tool: &str, args: &Value) -> bool {
         | "storage_file_upload"
         | "storage_files_move"
         | "storage_files_trash" => true,
-        "file_read" | "list_files" | "grep" | "memory_list" | "memory_read" | "web_search"
-        | "web_fetch" | "browser_open" | "calendar_list" | "task_list" | "get_current_time" => {
-            false
-        }
+        "file_read" | "read_image" | "list_files" | "grep" | "memory_list" | "memory_read"
+        | "web_search" | "web_fetch" | "browser_open" | "calendar_list" | "task_list"
+        | "get_current_time" => false,
         "storage_accounts_list"
         | "storage_files_list"
         | "storage_files_search"
