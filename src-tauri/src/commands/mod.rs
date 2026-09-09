@@ -5828,6 +5828,7 @@ pub struct SearchProviderSettingsDto {
     pub fallback_order: Vec<String>,
     pub searxng_base_url: Option<String>,
     pub has_brave_api_key: bool,
+    pub has_tavily_api_key: bool,
 }
 
 #[derive(Deserialize)]
@@ -5835,8 +5836,11 @@ pub struct SearchProviderSettingsInput {
     pub fallback_order: Vec<String>,
     pub searxng_base_url: Option<String>,
     pub brave_api_key: Option<String>,
+    pub tavily_api_key: Option<String>,
     #[serde(default)]
     pub clear_brave_api_key: bool,
+    #[serde(default)]
+    pub clear_tavily_api_key: bool,
 }
 
 #[derive(Serialize)]
@@ -5849,7 +5853,7 @@ pub struct SearchProviderTestResult {
     pub latency_ms: u128,
 }
 
-/// Return device-local search routing without exposing the Brave API key.
+/// Return device-local search routing without exposing search API keys.
 #[tauri::command]
 pub async fn get_search_provider_settings(
     state: tauri::State<'_, AppState>,
@@ -5862,14 +5866,22 @@ pub async fn get_search_provider_settings(
         .ok()
         .flatten()
         .is_some_and(|key| !key.is_empty());
+    let has_tavily_api_key = state
+        .secrets
+        .get(crate::web::TAVILY_SEARCH_API_KEY_SECRET_ID)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|key| !key.is_empty());
     Ok(SearchProviderSettingsDto {
         fallback_order: settings.fallback_order,
         searxng_base_url: settings.searxng_base_url,
         has_brave_api_key,
+        has_tavily_api_key,
     })
 }
 
-/// Persist search routing and update the Brave credential transactionally.
+/// Persist search routing and update search credentials transactionally.
 #[tauri::command]
 pub async fn set_search_provider_settings(
     state: tauri::State<'_, AppState>,
@@ -5889,55 +5901,80 @@ async fn persist_search_provider_settings(
     };
     settings.normalize()?;
 
-    let secret_id = crate::web::BRAVE_SEARCH_API_KEY_SECRET_ID;
-    let supplied_key = input
-        .brave_api_key
-        .take()
-        .map(|key| Zeroizing::new(key.trim().to_string()))
-        .filter(|key| !key.is_empty());
-    let supplied_key_value = supplied_key.as_ref().map(|key| key.as_str());
-    if supplied_key_value
-        .is_some_and(|key| key.len() > 1024 || !key.bytes().all(|value| value.is_ascii_graphic()))
-    {
-        return Err(AppError::Other(
-            "Brave Search API Key 必须是 1 到 1024 字节的可打印 ASCII 字符".into(),
-        ));
-    }
-    let brave_in_chain = settings
-        .fallback_order
-        .iter()
-        .any(|provider| provider == "brave");
-    let credential_access_needed =
-        brave_in_chain || input.clear_brave_api_key || supplied_key_value.is_some();
-    let previous_key = if credential_access_needed {
-        secrets.get(secret_id).await?.map(Zeroizing::new)
-    } else {
-        None
-    };
-    let previous_key_value = previous_key.as_ref().map(|key| key.as_str());
-    let desired_key = if input.clear_brave_api_key {
-        None
-    } else {
-        supplied_key_value.or_else(|| previous_key_value.filter(|key| !key.is_empty()))
-    };
-    if brave_in_chain && desired_key.is_none() {
-        return Err(AppError::Other(
-            "回退链包含 Brave Search，但尚未配置 API Key".into(),
-        ));
+    let mut credentials = vec![
+        SearchCredentialState::new(
+            crate::web::BRAVE_SEARCH_API_KEY_SECRET_ID,
+            "Brave Search",
+            normalize_search_api_key(input.brave_api_key.take(), "Brave Search")?,
+            input.clear_brave_api_key,
+            settings
+                .fallback_order
+                .iter()
+                .any(|provider| provider == "brave"),
+        ),
+        SearchCredentialState::new(
+            crate::web::TAVILY_SEARCH_API_KEY_SECRET_ID,
+            "Tavily Search",
+            normalize_search_api_key(input.tavily_api_key.take(), "Tavily Search")?,
+            input.clear_tavily_api_key,
+            settings
+                .fallback_order
+                .iter()
+                .any(|provider| provider == "tavily"),
+        ),
+    ];
+    for credential in &mut credentials {
+        if credential.needs_access() {
+            credential.previous = secrets.get(credential.secret_id).await?.map(Zeroizing::new);
+        }
+        if credential.in_chain && credential.desired().is_none() {
+            return Err(AppError::Other(format!(
+                "回退链包含 {}，但尚未配置 API Key",
+                credential.label
+            )));
+        }
     }
 
-    let credential_changed = input.clear_brave_api_key || supplied_key.is_some();
-    if input.clear_brave_api_key {
-        secrets.delete(secret_id).await?;
-    } else if let Some(key) = supplied_key_value {
-        secrets.set(secret_id, key).await?;
+    let mut changed = Vec::new();
+    for (index, credential) in credentials.iter().enumerate() {
+        let update = if credential.clear {
+            secrets.delete(credential.secret_id).await
+        } else if let Some(key) = credential.supplied.as_ref() {
+            secrets.set(credential.secret_id, key.as_str()).await
+        } else {
+            Ok(())
+        };
+        if let Err(error) = update {
+            let rollback_error = rollback_search_credentials(secrets, &credentials, &changed).await;
+            return Err(AppError::SecretStore(format!(
+                "search credential update failed: {error}{}",
+                rollback_error
+                    .map(|error| format!("; rollback failed: {error}"))
+                    .unwrap_or_default()
+            )));
+        }
+        if credential.changed() {
+            changed.push(index);
+        }
     }
-    if credential_changed {
-        let verified = secrets.get(secret_id).await?;
-        if verified.as_deref() != desired_key {
-            let rollback_error = restore_secret(secrets, secret_id, previous_key_value)
-                .await
-                .err();
+
+    for index in &changed {
+        let credential = &credentials[*index];
+        let verified = match secrets.get(credential.secret_id).await {
+            Ok(value) => value,
+            Err(error) => {
+                let rollback_error =
+                    rollback_search_credentials(secrets, &credentials, &changed).await;
+                return Err(AppError::SecretStore(format!(
+                    "search credential verification failed: {error}{}",
+                    rollback_error
+                        .map(|error| format!("; rollback failed: {error}"))
+                        .unwrap_or_default()
+                )));
+            }
+        };
+        if verified.as_deref() != credential.desired() {
+            let rollback_error = rollback_search_credentials(secrets, &credentials, &changed).await;
             return Err(AppError::SecretStore(format!(
                 "search credential verification failed{}",
                 rollback_error
@@ -5948,13 +5985,7 @@ async fn persist_search_provider_settings(
     }
 
     if let Err(db_error) = crate::web::save_search_provider_settings(db, &settings).await {
-        let rollback_error = if credential_changed {
-            restore_secret(secrets, secret_id, previous_key_value)
-                .await
-                .err()
-        } else {
-            None
-        };
+        let rollback_error = rollback_search_credentials(secrets, &credentials, &changed).await;
         if let Some(rollback_error) = rollback_error {
             return Err(AppError::SecretStore(format!(
                 "search settings save failed: {db_error}; credential rollback failed: {rollback_error}"
@@ -5963,6 +5994,92 @@ async fn persist_search_provider_settings(
         return Err(db_error);
     }
     Ok(())
+}
+
+fn normalize_search_api_key(
+    value: Option<String>,
+    provider_label: &str,
+) -> AppResult<Option<Zeroizing<String>>> {
+    let key = value
+        .map(|value| Zeroizing::new(value.trim().to_string()))
+        .filter(|value| !value.is_empty());
+    if key.as_ref().is_some_and(|value| {
+        value.len() > 1024 || !value.bytes().all(|byte| byte.is_ascii_graphic())
+    }) {
+        return Err(AppError::Other(format!(
+            "{provider_label} API Key 必须是 1 到 1024 字节的可打印 ASCII 字符"
+        )));
+    }
+    Ok(key)
+}
+
+struct SearchCredentialState {
+    secret_id: &'static str,
+    label: &'static str,
+    supplied: Option<Zeroizing<String>>,
+    clear: bool,
+    in_chain: bool,
+    previous: Option<Zeroizing<String>>,
+}
+
+impl SearchCredentialState {
+    fn new(
+        secret_id: &'static str,
+        label: &'static str,
+        supplied: Option<Zeroizing<String>>,
+        clear: bool,
+        in_chain: bool,
+    ) -> Self {
+        Self {
+            secret_id,
+            label,
+            supplied,
+            clear,
+            in_chain,
+            previous: None,
+        }
+    }
+
+    fn needs_access(&self) -> bool {
+        self.in_chain || self.clear || self.supplied.is_some()
+    }
+
+    fn desired(&self) -> Option<&str> {
+        if self.clear {
+            None
+        } else {
+            self.supplied
+                .as_ref()
+                .map(|value| value.as_str())
+                .or_else(|| self.previous.as_ref().map(|value| value.as_str()))
+                .filter(|value| !value.is_empty())
+        }
+    }
+
+    fn changed(&self) -> bool {
+        self.clear || self.supplied.is_some()
+    }
+}
+
+async fn rollback_search_credentials(
+    secrets: &dyn SecretStore,
+    credentials: &[SearchCredentialState],
+    changed: &[usize],
+) -> Option<String> {
+    let mut errors = Vec::new();
+    for index in changed.iter().rev() {
+        let credential = &credentials[*index];
+        if let Err(error) = restore_secret(
+            secrets,
+            credential.secret_id,
+            credential.previous.as_ref().map(|value| value.as_str()),
+        )
+        .await
+        {
+            errors.push(error.to_string());
+        }
+    }
+    (!errors.is_empty()).then(|| errors.join("; "))
 }
 
 /// Probe one configured search Provider with a fixed non-sensitive query.
@@ -5978,7 +6095,7 @@ pub async fn test_search_provider(
         )));
     }
     let settings = crate::web::load_search_provider_settings(&state.db).await?;
-    let api_key = if provider == "brave" {
+    let brave_api_key = if provider == "brave" {
         state
             .secrets
             .get(crate::web::BRAVE_SEARCH_API_KEY_SECRET_ID)
@@ -5986,9 +6103,23 @@ pub async fn test_search_provider(
     } else {
         None
     };
+    let tavily_api_key = if provider == "tavily" {
+        state
+            .secrets
+            .get(crate::web::TAVILY_SEARCH_API_KEY_SECRET_ID)
+            .await?
+    } else {
+        None
+    };
     let started = std::time::Instant::now();
-    let probe =
-        crate::web::probe_search_provider(&provider, &settings, api_key.as_deref(), 15).await;
+    let probe = crate::web::probe_search_provider(
+        &provider,
+        &settings,
+        brave_api_key.as_deref(),
+        tavily_api_key.as_deref(),
+        15,
+    )
+    .await;
     let latency_ms = started.elapsed().as_millis();
     Ok(match probe {
         Ok(result_count) => SearchProviderTestResult {
@@ -6429,7 +6560,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_provider_settings_keep_credentials_out_of_db_and_validate_brave() {
+    async fn search_provider_settings_keep_credentials_out_of_db_and_validate_api_keys() {
         let db_path =
             std::env::temp_dir().join(format!("agnes-search-settings-{}.db", uuid::Uuid::new_v4()));
         let db = crate::db::spawn_db_actor(db_path);
@@ -6439,10 +6570,12 @@ mod tests {
             &db,
             &secrets,
             SearchProviderSettingsInput {
-                fallback_order: vec!["brave".into(), "duckduckgo".into()],
+                fallback_order: vec!["brave".into(), "tavily".into(), "duckduckgo".into()],
                 searxng_base_url: None,
                 brave_api_key: Some("brave-secret".into()),
+                tavily_api_key: Some("tavily-secret".into()),
                 clear_brave_api_key: false,
+                clear_tavily_api_key: false,
             },
         )
         .await
@@ -6455,12 +6588,21 @@ mod tests {
                 .as_deref(),
             Some("brave-secret")
         );
+        assert_eq!(
+            secrets
+                .get(crate::web::TAVILY_SEARCH_API_KEY_SECRET_ID)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("tavily-secret")
+        );
         let stored = db
             .get_setting(crate::web::SEARCH_PROVIDER_SETTINGS_KEY.into())
             .await
             .unwrap()
             .unwrap();
         assert!(!stored.contains("brave-secret"));
+        assert!(!stored.contains("tavily-secret"));
 
         persist_search_provider_settings(
             &db,
@@ -6469,7 +6611,9 @@ mod tests {
                 fallback_order: vec!["duckduckgo".into()],
                 searxng_base_url: None,
                 brave_api_key: None,
+                tavily_api_key: None,
                 clear_brave_api_key: true,
+                clear_tavily_api_key: true,
             },
         )
         .await
@@ -6479,15 +6623,22 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+        assert!(secrets
+            .get(crate::web::TAVILY_SEARCH_API_KEY_SECRET_ID)
+            .await
+            .unwrap()
+            .is_none());
 
         let result = persist_search_provider_settings(
             &db,
             &secrets,
             SearchProviderSettingsInput {
-                fallback_order: vec!["brave".into()],
+                fallback_order: vec!["tavily".into()],
                 searxng_base_url: None,
                 brave_api_key: None,
+                tavily_api_key: None,
                 clear_brave_api_key: false,
+                clear_tavily_api_key: false,
             },
         )
         .await;
@@ -6508,7 +6659,9 @@ mod tests {
                 fallback_order: vec!["duckduckgo".into(), "bing".into()],
                 searxng_base_url: None,
                 brave_api_key: None,
+                tavily_api_key: None,
                 clear_brave_api_key: false,
+                clear_tavily_api_key: false,
             },
         )
         .await

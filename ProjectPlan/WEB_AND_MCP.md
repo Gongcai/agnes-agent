@@ -21,12 +21,12 @@
 默认使用无需密钥的 HTML 搜索：
 
 1. `auto` 默认先调用 DuckDuckGo；请求失败或没有结果时回退 Bing；
-2. 用户可以在 Agent 工具设置中固定 `duckduckgo` 或 `bing`；
+2. 用户可以在 Agent 工具设置中固定 `duckduckgo`、`bing` 或已配置的其他 Provider；
 3. Provider 只负责搜索，不绕过目标网站的访问控制；抓取失败时模型应改用其他公开来源。
 
-搜索核心通过统一 `SearchProvider` trait 接入四种来源：DuckDuckGo HTML、Bing HTML、可配置 SearXNG 与 Brave Search API。设备本地设置保存显式自动回退顺序；请求失败或结果为空时只记录 Provider ID 和 `authentication/rate_limit/timeout/network/service_unavailable/invalid_config/invalid_response/empty_results` 归一化类别，再尝试下一项。角色卡可以使用本机自动链，也可以固定一个来源。
+搜索核心通过统一 `SearchProvider` trait 接入五种来源：DuckDuckGo HTML、Bing HTML、可配置 SearXNG、Brave Search API 与 Tavily Search API。设备本地设置保存显式自动回退顺序；请求失败或结果为空时只记录 Provider ID 和 `authentication/rate_limit/timeout/network/service_unavailable/invalid_config/invalid_response/empty_results` 归一化类别，再尝试下一项。角色卡可以使用本机自动链，也可以固定一个来源。
 
-SearXNG 地址和回退顺序保存在设备本地设置，允许用户明确配置公开实例或本机/自托管服务；模型和网页内容不能修改该地址。Brave API Key 只保存在 OS Keyring，设置 IPC 只返回是否已配置。当前无密钥 Provider 继续作为默认链，不要求用户额外注册服务。
+SearXNG 地址和回退顺序保存在设备本地设置，允许用户明确配置公开实例或本机/自托管服务；模型和网页内容不能修改该地址。Brave 与 Tavily API Key 只保存在 OS Keyring，设置 IPC 只返回是否已配置。当前无密钥 Provider 继续作为默认链，不要求用户额外注册服务。
 
 ## 安全模型
 
@@ -47,7 +47,7 @@ HTML 使用结构化 DOM 解析，优先选择 `article/main/[role=main]`，过�
 
 已完成：
 
-- 抽象 `SearchProvider`，增加可配置 SearXNG 与 Brave Search API；
+- 抽象 `SearchProvider`，增加可配置 SearXNG、Brave Search API 与 Tavily Search API；
 - API 密钥进入系统 Keyring，不进入 Agent JSON、消息、审计参数或同步 payload；
 - 设置页支持 Provider 配置、固定非敏感查询的连接测试和显式回退顺序；
 - 搜索响应显示实际来源，并仅以归一化类别说明之前失败的 Provider。
@@ -88,7 +88,7 @@ HTML 使用结构化 DOM 解析，优先选择 `article/main/[role=main]`，过�
 - 超大响应、二进制响应和无正文页面以结构化错误结束，不留下 pending 消息；
 - Web 工具调用完整出现在实时消息卡与工具审计中。
 - JavaScript 动态页面可通过隔离浏览器提取渲染后正文；缺少 Chromium 时返回可操作错误，不隐式下载安装包。
-- 默认自动链无需密钥；SearXNG/Brave 配置后可加入任意回退位置，Provider 故障不会暴露原始响应或凭证。
+- 默认自动链无需密钥；SearXNG/Brave/Tavily 配置后可加入任意回退位置，Provider 故障不会暴露原始响应或凭证。
 - MCP 默认不向既有角色暴露；角色授权后可以发现并调用 stdio/Streamable HTTP 工具；
 - MCP 配置、动态 schema 与审计中不出现 Keyring secret 值，未知 MCP 工具在 Auto 模式下按 High 风险请求二次确认；
 - MCP Server 离线、返回超大内容或 schema 不合法时结构化失败，不影响未启用 MCP 的普通对话。

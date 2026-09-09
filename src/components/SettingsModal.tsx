@@ -405,12 +405,13 @@ interface SecretStoreStatus {
   error: string | null;
 }
 
-type SearchProviderId = "duckduckgo" | "bing" | "searxng" | "brave";
+type SearchProviderId = "duckduckgo" | "bing" | "searxng" | "brave" | "tavily";
 
 interface SearchProviderSettings {
   fallback_order: SearchProviderId[];
   searxng_base_url: string | null;
   has_brave_api_key: boolean;
+  has_tavily_api_key: boolean;
 }
 
 interface SearchProviderForm {
@@ -419,6 +420,9 @@ interface SearchProviderForm {
   braveApiKey: string;
   hasBraveApiKey: boolean;
   clearBraveApiKey: boolean;
+  tavilyApiKey: string;
+  hasTavilyApiKey: boolean;
+  clearTavilyApiKey: boolean;
 }
 
 interface SearchProviderTestResult {
@@ -434,10 +438,11 @@ const SEARCH_PROVIDER_LABELS: Record<SearchProviderId, string> = {
   duckduckgo: "DuckDuckGo HTML",
   bing: "Bing HTML",
   searxng: "SearXNG",
-  brave: "Brave MagnifyingGlass API",
+  brave: "Brave Search API",
+  tavily: "Tavily Search API",
 };
 
-const SEARCH_PROVIDER_IDS: SearchProviderId[] = ["duckduckgo", "bing", "searxng", "brave"];
+const SEARCH_PROVIDER_IDS: SearchProviderId[] = ["duckduckgo", "bing", "searxng", "brave", "tavily"];
 
 const EMPTY_SEARCH_PROVIDER_FORM: SearchProviderForm = {
   fallbackOrder: ["duckduckgo", "bing"],
@@ -445,6 +450,9 @@ const EMPTY_SEARCH_PROVIDER_FORM: SearchProviderForm = {
   braveApiKey: "",
   hasBraveApiKey: false,
   clearBraveApiKey: false,
+  tavilyApiKey: "",
+  hasTavilyApiKey: false,
+  clearTavilyApiKey: false,
 };
 
 interface McpEnvConfig {
@@ -704,7 +712,7 @@ function parseToolPolicy(json?: string): AgentFormValues["toolPolicy"] {
       enabled: readImage === false ? false : readImage?.enabled !== false,
       approval: "never",
     };
-    const searchProvider = ["auto", "duckduckgo", "bing", "searxng", "brave"].includes(obj?.web?.search_provider)
+    const searchProvider = ["auto", "duckduckgo", "bing", "searxng", "brave", "tavily"].includes(obj?.web?.search_provider)
       ? obj.web.search_provider as WebSearchProvider
       : "auto";
     base.web = {
@@ -882,6 +890,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [searchProviderTests, setSearchProviderTests] = useState<Partial<Record<SearchProviderId, SearchProviderTestResult>>>({});
   const [searchProviderMessage, setSearchProviderMessage] = useState<{ success: boolean; text: string } | null>(null);
   const [showBraveSearchKey, setShowBraveSearchKey] = useState(false);
+  const [showTavilySearchKey, setShowTavilySearchKey] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncStatusError, setSyncStatusError] = useState<string | null>(null);
   const [isSyncingNow, setIsSyncingNow] = useState(false);
@@ -1351,6 +1360,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           braveApiKey: "",
           hasBraveApiKey: settings.has_brave_api_key,
           clearBraveApiKey: false,
+          tavilyApiKey: "",
+          hasTavilyApiKey: settings.has_tavily_api_key,
+          clearTavilyApiKey: false,
         });
       })
       .catch((error) => {
@@ -1392,6 +1404,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           searxng_base_url: searchProviderForm.searxngBaseUrl.trim() || null,
           brave_api_key: searchProviderForm.braveApiKey.trim() || null,
           clear_brave_api_key: searchProviderForm.clearBraveApiKey,
+          tavily_api_key: searchProviderForm.tavilyApiKey.trim() || null,
+          clear_tavily_api_key: searchProviderForm.clearTavilyApiKey,
         },
       });
       await loadSearchProviderSettings();
@@ -3120,6 +3134,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 disabled={!savedSearchProviderSettings?.has_brave_api_key}
                               >
                                 Brave Search{savedSearchProviderSettings?.has_brave_api_key ? "" : "（未配置）"}
+                              </option>
+                              <option
+                                value="tavily"
+                                disabled={!savedSearchProviderSettings?.has_tavily_api_key}
+                              >
+                                Tavily Search{savedSearchProviderSettings?.has_tavily_api_key ? "" : "（未配置）"}
                               </option>
                             </select>
                           </div>
@@ -4857,7 +4877,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 >
                   <Key className="h-3.5 w-3.5 shrink-0" />
                   {secretStoreStatus?.available
-                    ? "Brave API Key 仅保存在本机系统安全存储"
+                    ? "Brave / Tavily API Key 仅保存在本机系统安全存储"
                     : secretStoreStatus?.error || "正在检查系统安全存储"}
                 </div>
 
@@ -4880,7 +4900,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       const configured = provider === "duckduckgo"
                         || provider === "bing"
                         || (provider === "searxng" && Boolean(savedSearchProviderSettings?.searxng_base_url))
-                        || (provider === "brave" && Boolean(savedSearchProviderSettings?.has_brave_api_key));
+                        || (provider === "brave" && Boolean(savedSearchProviderSettings?.has_brave_api_key))
+                        || (provider === "tavily" && Boolean(savedSearchProviderSettings?.has_tavily_api_key));
                       const test = searchProviderTests[provider];
                       const testing = testingSearchProvider === provider;
                       return (
@@ -4933,7 +4954,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                 <section className="space-y-3 border-t border-stone-200 pt-4">
                   <div>
-                    <h4 className="text-xs font-semibold text-stone-700">Brave MagnifyingGlass API</h4>
+                    <h4 className="text-xs font-semibold text-stone-700">Brave Search API</h4>
                   </div>
                   <label className="block space-y-1">
                     <span className="text-[10px] font-semibold text-stone-600">API Key</span>
@@ -4949,7 +4970,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             braveApiKey: event.target.value,
                             clearBraveApiKey: false,
                           }))}
-                          placeholder={searchProviderForm.hasBraveApiKey ? "已保存在系统安全存储；留空保持不变" : "输入 Brave MagnifyingGlass API Key"}
+                          placeholder={searchProviderForm.hasBraveApiKey ? "已保存在系统安全存储；留空保持不变" : "输入 Brave Search API Key"}
                           className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 pr-9 text-[11px] font-mono text-stone-700 outline-none focus:ring-1 focus:ring-indigo-200 disabled:bg-stone-50"
                         />
                         <button
@@ -4985,6 +5006,60 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </label>
                 </section>
 
+                <section className="space-y-3 border-t border-stone-200 pt-4">
+                  <div>
+                    <h4 className="text-xs font-semibold text-stone-700">Tavily Search API</h4>
+                  </div>
+                  <label className="block space-y-1">
+                    <span className="text-[10px] font-semibold text-stone-600">API Key</span>
+                    <div className="flex gap-2">
+                      <div className="relative min-w-0 flex-1">
+                        <input
+                          type={showTavilySearchKey ? "text" : "password"}
+                          value={searchProviderForm.tavilyApiKey}
+                          maxLength={1024}
+                          disabled={searchProviderForm.clearTavilyApiKey}
+                          onChange={(event) => setSearchProviderForm((form) => ({
+                            ...form,
+                            tavilyApiKey: event.target.value,
+                            clearTavilyApiKey: false,
+                          }))}
+                          placeholder={searchProviderForm.hasTavilyApiKey ? "已保存在系统安全存储；留空保持不变" : "输入 Tavily API Key"}
+                          className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 pr-9 text-[11px] font-mono text-stone-700 outline-none focus:ring-1 focus:ring-indigo-200 disabled:bg-stone-50"
+                        />
+                        <button
+                          type="button"
+                          title={showTavilySearchKey ? "隐藏密钥" : "显示密钥"}
+                          onClick={() => setShowTavilySearchKey((visible) => !visible)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700"
+                        >
+                          {showTavilySearchKey ? <EyeSlash className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                        </button>
+                      </div>
+                      {searchProviderForm.hasTavilyApiKey && (
+                        <button
+                          type="button"
+                          onClick={() => setSearchProviderForm((form) => ({
+                            ...form,
+                            tavilyApiKey: "",
+                            clearTavilyApiKey: !form.clearTavilyApiKey,
+                            fallbackOrder: !form.clearTavilyApiKey
+                              ? form.fallbackOrder.filter((provider) => provider !== "tavily")
+                              : form.fallbackOrder,
+                          }))}
+                          className={`rounded-md border px-2.5 text-[10px] font-semibold ${
+                            searchProviderForm.clearTavilyApiKey
+                              ? "border-amber-200 bg-amber-50 text-amber-700"
+                              : "border-stone-200 text-stone-500 hover:bg-rose-50 hover:text-rose-600"
+                          }`}
+                        >
+                          {searchProviderForm.clearTavilyApiKey ? "保留" : "删除"}
+                        </button>
+                      )}
+                    </div>
+                  </label>
+                </section>
+
                 <section className="border-t border-stone-200 pt-4">
                   <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
                     <div className="min-w-0">
@@ -5006,7 +5081,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           || (provider === "searxng" && Boolean(searchProviderForm.searxngBaseUrl.trim()))
                           || (provider === "brave"
                             && !searchProviderForm.clearBraveApiKey
-                            && (searchProviderForm.hasBraveApiKey || Boolean(searchProviderForm.braveApiKey.trim())));
+                            && (searchProviderForm.hasBraveApiKey || Boolean(searchProviderForm.braveApiKey.trim())))
+                          || (provider === "tavily"
+                            && !searchProviderForm.clearTavilyApiKey
+                            && (searchProviderForm.hasTavilyApiKey || Boolean(searchProviderForm.tavilyApiKey.trim())));
                         return (
                           <option
                             key={provider}

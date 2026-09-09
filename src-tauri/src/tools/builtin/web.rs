@@ -91,8 +91,22 @@ impl BuiltinTool for WebSearchTool {
                     .fallback_order
                     .iter()
                     .any(|provider| provider == "brave"));
+        let needs_tavily_key = selected_provider == "tavily"
+            || ((selected_provider.is_empty() || selected_provider == "auto")
+                && settings
+                    .fallback_order
+                    .iter()
+                    .any(|provider| provider == "tavily"));
         let brave_api_key = if needs_brave_key {
             match ctx.search_secrets.brave_api_key().await {
+                Ok(api_key) => api_key,
+                Err(error) => return fail(ctx, error.to_string()).await,
+            }
+        } else {
+            None
+        };
+        let tavily_api_key = if needs_tavily_key {
+            match ctx.search_secrets.tavily_api_key().await {
                 Ok(api_key) => api_key,
                 Err(error) => return fail(ctx, error.to_string()).await,
             }
@@ -108,6 +122,7 @@ impl BuiltinTool for WebSearchTool {
             ctx.policy.web.timeout_sec,
             &settings,
             brave_api_key.as_deref(),
+            tavily_api_key.as_deref(),
         )
         .await
         {

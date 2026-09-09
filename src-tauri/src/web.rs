@@ -7,7 +7,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use encoding_rs::{Encoding, UTF_8};
 use futures_util::StreamExt;
 use reqwest::header::{
-    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONTENT_LENGTH, CONTENT_TYPE, LOCATION,
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE,
+    LOCATION,
 };
 use reqwest::{Client, Url};
 use scraper::{ElementRef, Html, Selector};
@@ -19,7 +20,8 @@ use crate::error::{AppError, AppResult};
 
 pub const SEARCH_PROVIDER_SETTINGS_KEY: &str = "web:search_providers:v1";
 pub const BRAVE_SEARCH_API_KEY_SECRET_ID: &str = "web:search:brave:api_key";
-pub const SEARCH_PROVIDER_IDS: [&str; 4] = ["duckduckgo", "bing", "searxng", "brave"];
+pub const TAVILY_SEARCH_API_KEY_SECRET_ID: &str = "web:search:tavily:api_key";
+pub const SEARCH_PROVIDER_IDS: [&str; 5] = ["duckduckgo", "bing", "searxng", "brave", "tavily"];
 
 const SEARCH_BODY_LIMIT: usize = 2 * 1024 * 1024;
 const SEARCH_API_BODY_LIMIT: usize = 2 * 1024 * 1024;
@@ -233,6 +235,9 @@ struct SearxngSearchProvider {
 struct BraveSearchProvider {
     api_key: String,
 }
+struct TavilySearchProvider {
+    api_key: String,
+}
 
 #[async_trait]
 impl SearchProvider for DuckDuckGoSearchProvider {
@@ -306,6 +311,20 @@ impl SearchProvider for BraveSearchProvider {
     }
 }
 
+#[async_trait]
+impl SearchProvider for TavilySearchProvider {
+    fn id(&self) -> &'static str {
+        "tavily"
+    }
+
+    async fn search(
+        &self,
+        request: &SearchRequest<'_>,
+    ) -> Result<WebSearchResponse, SearchProviderFailure> {
+        search_tavily(&self.api_key, request).await
+    }
+}
+
 pub async fn search(
     provider: &str,
     query: &str,
@@ -315,6 +334,7 @@ pub async fn search(
     timeout_sec: u32,
     settings: &SearchProviderSettings,
     brave_api_key: Option<&str>,
+    tavily_api_key: Option<&str>,
 ) -> AppResult<WebSearchResponse> {
     let language = normalize_language(language)?;
     let request = SearchRequest {
@@ -338,16 +358,17 @@ pub async fn search(
     let mut attempts = Vec::new();
     let mut last_empty_response = None;
     for provider_id in provider_ids {
-        let provider = match create_search_provider(&provider_id, settings, brave_api_key) {
-            Ok(provider) => provider,
-            Err(failure) => {
-                attempts.push(SearchFallbackAttempt {
-                    provider: provider_id,
-                    category: failure.category,
-                });
-                continue;
-            }
-        };
+        let provider =
+            match create_search_provider(&provider_id, settings, brave_api_key, tavily_api_key) {
+                Ok(provider) => provider,
+                Err(failure) => {
+                    attempts.push(SearchFallbackAttempt {
+                        provider: provider_id,
+                        category: failure.category,
+                    });
+                    continue;
+                }
+            };
         match provider.search(&request).await {
             Ok(mut response) if !response.results.is_empty() => {
                 response.fallback_attempts = attempts;
@@ -385,9 +406,10 @@ pub async fn probe_search_provider(
     provider: &str,
     settings: &SearchProviderSettings,
     brave_api_key: Option<&str>,
+    tavily_api_key: Option<&str>,
     timeout_sec: u32,
 ) -> Result<usize, SearchFailureCategory> {
-    let provider = create_search_provider(provider, settings, brave_api_key)
+    let provider = create_search_provider(provider, settings, brave_api_key, tavily_api_key)
         .map_err(|failure| failure.category)?;
     let request = SearchRequest {
         query: "OpenAI",
@@ -525,6 +547,7 @@ fn create_search_provider(
     provider: &str,
     settings: &SearchProviderSettings,
     brave_api_key: Option<&str>,
+    tavily_api_key: Option<&str>,
 ) -> Result<Box<dyn SearchProvider>, SearchProviderFailure> {
     match provider {
         "duckduckgo" => Ok(Box::new(DuckDuckGoSearchProvider)),
@@ -543,6 +566,15 @@ fn create_search_provider(
             .filter(|key| !key.is_empty())
             .map(|api_key| {
                 Box::new(BraveSearchProvider {
+                    api_key: api_key.to_string(),
+                }) as Box<dyn SearchProvider>
+            })
+            .ok_or_else(|| SearchProviderFailure::new(SearchFailureCategory::InvalidConfig)),
+        "tavily" => tavily_api_key
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(|api_key| {
+                Box::new(TavilySearchProvider {
                     api_key: api_key.to_string(),
                 }) as Box<dyn SearchProvider>
             })
@@ -736,6 +768,55 @@ async fn search_brave(
         query: request.query.to_string(),
         provider: "brave".into(),
         results: parse_brave_results(&value, request.count),
+        fallback_attempts: Vec::new(),
+    })
+}
+
+async fn search_tavily(
+    api_key: &str,
+    request: &SearchRequest<'_>,
+) -> Result<WebSearchResponse, SearchProviderFailure> {
+    let mut payload = serde_json::json!({
+        "query": request.query,
+        "topic": if request.freshness.is_some() { "news" } else { "general" },
+        "search_depth": "basic",
+        "max_results": request.count,
+        "include_answer": false,
+        "include_raw_content": false,
+        "include_images": false,
+    });
+    if let Some(freshness) = request.freshness {
+        payload["time_range"] = Value::String(freshness.to_string());
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    let authorization = format!("Bearer {api_key}");
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&authorization)
+            .map_err(|_| SearchProviderFailure::new(SearchFailureCategory::InvalidConfig))?,
+    );
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(request.timeout_sec.clamp(3, 60) as u64))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(USER_AGENT)
+        .default_headers(headers)
+        .build()
+        .map_err(|_| SearchProviderFailure::new(SearchFailureCategory::InvalidConfig))?;
+    let response = client
+        .post("https://api.tavily.com/search")
+        .header(CONTENT_TYPE, "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| request_failure(&error))?;
+    let value = read_search_api_json(response).await?;
+    Ok(WebSearchResponse {
+        query: request.query.to_string(),
+        provider: "tavily".into(),
+        results: parse_tavily_results(&value, request.count),
         fallback_attempts: Vec::new(),
     })
 }
@@ -1118,6 +1199,16 @@ fn parse_brave_results(value: &Value, count: usize) -> Vec<WebSearchResult> {
     )
 }
 
+fn parse_tavily_results(value: &Value, count: usize) -> Vec<WebSearchResult> {
+    parse_json_results(
+        value.get("results").and_then(Value::as_array),
+        "title",
+        "url",
+        "content",
+        count,
+    )
+}
+
 fn parse_json_results(
     items: Option<&Vec<Value>>,
     title_key: &str,
@@ -1418,7 +1509,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_searxng_and_brave_json_results() {
+    fn parses_json_provider_results() {
         let searxng = serde_json::json!({
             "results": [
                 {"title": "Result A", "url": "https://example.com/a", "content": " First  summary. "},
@@ -1440,6 +1531,16 @@ mod tests {
         assert_eq!(brave_results.len(), 1);
         assert_eq!(brave_results[0].url, "https://example.org/news");
         assert_eq!(brave_results[0].snippet, "Current news");
+
+        let tavily = serde_json::json!({
+            "results": [
+                {"title": "Tavily result", "url": "https://example.org/tavily", "content": "Tavily summary"}
+            ]
+        });
+        let tavily_results = parse_tavily_results(&tavily, 5);
+        assert_eq!(tavily_results.len(), 1);
+        assert_eq!(tavily_results[0].title, "Tavily result");
+        assert_eq!(tavily_results[0].snippet, "Tavily summary");
     }
 
     #[test]
@@ -1535,6 +1636,7 @@ mod tests {
             5,
             &settings,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1592,6 +1694,7 @@ mod tests {
             None,
             15,
             &settings,
+            None,
             None,
         )
         .await

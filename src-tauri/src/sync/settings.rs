@@ -24,7 +24,9 @@ pub fn classify(key: &str) -> SettingClass {
     {
         return SettingClass::DeviceLocal;
     }
-    if key == "web:search:brave:api_key" {
+    if key == crate::web::BRAVE_SEARCH_API_KEY_SECRET_ID
+        || key == crate::web::TAVILY_SEARCH_API_KEY_SECRET_ID
+    {
         return SettingClass::Secret;
     }
     SettingClass::Unknown
@@ -65,6 +67,7 @@ mod tests {
             SettingClass::DeviceLocal
         );
         assert_eq!(classify("web:search:brave:api_key"), SettingClass::Secret);
+        assert_eq!(classify("web:search:tavily:api_key"), SettingClass::Secret);
         assert_eq!(classify("unclassified:value"), SettingClass::Unknown);
         assert!(renderer_access_allowed("ui:last_session_id"));
         assert!(!renderer_access_allowed("provider:openai:api_key"));

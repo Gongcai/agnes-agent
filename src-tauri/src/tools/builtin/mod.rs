@@ -43,6 +43,12 @@ impl<'a> SearchSecretAccess<'a> {
             .get(crate::web::BRAVE_SEARCH_API_KEY_SECRET_ID)
             .await
     }
+
+    pub async fn tavily_api_key(&self) -> AppResult<Option<String>> {
+        self.store
+            .get(crate::web::TAVILY_SEARCH_API_KEY_SECRET_ID)
+            .await
+    }
 }
 
 /// 工具执行上下文：包含审计所需的 DB 句柄、参数、policy 与 workspace cwd。
