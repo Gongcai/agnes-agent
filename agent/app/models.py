@@ -945,6 +945,23 @@ def _ensure_responses_native_streaming(model: str) -> None:
             pass
 
 
+def _disable_litellm_responses_stream_logging(stream: Any) -> Any:
+    """Skip LiteLLM's fragile success logger for app-owned Responses streams.
+
+    LiteLLM 1.92 calls its Responses logging path after a stream completes even
+    when no callbacks are configured. That path assumes the completed response
+    is an SDK object with ``response.usage``; some providers return a dict or no
+    usage at all, so the background logger raises after the usable stream has
+    already been produced. Agnes collects usage from the stream itself, so the
+    optional LiteLLM callback is not needed here.
+    """
+    if callable(getattr(stream, "_handle_logging_completed_response", None)):
+        # Assign on the instance so the provider iterator still emits every
+        # event while only its non-essential completion logger is bypassed.
+        stream._handle_logging_completed_response = lambda: None
+    return stream
+
+
 def responses_completion(
     model: str,
     messages: List[Dict[str, Any]],
@@ -1008,7 +1025,8 @@ def responses_completion(
             params["store"] = False
         else:
             params["input"] = _strip_reasoning_items(input_items) or ""
-        return litellm.responses(**params)
+        response_stream = litellm.responses(**params)
+        return _disable_litellm_responses_stream_logging(response_stream)
 
     if stream:
         _ensure_responses_native_streaming(call_model)

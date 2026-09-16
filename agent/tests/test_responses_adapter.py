@@ -11,6 +11,7 @@ from app.models import (
     _chat_response_to_chunks,
     _chat_messages_to_responses_input,
     _chat_tools_to_responses_tools,
+    _disable_litellm_responses_stream_logging,
     _iter_responses_events_as_chat_chunks,
     _responses_final_to_chat_response,
     _responses_reasoning,
@@ -36,6 +37,16 @@ def _config(**overrides) -> LlmConfig:
 
 def _event_stream(*events):
     return iter(events)
+
+
+def test_responses_stream_skips_litellm_success_logging_hook():
+    class FakeStream:
+        def _handle_logging_completed_response(self):
+            raise AssertionError("LiteLLM completion logging should be skipped")
+
+    stream = FakeStream()
+    assert _disable_litellm_responses_stream_logging(stream) is stream
+    stream._handle_logging_completed_response()
 
 
 def test_system_prompt_becomes_instructions_and_later_system_messages_stay_items():
