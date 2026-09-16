@@ -256,7 +256,7 @@ async fn handle_connection(
             return Ok(());
         }
     };
-    let range = cap_open_ended_range(range, session.metadata.size);
+    let range = resolve_open_ended_range(range, session.metadata.size);
     let (status, content_length, content_range) =
         response_range_headers(&range, session.metadata.size);
     let response_content_type = content_type(&session.metadata).to_owned();
@@ -625,13 +625,22 @@ fn parse_range(value: Option<&str>, size: Option<u64>) -> Result<RequestRange, (
     Ok(RequestRange::Partial { start, end })
 }
 
-fn cap_open_ended_range(range: RequestRange, size: Option<u64>) -> RequestRange {
+/// Resolve the range the proxy serves to the client.
+///
+/// An open-ended client range must not be shortened when the total size is known. WebKit's media
+/// loader keeps a single response open and reads from it continuously; when the response covers
+/// less than the requested `bytes=X-`, it aborts the connection and re-requests from inside the
+/// window it just received, so playback advances only a few hundred kilobytes per round trip and
+/// eventually stalls at a demuxer error. The upstream provider is still polled in
+/// `UPSTREAM_PART_BYTES` chunks by `forward_provider_ranges`, so the first bytes reach the client
+/// just as quickly as before.
+fn resolve_open_ended_range(range: RequestRange, size: Option<u64>) -> RequestRange {
     match range {
         RequestRange::Partial { start, end: None } => {
-            let chunk_end = start.saturating_add(UPSTREAM_PART_BYTES - 1);
             let end = size
-                .map(|size| chunk_end.min(size.saturating_sub(1)))
-                .unwrap_or(chunk_end);
+                .and_then(|size| size.checked_sub(1))
+                .filter(|end| *end >= start)
+                .unwrap_or_else(|| start.saturating_add(UPSTREAM_PART_BYTES - 1));
             RequestRange::Partial {
                 start,
                 end: Some(end),
@@ -1042,38 +1051,50 @@ mod tests {
     }
 
     #[test]
-    fn caps_open_ended_ranges_to_one_proxy_chunk() {
-        let size = 17 * 1024 * 1024 * 1024;
-        let range = cap_open_ended_range(
-            parse_range(Some("bytes=0-"), Some(size)).unwrap(),
+    fn serves_open_ended_ranges_up_to_the_end_of_the_file() {
+        let size = 274_765_496;
+        let start = 1_235_949;
+        let range = resolve_open_ended_range(
+            parse_range(Some("bytes=1235949-"), Some(size)).unwrap(),
             Some(size),
         );
         assert_eq!(
             range,
             RequestRange::Partial {
-                start: 0,
-                end: Some(UPSTREAM_PART_BYTES - 1),
+                start,
+                end: Some(size - 1)
             }
         );
         assert_eq!(
             response_range_headers(&range, Some(size)),
             (
                 206,
-                Some(UPSTREAM_PART_BYTES),
-                Some(format!("bytes 0-{}/{}", UPSTREAM_PART_BYTES - 1, size))
+                Some(size - start),
+                Some(format!("bytes {start}-{}/{}", size - 1, size))
             )
         );
+        // The upstream provider is still polled in fixed-size chunks.
+        assert_eq!(stream_bounds(range, Some(size)), Some((start, size - 1)));
+    }
+
+    #[test]
+    fn caps_open_ended_ranges_only_when_the_size_is_unknown() {
+        let start = 17 * 1024 * 1024 - 1;
         assert_eq!(
-            cap_open_ended_range(
-                RequestRange::Partial {
-                    start: 17 * 1024 * 1024 - 1,
-                    end: None,
-                },
+            resolve_open_ended_range(
+                RequestRange::Partial { start, end: None },
                 Some(17 * 1024 * 1024),
             ),
             RequestRange::Partial {
-                start: 17 * 1024 * 1024 - 1,
+                start,
                 end: Some(17 * 1024 * 1024 - 1),
+            }
+        );
+        assert_eq!(
+            resolve_open_ended_range(RequestRange::Partial { start, end: None }, None),
+            RequestRange::Partial {
+                start,
+                end: Some(start + UPSTREAM_PART_BYTES - 1),
             }
         );
     }
