@@ -12,6 +12,7 @@ from app.models import (
     _chat_messages_to_responses_input,
     _chat_tools_to_responses_tools,
     _disable_litellm_responses_stream_logging,
+    _is_litellm_responses_usage_logging_error,
     _iter_responses_events_as_chat_chunks,
     _responses_final_to_chat_response,
     _responses_reasoning,
@@ -44,9 +45,34 @@ def test_responses_stream_skips_litellm_success_logging_hook():
         def _handle_logging_completed_response(self):
             raise AssertionError("LiteLLM completion logging should be skipped")
 
+        def _log_completed_response(self, **_kwargs):
+            raise AssertionError("LiteLLM completion logging should be skipped")
+
     stream = FakeStream()
     assert _disable_litellm_responses_stream_logging(stream) is stream
     stream._handle_logging_completed_response()
+    stream._log_completed_response()
+
+
+def test_responses_stream_logging_usage_error_is_classified():
+    assert _is_litellm_responses_usage_logging_error(
+        AttributeError("'dict' object has no attribute 'usage'")
+    )
+    assert not _is_litellm_responses_usage_logging_error(
+        AttributeError("'dict' object has no attribute 'content'")
+    )
+
+
+def test_responses_stream_swallows_usage_error_after_output():
+    from app.models import ResponsesStream
+
+    def events():
+        yield SimpleNamespace(type="response.output_text.delta", delta="Answer")
+        raise AttributeError("'dict' object has no attribute 'usage'")
+
+    chunks = list(ResponsesStream(lambda: events()))
+
+    assert [chunk.choices[0].delta.content for chunk in chunks] == ["Answer"]
 
 
 def test_system_prompt_becomes_instructions_and_later_system_messages_stay_items():

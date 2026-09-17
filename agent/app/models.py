@@ -896,6 +896,12 @@ class ResponsesStream:
                 yielded = True
                 yield chunk
         except Exception as error:
+            # LiteLLM can raise after the provider has delivered the complete
+            # response, while assembling its optional logging payload. The
+            # app has already received usable output at this point, so keep it
+            # instead of turning a logging-only failure into a failed message.
+            if yielded and _is_litellm_responses_usage_logging_error(error):
+                return
             if not yielded and self._retry_factory is not None and _is_reasoning_retryable(error):
                 for chunk in _iter_responses_events_as_chat_chunks(
                     self._retry_factory(), reasoning
@@ -959,7 +965,19 @@ def _disable_litellm_responses_stream_logging(stream: Any) -> Any:
         # Assign on the instance so the provider iterator still emits every
         # event while only its non-essential completion logger is bypassed.
         stream._handle_logging_completed_response = lambda: None
+    if callable(getattr(stream, "_log_completed_response", None)):
+        # Fake-stream and cached-stream iterators call this lower-level method
+        # directly, bypassing _handle_logging_completed_response.
+        stream._log_completed_response = lambda **_kwargs: None
     return stream
+
+
+def _is_litellm_responses_usage_logging_error(error: BaseException) -> bool:
+    """Identify the LiteLLM Responses completion-logging usage bug."""
+    return (
+        isinstance(error, AttributeError)
+        and str(error) == "'dict' object has no attribute 'usage'"
+    )
 
 
 def responses_completion(
