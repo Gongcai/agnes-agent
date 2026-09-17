@@ -1410,6 +1410,7 @@ fn apply_remote_workspace(
         payload.version,
         payload.deleted_at.as_deref(),
     )?;
+    ensure_remote_agent_reference(tx, &payload.agent_id, entity)?;
     tx.execute(
         "INSERT INTO workspaces (id, agent_id, name, created_at, updated_at, version, deleted_at, origin_device_id) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7) \
@@ -1440,6 +1441,7 @@ fn apply_remote_session(
         payload.version,
         payload.deleted_at.as_deref(),
     )?;
+    ensure_remote_agent_reference(tx, &payload.agent_id, entity)?;
     if !payload.compress_threshold.is_finite() || !matches!(payload.pinned, 0 | 1) {
         return Err(AppError::Other(format!(
             "invalid session payload for `{}`",
@@ -1456,6 +1458,7 @@ fn apply_remote_session(
             entity.entity_id
         )));
     }
+    let workspace_id = active_remote_workspace_id(tx, payload.workspace_id.as_deref())?;
     tx.execute(
         "INSERT INTO sessions (id, agent_id, title, context_limit, compress_threshold, recency_window, \
          reserved_output_tokens, summarizer_model, model, thinking_mode, thinking_budget, streaming, \
@@ -1485,7 +1488,7 @@ fn apply_remote_session(
             payload.thinking_mode,
             payload.thinking_budget,
             payload.streaming.map(|value| if value { 1 } else { 0 }),
-            payload.workspace_id,
+            workspace_id,
             payload.selected_root_id,
             payload.summary,
             payload.summary_updated_at,
@@ -1497,6 +1500,56 @@ fn apply_remote_session(
         ],
     )?;
     Ok(())
+}
+
+/// Keep child rows applicable when a remote snapshot starts at a child or only
+/// contains a parent tombstone. A later agent upsert replaces this placeholder.
+fn ensure_remote_agent_reference(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    entity: &RemoteEntityInput,
+) -> AppResult<()> {
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE id = ?1)",
+        [agent_id],
+        |row| row.get(0),
+    )?;
+    if exists {
+        return Ok(());
+    }
+
+    let deleted_at = entity.updated_at.to_string();
+    tx.execute(
+        "INSERT INTO agents (
+           id, name, persona, scenario, system_prompt, greeting, example_dialogue,
+           model, tool_policy, avatar, tags, thinking_mode, thinking_budget, streaming,
+           created_at, updated_at, version, deleted_at, origin_device_id
+         ) VALUES (?1, '', '', '', '', '', '', '', '', '', '', 'off', 0, 1, ?2, ?2, ?3, ?2, ?4)",
+        params![
+            agent_id,
+            deleted_at,
+            entity.revision,
+            entity.origin_device_id
+        ],
+    )?;
+    Ok(())
+}
+
+fn active_remote_workspace_id(
+    tx: &Transaction<'_>,
+    workspace_id: Option<&str>,
+) -> AppResult<Option<String>> {
+    let Some(workspace_id) = workspace_id else {
+        return Ok(None);
+    };
+    let active: bool = tx.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM workspaces WHERE id = ?1 AND deleted_at IS NULL
+         )",
+        [workspace_id],
+        |row| row.get(0),
+    )?;
+    Ok(active.then(|| workspace_id.to_string()))
 }
 
 fn validate_payload_identity(
@@ -2101,6 +2154,7 @@ fn apply_remote_delete(tx: &Transaction<'_>, entity: &RemoteEntityInput) -> AppR
             )?;
         }
         "agent" => {
+            ensure_remote_agent_reference(tx, &entity.entity_id, entity)?;
             tx.execute(
                 "UPDATE agents SET deleted_at = ?1, updated_at = ?1, \
                  version = MAX(version + 1, ?2), origin_device_id = ?3 WHERE id = ?4",
@@ -3343,6 +3397,30 @@ mod tests {
         }
     }
 
+    fn remote_deleted(
+        entity_type: &str,
+        entity_id: &str,
+        revision: i64,
+        server_seq: i64,
+    ) -> RemoteEntityInput {
+        RemoteEntityInput {
+            protocol_version: 1,
+            entity_type: entity_type.into(),
+            entity_id: entity_id.into(),
+            revision,
+            hlc: format!("1000-{server_seq:04}-remote02"),
+            deleted: true,
+            payload_schema_version: 1,
+            payload_encoding: "json".into(),
+            payload: None,
+            payload_hash: format!("{:064x}", server_seq),
+            key_version: None,
+            origin_device_id: REMOTE_DEVICE.into(),
+            server_seq,
+            updated_at: 1_000 + server_seq,
+        }
+    }
+
     #[test]
     fn multi_page_bootstrap_applies_dependencies_and_finishes_at_snapshot_cursor() {
         let mut conn = setup();
@@ -4004,6 +4082,83 @@ mod tests {
             .unwrap();
         assert_eq!(streaming, Some(0));
         assert_eq!(status(&conn).unwrap().pending_count, 0);
+    }
+
+    #[test]
+    fn remote_session_with_missing_workspace_is_detached_without_blocking_sync() {
+        let mut conn = setup();
+        apply_bootstrap_page(
+            &mut conn,
+            "required",
+            &[
+                remote(
+                    "agent",
+                    "agent-1",
+                    1,
+                    1,
+                    agent_payload("agent-1", "Agent", 1),
+                ),
+                remote(
+                    "session",
+                    "session-1",
+                    1,
+                    2,
+                    session_payload("session-1", "agent-1", "deleted-workspace"),
+                ),
+            ],
+            2,
+            None,
+            false,
+            2_000,
+        )
+        .unwrap();
+
+        let workspace_id: Option<String> = conn
+            .query_row(
+                "SELECT workspace_id FROM sessions WHERE id = 'session-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(workspace_id, None);
+        assert_eq!(status(&conn).unwrap().last_pull_cursor, 2);
+        assert_eq!(status(&conn).unwrap().pending_count, 0);
+    }
+
+    #[test]
+    fn remote_session_after_agent_tombstone_keeps_foreign_keys_valid() {
+        let mut conn = setup();
+        apply_bootstrap_page(
+            &mut conn,
+            "required",
+            &[
+                remote_deleted("agent", "agent-1", 3, 1),
+                remote(
+                    "session",
+                    "session-1",
+                    12,
+                    2,
+                    session_payload("session-1", "agent-1", "deleted-workspace"),
+                ),
+            ],
+            2,
+            None,
+            false,
+            2_000,
+        )
+        .unwrap();
+
+        let (agent_deleted, session_count): (bool, i64) = conn
+            .query_row(
+                "SELECT a.deleted_at IS NOT NULL, (SELECT COUNT(*) FROM sessions WHERE id = 'session-1')
+                 FROM agents a WHERE a.id = 'agent-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(agent_deleted);
+        assert_eq!(session_count, 1);
+        assert_eq!(status(&conn).unwrap().last_pull_cursor, 2);
     }
 
     fn synced_agent_with_local_model_change() -> (Connection, OutboxRow) {
