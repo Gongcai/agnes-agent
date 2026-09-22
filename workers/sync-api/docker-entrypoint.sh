@@ -9,6 +9,7 @@ pnpm exec wrangler d1 migrations apply agnes-sync --local --persist-to "$persist
 memory_restart_mb=${SYNC_MEMORY_RESTART_MB:-768}
 health_failure_limit=${SYNC_HEALTH_FAILURE_LIMIT:-5}
 health_interval_seconds=${SYNC_HEALTH_INTERVAL_SECONDS:-15}
+stop_timeout_seconds=${SYNC_STOP_TIMEOUT_SECONDS:-5}
 
 case "$memory_restart_mb" in
   ''|*[!0-9]*)
@@ -40,6 +41,16 @@ if [ "$health_interval_seconds" -le 0 ]; then
   echo "SYNC_HEALTH_INTERVAL_SECONDS must be a positive integer" >&2
   exit 1
 fi
+case "$stop_timeout_seconds" in
+  ''|*[!0-9]*)
+    echo "SYNC_STOP_TIMEOUT_SECONDS must be a positive integer" >&2
+    exit 1
+    ;;
+esac
+if [ "$stop_timeout_seconds" -le 0 ]; then
+  echo "SYNC_STOP_TIMEOUT_SECONDS must be a positive integer" >&2
+  exit 1
+fi
 
 memory_restart_bytes=$((memory_restart_mb * 1024 * 1024))
 server_pid=
@@ -57,15 +68,56 @@ read_memory_bytes() {
   printf '0\n'
 }
 
-stop_server() {
+# The image only ships dash's builtin kill (no external kill binary), and dash
+# rejects the "--" option terminator, so the signal is passed as a plain option.
+signal_server() {
+  signal=$1
   if [ -n "${server_pgid:-}" ]; then
-    kill -TERM -- "-$server_pgid" 2>/dev/null || true
+    kill "-$signal" "-$server_pgid" 2>/dev/null || true
   elif [ -n "${server_pid:-}" ]; then
-    kill -TERM "$server_pid" 2>/dev/null || true
+    kill "-$signal" "$server_pid" 2>/dev/null || true
   fi
-  if [ -n "${server_pid:-}" ]; then
-    wait "$server_pid" 2>/dev/null || true
+}
+
+# An exited-but-unreaped process still answers kill -0, so the process state is
+# checked as well to tell a zombie apart from a live worker.
+server_running() {
+  kill -0 "$server_pid" 2>/dev/null || return 1
+  state=$(awk '{print $3}' "/proc/$server_pid/stat" 2>/dev/null) || return 0
+  [ "$state" != "Z" ]
+}
+
+wait_for_server_exit() {
+  limit=$1
+  elapsed=0
+  while server_running; do
+    if [ "$elapsed" -ge "$limit" ]; then
+      return 1
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 0
+}
+
+stop_server() {
+  if [ -z "${server_pid:-}" ]; then
+    return 0
   fi
+
+  signal_server TERM
+  if ! wait_for_server_exit "$stop_timeout_seconds"; then
+    echo "Worker ignored SIGTERM after ${stop_timeout_seconds}s, sending SIGKILL" >&2
+    signal_server KILL
+    if ! wait_for_server_exit "$stop_timeout_seconds"; then
+      # Give up and let the container restart policy take over instead of
+      # blocking the supervisor forever and leaving a dead listener behind.
+      echo "Worker could not be stopped, exiting so the container is restarted" >&2
+      exit 1
+    fi
+  fi
+
+  wait "$server_pid" 2>/dev/null || true
   server_pid=
   server_pgid=
 }
@@ -125,9 +177,7 @@ while :; do
 
   if [ -n "$restart_reason" ]; then
     echo "Stopping Worker for ${restart_reason} recovery" >&2
-    stop_server
-  else
-    stop_server
   fi
+  stop_server
   sleep 2
 done
