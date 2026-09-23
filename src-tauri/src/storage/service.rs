@@ -1550,6 +1550,7 @@ impl StorageService {
         &self,
         provider_id: String,
         challenge_id: String,
+        supplemental_account_id: Option<String>,
     ) -> AppResult<StorageAuthorizationProgress> {
         let factory = self
             .registry
@@ -1570,9 +1571,54 @@ impl StorageService {
                         "Storage provider authorization returned a mismatched provider ID".into(),
                     ));
                 }
-                let account_id = authorized.account.id.clone();
-                self.save_connected_account(authorized.account, authorized.credential)
-                    .await?;
+                let account_id = if let Some(account_id) = supplemental_account_id {
+                    let row = self
+                        .db
+                        .get_storage_account(account_id.clone())
+                        .await?
+                        .ok_or_else(|| {
+                            AppError::Other("Storage provider account was not found".into())
+                        })?;
+                    if row.provider_id != "quark_drive" || provider_id != "quark_drive" {
+                        return Err(AppError::Other("仅支持为夸克网盘补充官方授权".into()));
+                    }
+                    let previous = self
+                        .credentials
+                        .load(&account_id)
+                        .await
+                        .map_err(provider_error)?
+                        .ok_or_else(|| AppError::Other("当前账户没有可合并的原有凭证".into()))?;
+                    let merged = super::quark_drive_official::merge_official_credential(
+                        previous.as_str(),
+                        authorized.credential.as_str(),
+                    )
+                    .map_err(provider_error)?;
+                    let expected = Zeroizing::new(merged);
+                    self.credentials
+                        .store(&account_id, expected.clone())
+                        .await
+                        .map_err(provider_error)?;
+                    let verified = self
+                        .credentials
+                        .load(&account_id)
+                        .await
+                        .map_err(provider_error)?;
+                    if verified.as_ref().map(|value| value.as_str()) != Some(expected.as_str()) {
+                        restore_credential(self.credentials.as_ref(), &account_id, Some(previous))
+                            .await?;
+                        return Err(AppError::Other("补充官方授权凭证写入校验失败".into()));
+                    }
+                    self.registry
+                        .factory(&provider_id)
+                        .map_err(provider_error)?
+                        .invalidate_account(&account_id);
+                    account_id
+                } else {
+                    let account_id = authorized.account.id.clone();
+                    self.save_connected_account(authorized.account, authorized.credential)
+                        .await?;
+                    account_id
+                };
                 Ok(StorageAuthorizationProgress {
                     status: "completed".into(),
                     account_id: Some(account_id),

@@ -1530,6 +1530,35 @@ pub(crate) fn merge_legacy_cookie(existing: &str, cookie: &str) -> ProviderResul
     serde_json::to_string(&bundle).map_err(|_| invalid_response("夸克多凭证编码失败"))
 }
 
+pub(crate) fn merge_official_credential(existing: &str, official: &str) -> ProviderResult<String> {
+    let credential = parse_official_credential(official)?;
+    let mut bundle = if let Some(bundle) = parse_credential_bundle(existing) {
+        bundle
+    } else if let Ok(previous_official) = parse_credential(existing) {
+        QuarkCredentialBundle {
+            official: Some(previous_official),
+            legacy_cookie: None,
+        }
+    } else {
+        QuarkCredentialBundle {
+            official: None,
+            legacy_cookie: Some(existing.to_owned()),
+        }
+    };
+    if bundle
+        .official
+        .as_ref()
+        .is_some_and(|previous| previous.user_id != credential.user_id)
+    {
+        return Err(ProviderError::new(
+            ProviderErrorCategory::Authentication,
+            "重新授权的夸克账号与当前账户不一致",
+        ));
+    }
+    bundle.official = Some(credential);
+    serde_json::to_string(&bundle).map_err(|_| invalid_response("夸克多凭证编码失败"))
+}
+
 fn parse_official_credential(value: &str) -> ProviderResult<QuarkCredential> {
     if let Some(bundle) = parse_credential_bundle(value) {
         return bundle.official.ok_or_else(|| {

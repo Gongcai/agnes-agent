@@ -4907,10 +4907,11 @@ pub async fn poll_storage_provider_authorization(
     state: tauri::State<'_, AppState>,
     provider_id: String,
     challenge_id: String,
+    supplemental_account_id: Option<String>,
 ) -> AppResult<crate::storage::service::StorageAuthorizationProgress> {
     state
         .storage
-        .poll_authorization(provider_id, challenge_id)
+        .poll_authorization(provider_id, challenge_id, supplemental_account_id)
         .await
 }
 

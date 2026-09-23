@@ -809,7 +809,11 @@ export function DriveWorkspace() {
       try {
         const result = await invoke<StorageAuthorizationProgress>(
           "poll_storage_provider_authorization",
-          { providerId: "quark_drive", challengeId: quarkAuthorizationChallengeId },
+          {
+            providerId: "quark_drive",
+            challengeId: quarkAuthorizationChallengeId,
+            supplementalAccountId: quarkCredentialAccountId,
+          },
         );
         if (cancelled) return;
         if (result.status === "completed" && result.account_id) {
@@ -848,7 +852,7 @@ export function DriveWorkspace() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [showQuarkAuthorization, quarkAuthorizationMode, quarkAuthorizationChallengeId]);
+  }, [showQuarkAuthorization, quarkAuthorizationMode, quarkAuthorizationChallengeId, quarkCredentialAccountId]);
 
   const refreshQuota = async () => {
     if (!selectedAccountId) return;
@@ -2471,7 +2475,23 @@ export function DriveWorkspace() {
               </button>
             </div>
             <div className="space-y-4 p-4">
-              {!quarkCredentialAccountId ? <div className="flex rounded-md border border-stone-200 bg-white p-0.5">
+              <div className="flex rounded-md border border-stone-200 bg-white p-0.5">
+                {quarkCredentialAccountId && (
+                  <button
+                    onClick={() => {
+                      setQuarkAuthorizationMode("official");
+                      setQuarkAuthorizationChallengeId(null);
+                      if (!quarkQrLoading) void startQuarkOfficialAuthorization();
+                    }}
+                    disabled={loading || quarkQrLoading}
+                    className={`flex-1 rounded px-3 py-1.5 text-xs font-medium ${
+                      quarkAuthorizationMode === "official" ? "bg-stone-100 text-stone-900" : "text-stone-500"
+                    }`}
+                  >
+                    官方扫码重新授权
+                  </button>
+                )}
+                {!quarkCredentialAccountId && <>
                 <button
                   onClick={() => {
                     setQuarkAuthorizationMode("official");
@@ -2513,25 +2533,38 @@ export function DriveWorkspace() {
                 >
                   二维码登录
                 </button>
-              </div> : (
-                <div className="rounded-md border border-stone-200 bg-white px-3 py-2 text-center text-xs text-stone-600">
-                  Cookie / JSON 鉴权
-                </div>
-              )}
+                </>}
+                {quarkCredentialAccountId && (
+                  <button
+                    onClick={() => {
+                      setQuarkAuthorizationMode("cookie");
+                      setQuarkAuthorizationChallengeId(null);
+                    }}
+                    disabled={loading}
+                    className={`flex-1 rounded px-3 py-1.5 text-xs font-medium ${
+                      quarkAuthorizationMode === "cookie" ? "bg-stone-100 text-stone-900" : "text-stone-500"
+                    }`}
+                  >
+                    Cookie / JSON
+                  </button>
+                )}
+              </div>
               {quarkAuthorizationMode !== "official" && (
                 <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
                   <ShieldWarning className="mt-0.5 h-4 w-4 shrink-0" />
                   <span>这是社区逆向 API 适配器，可能因夸克接口变更或风控失效。Cookie 仅保存在本机系统 Keyring。</span>
                 </div>
               )}
-              {quarkAuthorizationMode === "official" && !quarkCredentialAccountId ? (
+              {quarkAuthorizationMode === "official" ? (
                 <div className="flex min-h-72 flex-col items-center justify-center gap-3 px-5 text-center">
                   <ShieldWarning className="h-8 w-8 text-emerald-700" />
                   <p className="text-sm font-medium text-stone-700">
                     {quarkAuthorizationStatus ?? "正在准备官方授权"}
                   </p>
                   <p className="max-w-sm text-[11px] leading-5 text-stone-500">
-                    授权页面会在系统浏览器中打开。完成授权后，此应用会自动保存官方 access token，并使用官方 Skill API 下载文件。
+                    {quarkCredentialAccountId
+                      ? "授权页面会在系统浏览器中打开。完成夸克授权后，新 access token 会更新到当前账户，并保留已有 Cookie。"
+                      : "授权页面会在系统浏览器中打开。完成授权后，此应用会自动保存官方 access token，并使用官方 Skill API 下载文件。"}
                   </p>
                   <div className="flex w-full max-w-sm items-center gap-2">
                     <input
