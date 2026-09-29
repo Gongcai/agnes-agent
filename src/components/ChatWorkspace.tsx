@@ -176,25 +176,40 @@ const AttachmentChip: React.FC<{
   onRemove?: () => void;
 }> = ({ metadata, onRemove }) => {
   const Icon = attachmentIconForMetadata(metadata);
-  const typeLabel = metadata.attachmentKind === "knowledge_collection"
+  const isKnowledge = metadata.attachmentKind === "knowledge_collection";
+  const isSkill = metadata.attachmentKind === "skill";
+  const isImage = metadata.attachmentKind === "local_file" && Boolean(metadata.mediaType?.startsWith("image/"));
+  const typeLabel = isKnowledge
     ? "知识库"
-    : metadata.attachmentKind === "skill"
+    : isSkill
       ? "Skill"
-      : "本地文件";
+      : isImage
+        ? "图片"
+        : "本地文件";
+
   return (
     <span
-      className="inline-flex max-w-64 items-center gap-1.5 rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 text-[10px] text-stone-600"
+      className={`inline-flex max-w-72 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] select-none transition-all ${
+        isKnowledge
+          ? "border-amber-300/80 bg-amber-50/80 text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200"
+          : isSkill
+            ? "border-violet-300/80 bg-violet-50/80 text-violet-900 dark:border-violet-900/40 dark:bg-violet-950/20 dark:text-violet-200"
+            : isImage
+              ? "border-emerald-300/80 bg-emerald-50/80 text-emerald-900 dark:border-emerald-900/40 dark:bg-emerald-950/20 dark:text-emerald-200"
+              : "border-stone-300/80 bg-stone-100/80 text-stone-800 dark:border-stone-800 dark:bg-stone-900/50 dark:text-stone-300"
+      }`}
       title={`${typeLabel}：${metadata.name}`}
     >
-      <Icon className="h-3.5 w-3.5 shrink-0 text-[#6C806A]" />
+      <Icon className="h-3.5 w-3.5 shrink-0 opacity-80" />
       <span className="truncate font-medium">{metadata.name}</span>
-      <span className="shrink-0 text-[9px] text-stone-400">{typeLabel}</span>
+      <span className="shrink-0 text-[10px] opacity-60">· {typeLabel}</span>
       {onRemove && (
         <button
           type="button"
           onClick={onRemove}
-          className="-mr-1 rounded p-0.5 text-stone-400 transition-colors hover:bg-stone-200 hover:text-stone-700"
+          className="-mr-1 rounded p-0.5 opacity-60 transition-opacity hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/10"
           title="移除附件"
+          aria-label="移除附件"
         >
           <X className="h-3 w-3" />
         </button>
@@ -465,6 +480,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [inputVal, setInputVal] = useState("");
   const [mobileInputActive, setMobileInputActive] = useState(false);
   const mobileInputRef = useRef<HTMLTextAreaElement>(null);
+  const desktopTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
   const mobileInputBlurTimerRef = useRef<number | null>(null);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const chatStageRef = useRef<HTMLDivElement>(null);
@@ -495,6 +512,54 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     new Date(),
     draftSession?.id ?? activeSessionId ?? "new-conversation",
   );
+
+  const adjustTextareaHeight = () => {
+    const textarea = desktopTextareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const minH = isEmptyConversation ? 48 : 38;
+    const maxH = 220;
+    const nextH = Math.min(Math.max(textarea.scrollHeight, minH), maxH);
+    textarea.style.height = `${nextH}px`;
+  };
+
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [inputVal, isEmptyConversation]);
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDragOver) setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    const droppedFiles = Array.from(e.dataTransfer.files);
+    if (droppedFiles.length === 0) return;
+    for (const file of droppedFiles) {
+      if (file.type.startsWith("image/")) {
+        await appendPastedImage(file);
+      } else {
+        const filePath = (file as unknown as { path?: string }).path;
+        if (filePath) {
+          appendLocalPaths([filePath]);
+        } else {
+          await appendPastedImage(file);
+        }
+      }
+    }
+  };
 
   // 拉取服务商与模型列表，供底部模型切换器使用
   useEffect(() => {
@@ -1268,7 +1333,20 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             </h1>
           </div>
         </div>
-        <div className={`agnes-chat-composer-box relative mx-auto max-w-4xl rounded-xl border border-stone-300/80 bg-white p-2.5 shadow-sm transition-[max-width,border-radius,box-shadow] duration-500 focus-within:border-stone-400 ${isEmptyConversation ? "agnes-chat-composer-box--empty" : ""}`}>
+        <div
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={(e) => void handleDrop(e)}
+          className={`agnes-chat-composer-box relative mx-auto max-w-4xl rounded-2xl border border-stone-300/80 bg-white p-2.5 shadow-sm transition-[max-width,border-radius,box-shadow] duration-500 focus-within:border-stone-400 ${isEmptyConversation ? "agnes-chat-composer-box--empty" : ""}`}
+        >
+          {isDragOver && (
+            <div className="absolute inset-0 z-30 flex items-center justify-center rounded-2xl border-2 border-dashed border-coral/60 bg-canvas/90 backdrop-blur-sm pointer-events-none transition-all">
+              <div className="flex items-center gap-2 text-sm font-medium text-coral">
+                <Plus className="h-5 w-5" />
+                <span>松开即可添加为附件</span>
+              </div>
+            </div>
+          )}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-2 pb-2">
               {attachments.map((attachment) => (
@@ -1290,6 +1368,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             </div>
           )}
           <textarea
+            ref={desktopTextareaRef}
             tabIndex={mobileInputActive ? -1 : 0}
             value={inputVal}
             onChange={(e) => setInputVal(e.target.value)}
@@ -1309,12 +1388,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             }}
             placeholder={
               isEmptyConversation
-                ? "输入一个问题、想法或任务…"
+                ? "输入一个问题、想法或任务… (Shift+Enter 换行)"
                 : activeAgent
                 ? `向 ${activeAgent.name} 发送消息... (Enter 发送)`
                 : "选择一个会话以开始..."
             }
-            className="w-full resize-none bg-transparent px-3 py-1 text-sm text-stone-900 placeholder:text-stone-450 focus:outline-none h-12"
+            className="w-full resize-none bg-transparent px-3 py-1.5 text-[14.5px] leading-relaxed text-ink placeholder:text-ink-muted/50 focus:outline-none"
           />
           {attachmentError && (
             <div className="mx-2 mb-2 rounded-md bg-rose-50 px-2 py-1.5 text-[10px] text-rose-700">
@@ -1522,15 +1601,29 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   </>
                 )}
               </div>
-              <span className="truncate" title={currentPermissionOption.desc}>
-                <span className={currentPermissionMode === "full_access" ? "font-semibold text-rose-600" : "font-semibold text-stone-500"}>
-                  {currentPermissionOption.label}
-                </span>
-                <span>{` · ${currentPermissionOption.desc}`}</span>
+              <div className="flex items-center gap-1.5 text-[11px] text-ink-muted">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModelPickerOpen(true);
+                    setAttachmentPicker(null);
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-canvas-surface-card ${
+                    currentPermissionMode === "full_access"
+                      ? "text-rose-600 font-medium bg-rose-50/80 dark:bg-rose-950/30"
+                      : "text-ink-muted hover:text-ink"
+                  }`}
+                  title={currentPermissionOption.desc}
+                >
+                  <ShieldCheck className="h-3 w-3" />
+                  <span>{currentPermissionOption.label}</span>
+                </button>
                 {attachments.length > 0 && (
-                  <span>{` · ${attachments.length} 个附件`}</span>
+                  <span className="inline-flex items-center gap-1 rounded-md bg-coral/10 px-1.5 py-0.5 text-coral font-medium text-[10px]">
+                    {attachments.length} 个附件
+                  </span>
                 )}
-              </span>
+              </div>
             </div>
             <div className="flex items-center gap-2">
               {/* Model, thinking, and permission switcher */}
@@ -1759,32 +1852,35 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 )}
               </div>
 
+              <span className="hidden sm:inline-block text-[10px] text-ink-muted/50 select-none mr-0.5">
+                Shift+Enter 换行
+              </span>
+
               {isStreaming ? (
                 <button
                   type="button"
                   onClick={() => activeSessionId && cancelRun(activeSessionId).catch(console.error)}
-                  className="agnes-chat-stop-button flex h-6 items-center gap-1 rounded-lg bg-red-600 px-3.5 py-1 text-[10px] font-semibold text-white shadow-sm transition-colors hover:bg-red-700"
+                  className="agnes-chat-stop-button flex h-7 w-7 sm:h-8 sm:w-8 items-center justify-center rounded-lg bg-red-600 text-white shadow-sm transition-all hover:bg-red-700 active:scale-95"
                   title="停止生成"
                   aria-label="停止生成"
                 >
-                  <Square className="h-2.5 w-2.5 fill-current" />
-                  <span>停止</span>
+                  <Square className="h-3 w-3 fill-current" />
                 </button>
               ) : (
-                <Button
+                <button
+                  type="button"
                   onClick={handleSend}
                   disabled={
                     (!inputVal.trim() && attachments.length === 0)
                     || !hasSessionTarget
                     || isPreparingSession
                   }
-                  className="agnes-chat-send-button h-6 rounded-lg bg-stone-900 px-3.5 py-1 text-[10px] font-semibold text-white shadow-sm hover:bg-stone-800"
-                  title="发送"
+                  className="agnes-chat-send-button flex h-7 w-7 sm:h-8 sm:w-8 items-center justify-center rounded-lg bg-coral text-white shadow-sm transition-all hover:bg-coral/90 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100"
+                  title={hasSessionTarget ? "发送 (Enter)" : "请先选择或新建会话"}
                   aria-label="发送"
                 >
-                  <PaperPlaneRight className="h-3 w-3 mr-1" />
-                  <span>发送</span>
-                </Button>
+                  <PaperPlaneRight className="h-3.5 w-3.5 sm:h-4 sm:w-4" weight="bold" />
+                </button>
               )}
             </div>
           </div>
