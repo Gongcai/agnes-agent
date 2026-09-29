@@ -485,6 +485,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return (
       <button
         key={sess.id}
+        type="button"
+        aria-current={isActive ? "page" : undefined}
         onClick={() => {
           onSelectFeature("chat");
           setActiveSessionId(sess.id);
@@ -660,37 +662,52 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 const expanded = expandedWs.has(ws.id);
                 const wsSessions = sessions.filter((s) => s.workspace_id === ws.id);
                 return (
-                  <div key={ws.id}>
-                    <div
-                      className="flex w-full cursor-pointer items-center gap-1.5 rounded-xl px-2 py-1.5 text-left text-xs text-stone-700 transition-colors hover:bg-stone-200/40"
-                      onClick={() => toggleWs(ws.id)}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        setAccountMenuOpen(false);
-                        setCtxMenu(null);
-                        setWsCtxMenu({ workspaceId: ws.id, name: ws.name, x: e.clientX, y: e.clientY });
-                      }}
-                      title={ws.folder_path}
-                    >
-                      {expanded ? <CaretDown className="h-3.5 w-3.5 shrink-0 text-stone-400" /> : <CaretRight className="h-3.5 w-3.5 shrink-0 text-stone-400" />}
-                      <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-                      <span className="flex-1 truncate font-medium">{ws.name}</span>
+                  <div
+                    key={ws.id}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setAccountMenuOpen(false);
+                      setCtxMenu(null);
+                      setWsCtxMenu({ workspaceId: ws.id, name: ws.name, x: e.clientX, y: e.clientY });
+                    }}
+                  >
+                    <div className="flex items-center gap-1.5">
                       <button
-                        onClick={(e) => { e.stopPropagation(); handleAddWorkspaceSession(ws.id); }}
-                        className="shrink-0 text-stone-400 hover:text-stone-900"
-                        title="在工作区中新建会话"
+                        type="button"
+                        className="agnes-workspace-toggle flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-left text-xs text-stone-700 transition-colors hover:bg-stone-200/40 sm:min-h-8"
+                        onClick={() => toggleWs(ws.id)}
+                        aria-expanded={expanded}
+                        aria-controls={`workspace-sessions-${ws.id}`}
+                        title={ws.folder_path}
                       >
-                        <Plus className="h-3 w-3" />
+                        {expanded ? <CaretDown className="h-3.5 w-3.5 shrink-0 text-stone-400" /> : <CaretRight className="h-3.5 w-3.5 shrink-0 text-stone-400" />}
+                        <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                        <span className="flex-1 truncate font-medium">{ws.name}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAddWorkspaceSession(ws.id)}
+                        className="agnes-workspace-add-session grid h-11 w-11 shrink-0 place-items-center rounded-md text-stone-400 transition-colors hover:bg-stone-200/60 hover:text-stone-900 sm:h-8 sm:w-8"
+                        title="在工作区中新建会话"
+                        aria-label={`在工作区 ${ws.name} 中新建会话`}
+                      >
+                        <Plus className="h-4 w-4" />
                       </button>
                     </div>
-                    {expanded && (
-                      <div className="ml-3 mt-0.5 space-y-1 border-l border-stone-200/60 pl-2">
-                        {wsSessions.map(renderSessionBtn)}
-                        {wsSessions.length === 0 && (
-                          <div className="py-2 text-center text-[10px] text-stone-400">无会话</div>
-                        )}
-                      </div>
-                    )}
+                    <div
+                      id={`workspace-sessions-${ws.id}`}
+                      hidden={!expanded}
+                      className="ml-3 mt-0.5 space-y-1 border-l border-stone-200/60 pl-2"
+                    >
+                      {expanded && (
+                        <>
+                          {wsSessions.map(renderSessionBtn)}
+                          {wsSessions.length === 0 && (
+                            <div className="py-2 text-center text-[10px] text-stone-400">无会话</div>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                 );
               })}

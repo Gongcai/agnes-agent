@@ -2844,6 +2844,14 @@ pre,
     transform: translateX(0);
   }
 
+  .agnes-sidebar .agnes-sidebar-primary-action,
+  .agnes-sidebar .agnes-mode-tab,
+  .agnes-sidebar .agnes-session-item,
+  .agnes-sidebar .agnes-account-action,
+  .agnes-sidebar .agnes-account-trigger {
+    min-height: 44px !important;
+  }
+
   .agnes-sidebar-account {
     padding-bottom: calc(4px + env(safe-area-inset-bottom)) !important;
   }
