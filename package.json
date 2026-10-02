@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "icons:generate": "tauri icon src-tauri/icons/icon-manifest.json && tauri icon src-tauri/icons/icon-source.png --output public --png 32 --png 192 --png 180",
     "build:sidecar": "node scripts/build-sidecar.mjs",
     "build:pdf-package": "node scripts/build-pdf-model-package.mjs",
     "build:android-proot": "node scripts/build-android-proot.mjs",

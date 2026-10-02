@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { readImage, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Warning, Brain, Check, CaretDown, Copy, Cpu, Books, FileText, ImageSquare, GitBranch, PencilSimple, Plus, PuzzlePiece, ArrowsClockwise, ArrowUp as PaperPlaneRight, ShieldCheck, Sparkle, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { Warning, Brain, Check, CaretDown, Copy, Cpu, Books, FileText, ImageSquare, GitBranch, PencilSimple, Plus, PuzzlePiece, ArrowsClockwise, ArrowUp as PaperPlaneRight, ShieldCheck, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -13,6 +13,7 @@ import type {
   ToolCall,
 } from "../store/useAgentStore";
 import { AgentAvatar } from "./AgentAvatar";
+import { AppLogo } from "./AppLogo";
 import { AnimatedDisclosure } from "./AnimatedDisclosure";
 import { ChatScrollNav } from "./ChatScrollNav";
 import { ContextUsageRing } from "./ContextUsageRing";
@@ -1308,7 +1309,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           aria-hidden={!isEmptyConversation}
         >
           <div className="flex items-center justify-center gap-3">
-            <Sparkle className="h-7 w-7 text-coral" />
+            <AppLogo />
             <h1 className="text-3xl font-serif font-normal text-ink">
               {welcomeGreeting}
             </h1>

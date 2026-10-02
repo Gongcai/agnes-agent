@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ArrowsOut, ArrowsIn, Minus, SidebarSimple, MagnifyingGlass, X } from "@phosphor-icons/react";
+import { AppLogo } from "./AppLogo";
 
 interface AppTitleBarProps {
   title: string;
@@ -57,7 +58,8 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
         >
           <SidebarSimple className="h-4 w-4" />
         </button>
-        <span className="ml-1 truncate text-xs font-semibold text-ink" data-tauri-drag-region>
+        <AppLogo size={20} className="ml-1 pointer-events-none" />
+        <span className="truncate text-xs font-semibold text-ink" data-tauri-drag-region>
           Agnes
         </span>
         <span className="opacity-40" aria-hidden="true">/</span>

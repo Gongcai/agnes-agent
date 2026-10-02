@@ -2,6 +2,8 @@
 
 项目规划与设计文档：技术栈、架构、数据模型、AGENTS 角色卡、记忆系统、版本路线图与关键决策。开发规范（语言、命令、代码质量）见 `CODEBUDDY.md`。
 
+Logo、跨平台应用图标与资源再生成方式详见 `ProjectPlan/BRAND_ASSETS.md`。
+
 记忆系统的实体字段、文件导航行为与 AI 工具契约详见 `ProjectPlan/MEMORY_SYSTEM.md`；正式运行时规则见 `ProjectPlan/MEMORY_FILESYSTEM_PROMPT.md`。
 
 Read With AI 的 EPUB、划线与讨论上下文边界详见 `ProjectPlan/READ_WITH_AI.md`。

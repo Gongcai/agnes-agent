@@ -1,3 +1,5 @@
+<p align="center"><img src="public/logo.png" width="96" height="96" alt="Agnes Agent" /></p>
+
 # Agnes Agent
 
 Agnes Agent is a local-first desktop application for multi-agent conversations, persistent memory, knowledge work, and personal productivity. It is closer to a character-based chat workspace than a standalone API agent: each Agent can have its own persona, system prompt, tool policy, and long-term memory.

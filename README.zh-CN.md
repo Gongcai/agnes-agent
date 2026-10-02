@@ -1,3 +1,5 @@
+<p align="center"><img src="public/logo.png" width="96" height="96" alt="Agnes Agent" /></p>
+
 # Agnes Agent
 
 Agnes Agent 是一个本地优先的桌面应用，用于多 Agent 对话、持久记忆、知识库和个人效率管理。它更接近带角色卡的聊天工作区，而不是单纯的 API Agent：每个 Agent 都可以拥有独立的人设、系统提示词、工具策略和长期记忆。
