@@ -41,6 +41,40 @@ body.quick-window-body {
   background: transparent;
 }
 
+/* Keep portaled model controls consistent with the app's semantic theme. */
+.model-picker :is(button, select, input):focus-visible {
+  outline: 2px solid var(--claude-clay);
+  outline-offset: -2px;
+}
+
+.model-picker select {
+  color-scheme: inherit;
+}
+
+.model-picker-settings > div:first-child {
+  margin-top: 0;
+}
+
+.model-picker-settings input {
+  flex-shrink: 0;
+}
+
+@media (max-width: 480px) {
+  .model-picker-settings > div:last-child {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 640px) {
+  .model-picker :is(button, select, input) {
+    min-height: 44px;
+  }
+
+  .model-picker input[type="search"] {
+    font-size: 16px;
+  }
+}
+
 body.quick-window-body #root {
   width: 100vw;
   height: 100vh;

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { readImage, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Warning, Brain, Check, CaretDown, Copy, Cpu, Books, FileText, ImageSquare, GitBranch, PencilSimple, Plus, PuzzlePiece, ArrowsClockwise, ArrowUp as PaperPlaneRight, HardDrives, ShieldCheck, Sparkle, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { Warning, Brain, Check, CaretDown, Copy, Cpu, Books, FileText, ImageSquare, GitBranch, PencilSimple, Plus, PuzzlePiece, ArrowsClockwise, ArrowUp as PaperPlaneRight, ShieldCheck, Sparkle, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -16,6 +16,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import { AnimatedDisclosure } from "./AnimatedDisclosure";
 import { ChatScrollNav } from "./ChatScrollNav";
 import { ContextUsageRing } from "./ContextUsageRing";
+import { ModelPicker, type ModelPickerTab } from "./ModelPicker";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ModifyMemoryModal } from "./ModifyMemoryModal";
 import { useConfirmDialog } from "./ConfirmDialog";
@@ -489,6 +490,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const composerRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modelPickerTab, setModelPickerTab] = useState<ModelPickerTab>("models");
   const [attachmentPicker, setAttachmentPicker] = useState<"menu" | "knowledge" | "skill" | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [knowledgeCollections, setKnowledgeCollections] = useState<KnowledgeCollectionOption[]>([]);
@@ -565,27 +567,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   useEffect(() => {
     loadProviders().catch(console.error);
   }, [loadProviders]);
-
-  useEffect(() => {
-    if (!modelPickerOpen) return;
-
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Node && !modelPickerRef.current?.contains(target)) {
-        setModelPickerOpen(false);
-      }
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setModelPickerOpen(false);
-    };
-
-    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [modelPickerOpen]);
 
   useEffect(() => {
     let active = true;
@@ -948,7 +929,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     thinkingMode: string,
     thinkingBudget: number,
     maxTokens = currentMaxTokens,
-    streaming?: boolean,
+    streaming = currentStreaming,
   ) => {
     if (activeSessionId) {
       setSessionLlm(activeSessionId, model, thinkingMode, thinkingBudget, maxTokens, streaming).catch(console.error);
@@ -1605,10 +1586,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 <button
                   type="button"
                   onClick={() => {
+                    setModelPickerTab("settings");
                     setModelPickerOpen(true);
                     setAttachmentPicker(null);
                   }}
-                  className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-canvas-surface-card ${
+                  className={`inline-flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5 transition-colors hover:bg-canvas-surface-card ${
                     currentPermissionMode === "full_access"
                       ? "text-rose-600 font-medium bg-rose-50/80 dark:bg-rose-950/30"
                       : "text-ink-muted hover:text-ink"
@@ -1630,14 +1612,19 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               <div ref={modelPickerRef} className="relative">
                 <button
                   onClick={() => {
+                    setModelPickerTab("models");
                     setModelPickerOpen((v) => !v);
                     setAttachmentPicker(null);
                   }}
                   className="flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[10px] text-stone-600 hover:text-stone-900 hover:bg-stone-50 transition-colors"
-                  title="模型与运行模式"
+                  type="button"
+                  aria-haspopup="dialog"
+                  aria-expanded={modelPickerOpen}
+                  aria-controls={modelPickerOpen ? "chat-model-picker" : undefined}
+                  title="模型与会话设置"
                 >
                   <Cpu className="h-3 w-3 text-[#8CA38A]" />
-                  <span className="max-w-[160px] truncate font-mono">
+                  <span className="max-w-[96px] truncate font-mono sm:max-w-[160px]">
                     {currentModel ? currentModel.name : "选择模型"}
                     {currentThinkingMode !== "off" && (
                       <span className="ml-1 text-[9px] text-violet-500 not-italic font-sans">
@@ -1654,55 +1641,69 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 </button>
 
                 {modelPickerOpen && (
-                  <div className="absolute bottom-full right-0 mb-2 z-50 w-80 max-h-80 overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl p-2">
-                      {providers.length === 0 ? (
-                        <div className="px-3 py-6 text-center text-[11px] text-stone-400">
-                          暂无服务商，请到设置 → 模型中添加
+                  <ModelPicker
+                    anchorRef={modelPickerRef}
+                    providers={providers}
+                    effectiveModel={effectiveModel}
+                    tab={modelPickerTab}
+                    onTabChange={setModelPickerTab}
+                    onSelect={(model) => applySessionLlm(model, currentThinkingMode, 0)}
+                    onClose={() => setModelPickerOpen(false)}
+                  >
+                      <div className="px-1">
+                        <div className="mb-1 text-xs font-semibold text-ink-muted">
+                          回复方式
                         </div>
-                      ) : (
-                        providers.map((p) => (
-                          <div key={p.id} className="mb-1">
-                            <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-stone-400">
-                              <HardDrives className="h-3 w-3" />
-                              <span className="truncate">{p.name}</span>
-                              {p.is_default && (
-                                <span className="text-[#6C806A]">默认</span>
-                              )}
-                            </div>
-                            {p.models.length === 0 ? (
-                              <div className="px-3 py-1 text-[10px] text-stone-300">
-                                无可用模型
-                              </div>
-                            ) : (
-                              p.models.map((m) => {
-                                const val = `${p.id}/${m.id}`;
-                                const isActive = effectiveModel === val;
-                                return (
-                                  <button
-                                    key={val}
-                                    onClick={() => {
-                                      applySessionLlm(val, currentThinkingMode, 0);
-                                      setModelPickerOpen(false);
-                                    }}
-                                    className={`w-full text-left px-3 py-1.5 rounded-lg text-[11px] font-mono transition-colors ${
-                                      isActive
-                                        ? "bg-[#8CA38A]/10 text-[#6C806A] font-semibold"
-                                        : "text-stone-600 hover:bg-stone-100"
-                                    }`}
-                                  >
-                                    {m.id}
-                                    {isActive && (
-                                      <Check className="h-3 w-3 inline ml-1" />
-                                    )}
-                                  </button>
-                                );
-                              })
-                            )}
-                          </div>
-                        ))
-                      )}
-                      <div className="mt-2 border-t border-stone-100 pt-2">
-                        <div className="mb-1 flex items-center gap-1.5 px-1 text-[10px] font-semibold text-stone-500">
+                        <div className="grid grid-cols-2 gap-1">
+                          {[
+                            { value: true, label: "流式" },
+                            { value: false, label: "非流式 · 整段" },
+                          ].map((opt) => (
+                            <button
+                              key={String(opt.value)}
+                              type="button"
+                              aria-pressed={currentStreaming === opt.value}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                applySessionLlm(effectiveModel, currentThinkingMode, 0, currentMaxTokens, opt.value);
+                              }}
+                              className={`min-h-11 px-1 py-1 rounded-md text-xs font-semibold transition-colors border ${
+                                currentStreaming === opt.value
+                                  ? "bg-clay-soft text-ink border-clay"
+                                  : "bg-canvas-surface-soft text-ink-muted border-hairline hover:bg-canvas-surface-strong"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Thinking depth for the current session. */}
+                      <div className="mt-3 pt-3 border-t border-hairline">
+                        <div className="px-1 mb-1 text-xs font-semibold text-ink-muted">
+                          思考模式 / 强度
+                        </div>
+                        <div className="grid grid-cols-5 gap-1 px-1">
+                          {THINKING_OPTIONS.map((opt) => (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              title={opt.desc}
+                              aria-pressed={currentThinkingMode === opt.value}
+                              onClick={() => applySessionLlm(effectiveModel, opt.value, 0)}
+                              className={`min-h-11 px-1 py-1 rounded-md text-xs font-semibold transition-colors border ${
+                                currentThinkingMode === opt.value
+                                  ? "bg-clay-soft text-ink border-clay"
+                                  : "bg-canvas-surface-soft text-ink-muted border-hairline hover:bg-canvas-surface-strong"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="mt-3 border-t border-hairline pt-3">
+                        <div className="mb-1 flex items-center gap-1.5 px-1 text-xs font-semibold text-ink-muted">
                           <ShieldCheck className="h-3 w-3" />
                           <span>运行模式</span>
                         </div>
@@ -1714,23 +1715,24 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               <button
                                 key={option.value}
                                 type="button"
+                                aria-pressed={isActive}
                                 disabled={!hasSessionTarget || isStreaming || isPreparingSession}
                                 onClick={() => applyPermissionMode(option.value)}
                                 className={`min-h-14 rounded-lg border px-2 py-1.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                                   isActive
                                     ? isFullAccess
-                                      ? "border-rose-200 bg-rose-50 text-rose-700"
-                                      : "border-[#8CA38A]/30 bg-[#8CA38A]/10 text-[#5F735D]"
+                                      ? "border-rose-400/50 bg-rose-500/10 text-rose-600 dark:text-rose-300"
+                                      : "border-clay bg-clay-soft text-ink"
                                     : isFullAccess
-                                      ? "border-stone-200 text-rose-600 hover:border-rose-200 hover:bg-rose-50"
-                                      : "border-stone-200 text-stone-600 hover:bg-stone-100"
+                                      ? "border-hairline text-rose-600 dark:text-rose-300 hover:border-rose-400/50 hover:bg-rose-500/10"
+                                      : "border-hairline text-ink-body hover:bg-canvas-surface-strong"
                                 }`}
                               >
-                                <span className="flex items-center justify-between gap-1 text-[10px] font-semibold">
+                                <span className="flex items-center justify-between gap-1 text-xs font-semibold">
                                   {option.label}
                                   {isActive && <Check className="h-3 w-3 shrink-0" />}
                                 </span>
-                                <span className="mt-0.5 line-clamp-2 block text-[9px] leading-relaxed opacity-70">
+                                <span className="mt-0.5 line-clamp-2 block text-[11px] leading-relaxed opacity-70">
                                   {option.desc}
                                 </span>
                               </button>
@@ -1738,58 +1740,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           })}
                         </div>
                       </div>
-                      {/* 思考模式/强度（与模型选择并列） */}
-                      <div className="mt-2 pt-2 border-t border-stone-100">
-                        <div className="px-1 mb-1 text-[10px] font-semibold text-stone-500">
-                          思考模式 / 强度
-                        </div>
-                        <div className="grid grid-cols-5 gap-1 px-1">
-                          {THINKING_OPTIONS.map((opt) => (
-                            <button
-                              key={opt.value}
-                              type="button"
-                              title={opt.desc}
-                              onClick={() => applySessionLlm(effectiveModel, opt.value, 0)}
-                              className={`px-1 py-1 rounded-md text-[10px] font-semibold transition-colors border ${
-                                currentThinkingMode === opt.value
-                                  ? "bg-indigo-50 text-indigo-700 border-indigo-300"
-                                  : "bg-stone-50 text-stone-500 border-stone-200/60 hover:bg-stone-100"
-                              }`}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="mt-2 border-t border-stone-100 px-1 pt-2">
-                        <div className="mb-1 text-[10px] font-semibold text-stone-500">
-                          流式输出
-                        </div>
-                        <div className="grid grid-cols-2 gap-1">
-                          {[
-                            { value: true, label: "流式" },
-                            { value: false, label: "整段" },
-                          ].map((opt) => (
-                            <button
-                              key={String(opt.value)}
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                applySessionLlm(effectiveModel, currentThinkingMode, 0, currentMaxTokens, opt.value);
-                              }}
-                              className={`px-1 py-1 rounded-md text-[10px] font-semibold transition-colors border ${
-                                currentStreaming === opt.value
-                                  ? "bg-[#8CA38A]/15 text-[#5F735D] border-[#8CA38A]/40"
-                                  : "bg-stone-50 text-stone-500 border-stone-200/60 hover:bg-stone-100"
-                              }`}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="mt-2 flex items-center gap-2 border-t border-stone-100 px-1 pt-2">
-                        <label htmlFor="session-max-tokens" className="min-w-0 flex-1 text-[10px] font-semibold text-stone-500">
+                      <div className="mt-2 flex items-center gap-2 border-t border-hairline px-1 pt-2">
+                        <label htmlFor="session-max-tokens" className="min-w-0 flex-1 text-xs font-semibold text-ink-muted">
                           最大输出 Token
                         </label>
                         <input
@@ -1811,12 +1763,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               applySessionLlm(effectiveModel, currentThinkingMode, 0, value);
                             }
                           }}
-                          className="h-7 w-24 rounded-md border border-stone-200 bg-stone-50 px-2 text-right font-mono text-[10px] text-stone-700 outline-none focus:border-emerald-400"
+                          className="h-10 w-24 rounded-md border border-hairline bg-canvas-surface-soft px-2 text-right font-mono text-xs text-ink outline-none focus:border-emerald-400"
                           aria-label="最大输出 Token"
                         />
                       </div>
-                      <div className="mt-2 flex items-center gap-2 border-t border-stone-100 px-1 pt-2">
-                        <label htmlFor="session-compress-threshold" className="min-w-0 flex-1 text-[10px] font-semibold text-stone-500">
+                      <div className="mt-2 flex items-center gap-2 border-t border-hairline px-1 pt-2">
+                        <label htmlFor="session-compress-threshold" className="min-w-0 flex-1 text-xs font-semibold text-ink-muted">
                           自动总结阈值
                         </label>
                         <input
@@ -1841,14 +1793,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               updateDraftSession({ compressThreshold: value });
                             }
                           }}
-                          className="h-7 w-20 rounded-md border border-stone-200 bg-stone-50 px-2 text-right font-mono text-[10px] text-stone-700 outline-none focus:border-emerald-400"
+                          className="h-10 w-20 rounded-md border border-hairline bg-canvas-surface-soft px-2 text-right font-mono text-xs text-ink outline-none focus:border-emerald-400"
                           aria-label="自动总结阈值"
                         />
-                        <span className="shrink-0 text-[9px] text-stone-400">
+                        <span className="shrink-0 text-[11px] text-ink-muted">
                           触发 {summaryTriggerTokens.toLocaleString()}
                         </span>
                       </div>
-                  </div>
+                  </ModelPicker>
                 )}
               </div>
 
