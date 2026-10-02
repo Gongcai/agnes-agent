@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Check, Cpu, HardDrives, MagnifyingGlass, SlidersHorizontal, X } from "@phosphor-icons/react";
 import type { ModelProvider } from "../store/useAgentStore";
 import { filterModelProviders } from "../lib/modelPicker";
+import { ProjectSelect } from "./ProjectSelect";
 
 export type ModelPickerTab = "models" | "settings";
 
@@ -209,11 +210,18 @@ export function ModelPicker({ anchorRef, providers, effectiveModel, tab, onTabCh
               />
             </div>
             <div className="flex items-center gap-2">
-              <label htmlFor={`${id}-provider`} className="shrink-0 text-xs text-ink-muted">提供商</label>
-              <select id={`${id}-provider`} value={providerId} onChange={(event) => setProviderId(event.target.value)} className="h-10 min-w-0 flex-1 rounded-lg border border-hairline bg-canvas-input px-2 text-xs text-ink">
-                <option value="">全部提供商（{providers.length}）</option>
-                {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}（{provider.models.length}）</option>)}
-              </select>
+              <span className="shrink-0 text-xs text-ink-muted">提供商</span>
+              <ProjectSelect
+                value={providerId}
+                onChange={setProviderId}
+                ariaLabel="提供商"
+                menuBoundarySelector=".model-picker"
+                className="min-w-0 flex-1"
+                options={[
+                  { value: "", label: `全部提供商（${providers.length}）` },
+                  ...providers.map((provider) => ({ value: provider.id, label: `${provider.name}（${provider.models.length}）` })),
+                ]}
+              />
             </div>
           </div>
           <div

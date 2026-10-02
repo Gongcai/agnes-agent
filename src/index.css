@@ -47,8 +47,9 @@ body.quick-window-body {
   outline-offset: -2px;
 }
 
-.model-picker select {
-  color-scheme: inherit;
+.model-picker .agnes-project-select-trigger[data-open="true"] {
+  border-color: var(--claude-border-strong) !important;
+  box-shadow: none;
 }
 
 .model-picker-settings > div:first-child {
@@ -2196,6 +2197,16 @@ pre,
 
 .agnes-project-select-option[aria-selected="true"] > svg {
   color: var(--claude-clay-dark);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agnes-project-select-menu {
+    animation: none;
+  }
+
+  .agnes-project-select-trigger > svg {
+    transition: none;
+  }
 }
 
 @keyframes agnes-project-select-in {

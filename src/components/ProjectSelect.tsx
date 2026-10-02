@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Check, CaretDown } from "@phosphor-icons/react";
 
 export interface ProjectSelectOption<T extends string = string> {
@@ -13,6 +13,7 @@ interface ProjectSelectProps<T extends string> {
   ariaLabel: string;
   className?: string;
   disabled?: boolean;
+  menuBoundarySelector?: string;
 }
 
 export function ProjectSelect<T extends string>({
@@ -22,10 +23,14 @@ export function ProjectSelect<T extends string>({
   ariaLabel,
   className = "",
   disabled = false,
+  menuBoundarySelector = ".agnes-settings-content",
 }: ProjectSelectProps<T>) {
+  const id = useId();
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [openUpward, setOpenUpward] = useState(false);
+  const [menuMaxHeight, setMenuMaxHeight] = useState(264);
   const [activeIndex, setActiveIndex] = useState(-1);
   const selected = options.find((option) => option.value === value) ?? options[0];
 
@@ -48,21 +53,53 @@ export function ProjectSelect<T extends string>({
     }
   }, [disabled]);
 
-  const toggle = () => {
-    if (disabled) return;
-    if (!open && rootRef.current) {
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      if (!rootRef.current) return;
       const triggerRect = rootRef.current.getBoundingClientRect();
       const boundaryRect = rootRef.current
-        .closest(".agnes-settings-content")
+        .closest(menuBoundarySelector)
         ?.getBoundingClientRect();
-      const boundaryTop = boundaryRect?.top ?? 0;
-      const boundaryBottom = boundaryRect?.bottom ?? window.innerHeight;
-      const requiredHeight = Math.min(options.length * 34 + 12, 264);
+      const viewport = window.visualViewport;
+      const viewportTop = viewport?.offsetTop ?? 0;
+      const viewportBottom = viewportTop + (viewport?.height ?? window.innerHeight);
+      const boundaryTop = Math.max(boundaryRect?.top ?? viewportTop, viewportTop);
+      const boundaryBottom = Math.min(boundaryRect?.bottom ?? viewportBottom, viewportBottom);
+      const requiredHeight = Math.min(options.length * 44 + 12, 264);
       const spaceAbove = triggerRect.top - boundaryTop;
       const spaceBelow = boundaryBottom - triggerRect.bottom;
-      setOpenUpward(spaceBelow < requiredHeight && spaceAbove > spaceBelow);
-      setActiveIndex(-1);
+      const upward = spaceBelow < requiredHeight && spaceAbove > spaceBelow;
+      setOpenUpward(upward);
+      setMenuMaxHeight(Math.min(264, Math.max(0, (upward ? spaceAbove : spaceBelow) - 8)));
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    if (rootRef.current) observer.observe(rootRef.current);
+    const boundary = rootRef.current?.closest(menuBoundarySelector);
+    if (boundary) observer.observe(boundary);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    window.visualViewport?.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("scroll", place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+      window.visualViewport?.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("scroll", place);
+    };
+  }, [open, options.length, menuBoundarySelector]);
+
+  useEffect(() => {
+    if (open && activeIndex >= 0) {
+      menuRef.current?.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`)?.scrollIntoView({ block: "nearest" });
     }
+  }, [open, activeIndex]);
+
+  const toggle = () => {
+    if (disabled || options.length === 0) return;
+    setActiveIndex(open ? -1 : Math.max(0, options.findIndex((option) => option.value === value)));
     setOpen((current) => !current);
   };
 
@@ -70,10 +107,20 @@ export function ProjectSelect<T extends string>({
     onChange(option.value);
     setOpen(false);
     setActiveIndex(-1);
+    rootRef.current?.querySelector<HTMLButtonElement>(".agnes-project-select-trigger")?.focus({ preventScroll: true });
   };
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === "Escape") {
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (disabled || event.nativeEvent.isComposing) return;
+    if (event.key === "Escape" && open) {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      setActiveIndex(-1);
+      rootRef.current?.querySelector<HTMLButtonElement>(".agnes-project-select-trigger")?.focus({ preventScroll: true });
+      return;
+    }
+    if (event.key === "Tab") {
       setOpen(false);
       setActiveIndex(-1);
       return;
@@ -87,7 +134,13 @@ export function ProjectSelect<T extends string>({
       }
       return;
     }
+    if (open && (event.key === "Home" || event.key === "End")) {
+      event.preventDefault();
+      setActiveIndex(event.key === "Home" ? 0 : options.length - 1);
+      return;
+    }
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    if (options.length === 0) return;
     event.preventDefault();
     if (!open) {
       toggle();
@@ -106,53 +159,64 @@ export function ProjectSelect<T extends string>({
   };
 
   return (
-    <div ref={rootRef} className={`agnes-project-select relative ${className}`}>
+    <div
+      ref={rootRef}
+      className={`agnes-project-select relative ${className}`}
+      onKeyDown={handleKeyDown}
+      onBlur={(event) => {
+        if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) {
+          setOpen(false);
+          setActiveIndex(-1);
+        }
+      }}
+    >
       <button
         type="button"
         className="agnes-project-select-trigger flex w-full items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-left text-xs font-normal text-stone-800"
         aria-label={ariaLabel}
+        role="combobox"
+        aria-autocomplete="none"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? `${id}-listbox` : undefined}
+        aria-activedescendant={open && activeIndex >= 0 ? `${id}-option-${activeIndex}` : undefined}
         data-open={open}
         disabled={disabled}
         onClick={toggle}
-        onKeyDown={handleKeyDown}
       >
         <span className="min-w-0 flex-1 truncate">{selected?.label ?? value}</span>
-        <CaretDown className="h-3.5 w-3.5 shrink-0 text-stone-400 transition-transform duration-150" />
+        <CaretDown className="h-3.5 w-3.5 shrink-0 text-stone-400 transition-transform duration-150" aria-hidden="true" />
       </button>
 
       {open && (
         <div
+          ref={menuRef}
+          id={`${id}-listbox`}
           role="listbox"
           aria-label={ariaLabel}
-          className={`agnes-project-select-menu claude-popover absolute left-0 z-50 max-h-64 min-w-full overflow-y-auto rounded-lg border border-stone-200 bg-white p-1 shadow-xl ${
+          className={`agnes-project-select-menu claude-popover absolute left-0 z-50 max-h-64 w-full overflow-y-auto overscroll-contain rounded-lg border border-stone-200 bg-white p-1 shadow-xl ${
             openUpward ? "bottom-full mb-1" : "top-full mt-1"
           }`}
           data-direction={openUpward ? "up" : "down"}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              setOpen(false);
-              setActiveIndex(-1);
-              rootRef.current?.querySelector<HTMLButtonElement>(".agnes-project-select-trigger")?.focus();
-            }
-          }}
+          style={{ maxHeight: menuMaxHeight }}
         >
           {options.map((option, index) => (
             <button
               key={option.value}
               type="button"
               role="option"
+              id={`${id}-option-${index}`}
+              tabIndex={-1}
               aria-selected={option.value === value}
+              data-index={index}
               data-active={activeIndex === index}
               className="agnes-project-select-option flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-stone-700"
               onPointerMove={() => setActiveIndex(index)}
               onPointerLeave={() => setActiveIndex(-1)}
               onClick={() => choose(option)}
             >
-              <span className="min-w-0 flex-1 truncate">{option.label}</span>
-              {option.value === value && <Check className="h-3.5 w-3.5 shrink-0" />}
+              <span className="min-w-0 flex-1 truncate" title={option.label}>{option.label}</span>
+              {option.value === value && <Check className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
             </button>
           ))}
         </div>
