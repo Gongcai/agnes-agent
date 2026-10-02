@@ -1041,14 +1041,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             <div
               key={message._renderKey ?? message.id}
               data-mid={message.id}
-              className={`agnes-message-row group flex gap-4 animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out ${isUser ? "justify-end" : "justify-start"}`}
+              className={`agnes-message-row group flex gap-4 animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out ${isUser ? "justify-end" : "agnes-message-row--assistant"}`}
             >
               {!isUser && activeAgent && (
                 <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={32} />
               )}
 
               <div
-                className={`space-y-1.5 ${
+                className={`agnes-message-column space-y-1.5 ${
                   isUser && editingMsgId === message.id
                     ? "agnes-message-column--editing w-full max-w-[620px]"
                     : "max-w-[85%] min-w-0"
@@ -1289,11 +1289,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         })}
 
         {isStreaming && messages[messages.length - 1]?.role === "user" && (
-          <div className="flex gap-4 justify-start">
+          <div className="agnes-message-row agnes-message-row--assistant flex gap-4">
             {activeAgent && (
               <AgentAvatar name={activeAgent.name} avatar={activeAgent.avatar} size={32} />
             )}
-            <div className="bg-white border border-stone-200 px-4 py-2.5 rounded-2xl rounded-tl-sm flex items-center gap-1 shadow-sm">
+            <div className="agnes-message-column bg-white border border-stone-200 px-4 py-2.5 rounded-2xl rounded-tl-sm flex items-center gap-1 shadow-sm">
               <span className="w-1.5 h-1.5 rounded-full bg-stone-400 animate-bounce"></span>
               <span className="w-1.5 h-1.5 rounded-full bg-stone-400 animate-bounce delay-100"></span>
               <span className="w-1.5 h-1.5 rounded-full bg-stone-400 animate-bounce delay-200"></span>

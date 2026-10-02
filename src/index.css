@@ -898,16 +898,6 @@ pre,
   color: var(--claude-body);
 }
 
-.agnes-main-layout {
-  --agnes-chat-sidebar-center-width: 260px;
-  --agnes-chat-sidebar-center-offset: 130px;
-}
-
-.agnes-main-layout[data-sidebar-open="false"] {
-  --agnes-chat-sidebar-center-width: 48px;
-  --agnes-chat-sidebar-center-offset: 24px;
-}
-
 .agnes-chat-header {
   height: 56px !important;
   padding-inline: 24px !important;
@@ -1005,9 +995,9 @@ pre,
 }
 
 .agnes-chat-messages {
-  left: calc(50% - var(--agnes-chat-sidebar-center-offset, 0px)) !important;
+  left: 50% !important;
   right: auto !important;
-  width: min(48rem, calc(100% - var(--agnes-chat-sidebar-center-width, 0px))) !important;
+  width: 100% !important;
   max-width: 48rem !important;
   margin-inline: 0 !important;
   padding: 36px 32px calc(var(--agnes-composer-h, 150px) + 44px) !important;
@@ -1167,6 +1157,21 @@ pre,
 
 .agnes-chat-messages .agnes-message-row {
   gap: 12px !important;
+}
+
+/* Symmetric avatar gutters keep the reply body on the composer centerline. */
+.agnes-chat-messages .agnes-message-row--assistant {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 32px;
+  align-items: start;
+}
+
+.agnes-chat-messages .agnes-message-row--assistant > .agnes-message-column {
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
+  max-width: none !important;
+  min-width: 0;
 }
 
 .agnes-chat-messages .agnes-message-row + .agnes-message-row {
@@ -1521,9 +1526,9 @@ pre,
 }
 
 .agnes-chat-composer {
-  left: calc(50% - var(--agnes-chat-sidebar-center-offset, 0px)) !important;
+  left: 50% !important;
   right: auto !important;
-  width: min(760px, calc(100% - var(--agnes-chat-sidebar-center-width, 0px) - 36px));
+  width: min(760px, calc(100% - 48px));
   margin-inline: 0;
   padding: 0 !important;
   background: transparent !important;
@@ -1536,7 +1541,7 @@ pre,
 }
 
 .agnes-chat-composer--empty {
-  width: min(760px, calc(100% - var(--agnes-chat-sidebar-center-width, 0px) - 36px));
+  width: min(760px, calc(100% - 48px));
 }
 
 .agnes-mobile-input-overlay {
@@ -2794,11 +2799,6 @@ pre,
 }
 
 @media (max-width: 900px) {
-  .agnes-main-layout[data-sidebar-open] {
-    --agnes-chat-sidebar-center-width: 0px;
-    --agnes-chat-sidebar-center-offset: 0px;
-  }
-
   .agnes-sidebar--open {
     width: 248px !important;
   }

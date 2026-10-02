@@ -246,7 +246,7 @@ export default function App() {
         onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
       />
 
-      <div className="agnes-main-layout flex min-h-0 flex-1 overflow-hidden" data-sidebar-open={isSidebarOpen}>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         {isSidebarOpen && (
           <button
             type="button"
