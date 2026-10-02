@@ -42,7 +42,7 @@ body.quick-window-body {
 }
 
 /* Keep portaled model controls consistent with the app's semantic theme. */
-.model-picker :is(button, select, input):focus-visible {
+.model-picker :is(button, select, input:not([type="search"])):focus-visible {
   outline: 2px solid var(--claude-clay);
   outline-offset: -2px;
 }

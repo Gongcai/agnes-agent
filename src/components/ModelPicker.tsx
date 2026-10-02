@@ -185,7 +185,7 @@ export function ModelPicker({ anchorRef, providers, effectiveModel, tab, onTabCh
       <div role="tabpanel" id={`${id}-${tab}-panel`} aria-labelledby={`${id}-${tab}-tab`} className="flex min-h-0 flex-col">
         {tab === "models" ? <>
           <div className="shrink-0 space-y-2 border-b border-hairline p-3">
-            <div className="flex min-h-11 items-center gap-2 rounded-lg border border-hairline-strong bg-canvas-input px-3 focus-within:ring-2 focus-within:ring-clay">
+            <div className="flex min-h-11 items-center gap-2 rounded-lg border border-hairline-strong bg-canvas-input px-3">
               <MagnifyingGlass className="h-4 w-4 shrink-0 text-ink-muted" aria-hidden="true" />
               <input
                 ref={searchRef}
