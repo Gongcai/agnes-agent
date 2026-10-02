@@ -998,7 +998,7 @@ pre,
   width: 100%;
   /* Keep the chat column aligned with the rem-based font scale. */
   max-width: 48rem !important;
-  padding: 36px 32px 170px !important;
+  padding: 36px 32px calc(var(--agnes-composer-h, 150px) + 44px) !important;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   /* Native scrollbar replaced by the floating ChatScrollNav. */
@@ -1509,14 +1509,20 @@ pre,
 }
 
 .agnes-chat-composer {
-  padding: 10px 28px 20px !important;
-  background: var(--claude-canvas) !important;
+  width: min(760px, calc(100% - 48px));
+  margin-inline: auto;
+  padding: 0 !important;
+  background: transparent !important;
   border-top: 0 !important;
+  pointer-events: none;
+}
+
+.agnes-chat-composer:not(.agnes-chat-composer--empty) {
+  bottom: 18px !important;
 }
 
 .agnes-chat-composer--empty {
-  padding-bottom: 10px !important;
-  background: transparent !important;
+  width: min(760px, calc(100% - 48px));
 }
 
 .agnes-mobile-input-overlay {
@@ -1532,12 +1538,13 @@ pre,
 
 .agnes-chat-composer-box {
   width: 100%;
-  max-width: 744px !important;
-  border: 1px solid var(--claude-border) !important;
+  max-width: 100% !important;
+  border: 1px solid var(--claude-border-strong) !important;
   border-radius: 16px !important;
   background: var(--claude-input) !important;
   padding: 6px 8px 6px !important;
-  box-shadow: 0 1px 3px rgba(31, 30, 27, 0.04) !important;
+  box-shadow: 0 12px 32px rgba(31, 30, 27, 0.14), 0 2px 8px rgba(31, 30, 27, 0.08) !important;
+  pointer-events: auto;
   transition: border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.3s ease !important;
 }
 
@@ -1545,15 +1552,16 @@ pre,
   max-width: 760px !important;
   border-radius: 20px !important;
   padding: 8px 10px 8px !important;
-  box-shadow: 0 2px 8px rgba(31, 30, 27, 0.04) !important;
+  box-shadow: 0 12px 32px rgba(31, 30, 27, 0.14), 0 2px 8px rgba(31, 30, 27, 0.08) !important;
 }
 
 :root[data-agnes-theme="dark"] .agnes-chat-composer-box--empty {
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.26) !important;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 10px rgba(0, 0, 0, 0.24) !important;
 }
 
 :root[data-agnes-theme="dark"] .agnes-chat-composer-box {
   background: var(--claude-input) !important;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42), 0 2px 10px rgba(0, 0, 0, 0.24) !important;
 }
 
 .agnes-chat-composer-box:focus-within {
@@ -2785,11 +2793,11 @@ pre,
   }
 
   .agnes-chat-messages {
-    padding: 24px 20px 166px !important;
+    padding: 24px 20px calc(var(--agnes-composer-h, 150px) + 36px) !important;
   }
 
   .agnes-chat-composer {
-    padding-inline: 18px !important;
+    width: min(760px, calc(100% - 36px));
   }
 }
 
@@ -2906,11 +2914,11 @@ pre,
   }
 
   .agnes-chat-messages {
-    padding: 20px 14px calc(154px + var(--agnes-keyboard-height, 0px)) !important;
+    padding: 20px 14px calc(var(--agnes-composer-h, 136px) + 28px + var(--agnes-keyboard-height, 0px)) !important;
   }
 
   .agnes-chat-composer:not(.agnes-chat-composer--empty) {
-    bottom: var(--agnes-keyboard-height, 0px) !important;
+    bottom: calc(var(--agnes-keyboard-height, 0px) + 10px + env(safe-area-inset-bottom)) !important;
   }
 
   .agnes-chat-composer--mobile-hidden {
@@ -3003,7 +3011,7 @@ pre,
   }
 
   .agnes-chat-composer {
-    padding: 8px 10px 12px !important;
+    width: calc(100% - 20px);
   }
 
   .agnes-chat-composer-box .agnes-chat-send-button {
