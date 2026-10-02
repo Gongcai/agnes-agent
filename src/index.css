@@ -1522,7 +1522,7 @@ pre,
 .agnes-chat-composer {
   left: calc(50% - var(--agnes-chat-sidebar-center-width, 0px) / 2) !important;
   right: auto !important;
-  width: min(760px, calc(100% - var(--agnes-chat-sidebar-center-width, 0px)));
+  width: min(760px, calc(100% - var(--agnes-chat-sidebar-center-width, 0px) - 36px));
   margin-inline: 0;
   translate: -50% 0;
   padding: 0 !important;
@@ -1536,7 +1536,7 @@ pre,
 }
 
 .agnes-chat-composer--empty {
-  width: min(760px, calc(100% - var(--agnes-chat-sidebar-center-width, 0px)));
+  width: min(760px, calc(100% - var(--agnes-chat-sidebar-center-width, 0px) - 36px));
 }
 
 .agnes-mobile-input-overlay {
@@ -3029,6 +3029,10 @@ pre,
   }
 
   .agnes-chat-composer {
+    width: calc(100% - 20px);
+  }
+
+  .agnes-chat-composer--empty {
     width: calc(100% - 20px);
   }
 
