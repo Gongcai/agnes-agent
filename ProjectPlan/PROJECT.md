@@ -24,6 +24,8 @@ Linux 桌面端的标准发行构建、Arch Linux AppImage 兼容处理与产物
 
 Android 本地完整 Agent、PRoot/Ubuntu Runtime、Android Service、工作区互通与分阶段验收详见 `ProjectPlan/ANDROID_RUNTIME.md`。
 
+Android ARM64 Release APK 的构建、本机签名与产物验收详见 `ProjectPlan/ANDROID_RELEASE.md`。
+
 Operit Android 内置 Ubuntu 的公开实现、资产布局、首次安装、PRoot 交付方式及 Agnes 复用边界详见 `ProjectPlan/OPERIT_ANDROID_RUNTIME_REFERENCE.md`。
 
 # 项目定位

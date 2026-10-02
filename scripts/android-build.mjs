@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -7,6 +7,23 @@ import { fileURLToPath } from "node:url";
 const sdkRoot = process.env.ANDROID_SDK_ROOT || process.env.ANDROID_HOME || join(homedir(), "Android", "Sdk");
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const tauriCli = join(scriptDir, "..", "node_modules", ".bin", process.platform === "win32" ? "tauri.cmd" : "tauri");
+
+function findJavaHome() {
+  const candidates = [
+    process.env.JAVA_HOME,
+    "/usr/lib/jvm/java-21-openjdk",
+    "/usr/lib/jvm/java-17-openjdk",
+    "/usr/lib/jvm/default",
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const compiler = join(candidate, "bin", process.platform === "win32" ? "javac.exe" : "javac");
+    const release = join(candidate, "release");
+    if (!existsSync(compiler) || !existsSync(release)) continue;
+    const major = Number(readFileSync(release, "utf8").match(/^JAVA_VERSION="(\d+)/m)?.[1]);
+    if (major >= 17) return candidate;
+  }
+  throw new Error("Android builds require a full JDK 17 or newer; set JAVA_HOME to its installation directory");
+}
 
 function findNdk() {
   const configured = [process.env.ANDROID_NDK_HOME, process.env.NDK_HOME].filter(Boolean);
@@ -27,6 +44,7 @@ function findNdk() {
 }
 
 const ndkRoot = findNdk();
+const javaHome = findJavaHome();
 const hostPrebuilt = process.platform === "linux" ? "linux-x86_64" : "darwin-x86_64";
 const ndkBin = join(ndkRoot, "toolchains", "llvm", "prebuilt", hostPrebuilt, "bin");
 if (!existsSync(ndkBin)) throw new Error(`Android NDK LLVM toolchain does not exist: ${ndkBin}`);
@@ -44,7 +62,8 @@ const env = {
   ANDROID_SDK_ROOT: sdkRoot,
   ANDROID_NDK_HOME: ndkRoot,
   NDK_HOME: ndkRoot,
-  PATH: `${ndkBin}${delimiter}${process.env.PATH || ""}`,
+  JAVA_HOME: javaHome,
+  PATH: `${join(javaHome, "bin")}${delimiter}${ndkBin}${delimiter}${process.env.PATH || ""}`,
 };
 
 for (const [target, [cargoTarget, compiler]] of Object.entries(toolchains)) {
