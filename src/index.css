@@ -898,6 +898,14 @@ pre,
   color: var(--claude-body);
 }
 
+.agnes-main-layout {
+  --agnes-chat-sidebar-center-width: 260px;
+}
+
+.agnes-main-layout[data-sidebar-open="false"] {
+  --agnes-chat-sidebar-center-width: 48px;
+}
+
 .agnes-chat-header {
   height: 56px !important;
   padding-inline: 24px !important;
@@ -995,9 +1003,12 @@ pre,
 }
 
 .agnes-chat-messages {
-  width: 100%;
-  /* Keep the chat column aligned with the rem-based font scale. */
+  left: calc(50% - var(--agnes-chat-sidebar-center-width, 0px) / 2) !important;
+  right: auto !important;
+  width: min(48rem, calc(100% - var(--agnes-chat-sidebar-center-width, 0px))) !important;
   max-width: 48rem !important;
+  margin-inline: 0 !important;
+  translate: -50% 0;
   padding: 36px 32px calc(var(--agnes-composer-h, 150px) + 44px) !important;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
@@ -1509,8 +1520,11 @@ pre,
 }
 
 .agnes-chat-composer {
-  width: min(760px, calc(100% - 48px));
-  margin-inline: auto;
+  left: calc(50% - var(--agnes-chat-sidebar-center-width, 0px) / 2) !important;
+  right: auto !important;
+  width: min(760px, calc(100% - var(--agnes-chat-sidebar-center-width, 0px)));
+  margin-inline: 0;
+  translate: -50% 0;
   padding: 0 !important;
   background: transparent !important;
   border-top: 0 !important;
@@ -1522,7 +1536,7 @@ pre,
 }
 
 .agnes-chat-composer--empty {
-  width: min(760px, calc(100% - 48px));
+  width: min(760px, calc(100% - var(--agnes-chat-sidebar-center-width, 0px)));
 }
 
 .agnes-mobile-input-overlay {
@@ -2780,6 +2794,10 @@ pre,
 }
 
 @media (max-width: 900px) {
+  .agnes-main-layout[data-sidebar-open] {
+    --agnes-chat-sidebar-center-width: 0px;
+  }
+
   .agnes-sidebar--open {
     width: 248px !important;
   }
