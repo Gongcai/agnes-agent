@@ -1013,7 +1013,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       {/* Message Panel list */}
       <div
         ref={messagesContainerRef}
-        className={`agnes-chat-messages absolute inset-0 mx-auto w-full max-w-4xl space-y-6 overflow-y-auto p-6 ${
+        className={`agnes-chat-messages absolute inset-0 -translate-x-1/2 mx-auto w-full max-w-4xl space-y-6 overflow-y-auto p-6 ${
           isEmptyConversation
             ? "pointer-events-none transition-[opacity,transform] duration-500 ease-out motion-reduce:transition-none translate-y-4 opacity-0"
             : "opacity-100"
@@ -1310,7 +1310,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       {/* Input box */}
       <div
         ref={composerRef}
-        className={`agnes-chat-composer absolute inset-x-0 z-20 border-t border-stone-200 bg-[#FAF9F5] p-4 transition-[bottom,transform,background-color] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+        className={`agnes-chat-composer absolute inset-x-0 -translate-x-1/2 z-20 border-t border-stone-200 bg-[#FAF9F5] p-4 transition-[bottom,transform,background-color] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
           mobileInputActive ? "agnes-chat-composer--mobile-hidden" : ""
         } ${
           isEmptyConversation
