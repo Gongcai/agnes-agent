@@ -46,13 +46,14 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
   return (
     <header
       className="agnes-titlebar flex h-10 shrink-0 items-center justify-between bg-canvas-sidebar px-2.5 text-ink-secondary select-none transition-colors"
+      data-sidebar-open={isSidebarOpen}
       data-tauri-drag-region
     >
       <div className="flex min-w-0 flex-1 items-center gap-1.5" data-tauri-drag-region>
         <button
           type="button"
           onClick={onToggleSidebar}
-          className="agnes-titlebar-action grid h-7 w-7 shrink-0 place-items-center rounded-md text-ink-muted hover:bg-canvas-surface-card hover:text-ink transition-colors"
+          className="agnes-titlebar-action agnes-sidebar-toggle grid h-7 w-7 shrink-0 place-items-center rounded-md text-ink-muted hover:bg-canvas-surface-card hover:text-ink transition-colors"
           title={isSidebarOpen ? "收起侧边栏" : "展开侧边栏"}
           aria-label={isSidebarOpen ? "收起侧边栏" : "展开侧边栏"}
         >
