@@ -37,8 +37,8 @@ sha256sum <release.apk>
 
 - 版本：`0.1.0`，`versionCode=1000`，最低 Android API 24。
 - 交付路径：`src-tauri/target/android-release/agnes-agent_0.1.0_arm64-v8a-release.apk`。
-- 大小：286,335,054 字节，约 273.07 MiB。
-- SHA-256：`6483d833addaa31ba087bd34e1fd91914af826b9d36a82b1558d0e19e81a1901`。
+- 大小：286,335,058 字节，约 273.07 MiB。
+- SHA-256：`9c190eb73df6dab3877342441eefbc0be63873a898055eede1d134b85e1d5653`。
 - 本机 Release 证书 SHA-256：`4d7fae2f06b3065c4df6aa6a9272375eaba1e0d4352f1621afa28a58f6923f6a`。
 - 验收通过：APK v2 签名、本机证书匹配、ZIP 对齐、ARM64 ELF 架构、内置 Runtime SHA-256，以及启动图标的透明度与显示内容。
 
