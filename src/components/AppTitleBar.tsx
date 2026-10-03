@@ -45,7 +45,7 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
 
   return (
     <header
-      className="agnes-titlebar flex h-10 shrink-0 items-center justify-between border-b border-hairline bg-canvas-sidebar px-2.5 text-ink-secondary select-none transition-colors"
+      className="agnes-titlebar flex h-10 shrink-0 items-center justify-between bg-canvas-sidebar px-2.5 text-ink-secondary select-none transition-colors"
       data-tauri-drag-region
     >
       <div className="flex min-w-0 flex-1 items-center gap-1.5" data-tauri-drag-region>

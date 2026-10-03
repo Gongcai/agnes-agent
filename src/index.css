@@ -571,7 +571,6 @@ pre,
   z-index: 60;
   min-height: 40px;
   background: var(--claude-header) !important;
-  border-color: var(--claude-border) !important;
   color: var(--claude-muted);
 }
 
@@ -598,7 +597,6 @@ pre,
   position: relative;
   width: 260px !important;
   background: var(--claude-sidebar) !important;
-  border-color: var(--claude-border) !important;
   box-shadow: none;
 }
 
@@ -616,7 +614,6 @@ pre,
 .agnes-sidebar > nav {
   position: relative;
   z-index: 1;
-  border-color: var(--claude-border) !important;
 }
 
 .agnes-sidebar button {
@@ -2905,7 +2902,6 @@ pre,
     max-height: none !important;
     z-index: 30;
     width: min(84vw, 304px) !important;
-    border-right: 1px solid var(--claude-border) !important;
     box-shadow: 14px 0 32px rgba(28, 25, 23, 0.12);
     transform: translateX(-104%);
     transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1) !important;

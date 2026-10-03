@@ -514,7 +514,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside
       ref={sidebarRef}
       data-open={isOpen}
-      className={`agnes-sidebar ${isOpen ? "agnes-sidebar--open" : "agnes-sidebar--collapsed"} flex h-full shrink-0 flex-col overflow-hidden border-r border-stone-200/80 bg-stone-100 transition-[width] duration-300 ${
+      className={`agnes-sidebar ${isOpen ? "agnes-sidebar--open" : "agnes-sidebar--collapsed"} flex h-full shrink-0 flex-col overflow-hidden bg-stone-100 transition-[width] duration-300 ${
         isOpen ? "w-72" : "w-12"
       }`}
     >
@@ -586,7 +586,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
       </div>
 
-      <nav className="agnes-sidebar-nav shrink-0 border-b border-stone-200/80 px-3 pb-3 pt-1 space-y-1" aria-label="功能导航">
+      <nav className="agnes-sidebar-nav shrink-0 px-3 pb-3 pt-1 space-y-1" aria-label="功能导航">
         <button
           type="button"
           onClick={openSessionSearch}
@@ -717,7 +717,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Account entry */}
-      <div className="agnes-sidebar-account relative mt-auto shrink-0 border-t border-stone-200 bg-stone-200/20 px-2 py-1">
+      <div className="agnes-sidebar-account relative mt-auto shrink-0 bg-stone-200/20 px-2 py-1">
         <div className="agnes-account-actions" data-open={accountMenuOpen}>
           <div className="agnes-account-actions-inner space-y-1">
             <NotificationCenter
