@@ -3074,6 +3074,15 @@ pre,
     max-width: 92% !important;
   }
 
+  /* Let assistant replies use the full mobile message width after the avatar. */
+  .agnes-chat-messages .agnes-message-row--assistant {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+
+  .agnes-chat-messages .agnes-message-row--assistant > .agnes-message-column {
+    max-width: 100% !important;
+  }
+
   .agnes-chat-composer {
     width: calc(100% - 20px);
   }
