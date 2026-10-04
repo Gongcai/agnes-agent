@@ -3020,11 +3020,11 @@ pre,
   }
 
   .agnes-chat-composer:not(.agnes-chat-composer--empty) {
-    bottom: calc(var(--agnes-keyboard-height, 0px) + 10px + env(safe-area-inset-bottom)) !important;
+    bottom: calc(max(var(--agnes-native-ime-height, 0px), var(--agnes-keyboard-height, 0px)) + 10px + env(safe-area-inset-bottom)) !important;
   }
 
   .agnes-chat-composer--mobile-keyboard-open {
-    bottom: calc(var(--agnes-native-ime-height, var(--agnes-keyboard-height, 0px)) + 10px + env(safe-area-inset-bottom)) !important;
+    bottom: calc(max(var(--agnes-native-ime-height, 0px), var(--agnes-keyboard-height, 0px)) + 10px + env(safe-area-inset-bottom)) !important;
     transform: translateX(-50%) !important;
   }
 

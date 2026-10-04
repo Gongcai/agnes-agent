@@ -41,7 +41,7 @@ class MainActivity : TauriActivity() {
     // Some Android WebViews keep the layout viewport at full height when the
     // IME opens. Pass the native IME inset to the web UI so fixed composers can
     // be positioned above the keyboard without relying on visualViewport.
-    ViewCompat.setOnApplyWindowInsetsListener(webView) { _, insets ->
+    val dispatchImeInsets: (WindowInsetsCompat) -> WindowInsetsCompat = { insets ->
       val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
       val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
       val imeHeight = if (insets.isVisible(WindowInsetsCompat.Type.ime())) {
@@ -62,6 +62,18 @@ class MainActivity : TauriActivity() {
       }
       insets
     }
+
+    // The WebView does not receive IME insets consistently on every Android
+    // version when the activity is edge-to-edge. Observe the decor view as
+    // well, while keeping the WebView listener for versions that dispatch
+    // insets only to the child.
+    ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
+      dispatchImeInsets(insets)
+    }
+    ViewCompat.setOnApplyWindowInsetsListener(webView) { _, insets ->
+      dispatchImeInsets(insets)
+    }
+    ViewCompat.requestApplyInsets(window.decorView)
     ViewCompat.requestApplyInsets(webView)
   }
 }
