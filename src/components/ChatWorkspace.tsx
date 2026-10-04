@@ -516,19 +516,31 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     draftSession?.id ?? activeSessionId ?? "new-conversation",
   );
 
+  const resizeTextarea = (textarea: HTMLTextAreaElement, minH: number, maxH: number) => {
+    // Reset first so deleting text can shrink the control as well as growing it.
+    textarea.style.height = "auto";
+    const contentHeight = textarea.scrollHeight;
+    const nextH = Math.min(Math.max(contentHeight, minH), maxH);
+    textarea.style.height = `${nextH}px`;
+    textarea.style.overflowY = contentHeight > maxH ? "auto" : "hidden";
+  };
+
   const adjustTextareaHeight = () => {
     const textarea = desktopTextareaRef.current;
     if (!textarea) return;
-    textarea.style.height = "auto";
-    const minH = isEmptyConversation ? 48 : 38;
-    const maxH = 220;
-    const nextH = Math.min(Math.max(textarea.scrollHeight, minH), maxH);
-    textarea.style.height = `${nextH}px`;
+    resizeTextarea(textarea, isEmptyConversation ? 48 : 38, 220);
+  };
+
+  const adjustMobileTextareaHeight = () => {
+    const textarea = mobileInputRef.current;
+    if (!textarea) return;
+    resizeTextarea(textarea, 42, 136);
   };
 
   useEffect(() => {
     adjustTextareaHeight();
-  }, [inputVal, isEmptyConversation]);
+    adjustMobileTextareaHeight();
+  }, [inputVal, isEmptyConversation, mobileInputActive]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -1861,6 +1873,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             tabIndex={mobileInputActive ? 0 : -1}
             value={inputVal}
             onChange={(e) => setInputVal(e.target.value)}
+            onInput={adjustMobileTextareaHeight}
             onFocus={openMobileInput}
             onBlur={closeMobileInputIfBlurred}
             onPaste={(event) => void handlePaste(event)}
