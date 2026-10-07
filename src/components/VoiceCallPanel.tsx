@@ -5,6 +5,7 @@ import { ArrowLeft, Microphone, MicrophoneSlash, PhoneDisconnect, SpeakerHigh, S
 import { splitSpeechText } from "../lib/voiceSpeech";
 import { createVoiceCapture, type VoiceCapture } from "../lib/voiceCapture";
 import { VoicePhaseTimeoutError, withVoiceDeadline } from "../lib/voiceDeadline";
+import { getVoiceAecStatus, openVoiceMicrophone } from "../lib/voiceAec";
 
 type VoiceVisualState = "idle" | "connecting" | "listening" | "recognizing" | "thinking" | "speaking" | "stopping" | "error";
 
@@ -89,6 +90,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const playbackAnalyserRef = useRef<AnalyserNode | null>(null);
   const captureRef = useRef<VoiceCapture | null>(null);
   const captureAbortRef = useRef<AbortController | null>(null);
+  const pipewireAecRef = useRef(false);
+  const [pipewireAec, setPipewireAec] = useState(false);
   const microphoneLevelRef = useRef(0);
   const mutedRef = useRef(false);
   const [visualState, setVisualState] = useState<VoiceVisualState>("idle");
@@ -328,6 +331,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     microphoneLevelRef.current = 0;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+    pipewireAecRef.current = false;
+    setPipewireAec(false);
     playbackAnalyserRef.current = null;
     const context = contextRef.current;
     contextRef.current = null;
@@ -359,19 +364,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     lifetime.signal.addEventListener("abort", releasePending, { once: true });
     try {
       const requestedDeviceId = deviceId ?? selectedAudioInputRef.current;
-      const stream = await withVoiceDeadline(navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          ...(requestedDeviceId ? { deviceId: { exact: requestedDeviceId } } : {}),
-        },
-      }), {
-        timeoutMs: 60_000,
-        message: "麦克风连接超时，请确认权限和输入设备后重试。",
-        signal: lifetime.signal,
-        onLateResolve: (lateStream) => lateStream.getTracks().forEach((track) => track.stop()),
-      });
+      const microphone = await openVoiceMicrophone(requestedDeviceId, lifetime.signal);
+      const { stream } = microphone;
       pendingStream = stream;
       const context = new AudioContext();
       pendingContext = context;
@@ -413,6 +407,19 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       playbackAnalyser.fftSize = 512;
       playbackAnalyser.connect(context.destination);
       streamRef.current = stream;
+      stream.getAudioTracks()[0]?.addEventListener("ended", () => {
+        if (!mountedRef.current || captureGeneration !== captureGenerationRef.current) return;
+        const targetSessionId = sessionIdRef.current;
+        const targetRunId = activeRunIdRef.current;
+        if (replyPendingRef.current && targetSessionId && targetRunId) {
+          void onInterruptRef.current(targetSessionId, targetRunId).catch((reason) => console.warn("Unable to cancel the voice call after microphone disconnection", reason));
+        }
+        stopCapture();
+        setError("麦克风输入已断开，请重新选择设备并开启麦克风。");
+        setVisualState("error");
+      }, { once: true });
+      pipewireAecRef.current = microphone.pipewireAec;
+      setPipewireAec(microphone.pipewireAec);
       contextRef.current = context;
       playbackContextRef.current = context;
       playbackAnalyserRef.current = playbackAnalyser;
@@ -425,6 +432,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       const settings = stream.getAudioTracks()[0]?.getSettings?.();
       console.info("[voice][capture]", {
         backend: capture.backend,
+        aec_backend: microphone.pipewireAec ? "pipewire" : "browser",
         sample_rate: context.sampleRate,
         echo_cancellation_reported: settings?.echoCancellation ?? null,
         noise_suppression_reported: settings?.noiseSuppression ?? null,
@@ -459,6 +467,48 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       lifetime.signal.removeEventListener("abort", releasePending);
     }
   }, [processUtterance, refreshAudioInputs, stopCapture]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pauseForAudioChange = (message: string) => {
+      if (disposed || !streamRef.current && !captureAbortRef.current) return;
+      const targetSessionId = sessionIdRef.current;
+      const targetRunId = activeRunIdRef.current;
+      if (replyPendingRef.current && targetSessionId && targetRunId) {
+        void onInterruptRef.current(targetSessionId, targetRunId).catch((reason) => console.warn("Unable to cancel the voice call after an audio change", reason));
+      }
+      stopCapture();
+      setError(message);
+      setVisualState("error");
+    };
+    void listen("voice://aec_changed", () => {
+      pauseForAudioChange("回声消除设置已改变，请重新开启麦克风。");
+      void refreshAudioInputs();
+    }).then((off) => { if (disposed) off(); else unlisten = off; }).catch(() => undefined);
+    const refresh = async () => {
+      try {
+        if (pipewireAecRef.current) {
+          const generation = captureGenerationRef.current;
+          const status = await getVoiceAecStatus();
+          if (!disposed && generation === captureGenerationRef.current && pipewireAecRef.current && (!status?.running || !status.routes_ready)) {
+            pauseForAudioChange(status?.message || "回声消除输入已断开，请在语音设置中重新连接并开启麦克风。");
+          }
+        }
+      } catch {
+        if (pipewireAecRef.current) pauseForAudioChange("无法确认回声消除连接，请在语音设置中重新连接后重试。");
+      } finally {
+        if (!disposed) timer = setTimeout(() => void refresh(), 3_000);
+      }
+    };
+    timer = setTimeout(() => void refresh(), 3_000);
+    return () => {
+      disposed = true;
+      unlisten?.();
+      if (timer) clearTimeout(timer);
+    };
+  }, [refreshAudioInputs, stopCapture]);
 
   useEffect(() => {
     void refreshAudioInputs();
@@ -931,6 +981,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           </div>
           <div className="mt-1 min-h-12 text-center">
             <div className="text-sm font-medium tracking-wide text-white/90" aria-live="polite">{status}</div>
+            {pipewireAec && <p className="mt-1 text-xs text-white/70">正在使用 PipeWire 回声消除输入</p>}
             {(visualState === "listening" && !muted || visualState === "speaking") && (
               <div className="mt-1 text-xs text-white/65">{visualState === "speaking" ? "播放音量" : "麦克风音量"} {Math.round(level * 100)}%</div>
             )}

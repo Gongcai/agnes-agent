@@ -74,6 +74,12 @@ flowchart LR
 
 模块和插件存在不等于路由已经工作，候选模板尚未经过真实声卡验收。后续诊断应读取实际设备路由与回灌强度，不能根据设备显示名称自动认定 AEC 有效。采用系统 AEC 后，还需评估浏览器再次处理该虚拟源是否影响双讲时的人声。
 
+### 当前桌面运行时实现
+
+Agnes 在 Linux 桌面启用 AEC 时通过 `pactl load-module module-echo-cancel` 临时创建固定名称的 `agnes.aec.source` 和 `agnes.aec.sink`。物理麦克风连接到 `echo-cancel-capture`，`echo-cancel-playback` 连接到原物理输出；随后把 PulseAudio 默认输入和输出切换到这两个虚拟端点。这样 WebView 的 `getUserMedia()` 采集的是处理后的 source，Web Audio 的 TTS 默认播放则经过 AEC sink 并进入播放参考。关闭 Agnes 或停用 AEC 时只在默认设备仍指向 Agnes 端点的情况下恢复原设备，避免覆盖用户在通话期间的手动切换。
+
+启动状态同时检查默认端点、虚拟节点以及两条 PipeWire Link；任一路由消失都会暂停语音采集并要求重新连接。`src-tauri/examples/voice_aec.rs routes` 可在真实设备上执行一次加载、状态检查和清理。此方案仍需人工试听双讲和扬声器回灌效果；路由通过不等于 AEC 效果已经达到全双工验收标准。
+
 参考：本机 PipeWire 1.6.9 手册；[PipeWire Echo Cancel 文档](https://docs.pipewire.org/page_module_echo_cancel.html)。
 
 ## 4. 下一阶段完成条件

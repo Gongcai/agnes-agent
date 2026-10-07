@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Copy, Play, SpeakerHigh, Trash } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
+import { VoiceAecSettings } from "./VoiceAecSettings";
 
 interface VoiceSettings {
   api_key_configured: boolean;
@@ -150,6 +151,8 @@ export const VoiceSettingsTab: React.FC = () => {
           </div>
         </label>
       </section>
+
+      <VoiceAecSettings />
 
       <section className="space-y-3">
         <div className="flex items-center gap-2"><SpeakerHigh size={16} className="text-indigo-600" /><h4 className="text-xs font-semibold text-stone-700">设计新音色</h4></div>

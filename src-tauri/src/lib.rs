@@ -23,6 +23,7 @@ pub mod sync;
 mod tools;
 mod user_profile;
 mod web;
+mod voice_aec;
 
 use std::sync::Arc;
 
@@ -465,6 +466,7 @@ pub fn run() {
             }
 
             let pdf_models = Arc::new(pdf_models::PdfModelPackageManager::new(&data_dir));
+            app.manage(voice_aec::VoiceAecManager::default());
             app.manage(AppState {
                 app_handle: app.handle().clone(),
                 data_dir,
@@ -562,6 +564,9 @@ pub fn run() {
             commands::get_debug_prompt,
             commands::transcribe_voice,
             commands::get_voice_settings,
+            voice_aec::get_voice_aec_status,
+            voice_aec::start_voice_aec,
+            voice_aec::stop_voice_aec,
             commands::set_voice_settings,
             commands::design_voice,
             commands::synthesize_voice,
@@ -719,6 +724,9 @@ pub fn run() {
         .run(|_app, _event| {
             #[cfg(desktop)]
             if let RunEvent::Exit = _event {
+                if let Some(aec) = _app.try_state::<voice_aec::VoiceAecManager>() {
+                    tauri::async_runtime::block_on(aec.stop());
+                }
                 if let Some(state) = _app.try_state::<AppState>() {
                     state.agent.shutdown();
                 }

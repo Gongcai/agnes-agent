@@ -1,6 +1,6 @@
 # 全双工语音通话规划设计
 
-> 状态：Phase 1 基础链路已接通；Phase 2 已加入手动打断、Agent/TTS 联动取消、run ID 过滤、句尾播放期间合成下一句，以及识别／思考／播报状态。采集和 VAD 已优先迁移 AudioWorklet，增加初始化、ASR 和 TTS 阶段的超时收尾。当前为防回声采用轮流收听与播报；可靠语音插话、专用语音话轮协议、ASR 二进制通道和 Android 验收仍待完成。构建检查不能替代真实设备上的连续通话与延迟实测。
+> 状态：Phase 1 基础链路已接通；Phase 2 已加入手动打断、Agent/TTS 联动取消、run ID 过滤、句尾播放期间合成下一句，以及识别／思考／播报状态。Linux 桌面已接入可验证的 PipeWire `module-echo-cancel` 运行时路由，但自动插话仍需真实扬声器双讲测试；专用语音话轮协议、ASR 二进制通道和 Android 验收仍待完成。构建检查不能替代真实设备上的连续通话与延迟实测。
 > 关联文档：VOICE_CALLING.md（可行性与竞品参考）、architecture.md（系统边界）、MODEL_ROUTING.md（模型任务分工）。
 
 ## 1. 目标与产品定义
@@ -39,7 +39,7 @@ cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus�
 
 采集模块按音频样本数计时，在音频处理器完成一句后立即暂停收集；每次门控更新 epoch，丢弃已经排队的旧事件。固定缓冲保留 400 ms 前滚，100 ms 起音确认、120 ms 最小有声时长、850 ms 静音封段及 20 秒单段上限；界面动画不再负责 VAD。初始化、ASR 和 TTS 等待已增加阶段超时，细节及 PipeWire AEC 候选配置见 [VOICE_AUDIO_PIPELINE.md](VOICE_AUDIO_PIPELINE.md)。
 
-若 Qwen 模型另有受支持的实时音频 API，可替换 ASR adapter。下一步优先验证 PipeWire 播放参考与可靠 AEC、建立专用 voice_session_id/turn_id，再优化 ASR 传输及测量真实延迟。
+若 Qwen 模型另有受支持的实时音频 API，可替换 ASR adapter。下一步优先在 AEC 路由下验证播放期间的双讲和回声抑制，再建立专用 voice_session_id/turn_id，最后优化 ASR 传输及测量真实延迟。
 
 ## 4. 逻辑架构与职责
 
