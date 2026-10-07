@@ -23,10 +23,20 @@ class CosyVoiceTtsProvider:
 
     def __init__(self, api_key: str | None = None, voice: str | None = None) -> None:
         self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY")
-        self.voice = voice
+        self.voice = voice or os.environ.get("DASHSCOPE_TTS_VOICE")
         self._active_task: asyncio.Task[bytes] | None = None
         if not self.api_key:
             raise ValueError("DASHSCOPE_API_KEY is required for CosyVoice")
+        if not self.voice:
+            raise ValueError(
+                "DASHSCOPE_TTS_VOICE is required for cosyvoice-v3.5-flash; "
+                "create or select a voice supported by this model, then set the returned voice_id"
+            )
+
+    @property
+    def voice_id(self) -> str:
+        """Return the provider voice id used by the current model."""
+        return self.voice
 
     async def synthesize(self, text: str) -> bytes:
         if not text.strip():
@@ -55,13 +65,17 @@ class CosyVoiceTtsProvider:
     def _call_sync(self, text: str) -> bytes:
         try:
             import dashscope
-            from dashscope.audio.tts_v2 import SpeechSynthesizer
+            from dashscope.audio.tts_v2 import AudioFormat, SpeechSynthesizer
         except ImportError as exc:
             raise RuntimeError(
                 "CosyVoice requires the dashscope Python package; run uv sync"
             ) from exc
         dashscope.api_key = self.api_key
-        synthesizer = SpeechSynthesizer(model=self.model, voice=self.voice)
+        synthesizer = SpeechSynthesizer(
+            model=self.model,
+            voice=self.voice,
+            format=AudioFormat.MP3_22050HZ_MONO_256KBPS,
+        )
         audio = synthesizer.call(text)
         if not audio:
             raise RuntimeError("CosyVoice returned no audio")
