@@ -1,6 +1,6 @@
 # 全双工语音通话规划设计
 
-> 状态：规划设计；ASR/TTS Provider 暂定，接口与性能须用目标百炼 Workspace 实测。
+> 状态：规划设计；ASR/TTS Provider 已完成最小账户验证，CosyVoice Flash 回调流式输出与取消已落地，端到端语音会话和 UI 仍待接线。
 > 关联文档：VOICE_CALLING.md（可行性与竞品参考）、architecture.md（系统边界）、MODEL_ROUTING.md（模型任务分工）。
 
 ## 1. 目标与产品定义
@@ -12,7 +12,7 @@
 | 角色 | 模型 | 示例所示接口 | 规划判断 |
 |---|---|---|---|
 | ASR | qwen-audio-3.1-asr-flash | ProjectPlan/qwen-audio-asr-example.txt：HTTP POST，input_audio.data 为音频 URL，format/sample_rate 指定音频格式，关闭 SSE | 目前只证明整段音频识别请求，不证明实时音频流或 partial transcript。首版按 VAD 切分 utterance 后逐段识别，由 endpointing 触发回复。 |
-| TTS | cosyvoice-v3.5-flash | ProjectPlan/cosyvoice-v3.5-flash-example.py：DashScope SDK、WebSocket endpoint、SpeechSynthesizer.call() | SDK 使用 WebSocket，但示例最终返回完整音频；不能据此认定 Python 可消费首帧或在生成中追加文本。Phase 0 须检查官方流式接口和取消语义。 |
+| TTS | cosyvoice-v3.5-flash | DashScope Python SDK `SpeechSynthesizer` callback / `streaming_call()` | 已确认北京 Workspace 支持 `on_data()` 音频回调、`streaming_complete()` 和 `streaming_cancel()`；Provider 已将同步 SDK 包装为异步音频块迭代器。文本增量接入 Agent 仍待完成。 |
 
 cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus；但官方 `voice-design.md` 的支持范围确认 CosyVoice Voice Design 可直接指定 `cosyvoice-v3.5-flash`。CosyVoice SDK 的 `SpeechSynthesizer` 要求 `voice` 参数，第一版使用 `agent/app/voice/design_voice.py` 生成并配置 Flash 专属 `voice_id`（`DASHSCOPE_TTS_VOICE` 或应用配置），不能复用 v3 内置音色。具体声音描述和创建步骤见 `ProjectPlan/AGNES_VOICE_DESIGN.md`。
 
@@ -103,7 +103,48 @@ idle → connecting → listening ↔ recognizing ↔ thinking ↔ speaking → 
 
 Provider 端口应允许替换：transcribe(audio, config) → transcript；synthesize_stream(text, config) → AsyncIterator[AudioChunk]。若当前 SDK 只能整段返回，则公开 synthesize() 并声明 non-streaming，不伪造流式能力。VAD 也使用 provider-neutral 接口；先用 AudioWorklet 原型，按噪声/回声测试决定 WebRTC VAD 或平台能力，不把判断逻辑放在 React 组件中。
 
-## 10. 分阶段计划
+## 10. 对话界面与动态视觉设计
+
+### 10.1 体验定位
+
+语音通话使用独立的沉浸式工作区，不把语音流程塞进普通聊天气泡。用户点击聊天输入区的麦克风按钮后进入 `VoiceCallPanel`；面板占据当前工作区，保留窗口标题栏和返回/结束入口。桌面端以大面积留白和中心动态体表现“正在与 Agnes 对话”，移动端保持同一层级但缩小动态体和控制区间距。
+
+视觉参考 SpeakRail 与 GPT Live 的连续呼吸效果，但不复制具体品牌图形。中心视觉是一个由实时音量和状态驱动的 `VoicePresence` Canvas：
+
+- `listening`：低速呼吸，响应麦克风 RMS；使用偏暖的 clay/coral 和浅青色高光，表示 Agnes 正在听。
+- `recognizing`：保持收缩呼吸，外围出现短促的环形扫描，表示正在等待 ASR final。
+- `thinking`：动态体缓慢偏移和旋转，亮度较低，避免让用户误以为已经开始说话。
+- `speaking`：根据 TTS 播放 RMS 和音频进度产生更明显的形变和光晕，首个音频块到达即切换，不等待整段完成。
+- `stopping` / `interrupted`：快速收缩并在 180 ms 内停止动画与播放队列，然后回到 `listening`。
+- `error`：暂停形变，使用单一警示色和可重试操作；错误信息放在状态文本区，不通过颜色单独传达。
+
+动态体是当前任务的主要反馈，不作为装饰背景。实现优先使用 Canvas 2D + `requestAnimationFrame`，从 `AnalyserNode` 读取输入/输出能量；不保存原始音频。需要 WebGL 时再替换渲染器，但保持相同的状态和音量输入接口。支持 `prefers-reduced-motion`：减少位移和光晕，只保留静态状态色与轻微缩放。
+
+### 10.2 面板结构
+
+1. 顶部：会话标题、当前 Agent 名称、连接状态和结束按钮。结束是明确的挂断操作，不能与返回聊天混淆。
+2. 中央：`VoicePresence` 动态体及状态标签，例如“正在听”“正在思考”“Agnes 正在说”。状态标签与 `VoiceState` 一一对应。
+3. 下方：最近一轮的临时转写和最终转写。临时文本使用较低对比度，final transcript 与 assistant 文本只保留最近几轮，完整内容继续进入普通会话历史。
+4. 底部：麦克风静音/取消静音、扬声器静音和设备选择。主按钮使用熟悉图标并提供 tooltip；通话进行时点击麦克风按钮即触发本地打断或暂停采集。
+5. 错误与权限：首次进入显示麦克风权限状态；设备断开、权限撤销、网络错误都在面板内提供恢复动作，不把密钥、Workspace 或 SDK 错误细节展示给用户。
+
+### 10.3 音频与状态同步
+
+- UI 以 Rust/Python 的 `voice_state`、`voice_transcript_*`、`voice_audio_chunk` 事件作为状态源，不能仅根据本地按钮推断 Agent 阶段。
+- `voice_audio_chunk` 到达后立即进入有界播放队列，同时更新 `speaking` 的音频能量；插话事件先清空队列，再等待新 turn 的音频。
+- 当 turn_id 变化时，旧字幕和旧音频都停止更新；动态体只响应当前 turn，避免取消后的迟到事件造成闪回。
+- 面板关闭、切换会话、窗口失焦策略触发或设备错误时，释放 `MediaStreamTrack`、`AudioContext` 和播放节点。
+
+### 10.4 响应式与可访问性
+
+- 桌面宽屏使用约 320–440 px 的动态体尺寸；窄屏以视口宽度的 52–68% 限制尺寸，控制区始终在安全区域内。
+- 不使用大段说明文字解释功能；通过状态标签、图标 tooltip、字幕和可操作错误反馈完成引导。
+- 所有状态不能只依赖颜色；必须同时有文字或图标变化。动态体和状态标签使用 `aria-live="polite"`，错误使用 `role="alert"`。
+- 键盘支持开始/结束、静音和打断；动画和音量反馈不影响文本对话和系统级辅助功能。
+
+这部分 UI 设计对应 Phase 1 的 `VoiceCallPanel`、`audioCapture`、`audioPlayback` 和 voice protocol 模块；动态体本身不承担 VAD、ASR 或 turn 判断。
+
+## 11. 分阶段计划
 
 ### Phase 0：接口与延迟 Spike
 
@@ -134,7 +175,7 @@ Provider 端口应允许替换：transcribe(audio, config) → transcript；synt
 - 若需原生采集/播放，复用 Voice Session 协议与状态机。
 - 完成并发上限、成本展示、隐私说明、密钥生命周期与发布态验收。
 
-## 11. 验收目标
+## 12. 验收目标
 
 以下为工程目标，不是云厂商 SLA；Phase 0 后按真实数据修订。
 
@@ -149,18 +190,18 @@ Provider 端口应允许替换：transcribe(audio, config) → transcript；synt
 
 ASR 若为每 utterance HTTP 整段请求，endpointing 后 ASR 的实测延迟是首要门槛；达不到目标时应换实时 ASR 接口或接受按键式/半双工体验，不靠牺牲识别质量掩盖等待。
 
-## 12. 风险与待确认事项
+## 13. 风险与待确认事项
 
 | 事项 | 当前处理 | 决策时点 |
 |---|---|---|
 | ASR 是否支持该模型实时输入 | 示例只证明 HTTP 整段请求，按非流式设计 | Phase 0 查正式 API 与 Workspace 权限 |
-| CosyVoice Flash 流式消费/取消 | 示例 call() 返回完整音频，能力未知 | Phase 0 检查 SDK callback/iterator 与服务事件 |
+| CosyVoice Flash 文本增量接入 | 音频 callback、完成和取消已验证；Agent `assistant_delta` 尚未直接驱动同一 TTS 任务 | Phase 2 接入文本缓冲和双向 `streaming_call()` |
 | ASR 音频提交方式 | 示例使用 input_audio.data URL | 确认受控上传/本地直传，避免公开 URL |
 | 格式、最大长度、地域、价格、配额 | 不写死假设 | 实测和控制台确认后固化 |
 | 首发音色 | 默认/预置音色；设计示例使用 Plus | Flash 兼容性验证后再纳入 |
 | 中断消息存储语义 | 遵循现有 run/message 能力 | 协议实现前检查 schema 与取消路径 |
 | Android 交付范围 | Phase 3 | 桌面 MVP 验收后决定 |
 
-## 13. 阶段完成定义
+## 14. 阶段完成定义
 
 Phase 0 完成后必须有真实账户上的接口记录和延迟表；Phase 1 完成后用户能在桌面端与当前 Agent 多轮语音对话；Phase 2 完成后插话可即时静音、旧 turn 完整取消且文本历史不串轮；Phase 3 完成后 Android 通过目标设备验收，密钥与音频数据边界也经发布态检查。每阶段结束时更新本文档状态与实测结论，再进入下一阶段。
