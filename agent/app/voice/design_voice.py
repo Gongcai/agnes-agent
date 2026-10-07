@@ -65,6 +65,7 @@ def create_voice(
     voice_prompt: str,
     preview_text: str,
     prefix: str,
+    target_model: str = TARGET_MODEL,
 ) -> tuple[str, bytes | None, str | None, dict]:
     if len(voice_prompt) > 500:
         raise ValueError("CosyVoice voice_prompt must be at most 500 characters")
@@ -74,7 +75,7 @@ def create_voice(
         "model": "voice-enrollment",
         "input": {
             "action": "create_voice",
-            "target_model": TARGET_MODEL,
+            "target_model": target_model,
             "voice_prompt": voice_prompt,
             "preview_text": preview_text,
             "prefix": prefix,

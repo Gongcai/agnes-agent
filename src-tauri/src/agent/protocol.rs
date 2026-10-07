@@ -57,6 +57,8 @@ pub mod msg_type {
     pub const EMBEDDING_RESULT: &str = "embedding_result";
     pub const VOICE_TRANSCRIBE_REQUEST: &str = "voice_transcribe_request";
     pub const VOICE_TRANSCRIBE_RESULT: &str = "voice_transcribe_result";
+    pub const VOICE_DESIGN_REQUEST: &str = "voice_design_request";
+    pub const VOICE_DESIGN_RESULT: &str = "voice_design_result";
     pub const VOICE_SYNTHESIZE_REQUEST: &str = "voice_synthesize_request";
     pub const VOICE_SYNTHESIZE_RESULT: &str = "voice_synthesize_result";
     pub const VOICE_SYNTHESIZE_STREAM_REQUEST: &str = "voice_synthesize_stream_request";

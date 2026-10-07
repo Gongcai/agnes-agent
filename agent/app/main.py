@@ -18,6 +18,7 @@ from .graph import build_graph, get_available_tools
 from .models import LlmConfig, embed_texts
 from .title import generate_session_title
 from .voice.providers import AudioFormat, CosyVoiceTtsProvider, DashScopeAsrProvider
+from .voice.design_voice import create_voice
 
 EMBEDDING_REQUEST_TIMEOUT_SECONDS = 30
 
@@ -349,7 +350,10 @@ async def handle_voice_transcribe_request(
         sample_rate = int(payload.get("sample_rate") or 16000)
         if sample_rate not in {8000, 16000, 22050, 24000, 44100, 48000}:
             raise ValueError("unsupported voice sample rate")
-        provider = DashScopeAsrProvider()
+        provider = DashScopeAsrProvider(
+            api_key=payload.get("api_key"),
+            model=payload.get("model"),
+        )
         result = await provider.transcribe(
             audio,
             audio_format=audio_format,
@@ -394,6 +398,7 @@ async def handle_voice_synthesize_request(
             api_key=payload.get("api_key"),
             voice=payload.get("voice_id"),
             workspace=payload.get("workspace_id"),
+            model=payload.get("model"),
         )
         audio = await provider.synthesize(text.strip())
         if not audio or len(audio) > VOICE_SYNTHESIS_MAX_BYTES:
@@ -412,6 +417,50 @@ async def handle_voice_synthesize_request(
             payload=result_payload,
         )
         await ws.send(result.model_dump_json())
+    except websockets.exceptions.ConnectionClosed:
+        return
+
+
+async def handle_voice_design_request(
+    ws: websockets.WebSocketClientProtocol,
+    envelope: Dict[str, Any],
+) -> None:
+    request_id = envelope.get("id", "")
+    payload = envelope.get("payload", {})
+    try:
+        api_key = payload.get("api_key")
+        voice_prompt = payload.get("voice_prompt")
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise ValueError("DashScope API Key 未配置")
+        if not isinstance(voice_prompt, str) or not voice_prompt.strip():
+            raise ValueError("音色描述不能为空")
+        if len(voice_prompt) > 500:
+            raise ValueError("音色描述不能超过 500 个字符")
+        voice_id, preview, provider_request_id, _raw = await asyncio.to_thread(
+            create_voice,
+            api_key,
+            str(payload.get("endpoint") or "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"),
+            voice_prompt.strip(),
+            str(payload.get("preview_text") or "你好，我是 Agnes。很高兴与你开始这段语音对话。"),
+            "agnes",
+            str(payload.get("model") or "cosyvoice-v3.5-flash"),
+        )
+        response = {
+            "id": request_id,
+            "voice_id": voice_id,
+            "preview_audio_base64": base64.b64encode(preview).decode("ascii") if preview else None,
+            "request_id": provider_request_id,
+        }
+    except Exception as error:
+        response = {"id": request_id, "error": str(error)}
+    try:
+        await ws.send(
+            make(
+                MsgType.VOICE_DESIGN_RESULT,
+                session_id=envelope.get("session_id", ""),
+                payload=response,
+            ).model_dump_json()
+        )
     except websockets.exceptions.ConnectionClosed:
         return
 
@@ -435,6 +484,7 @@ async def handle_voice_synthesize_stream_request(
             api_key=payload.get("api_key"),
             voice=payload.get("voice_id"),
             workspace=payload.get("workspace_id"),
+            model=payload.get("model"),
         )
         async for chunk in provider.synthesize_stream(text.strip()):
             if len(chunk.data) > 256 * 1024:
@@ -543,6 +593,11 @@ async def main() -> None:
 
                 elif mtype == MsgType.VOICE_TRANSCRIBE_REQUEST:
                     task = asyncio.create_task(handle_voice_transcribe_request(ws, msg))
+                    background_tasks.add(task)
+                    task.add_done_callback(background_tasks.discard)
+
+                elif mtype == MsgType.VOICE_DESIGN_REQUEST:
+                    task = asyncio.create_task(handle_voice_design_request(ws, msg))
                     background_tasks.add(task)
                     task.add_done_callback(background_tasks.discard)
 

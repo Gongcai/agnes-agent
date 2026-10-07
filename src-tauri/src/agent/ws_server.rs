@@ -409,6 +409,17 @@ async fn handle_conn<R: tauri::Runtime>(
                 }
             }
 
+            msg_type::VOICE_DESIGN_RESULT => {
+                let req_id = env
+                    .payload
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                if !req_id.is_empty() {
+                    let _ = manager.resolve_voice_synthesis(req_id, env.payload.clone());
+                }
+            }
+
             msg_type::VOICE_SYNTHESIZE_AUDIO_CHUNK => {
                 let req_id = env.payload.get("id").and_then(|value| value.as_str()).unwrap_or("");
                 if !req_id.is_empty() {

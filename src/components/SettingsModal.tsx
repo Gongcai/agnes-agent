@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { X, ArrowLeft, User, UserCircle, Camera, Database, Sliders, ShieldCheck, ShieldSlash, Key, Plus, Trash, PencilSimple, Check, Lightning, HardDrives, DownloadSimple, Eye, EyeSlash, Terminal, Gear, MagnifyingGlass, ArrowsClockwise, GitDiff, Laptop, Cloud, LockKey, Copy, FileLock, ArrowUp, ArrowDown, GlobeHemisphereWest, ChartBar, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, PuzzlePiece, Play, Stop, CircleNotch, FolderOpen } from "@phosphor-icons/react";
+import { X, ArrowLeft, User, UserCircle, Camera, Database, Sliders, ShieldCheck, ShieldSlash, Key, Plus, Trash, PencilSimple, Check, Lightning, HardDrives, DownloadSimple, Eye, EyeSlash, Terminal, Gear, MagnifyingGlass, ArrowsClockwise, GitDiff, Laptop, Cloud, LockKey, Copy, FileLock, ArrowUp, ArrowDown, GlobeHemisphereWest, ChartBar, Brain, Monitor, Moon, Sun, HardDrive, Eraser, Gauge, PuzzlePiece, Play, Stop, CircleNotch, FolderOpen, SpeakerHigh } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAgentStore } from "../store/useAgentStore";
@@ -14,6 +14,7 @@ import type {
 import { AgentAvatar } from "./AgentAvatar";
 import { ProjectSelect, type ProjectSelectOption } from "./ProjectSelect";
 import { SkillSettingsTab } from "./SkillSettingsTab";
+import { VoiceSettingsTab } from "./VoiceSettingsTab";
 import { TokenUsageCalendar, type TokenUsageDay } from "./TokenUsageCalendar";
 import { useConfirmDialog } from "./ConfirmDialog";
 import { createMemoryFileTemplate, memoryFileMatchesQuery } from "../lib/memory";
@@ -79,7 +80,7 @@ import {
 } from "../lib/uiPreferences";
 import { syncE2eeStatusMessage } from "../lib/syncStatus";
 
-type SettingsTab = "profile" | "general" | "runtime" | "agents" | "memory" | "storage" | "models" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
+type SettingsTab = "profile" | "general" | "runtime" | "agents" | "memory" | "storage" | "models" | "voice" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -2527,6 +2528,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <span>模型</span>
             </button>
             <button
+              onClick={() => selectSettingsTab("voice")}
+              aria-current={activeTab === "voice" ? "page" : undefined}
+              className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${activeTab === "voice" ? "text-zinc-900" : "text-stone-500"}`}
+            >
+              <SpeakerHigh className="h-4 w-4 text-stone-500" />
+              <span>语音</span>
+            </button>
+            <button
               onClick={() => selectSettingsTab("sync")}
               aria-current={activeTab === "sync" ? "page" : undefined}
               className={`agnes-settings-nav-item w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-left transition-colors ${
@@ -2741,6 +2750,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 )}
               </div>
             )}
+
+            {activeTab === "voice" && <VoiceSettingsTab />}
 
             {/* 0. GENERAL TAB */}
             {activeTab === "general" && (

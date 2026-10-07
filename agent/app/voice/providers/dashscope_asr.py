@@ -30,9 +30,15 @@ class DashScopeAsrProvider:
     model = "qwen-audio-3.1-asr-flash"
     streaming = False
 
-    def __init__(self, api_key: str | None = None, endpoint: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        endpoint: str | None = None,
+        model: str | None = None,
+    ) -> None:
         self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY")
         self.endpoint = endpoint or os.environ.get("DASHSCOPE_ASR_ENDPOINT", DEFAULT_ASR_ENDPOINT)
+        self.model = model or type(self).model
         if not self.api_key:
             raise ValueError("DASHSCOPE_API_KEY is required for Qwen Audio ASR")
 

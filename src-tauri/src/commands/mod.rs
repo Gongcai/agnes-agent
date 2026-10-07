@@ -1476,6 +1476,242 @@ pub async fn get_debug_prompt(
 
 /// Send one VAD-completed utterance through the authenticated sidecar ASR path.
 /// Raw audio is transient and is never written to SQLite or emitted to the UI.
+const VOICE_ASR_MODEL_SETTING: &str = "voice:dashscope:asr_model";
+const VOICE_TTS_MODEL_SETTING: &str = "voice:dashscope:tts_model";
+const VOICE_ID_SETTING: &str = "voice:dashscope:cosyvoice_voice_id";
+const VOICE_WORKSPACE_SETTING: &str = "voice:dashscope:workspace_id";
+const VOICE_API_KEY_SECRET_ID: &str = "voice:dashscope:api_key";
+const DEFAULT_VOICE_ASR_MODEL: &str = "qwen-audio-3.1-asr-flash";
+const DEFAULT_VOICE_TTS_MODEL: &str = "cosyvoice-v3.5-flash";
+
+#[derive(Serialize)]
+pub struct VoiceSettingsDto {
+    pub api_key_configured: bool,
+    pub asr_model: String,
+    pub tts_model: String,
+    pub voice_id: String,
+    pub workspace_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct VoiceSettingsInput {
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub clear_api_key: bool,
+    pub asr_model: String,
+    pub tts_model: String,
+    pub voice_id: String,
+    pub workspace_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct VoiceDesignInput {
+    pub voice_prompt: String,
+    pub preview_text: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct VoiceDesignResultDto {
+    pub voice_id: String,
+    pub preview_audio_base64: Option<String>,
+    pub request_id: Option<String>,
+}
+
+async fn load_voice_api_key(state: &AppState) -> AppResult<String> {
+    if let Some(key) = state
+        .secrets
+        .get(VOICE_API_KEY_SECRET_ID)
+        .await?
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(key);
+    }
+    let providers = state.db.list_model_providers().await?;
+    let provider = providers
+        .iter()
+        .find(|provider| provider.kind == "dashscope" && provider.is_default != 0)
+        .or_else(|| {
+            providers
+                .iter()
+                .find(|provider| provider.kind == "dashscope")
+        });
+    if let Some(key) = match provider {
+        Some(provider) => {
+            state
+                .secrets
+                .get(&provider_api_key_secret_id(&provider.id))
+                .await?
+        }
+        None => None,
+    }
+    .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(key);
+    }
+    std::env::var("DASHSCOPE_API_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| AppError::Other("DashScope API Key 未配置".into()))
+}
+
+#[tauri::command]
+pub async fn get_voice_settings(state: tauri::State<'_, AppState>) -> AppResult<VoiceSettingsDto> {
+    let api_key_configured = state
+        .secrets
+        .get(VOICE_API_KEY_SECRET_ID)
+        .await?
+        .is_some_and(|value| !value.trim().is_empty())
+        || load_voice_api_key(&state).await.is_ok();
+    Ok(VoiceSettingsDto {
+        api_key_configured,
+        asr_model: state
+            .db
+            .get_setting(VOICE_ASR_MODEL_SETTING.into())
+            .await?
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_VOICE_ASR_MODEL.into()),
+        tts_model: state
+            .db
+            .get_setting(VOICE_TTS_MODEL_SETTING.into())
+            .await?
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_VOICE_TTS_MODEL.into()),
+        voice_id: state
+            .db
+            .get_setting(VOICE_ID_SETTING.into())
+            .await?
+            .or_else(|| std::env::var("DASHSCOPE_TTS_VOICE").ok())
+            .unwrap_or_default(),
+        workspace_id: state
+            .db
+            .get_setting(VOICE_WORKSPACE_SETTING.into())
+            .await?
+            .or_else(|| std::env::var("DASHSCOPE_WORKSPACE_ID").ok())
+            .unwrap_or_default(),
+    })
+}
+
+#[tauri::command]
+pub async fn set_voice_settings(
+    state: tauri::State<'_, AppState>,
+    input: VoiceSettingsInput,
+) -> AppResult<()> {
+    let asr_model = input.asr_model.trim();
+    let tts_model = input.tts_model.trim();
+    if asr_model.is_empty()
+        || asr_model.len() > 120
+        || tts_model.is_empty()
+        || tts_model.len() > 120
+    {
+        return Err(AppError::Other(
+            "语音模型名称不能为空且不能超过 120 个字符".into(),
+        ));
+    }
+    if input.clear_api_key {
+        state.secrets.delete(VOICE_API_KEY_SECRET_ID).await?;
+    } else if let Some(api_key) = input.api_key.filter(|value| !value.trim().is_empty()) {
+        state
+            .secrets
+            .set(VOICE_API_KEY_SECRET_ID, api_key.trim())
+            .await?;
+    }
+    state
+        .db
+        .set_setting(VOICE_ASR_MODEL_SETTING.into(), asr_model.to_string())
+        .await?;
+    state
+        .db
+        .set_setting(VOICE_TTS_MODEL_SETTING.into(), tts_model.to_string())
+        .await?;
+    state
+        .db
+        .set_setting(VOICE_ID_SETTING.into(), input.voice_id.trim().to_string())
+        .await?;
+    state
+        .db
+        .set_setting(
+            VOICE_WORKSPACE_SETTING.into(),
+            input.workspace_id.unwrap_or_default().trim().to_string(),
+        )
+        .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn design_voice(
+    state: tauri::State<'_, AppState>,
+    input: VoiceDesignInput,
+) -> AppResult<VoiceDesignResultDto> {
+    let voice_prompt = input.voice_prompt.trim();
+    if voice_prompt.is_empty() || voice_prompt.chars().count() > 500 {
+        return Err(AppError::Other(
+            "音色描述不能为空且不能超过 500 个字符".into(),
+        ));
+    }
+    let api_key = load_voice_api_key(&state).await?;
+    let model = state
+        .db
+        .get_setting(VOICE_TTS_MODEL_SETTING.into())
+        .await?
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_VOICE_TTS_MODEL.into());
+    let workspace_id = state
+        .db
+        .get_setting(VOICE_WORKSPACE_SETTING.into())
+        .await?
+        .or_else(|| std::env::var("DASHSCOPE_WORKSPACE_ID").ok())
+        .unwrap_or_default();
+    let endpoint = if workspace_id.trim().is_empty() {
+        "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization".to_string()
+    } else {
+        format!(
+            "https://{}.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization",
+            workspace_id.trim()
+        )
+    };
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
+    state.agent.register_voice_synthesis(request_id.clone(), tx);
+    state.agent.send_to_agent(Envelope {
+        protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
+        id: request_id.clone(), run_id: String::new(), session_id: String::new(),
+        msg_type: msg_type::VOICE_DESIGN_REQUEST.to_string(), created_at: String::new(),
+        payload: json!({
+            "api_key": api_key, "model": model, "endpoint": endpoint,
+            "voice_prompt": voice_prompt,
+            "preview_text": input.preview_text.unwrap_or_else(|| "你好，我是 Agnes。很高兴与你开始这段语音对话。".into()),
+        }),
+    })?;
+    let payload = match tokio::time::timeout(std::time::Duration::from_secs(90), rx).await {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(_)) => return Err(AppError::Other("音色设计通道已断开".into())),
+        Err(_) => {
+            state
+                .agent
+                .resolve_voice_synthesis(&request_id, json!({ "error": "timeout" }));
+            return Err(AppError::Other("音色设计请求超时".into()));
+        }
+    };
+    if let Some(error) = payload.get("error").and_then(|value| value.as_str()) {
+        return Err(AppError::Other(error.to_string()));
+    }
+    Ok(VoiceDesignResultDto {
+        voice_id: payload
+            .get("voice_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        preview_audio_base64: payload
+            .get("preview_audio_base64")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        request_id: payload
+            .get("request_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+    })
+}
+
 #[tauri::command]
 pub async fn transcribe_voice(
     state: tauri::State<'_, AppState>,
@@ -1485,6 +1721,13 @@ pub async fn transcribe_voice(
     sample_rate: Option<u32>,
 ) -> AppResult<String> {
     const MAX_AUDIO_BYTES: usize = 4 * 1024 * 1024;
+    let api_key = load_voice_api_key(&state).await?;
+    let model = state
+        .db
+        .get_setting(VOICE_ASR_MODEL_SETTING.into())
+        .await?
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_VOICE_ASR_MODEL.into());
     let decoded = BASE64
         .decode(audio_base64.as_bytes())
         .map_err(|_| AppError::Other("语音数据不是有效的 base64".into()))?;
@@ -1517,6 +1760,8 @@ pub async fn transcribe_voice(
             "audio_base64": audio_base64,
             "format": format,
             "sample_rate": sample_rate.unwrap_or(16000),
+            "api_key": api_key,
+            "model": model,
         }),
     };
     if let Err(error) = state.agent.send_to_agent(env) {
@@ -1557,47 +1802,31 @@ pub async fn synthesize_voice(
     const MAX_AUDIO_BYTES: usize = 12 * 1024 * 1024;
     let text = text.trim();
     if text.is_empty() || text.chars().count() > MAX_TEXT_CHARS {
-        return Err(AppError::Other("语音合成文本为空或超过 4000 字符限制".into()));
+        return Err(AppError::Other(
+            "语音合成文本为空或超过 4000 字符限制".into(),
+        ));
     }
     let session_id = session_id.unwrap_or_default();
-    if !session_id.is_empty()
-        && state.db.get_session(session_id.clone()).await?.is_none()
-    {
+    if !session_id.is_empty() && state.db.get_session(session_id.clone()).await?.is_none() {
         return Err(AppError::Other("语音合成关联的会话不存在".into()));
     }
-    let providers = state.db.list_model_providers().await?;
-    let provider = providers
-        .iter()
-        .find(|provider| provider.kind == "dashscope" && provider.is_default != 0)
-        .or_else(|| providers.iter().find(|provider| provider.kind == "dashscope"));
-    let api_key = match provider {
-        Some(provider) => state
-            .secrets
-            .get(&provider_api_key_secret_id(&provider.id))
-            .await?
-            .filter(|value| !value.trim().is_empty()),
-        None => None,
-    }
-    .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok().filter(|value| !value.trim().is_empty()))
-    .ok_or_else(|| AppError::Other("DashScope API Key 未配置".into()))?;
+    let api_key = load_voice_api_key(&state).await?;
     let voice_id = state
         .db
-        .get_setting("voice:dashscope:cosyvoice_voice_id".into())
+        .get_setting(VOICE_ID_SETTING.into())
         .await?
         .filter(|value| !value.trim().is_empty())
         .or_else(|| std::env::var("DASHSCOPE_TTS_VOICE").ok())
         .ok_or_else(|| AppError::Other("请配置 cosyvoice-v3.5-flash 的 voice_id".into()))?;
     let workspace_id = state
         .db
-        .get_setting("voice:dashscope:workspace_id".into())
+        .get_setting(VOICE_WORKSPACE_SETTING.into())
         .await?
         .or_else(|| std::env::var("DASHSCOPE_WORKSPACE_ID").ok())
         .unwrap_or_default();
     let request_id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
-    state
-        .agent
-        .register_voice_synthesis(request_id.clone(), tx);
+    state.agent.register_voice_synthesis(request_id.clone(), tx);
     let env = Envelope {
         protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
         id: request_id.clone(),
@@ -1610,6 +1839,8 @@ pub async fn synthesize_voice(
             "api_key": api_key,
             "voice_id": voice_id,
             "workspace_id": workspace_id,
+            "model": state.db.get_setting(VOICE_TTS_MODEL_SETTING.into()).await?
+                .filter(|value| !value.trim().is_empty()).unwrap_or_else(|| DEFAULT_VOICE_TTS_MODEL.into()),
         }),
     };
     if let Err(error) = state.agent.send_to_agent(env) {
@@ -1655,39 +1886,25 @@ pub async fn start_voice_synthesis_stream(
     const MAX_TEXT_CHARS: usize = 4000;
     let text = text.trim();
     if text.is_empty() || text.chars().count() > MAX_TEXT_CHARS {
-        return Err(AppError::Other("语音合成文本为空或超过 4000 字符限制".into()));
+        return Err(AppError::Other(
+            "语音合成文本为空或超过 4000 字符限制".into(),
+        ));
     }
     let session_id = session_id.unwrap_or_default();
-    if !session_id.is_empty()
-        && state.db.get_session(session_id.clone()).await?.is_none()
-    {
+    if !session_id.is_empty() && state.db.get_session(session_id.clone()).await?.is_none() {
         return Err(AppError::Other("语音合成关联的会话不存在".into()));
     }
-    let providers = state.db.list_model_providers().await?;
-    let provider = providers
-        .iter()
-        .find(|provider| provider.kind == "dashscope" && provider.is_default != 0)
-        .or_else(|| providers.iter().find(|provider| provider.kind == "dashscope"));
-    let api_key = match provider {
-        Some(provider) => state
-            .secrets
-            .get(&provider_api_key_secret_id(&provider.id))
-            .await?
-            .filter(|value| !value.trim().is_empty()),
-        None => None,
-    }
-    .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok().filter(|value| !value.trim().is_empty()))
-    .ok_or_else(|| AppError::Other("DashScope API Key 未配置".into()))?;
+    let api_key = load_voice_api_key(&state).await?;
     let voice_id = state
         .db
-        .get_setting("voice:dashscope:cosyvoice_voice_id".into())
+        .get_setting(VOICE_ID_SETTING.into())
         .await?
         .filter(|value| !value.trim().is_empty())
         .or_else(|| std::env::var("DASHSCOPE_TTS_VOICE").ok())
         .ok_or_else(|| AppError::Other("请配置 cosyvoice-v3.5-flash 的 voice_id".into()))?;
     let workspace_id = state
         .db
-        .get_setting("voice:dashscope:workspace_id".into())
+        .get_setting(VOICE_WORKSPACE_SETTING.into())
         .await?
         .or_else(|| std::env::var("DASHSCOPE_WORKSPACE_ID").ok())
         .unwrap_or_default();
@@ -1706,6 +1923,8 @@ pub async fn start_voice_synthesis_stream(
             "api_key": api_key,
             "voice_id": voice_id,
             "workspace_id": workspace_id,
+            "model": state.db.get_setting(VOICE_TTS_MODEL_SETTING.into()).await?
+                .filter(|value| !value.trim().is_empty()).unwrap_or_else(|| DEFAULT_VOICE_TTS_MODEL.into()),
         }),
     };
     state.agent.send_to_agent(env)?;

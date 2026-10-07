@@ -444,7 +444,7 @@ const ToolCallCard: React.FC<{
 });
 
 interface ChatWorkspaceProps {
-  onOpenSettings: (tab: "agents" | "memory" | "models" | "sync" | "tokens" | "skills" | "audit" | "debug" | "runtime") => void;
+  onOpenSettings: (tab: "agents" | "memory" | "models" | "voice" | "sync" | "tokens" | "skills" | "audit" | "debug" | "runtime") => void;
 }
 
 interface ChatUserProfile {

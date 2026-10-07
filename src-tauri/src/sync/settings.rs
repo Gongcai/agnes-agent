@@ -26,8 +26,12 @@ pub fn classify(key: &str) -> SettingClass {
     }
     if key == crate::web::BRAVE_SEARCH_API_KEY_SECRET_ID
         || key == crate::web::TAVILY_SEARCH_API_KEY_SECRET_ID
+        || key == "voice:dashscope:api_key"
     {
         return SettingClass::Secret;
+    }
+    if key.starts_with("voice:dashscope:") {
+        return SettingClass::DeviceLocal;
     }
     SettingClass::Unknown
 }

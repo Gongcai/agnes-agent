@@ -58,10 +58,12 @@ class CosyVoiceTtsProvider:
         voice: str | None = None,
         websocket_url: str | None = None,
         workspace: str | None = None,
+        model: str | None = None,
     ) -> None:
         self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY")
         self.voice = voice or os.environ.get("DASHSCOPE_TTS_VOICE")
         self.workspace = workspace or os.environ.get("DASHSCOPE_WORKSPACE_ID")
+        self.model = model or type(self).model
         self.websocket_url = resolve_websocket_url(
             websocket_url or os.environ.get("DASHSCOPE_TTS_WEBSOCKET_URL"),
             self.workspace,

@@ -59,7 +59,7 @@ export default function App() {
   const [requestedPlannerEventId, setRequestedPlannerEventId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
-  const [settingsTab, setSettingsTab] = useState<"profile" | "general" | "runtime" | "agents" | "memory" | "storage" | "models" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug">("agents");
+  const [settingsTab, setSettingsTab] = useState<"profile" | "general" | "runtime" | "agents" | "memory" | "storage" | "models" | "voice" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug">("agents");
 
   // 全局 Cmd+K / Ctrl+K 快捷指令调起
   useEffect(() => {
@@ -187,7 +187,7 @@ export default function App() {
     if (window.matchMedia("(max-width: 640px)").matches) setIsSidebarOpen(false);
   };
 
-  const handleOpenSettings = (tab: "profile" | "general" | "runtime" | "agents" | "memory" | "storage" | "models" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug" = "agents") => {
+  const handleOpenSettings = (tab: "profile" | "general" | "runtime" | "agents" | "memory" | "storage" | "models" | "voice" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug" = "agents") => {
     setSettingsTab(tab);
     setIsSettingsOpen(true);
   };

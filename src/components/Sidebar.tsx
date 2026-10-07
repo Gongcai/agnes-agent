@@ -11,7 +11,7 @@ import { useAgentStore } from "../store/useAgentStore";
 import { NotificationCenter, type AppNotification } from "./NotificationCenter";
 import { useConfirmDialog } from "./ConfirmDialog";
 
-type SettingsTab = "profile" | "general" | "runtime" | "agents" | "memory" | "storage" | "models" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
+type SettingsTab = "profile" | "general" | "runtime" | "agents" | "memory" | "storage" | "models" | "voice" | "sync" | "tokens" | "web" | "mcp" | "skills" | "audit" | "debug";
 
 interface SidebarUserProfile {
   avatar: string;

@@ -100,6 +100,8 @@ idle → connecting → listening ↔ recognizing ↔ thinking ↔ speaking → 
 
 不要错误复用 speech_model。若纳入 Model Routing，应新增明确 ASR/TTS role，ASR 不是“文本输出模型”能力。API Key 存 Rust SecretStore，sidecar 仅在会话期间按最小必要范围使用；禁止进入 React state/localStorage、普通设置 JSON、日志、消息和同步 payload。示例 endpoint 含 Workspace ID，实际地域和 Workspace 应可配置，且与密钥分开保存。
 
+设置界面已增加“语音”页：ASR/TTS 模型名、Workspace ID、CosyVoice voice_id 保存在设备本地设置；DashScope API Key 存入 Rust SecretStore，兼容已有 DashScope 服务商 Key 和 `DASHSCOPE_API_KEY` 环境变量。音色描述经 sidecar 调用 Voice Design API，返回的预览 WAV 仅在界面内播放，不写入会话或持久化；用户确认后保存 voice_id。
+
 ## 9. 模块建议
 
 建议前端新增 VoiceCallPanel、audioCapture、audioPlayback、voice protocol 模块；Rust 新增 voice 子模块，负责 commands/config/session/protocol；Python 新增 agent/app/voice/session.py、audio.py、providers/base.py、dashscope_asr.py、dashscope_tts.py。
