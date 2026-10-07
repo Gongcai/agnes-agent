@@ -519,7 +519,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   );
 
   useEffect(() => {
-    if (voiceCallOpen && !voiceCallSessionId && activeSessionId) {
+    if (
+      voiceCallOpen
+      && activeSessionId
+      && (!voiceCallSessionId || voiceCallSessionId.startsWith("draft-"))
+    ) {
       setVoiceCallSessionId(activeSessionId);
     }
   }, [activeSessionId, voiceCallOpen, voiceCallSessionId]);
@@ -1842,7 +1846,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  setVoiceCallSessionId(activeSessionId ?? draftSession?.id ?? null);
+                  setVoiceCallSessionId(activeSessionId ?? null);
                   setVoiceCallOpen(true);
                 }}
                 disabled={!hasSessionTarget || isPreparingSession || isStreaming}
