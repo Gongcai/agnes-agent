@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import threading
+from dataclasses import dataclass, field
+from typing import Any
 from typing import AsyncIterator
 
 from .base import AudioChunk
@@ -38,13 +41,14 @@ def resolve_websocket_url(websocket_url: str | None, workspace: str | None) -> s
 class CosyVoiceTtsProvider:
     """CosyVoice v3.5 Flash adapter.
 
-    The checked-in official example uses ``SpeechSynthesizer.call`` and returns
-    one complete byte string. ``streaming`` remains false until the SDK's
-    callback/iterator API is verified against the target account.
+    The SDK is synchronous and delivers streaming audio through callbacks. The
+    adapter runs that SDK call in a worker thread and bridges callback events to
+    the asyncio loop, while retaining ``synthesize`` for callers that need one
+    complete byte string.
     """
 
     model = "cosyvoice-v3.5-flash"
-    streaming = False
+    streaming = True
 
     def __init__(
         self,
@@ -61,6 +65,7 @@ class CosyVoiceTtsProvider:
             self.workspace,
         )
         self._active_task: asyncio.Task[bytes] | None = None
+        self._active_stream: _StreamState | None = None
         if not self.api_key:
             raise ValueError("DASHSCOPE_API_KEY is required for CosyVoice")
         if not self.voice:
@@ -84,19 +89,111 @@ class CosyVoiceTtsProvider:
             self._active_task = None
 
     def synthesize_stream(self, text: str) -> AsyncIterator[AudioChunk]:
-        async def one_chunk() -> AsyncIterator[AudioChunk]:
-            data = await self.synthesize(text)
-            if data:
-                yield AudioChunk(data=data, content_type="audio/mpeg", sequence=0, is_final=True)
+        async def stream() -> AsyncIterator[AudioChunk]:
+            if not text.strip():
+                return
+            await self._cancel_stream()
+            state = _StreamState(loop=asyncio.get_running_loop())
+            self._active_stream = state
+            state.worker = asyncio.create_task(self._run_stream(text, state))
+            sequence = 0
+            pending: _AudioEvent | None = None
+            try:
+                while True:
+                    event = await state.events.get()
+                    if isinstance(event, _AudioEvent):
+                        if state.cancelled:
+                            continue
+                        if pending is not None:
+                            yield AudioChunk(
+                                data=pending.data,
+                                content_type="audio/mpeg",
+                                sequence=sequence,
+                                is_final=False,
+                            )
+                            sequence += 1
+                        pending = event
+                    elif isinstance(event, _StreamError):
+                        raise event.error
+                    elif isinstance(event, _StreamComplete):
+                        if pending is not None and not state.cancelled:
+                            yield AudioChunk(
+                                data=pending.data,
+                                content_type="audio/mpeg",
+                                sequence=sequence,
+                                is_final=True,
+                            )
+                        break
+            finally:
+                if self._active_stream is state:
+                    await self._close_stream(state)
+                    self._active_stream = None
 
-        return one_chunk()
+        return stream()
 
     async def cancel(self) -> None:
+        await self._cancel_stream()
         task = self._active_task
         if task and not task.done():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+    async def _cancel_stream(self) -> None:
+        state = self._active_stream
+        if state is None:
+            return
+        state.cancelled = True
+        synthesizer = state.get_synthesizer()
+        if synthesizer is not None:
+            self._start_cancel_thread(synthesizer)
+        worker = state.worker
+        if worker and not worker.done():
+            worker.cancel()
+        if self._active_stream is state:
+            self._active_stream = None
+
+    async def _close_stream(self, state: "_StreamState") -> None:
+        if state.cancelled or not state.is_terminal():
+            state.cancelled = True
+            # The generator may be running in a cancellation context. Waiting
+            # for another executor task here can prevent the cancellation from
+            # completing, so let the SDK cancellation finish independently.
+            asyncio.create_task(self._cancel_stream_state(state))
+            return
+        worker = state.worker
+        if worker and not worker.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+
+    async def _cancel_stream_state(self, state: "_StreamState") -> None:
+        synthesizer = state.get_synthesizer()
+        if synthesizer is not None:
+            self._start_cancel_thread(synthesizer)
+        worker = state.worker
+        if worker and not worker.done():
+            worker.cancel()
+
+    @staticmethod
+    def _start_cancel_thread(synthesizer: Any) -> None:
+        def cancel() -> None:
+            with contextlib.suppress(Exception):
+                synthesizer.streaming_cancel()
+
+        threading.Thread(target=cancel, name="cosyvoice-cancel", daemon=True).start()
+
+    async def _run_stream(self, text: str, state: "_StreamState") -> None:
+        thread = threading.Thread(
+            target=self._stream_sync,
+            args=(text, state),
+            name="cosyvoice-stream",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            await state.done.wait()
+        except asyncio.CancelledError:
+            raise
 
     def _call_sync(self, text: str) -> bytes:
         try:
@@ -119,3 +216,128 @@ class CosyVoiceTtsProvider:
         if not audio:
             raise RuntimeError("CosyVoice returned no audio")
         return bytes(audio)
+
+    def _stream_sync(self, text: str, state: "_StreamState") -> None:
+        try:
+            self._stream_sync_impl(text, state)
+        except Exception as exc:
+            state.emit_error(exc)
+        finally:
+            state.emit_complete()
+            state.loop.call_soon_threadsafe(state.done.set)
+
+    def _stream_sync_impl(self, text: str, state: "_StreamState") -> None:
+        try:
+            import dashscope
+            from dashscope.audio.tts_v2 import (
+                AudioFormat,
+                ResultCallback,
+                SpeechSynthesizer,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "CosyVoice requires the dashscope Python package; run uv sync"
+            ) from exc
+
+        dashscope.api_key = self.api_key
+        if self.websocket_url:
+            dashscope.base_websocket_api_url = self.websocket_url
+
+        provider = self
+
+        class Callback(ResultCallback):
+            def on_data(self, data: bytes) -> None:
+                state.emit_audio(bytes(data))
+
+            def on_complete(self) -> None:
+                state.emit_complete()
+
+            def on_error(self, message: Any) -> None:
+                if isinstance(message, BaseException):
+                    error = message
+                else:
+                    error = RuntimeError(str(message))
+                state.emit_error(error)
+
+        synthesizer = SpeechSynthesizer(
+            model=provider.model,
+            voice=provider.voice,
+            format=AudioFormat.MP3_22050HZ_MONO_256KBPS,
+            workspace=provider.workspace,
+            callback=Callback(),
+        )
+        state.set_synthesizer(synthesizer)
+        if state.cancelled:
+            with contextlib.suppress(Exception):
+                synthesizer.streaming_cancel()
+            return
+        synthesizer.streaming_call(text)
+        if state.cancelled:
+            with contextlib.suppress(Exception):
+                synthesizer.streaming_cancel()
+            return
+        synthesizer.streaming_complete()
+
+
+@dataclass(frozen=True)
+class _AudioEvent:
+    data: bytes
+
+
+@dataclass(frozen=True)
+class _StreamError:
+    error: BaseException
+
+
+@dataclass(frozen=True)
+class _StreamComplete:
+    pass
+
+
+@dataclass
+class _StreamState:
+    loop: asyncio.AbstractEventLoop
+    events: asyncio.Queue[object] = field(default_factory=asyncio.Queue)
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    worker: asyncio.Task[None] | None = None
+    cancelled: bool = False
+    _synthesizer: Any = None
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _terminal: bool = False
+
+    def set_synthesizer(self, synthesizer: Any) -> None:
+        with self._lock:
+            self._synthesizer = synthesizer
+
+    def get_synthesizer(self) -> Any:
+        with self._lock:
+            return self._synthesizer
+
+    def is_terminal(self) -> bool:
+        with self._lock:
+            return self._terminal
+
+    def _emit(self, event: object) -> None:
+        if self.cancelled and isinstance(event, (_AudioEvent, _StreamError)):
+            return
+        try:
+            self.loop.call_soon_threadsafe(self.events.put_nowait, event)
+        except RuntimeError:
+            return
+
+    def emit_audio(self, data: bytes) -> None:
+        if data:
+            self._emit(_AudioEvent(data))
+
+    def emit_error(self, error: BaseException) -> None:
+        with self._lock:
+            if self._terminal:
+                return
+        self._emit(_StreamError(error))
+
+    def emit_complete(self) -> None:
+        with self._lock:
+            if self._terminal:
+                return
+            self._terminal = True
+        self._emit(_StreamComplete())
