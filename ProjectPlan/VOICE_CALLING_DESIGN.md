@@ -37,7 +37,7 @@ cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus�
 
 | 层 | 职责 |
 |---|---|
-| React / Tauri WebView | 当前用 MediaRecorder 分段、Web Audio RMS endpointing，并转为单声道 16 kHz WAV；监听普通 Agent 增量并分句。Web Audio 将 PCM16/22050 Hz 块调度至播放队列，最多预排约 350 ms；收到并调度后 ACK。插话时立即停止本地节点、清空待播语句并取消当前 TTS 请求。 |
+| React / Tauri WebView | 使用 Web Audio ScriptProcessor 捕获 PCM 帧、RMS endpointing，并保留 400 ms 前滚缓冲；封段后重采样为单声道 16 kHz WAV。监听普通 Agent 增量并分句。Web Audio 将 PCM16/22050 Hz 块调度至播放队列，最多预排约 350 ms；收到并调度后 ACK。插话时立即停止本地节点、清空待播语句并取消当前 TTS 请求。 |
 | Rust Core | 校验文本/会话并传递带 request_id、sequence 的 TTS 块与 ACK；API Key、voice_id、Workspace 只从 Rust 配置/密钥边界读取，原始音频不落库。TTS 传输仍使用本地认证 JSON WebSocket 和 base64 块，ASR 也仍是 base64 WAV 请求。 |
 | Python Voice Session（Agent sidecar 内） | 处理一次性 ASR 与 CosyVoice 合成请求；callback 线程桥接到最多 3 块的 asyncio 队列，sidecar 每次仅发送一个未确认 PCM 块，并等待 WebView ACK 后继续。取消消息会取消 TTS task 并调用 SDK streaming_cancel。 |
 | 阿里云 | Qwen ASR 与 CosyVoice TTS；HTTPS/WSS，由受控运行时使用密钥。 |

@@ -13,44 +13,40 @@ interface VoiceCallPanelProps {
   onTranscript?: (text: string) => Promise<void> | void;
 }
 
-async function toMonoWav16k(blob: Blob): Promise<Blob> {
-  const decodeContext = new AudioContext();
-  try {
-    const decoded = await decodeContext.decodeAudioData(await blob.arrayBuffer());
-    const length = Math.max(1, Math.ceil(decoded.duration * 16000));
-    const offline = new OfflineAudioContext(1, length, 16000);
-    const source = offline.createBufferSource();
-    source.buffer = decoded;
-    source.connect(offline.destination);
-    source.start();
-    const rendered = await offline.startRendering();
-    const samples = rendered.getChannelData(0);
-    const buffer = new ArrayBuffer(44 + samples.length * 2);
-    const view = new DataView(buffer);
-    const writeText = (offset: number, value: string) => {
-      for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
-    };
-    writeText(0, "RIFF");
-    view.setUint32(4, 36 + samples.length * 2, true);
-    writeText(8, "WAVE");
-    writeText(12, "fmt " );
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, 16000, true);
-    view.setUint32(28, 32000, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeText(36, "data");
-    view.setUint32(40, samples.length * 2, true);
-    for (let index = 0; index < samples.length; index += 1) {
-      const sample = Math.max(-1, Math.min(1, samples[index]));
-      view.setInt16(44 + index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-    }
-    return new Blob([buffer], { type: "audio/wav" });
-  } finally {
-    await decodeContext.close();
+async function toMonoWav16k(input: Float32Array<ArrayBuffer>, inputSampleRate: number): Promise<Blob> {
+  const outputLength = Math.max(1, Math.ceil(input.length * 16000 / inputSampleRate));
+  const offline = new OfflineAudioContext(1, outputLength, 16000);
+  const sourceBuffer = offline.createBuffer(1, input.length, inputSampleRate);
+  sourceBuffer.copyToChannel(input, 0);
+  const source = offline.createBufferSource();
+  source.buffer = sourceBuffer;
+  source.connect(offline.destination);
+  source.start();
+  const rendered = await offline.startRendering();
+  const samples = rendered.getChannelData(0);
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const writeText = (offset: number, value: string) => {
+    for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
+  };
+  writeText(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeText(8, "WAVE");
+  writeText(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 16000, true);
+  view.setUint32(28, 32000, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeText(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[index]));
+    view.setInt16(44 + index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
   }
+  return new Blob([buffer], { type: "audio/wav" });
 }
 
 function blobToBase64(blob: Blob): Promise<string> {
@@ -81,10 +77,13 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
+  const captureProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const captureSilenceGainRef = useRef<GainNode | null>(null);
+  const preRollFramesRef = useRef<Float32Array[]>([]);
+  const preRollSamplesRef = useRef(0);
+  const utteranceFramesRef = useRef<Float32Array[]>([]);
   const utteranceStartedAtRef = useRef<number | null>(null);
   const silenceSinceRef = useRef<number | null>(null);
-  const utteranceChunksRef = useRef<Blob[]>([]);
   const stoppingRef = useRef(false);
   const [visualState, setVisualState] = useState<VoiceVisualState>("idle");
   const [muted, setMuted] = useState(false);
@@ -154,14 +153,52 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     }
   }, []);
 
+  const processUtterance = useCallback((samples: Float32Array<ArrayBuffer>, sampleRate: number, generation: number) => {
+    if (samples.length === 0) {
+      setProcessingError("没有采集到这段语音的音频数据，请重新说一次。");
+      return;
+    }
+    setUtteranceCount((count) => count + 1);
+    setLastUtteranceMs(samples.length / sampleRate * 1000);
+    recognitionQueueRef.current = recognitionQueueRef.current.then(async () => {
+      if (!mountedRef.current || generation !== captureGenerationRef.current) return;
+      setRecognizing(true);
+      setProcessingError(null);
+      try {
+        const wav = await toMonoWav16k(samples, sampleRate);
+        if (!mountedRef.current || generation !== captureGenerationRef.current) return;
+        const text = await invoke<string>("transcribe_voice", {
+          sessionId: sessionId ?? null,
+          audioBase64: await blobToBase64(wav),
+          mimeType: "audio/wav",
+          sampleRate: 16000,
+        });
+        if (!mountedRef.current || generation !== captureGenerationRef.current || !text.trim()) return;
+        setTranscript(text.trim());
+        await onTranscriptRef.current?.(text.trim());
+      } catch (reason) {
+        if (mountedRef.current && generation === captureGenerationRef.current) {
+          setProcessingError(reason instanceof Error ? reason.message : String(reason));
+        }
+      } finally {
+        if (mountedRef.current && generation === captureGenerationRef.current) setRecognizing(false);
+      }
+    });
+  }, [sessionId]);
+
   const stopCapture = useCallback(() => {
     captureGenerationRef.current += 1;
     cancelCurrentSpeech();
     stoppingRef.current = true;
-    recorderRef.current?.stop();
-    recorderRef.current = null;
     utteranceStartedAtRef.current = null;
     silenceSinceRef.current = null;
+    preRollFramesRef.current = [];
+    preRollSamplesRef.current = 0;
+    utteranceFramesRef.current = [];
+    captureProcessorRef.current?.disconnect();
+    captureProcessorRef.current = null;
+    captureSilenceGainRef.current?.disconnect();
+    captureSilenceGainRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     analyserRef.current = null;
@@ -192,78 +229,45 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       });
       const captureGeneration = captureGenerationRef.current;
       const context = new AudioContext();
+      if (context.state === "suspended") await context.resume();
+      preRollFramesRef.current = [];
+      preRollSamplesRef.current = 0;
+      utteranceFramesRef.current = [];
+      utteranceStartedAtRef.current = null;
+      silenceSinceRef.current = null;
       const analyser = context.createAnalyser();
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = 0.78;
-      context.createMediaStreamSource(stream).connect(analyser);
-      if (typeof MediaRecorder === "undefined") {
-        stream.getTracks().forEach((track) => track.stop());
-        throw new Error("当前环境不支持浏览器音频录制");
-      }
-      const recorder = new MediaRecorder(stream);
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0 && utteranceStartedAtRef.current !== null) {
-          utteranceChunksRef.current.push(event.data);
-        }
-      };
-      recorder.onstop = () => {
-        if (captureGeneration !== captureGenerationRef.current) {
-          utteranceChunksRef.current = [];
-          utteranceStartedAtRef.current = null;
+      const source = context.createMediaStreamSource(stream);
+      source.connect(analyser);
+      const processor = context.createScriptProcessor(1024, 1, 1);
+      const silenceGain = context.createGain();
+      silenceGain.gain.value = 0;
+      processor.onaudioprocess = (event) => {
+        if (captureGeneration !== captureGenerationRef.current) return;
+        const frame = new Float32Array(event.inputBuffer.getChannelData(0));
+        if (utteranceStartedAtRef.current !== null) {
+          utteranceFramesRef.current.push(frame);
           return;
         }
-        const startedAt = utteranceStartedAtRef.current;
-        const restartRecorder = () => {
-          utteranceChunksRef.current = [];
-          utteranceStartedAtRef.current = null;
-          silenceSinceRef.current = null;
-          if (!stoppingRef.current && streamRef.current === stream && recorder.state === "inactive") {
-            recorder.start(100);
-          }
-        };
-        if (!startedAt || utteranceChunksRef.current.length === 0) {
-          if (startedAt) setProcessingError("未采集到这段语音的音频数据，请重新说一次。");
-          restartRecorder();
-          return;
+        preRollFramesRef.current.push(frame);
+        preRollSamplesRef.current += frame.length;
+        const maxPreRollSamples = Math.ceil(context.sampleRate * 0.4);
+        while (preRollSamplesRef.current > maxPreRollSamples && preRollFramesRef.current.length > 0) {
+          const removed = preRollFramesRef.current.shift();
+          if (removed) preRollSamplesRef.current -= removed.length;
         }
-        const audio = new Blob(utteranceChunksRef.current, { type: recorder.mimeType || "audio/webm" });
-        const durationMs = performance.now() - startedAt;
-        setUtteranceCount((count) => count + 1);
-        setLastUtteranceMs(durationMs);
-        const generation = captureGenerationRef.current;
-        recognitionQueueRef.current = recognitionQueueRef.current.then(async () => {
-          if (!mountedRef.current || generation !== captureGenerationRef.current) return;
-          setRecognizing(true);
-          setProcessingError(null);
-          try {
-            const wav = await toMonoWav16k(audio);
-            if (!mountedRef.current || generation !== captureGenerationRef.current) return;
-            const text = await invoke<string>("transcribe_voice", {
-              sessionId: sessionId ?? null,
-              audioBase64: await blobToBase64(wav),
-              mimeType: "audio/wav",
-              sampleRate: 16000,
-            });
-            if (!mountedRef.current || generation !== captureGenerationRef.current || !text.trim()) return;
-            setTranscript(text.trim());
-            await onTranscriptRef.current?.(text.trim());
-          } catch (reason) {
-            if (mountedRef.current && generation === captureGenerationRef.current) {
-              setProcessingError(reason instanceof Error ? reason.message : String(reason));
-            }
-          } finally {
-            if (mountedRef.current && generation === captureGenerationRef.current) setRecognizing(false);
-          }
-        });
-        restartRecorder();
       };
-      recorder.start(100);
-      recorderRef.current = recorder;
+      source.connect(processor);
+      processor.connect(silenceGain);
+      silenceGain.connect(context.destination);
       streamRef.current = stream;
       contextRef.current = context;
       playbackContextRef.current = context;
       scheduledUntilRef.current = context.currentTime;
       analyserRef.current = analyser;
+      captureProcessorRef.current = processor;
+      captureSilenceGainRef.current = silenceGain;
       stoppingRef.current = false;
       setUtteranceCount(0);
       setLastUtteranceMs(null);
@@ -285,7 +289,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           : `无法启动麦克风：${reason instanceof Error ? reason.message : String(reason)}`);
       setVisualState("error");
     }
-  }, [refreshAudioInputs, sessionId]);
+  }, [refreshAudioInputs]);
 
   useEffect(() => {
     void refreshAudioInputs();
@@ -504,7 +508,9 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
                 setVisualState("listening");
               }
               utteranceStartedAtRef.current = now;
-              utteranceChunksRef.current = [];
+              utteranceFramesRef.current = preRollFramesRef.current;
+              preRollFramesRef.current = [];
+              preRollSamplesRef.current = 0;
             }
             silenceSinceRef.current = null;
           } else if (utteranceStartedAtRef.current !== null) {
@@ -517,9 +523,19 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           const reachedMaximumDuration = utteranceStartedAt !== null
             && now - utteranceStartedAt >= maxUtteranceMs;
           if (reachedSilenceEndpoint || reachedMaximumDuration) {
-            const recorder = recorderRef.current;
-            if (recorder && recorder.state === "recording") recorder.stop();
+            const frames = utteranceFramesRef.current;
+            const sampleCount = frames.reduce((total, frame) => total + frame.length, 0);
+            const samples = new Float32Array(sampleCount);
+            let offset = 0;
+            for (const frame of frames) {
+              samples.set(frame, offset);
+              offset += frame.length;
+            }
+            const sampleRate = contextRef.current?.sampleRate ?? 48000;
+            utteranceFramesRef.current = [];
+            utteranceStartedAtRef.current = null;
             silenceSinceRef.current = null;
+            processUtterance(samples, sampleRate, captureGenerationRef.current);
           }
           if (time - lastMeterUpdate > 45) {
             lastMeterUpdate = time;
@@ -584,7 +600,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     };
     frame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frame);
-  }, [cancelCurrentSpeech, muted, visualState]);
+  }, [cancelCurrentSpeech, muted, processUtterance, visualState]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -609,7 +625,9 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     if (nextMuted) {
       utteranceStartedAtRef.current = null;
       silenceSinceRef.current = null;
-      utteranceChunksRef.current = [];
+      preRollFramesRef.current = [];
+      preRollSamplesRef.current = 0;
+      utteranceFramesRef.current = [];
     }
     setMuted(nextMuted);
   };
