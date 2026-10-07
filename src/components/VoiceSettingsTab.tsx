@@ -139,7 +139,8 @@ export const VoiceSettingsTab: React.FC = () => {
         </div>
         <label className="block space-y-1">
           <span className="text-[10px] font-semibold text-stone-600">Workspace ID（可选）</span>
-          <input value={settings.workspace_id} onChange={(event) => setSettings((current) => ({ ...current, workspace_id: event.target.value }))} placeholder="仅填写 Workspace ID" className="w-full rounded-md border border-stone-200 px-3 py-2 text-xs font-mono outline-none focus:border-indigo-300" />
+          <input value={settings.workspace_id} onChange={(event) => setSettings((current) => ({ ...current, workspace_id: event.target.value }))} placeholder="例如 llm-srukcv1xajun2e5g" className="w-full rounded-md border border-stone-200 px-3 py-2 text-xs font-mono outline-none focus:border-indigo-300" />
+          <p className="text-[10px] text-stone-400">只填写百炼控制台的 Workspace ID，不要填写域名、wss:// 或完整 URL。</p>
         </label>
         <label className="block space-y-1">
           <span className="text-[10px] font-semibold text-stone-600">当前音色 ID</span>

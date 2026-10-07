@@ -33,7 +33,7 @@ def resolve_websocket_url(websocket_url: str | None, workspace: str | None) -> s
     if not workspace:
         return None
     workspace_id = workspace.strip()
-    if ".cn-beijing.maas.aliyuncs.com" in workspace_id or "/" in workspace_id:
+    if "." in workspace_id or "/" in workspace_id or ":" in workspace_id:
         raise ValueError(
             "DASHSCOPE_WORKSPACE_ID must be the Workspace ID only, not a hostname or URL"
         )

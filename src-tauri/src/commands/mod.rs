@@ -1598,6 +1598,7 @@ pub async fn set_voice_settings(
 ) -> AppResult<()> {
     let asr_model = input.asr_model.trim();
     let tts_model = input.tts_model.trim();
+    let workspace_id = input.workspace_id.as_deref().unwrap_or("").trim();
     if asr_model.is_empty()
         || asr_model.len() > 120
         || tts_model.is_empty()
@@ -1605,6 +1606,15 @@ pub async fn set_voice_settings(
     {
         return Err(AppError::Other(
             "语音模型名称不能为空且不能超过 120 个字符".into(),
+        ));
+    }
+    if !workspace_id.is_empty()
+        && (workspace_id.len() > 64
+            || !workspace_id.chars().next().is_some_and(|value| value.is_ascii_alphanumeric())
+            || !workspace_id.chars().all(|value| value.is_ascii_alphanumeric() || value == '-' || value == '_'))
+    {
+        return Err(AppError::Other(
+            "Workspace ID 只能填写控制台提供的 ID（字母、数字、- 或 _），不能填写域名或 URL".into(),
         ));
     }
     if input.clear_api_key {
@@ -1631,7 +1641,7 @@ pub async fn set_voice_settings(
         .db
         .set_setting(
             VOICE_WORKSPACE_SETTING.into(),
-            input.workspace_id.unwrap_or_default().trim().to_string(),
+            workspace_id.to_string(),
         )
         .await?;
     Ok(())
