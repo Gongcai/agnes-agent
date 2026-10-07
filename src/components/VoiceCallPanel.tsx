@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, Microphone, MicrophoneSlash, PhoneDisconnect, SpeakerHigh, SpeakerSlash, Square, Warning } from "@phosphor-icons/react";
 import { splitSpeechText } from "../lib/voiceSpeech";
+import { createVoiceCapture, type VoiceCapture } from "../lib/voiceCapture";
+import { VoicePhaseTimeoutError, withVoiceDeadline } from "../lib/voiceDeadline";
 
 type VoiceVisualState = "idle" | "connecting" | "listening" | "recognizing" | "thinking" | "speaking" | "stopping" | "error";
 
@@ -84,16 +86,11 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
   const playbackAnalyserRef = useRef<AnalyserNode | null>(null);
-  const captureProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const captureSilenceGainRef = useRef<GainNode | null>(null);
-  const preRollFramesRef = useRef<Float32Array[]>([]);
-  const preRollSamplesRef = useRef(0);
-  const utteranceFramesRef = useRef<Float32Array[]>([]);
-  const utteranceStartedAtRef = useRef<number | null>(null);
-  const silenceSinceRef = useRef<number | null>(null);
-  const stoppingRef = useRef(false);
+  const captureRef = useRef<VoiceCapture | null>(null);
+  const captureAbortRef = useRef<AbortController | null>(null);
+  const microphoneLevelRef = useRef(0);
+  const mutedRef = useRef(false);
   const [visualState, setVisualState] = useState<VoiceVisualState>("idle");
   const [muted, setMuted] = useState(false);
   const [speakerMuted, setSpeakerMuted] = useState(false);
@@ -130,6 +127,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const playbackNodesRef = useRef(new Set<AudioBufferSourceNode>());
   const playbackGainsRef = useRef(new Set<GainNode>());
   const activeSynthesisRef = useRef<string | null>(null);
+  const synthesisTimeoutRef = useRef<number | null>(null);
   const captureSuppressedRef = useRef(false);
   const captureResumeTimerRef = useRef<number | null>(null);
   const audioChunkChainRef = useRef(Promise.resolve());
@@ -139,12 +137,9 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   onInterruptRef.current = onInterrupt;
   const reducedMotion = useRef(false);
 
-  const clearCaptureBuffers = useCallback(() => {
-    utteranceStartedAtRef.current = null;
-    silenceSinceRef.current = null;
-    preRollFramesRef.current = [];
-    preRollSamplesRef.current = 0;
-    utteranceFramesRef.current = [];
+  const updateCaptureGate = useCallback(() => {
+    microphoneLevelRef.current = 0;
+    captureRef.current?.setEnabled(!captureSuppressedRef.current && !mutedRef.current);
   }, []);
 
   const suppressCapture = useCallback(() => {
@@ -153,8 +148,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       window.clearTimeout(captureResumeTimerRef.current);
       captureResumeTimerRef.current = null;
     }
-    clearCaptureBuffers();
-  }, [clearCaptureBuffers]);
+    updateCaptureGate();
+  }, [updateCaptureGate]);
 
   const scheduleCaptureResume = useCallback((delayMs = 220) => {
     if (captureResumeTimerRef.current !== null) window.clearTimeout(captureResumeTimerRef.current);
@@ -162,12 +157,12 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       captureResumeTimerRef.current = null;
       if (!mountedRef.current || replyPendingRef.current || recognitionPendingRef.current
         || interruptionPendingRef.current || speechWorkerRef.current !== null) return;
-      clearCaptureBuffers();
       captureSuppressedRef.current = false;
+      updateCaptureGate();
       setVisualState(streamRef.current ? "listening" : "idle");
       setCanInterrupt(false);
     }, delayMs);
-  }, [clearCaptureBuffers]);
+  }, [updateCaptureGate]);
 
   const finishReplyPlayback = useCallback(() => {
     if (!mountedRef.current || interruptionPendingRef.current || speechWorkerRef.current !== null) return;
@@ -200,6 +195,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     speechFlushTimerRef.current = null;
     speechQueueRef.current = [];
     speechBufferRef.current = "";
+    if (synthesisTimeoutRef.current !== null) window.clearTimeout(synthesisTimeoutRef.current);
+    synthesisTimeoutRef.current = null;
     const requestId = activeSynthesisRef.current;
     activeSynthesisRef.current = null;
     if (requestId) {
@@ -266,13 +263,23 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     recognitionQueueRef.current = recognitionQueueRef.current.then(async () => {
       if (!mountedRef.current || submission.signal.aborted || generation !== captureGenerationRef.current) return;
       try {
-        const wav = await toMonoWav16k(samples, sampleRate);
-        if (!mountedRef.current || submission.signal.aborted || generation !== captureGenerationRef.current) return;
-        const text = await invoke<string>("transcribe_voice", {
-          sessionId: sessionIdRef.current,
-          audioBase64: await blobToBase64(wav),
-          mimeType: "audio/wav",
-          sampleRate: 16000,
+        const recognition = (async () => {
+          const wav = await toMonoWav16k(samples, sampleRate);
+          const audioBase64 = await blobToBase64(wav);
+          if (submission.signal.aborted || generation !== captureGenerationRef.current) {
+            throw new DOMException("Voice recognition cancelled", "AbortError");
+          }
+          return invoke<string>("transcribe_voice", {
+            sessionId: sessionIdRef.current,
+            audioBase64,
+            mimeType: "audio/wav",
+            sampleRate: 16000,
+          });
+        })();
+        const text = await withVoiceDeadline(recognition, {
+          timeoutMs: 40_000,
+          message: "语音识别响应超时，请检查网络后重新说一次。",
+          signal: submission.signal,
         });
         if (!mountedRef.current || submission.signal.aborted || generation !== captureGenerationRef.current || !text.trim()) return;
         setTranscript(text.trim());
@@ -304,6 +311,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
 
   const stopCapture = useCallback(() => {
     captureGenerationRef.current += 1;
+    captureAbortRef.current?.abort();
+    captureAbortRef.current = null;
     submissionAbortRef.current?.abort();
     recognitionQueueRef.current = Promise.resolve();
     cancelCurrentSpeech();
@@ -314,19 +323,11 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     if (captureResumeTimerRef.current !== null) window.clearTimeout(captureResumeTimerRef.current);
     captureResumeTimerRef.current = null;
     captureSuppressedRef.current = false;
-    stoppingRef.current = true;
-    utteranceStartedAtRef.current = null;
-    silenceSinceRef.current = null;
-    preRollFramesRef.current = [];
-    preRollSamplesRef.current = 0;
-    utteranceFramesRef.current = [];
-    captureProcessorRef.current?.disconnect();
-    captureProcessorRef.current = null;
-    captureSilenceGainRef.current?.disconnect();
-    captureSilenceGainRef.current = null;
+    captureRef.current?.close();
+    captureRef.current = null;
+    microphoneLevelRef.current = 0;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
-    analyserRef.current = null;
     playbackAnalyserRef.current = null;
     const context = contextRef.current;
     contextRef.current = null;
@@ -345,63 +346,69 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       return;
     }
     const captureGeneration = captureGenerationRef.current;
+    const lifetime = new AbortController();
+    captureAbortRef.current = lifetime;
     let pendingStream: MediaStream | null = null;
     let pendingContext: AudioContext | null = null;
+    let pendingCapture: VoiceCapture | null = null;
+    const releasePending = () => {
+      pendingCapture?.close();
+      pendingStream?.getTracks().forEach((track) => track.stop());
+      if (pendingContext && pendingContext.state !== "closed") void pendingContext.close().catch(() => undefined);
+    };
+    lifetime.signal.addEventListener("abort", releasePending, { once: true });
     try {
       const requestedDeviceId = deviceId ?? selectedAudioInputRef.current;
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const stream = await withVoiceDeadline(navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
           ...(requestedDeviceId ? { deviceId: { exact: requestedDeviceId } } : {}),
         },
+      }), {
+        timeoutMs: 60_000,
+        message: "麦克风连接超时，请确认权限和输入设备后重试。",
+        signal: lifetime.signal,
+        onLateResolve: (lateStream) => lateStream.getTracks().forEach((track) => track.stop()),
       });
       pendingStream = stream;
-      if (!mountedRef.current || captureGeneration !== captureGenerationRef.current) {
-        stream.getTracks().forEach((track) => track.stop());
-        return;
-      }
       const context = new AudioContext();
       pendingContext = context;
-      if (context.state === "suspended") await context.resume();
+      if (context.state === "suspended") {
+        await withVoiceDeadline(context.resume(), {
+          timeoutMs: 10_000,
+          message: "音频设备启动超时，请重新开启麦克风。",
+          signal: lifetime.signal,
+        });
+      }
+      const capture = await createVoiceCapture(context, stream, {
+        signal: lifetime.signal,
+        onLevel: (value) => {
+          if (mountedRef.current && captureGeneration === captureGenerationRef.current) microphoneLevelRef.current = value;
+        },
+        onUtterance: (samples, sampleRate) => {
+          if (mountedRef.current && captureGeneration === captureGenerationRef.current && !captureSuppressedRef.current && !mutedRef.current) {
+            processUtterance(samples, sampleRate, captureGeneration);
+          }
+        },
+        onError: () => {
+          if (!mountedRef.current || captureGeneration !== captureGenerationRef.current) return;
+          const targetSessionId = sessionIdRef.current;
+          const targetRunId = activeRunIdRef.current;
+          if (replyPendingRef.current && targetSessionId && targetRunId) {
+            void onInterruptRef.current(targetSessionId, targetRunId).catch((reason) => console.warn("Unable to cancel the failed voice call", reason));
+          }
+          stopCapture();
+          setError("麦克风音频处理已停止，请重新开启麦克风。");
+          setVisualState("error");
+        },
+      });
+      pendingCapture = capture;
       if (!mountedRef.current || captureGeneration !== captureGenerationRef.current) {
-        stream.getTracks().forEach((track) => track.stop());
-        void context.close();
+        releasePending();
         return;
       }
-      preRollFramesRef.current = [];
-      preRollSamplesRef.current = 0;
-      utteranceFramesRef.current = [];
-      utteranceStartedAtRef.current = null;
-      silenceSinceRef.current = null;
-      const analyser = context.createAnalyser();
-      analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.78;
-      const source = context.createMediaStreamSource(stream);
-      source.connect(analyser);
-      const processor = context.createScriptProcessor(1024, 1, 1);
-      const silenceGain = context.createGain();
-      silenceGain.gain.value = 0;
-      processor.onaudioprocess = (event) => {
-        if (captureGeneration !== captureGenerationRef.current) return;
-        if (captureSuppressedRef.current) return;
-        const frame = new Float32Array(event.inputBuffer.getChannelData(0));
-        if (utteranceStartedAtRef.current !== null) {
-          utteranceFramesRef.current.push(frame);
-          return;
-        }
-        preRollFramesRef.current.push(frame);
-        preRollSamplesRef.current += frame.length;
-        const maxPreRollSamples = Math.ceil(context.sampleRate * 0.4);
-        while (preRollSamplesRef.current > maxPreRollSamples && preRollFramesRef.current.length > 0) {
-          const removed = preRollFramesRef.current.shift();
-          if (removed) preRollSamplesRef.current -= removed.length;
-        }
-      };
-      source.connect(processor);
-      processor.connect(silenceGain);
-      silenceGain.connect(context.destination);
       const playbackAnalyser = context.createAnalyser();
       playbackAnalyser.fftSize = 512;
       playbackAnalyser.connect(context.destination);
@@ -410,11 +417,20 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       playbackContextRef.current = context;
       playbackAnalyserRef.current = playbackAnalyser;
       scheduledUntilRef.current = context.currentTime;
-      analyserRef.current = analyser;
-      captureProcessorRef.current = processor;
-      captureSilenceGainRef.current = silenceGain;
-      stoppingRef.current = false;
+      captureRef.current = capture;
+      captureSuppressedRef.current = false;
+      mutedRef.current = false;
       acceptingReplyRef.current = false;
+      capture.setEnabled(true);
+      const settings = stream.getAudioTracks()[0]?.getSettings?.();
+      console.info("[voice][capture]", {
+        backend: capture.backend,
+        sample_rate: context.sampleRate,
+        echo_cancellation_reported: settings?.echoCancellation ?? null,
+        noise_suppression_reported: settings?.noiseSuppression ?? null,
+        auto_gain_control_reported: settings?.autoGainControl ?? null,
+      });
+      pendingCapture = null;
       pendingStream = null;
       pendingContext = null;
       setUtteranceCount(0);
@@ -423,8 +439,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       setVisualState("listening");
       void refreshAudioInputs();
     } catch (reason) {
-      pendingStream?.getTracks().forEach((track) => track.stop());
-      if (pendingContext && pendingContext.state !== "closed") void pendingContext.close().catch(() => undefined);
+      releasePending();
+      if (captureAbortRef.current === lifetime) captureAbortRef.current = null;
       if (!mountedRef.current || captureGeneration !== captureGenerationRef.current) return;
       void refreshAudioInputs();
       const name = reason instanceof DOMException ? reason.name : "";
@@ -439,8 +455,10 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
             ? "麦克风被其他程序占用，或音频服务不可用。请关闭占用麦克风的程序并检查系统音频服务。"
           : `无法启动麦克风：${reason instanceof Error ? reason.message : String(reason)}`);
       setVisualState("error");
+    } finally {
+      lifetime.signal.removeEventListener("abort", releasePending);
     }
-  }, [refreshAudioInputs]);
+  }, [processUtterance, refreshAudioInputs, stopCapture]);
 
   useEffect(() => {
     void refreshAudioInputs();
@@ -466,6 +484,16 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     let unlistenError: (() => void) | undefined;
     let unlistenAudioChunk: (() => void) | undefined;
     let unlistenTtsComplete: (() => void) | undefined;
+    const armSynthesisTimeout = (requestId: string, timeoutMs: number) => {
+      if (synthesisTimeoutRef.current !== null) window.clearTimeout(synthesisTimeoutRef.current);
+      synthesisTimeoutRef.current = window.setTimeout(() => {
+        synthesisTimeoutRef.current = null;
+        if (disposed || activeSynthesisRef.current !== requestId) return;
+        const error = new VoicePhaseTimeoutError("语音回复响应超时，已停止本轮回复。请检查网络后重试。");
+        synthesisCompletionsRef.current.get(requestId)?.reject(error);
+        void invoke("cancel_voice_synthesis_stream", { requestId }).catch(() => undefined);
+      }, timeoutMs);
+    };
     const enqueueSpeech = (text: string) => {
       const clean = text.trim();
       if (!clean) {
@@ -505,17 +533,22 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
             });
             // Cancellation can arrive while the start command is still pending.
             void completed.catch(() => undefined);
-            await invoke<string>("start_voice_synthesis_stream", {
+            armSynthesisTimeout(requestId, 25_000);
+            const started = invoke<string>("start_voice_synthesis_stream", {
               sessionId: sessionIdRef.current,
               text: next,
               requestId,
             });
-            if (disposed || generation !== playbackGenerationRef.current) {
+            void started.then(() => {
               // The earlier cancel may have arrived before native preparation
               // queued this request. Cancel again after start is confirmed.
-              void invoke("cancel_voice_synthesis_stream", { requestId }).catch(() => undefined);
-              break;
-            }
+              if (disposed || generation !== playbackGenerationRef.current) {
+                void invoke("cancel_voice_synthesis_stream", { requestId }).catch(() => undefined);
+              }
+            }).catch(() => undefined);
+            // A missing start response must not hide an audio timeout.
+            await Promise.race([started, completed]);
+            if (disposed || generation !== playbackGenerationRef.current) break;
             await completed;
             if (disposed || generation !== playbackGenerationRef.current) break;
             // Synthesize the next sentence while this sentence's buffered tail
@@ -523,9 +556,17 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           } catch (reason) {
             if (!disposed && generation === playbackGenerationRef.current) {
               setProcessingError(reason instanceof Error ? reason.message : String(reason));
+              if (reason instanceof VoicePhaseTimeoutError) {
+                void interruptReply();
+                break;
+              }
             }
           } finally {
-            if (activeSynthesisRef.current === requestId) activeSynthesisRef.current = null;
+            if (activeSynthesisRef.current === requestId) {
+              activeSynthesisRef.current = null;
+              if (synthesisTimeoutRef.current !== null) window.clearTimeout(synthesisTimeoutRef.current);
+              synthesisTimeoutRef.current = null;
+            }
             synthesisCompletionsRef.current.delete(requestId);
           }
         }
@@ -607,6 +648,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       const requestId = chunk.id;
       const generation = playbackGenerationRef.current;
       if (disposed || !sessionIdRef.current || chunk.session_id !== sessionIdRef.current || activeSynthesisRef.current !== requestId || chunk.sequence !== nextAudioSequenceRef.current) return;
+      armSynthesisTimeout(requestId, 15_000);
       // Tauri event callbacks are not awaited by the event dispatcher. Keep
       // chunk rendering ordered so a fast ACK cannot race the next event.
       audioChunkChainRef.current = audioChunkChainRef.current.then(async () => {
@@ -679,6 +721,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       if (disposed || !sessionIdRef.current || result.session_id !== sessionIdRef.current || activeSynthesisRef.current !== result.id) return;
       const completion = synthesisCompletionsRef.current.get(result.id);
       if (!completion) return;
+      if (synthesisTimeoutRef.current !== null) window.clearTimeout(synthesisTimeoutRef.current);
+      synthesisTimeoutRef.current = null;
       if (result.error) completion.reject(new Error(result.error));
       else completion.resolve();
     }).then((unlisten) => {
@@ -729,55 +773,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
         }
         context.setTransform(scale, 0, 0, scale, 0, 0);
         context.clearRect(0, 0, bounds.width, bounds.height);
-        const analyser = analyserRef.current;
-        let rms = 0;
-        if (analyser && !muted && !captureSuppressedRef.current) {
-          const samples = new Uint8Array(analyser.fftSize);
-          analyser.getByteTimeDomainData(samples);
-          let sum = 0;
-          for (const sample of samples) {
-            const value = (sample - 128) / 128;
-            sum += value * value;
-          }
-          rms = Math.min(1, Math.sqrt(sum / samples.length) * 3.4);
-          const now = performance.now();
-          const speechStartThreshold = 0.055;
-          const speechEndThreshold = 0.05;
-          const endpointSilenceMs = 850;
-          const maxUtteranceMs = 20_000;
-          if (rms >= speechStartThreshold) {
-            if (utteranceStartedAtRef.current === null) {
-              utteranceStartedAtRef.current = now;
-              utteranceFramesRef.current = preRollFramesRef.current;
-              preRollFramesRef.current = [];
-              preRollSamplesRef.current = 0;
-            }
-            silenceSinceRef.current = null;
-          } else if (utteranceStartedAtRef.current !== null) {
-            if (rms >= speechEndThreshold) silenceSinceRef.current = null;
-            else silenceSinceRef.current ??= now;
-          }
-          const utteranceStartedAt = utteranceStartedAtRef.current;
-          const reachedSilenceEndpoint = silenceSinceRef.current !== null
-            && now - silenceSinceRef.current >= endpointSilenceMs;
-          const reachedMaximumDuration = utteranceStartedAt !== null
-            && now - utteranceStartedAt >= maxUtteranceMs;
-          if (reachedSilenceEndpoint || reachedMaximumDuration) {
-            const frames = utteranceFramesRef.current;
-            const sampleCount = frames.reduce((total, frame) => total + frame.length, 0);
-            const samples = new Float32Array(sampleCount);
-            let offset = 0;
-            for (const frame of frames) {
-              samples.set(frame, offset);
-              offset += frame.length;
-            }
-            const sampleRate = contextRef.current?.sampleRate ?? 48000;
-            utteranceFramesRef.current = [];
-            utteranceStartedAtRef.current = null;
-            silenceSinceRef.current = null;
-            processUtterance(samples, sampleRate, captureGenerationRef.current);
-          }
-        }
+        let rms = !muted && !captureSuppressedRef.current ? microphoneLevelRef.current : 0;
         const playbackAnalyser = playbackAnalyserRef.current;
         if (visualState === "speaking" && playbackAnalyser && !speakerMutedRef.current) {
           const samples = new Uint8Array(playbackAnalyser.fftSize);
@@ -851,7 +847,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     };
     frame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frame);
-  }, [muted, processUtterance, visualState]);
+  }, [muted, visualState]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -895,13 +891,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     }
     const nextMuted = !muted;
     streamRef.current.getAudioTracks().forEach((track) => { track.enabled = !nextMuted; });
-    if (nextMuted) {
-      utteranceStartedAtRef.current = null;
-      silenceSinceRef.current = null;
-      preRollFramesRef.current = [];
-      preRollSamplesRef.current = 0;
-      utteranceFramesRef.current = [];
-    }
+    mutedRef.current = nextMuted;
+    updateCaptureGate();
     setMuted(nextMuted);
   };
 

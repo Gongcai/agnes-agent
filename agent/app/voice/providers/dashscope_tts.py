@@ -52,6 +52,8 @@ class CosyVoiceTtsProvider:
     model = "cosyvoice-v3.5-flash"
     streaming = True
     MAX_PENDING_CHUNKS = 3
+    FIRST_AUDIO_TIMEOUT_SECONDS = 30
+    AUDIO_EVENT_TIMEOUT_SECONDS = 15
 
     def __init__(
         self,
@@ -107,7 +109,16 @@ class CosyVoiceTtsProvider:
             sequence = 0
             try:
                 while True:
-                    event = await state.events.get()
+                    timeout = (
+                        self.FIRST_AUDIO_TIMEOUT_SECONDS
+                        if sequence == 0
+                        else self.AUDIO_EVENT_TIMEOUT_SECONDS
+                    )
+                    try:
+                        event = await asyncio.wait_for(state.events.get(), timeout=timeout)
+                    except TimeoutError as exc:
+                        phase = "首个音频" if sequence == 0 else "后续音频或完成事件"
+                        raise RuntimeError(f"CosyVoice 等待{phase}超时") from exc
                     if isinstance(event, _AudioEvent):
                         if state.cancelled:
                             continue
