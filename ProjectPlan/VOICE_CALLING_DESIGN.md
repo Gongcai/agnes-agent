@@ -1,6 +1,6 @@
 # 全双工语音通话规划设计
 
-> 状态：Phase 1 基础链路已接通；Phase 2 已加入手动打断、Agent/TTS 联动取消、run ID 过滤、句尾播放期间合成下一句，以及识别／思考／播报状态。Linux 桌面已接入可验证的 PipeWire `module-echo-cancel` 运行时路由，但自动插话仍需真实扬声器双讲测试；专用语音话轮协议、ASR 二进制通道和 Android 验收仍待完成。构建检查不能替代真实设备上的连续通话与延迟实测。
+> 状态：Phase 1 基础链路已接通；Phase 2 已加入手动打断、Agent/TTS 联动取消、run ID 过滤、句尾播放期间合成下一句，以及识别／思考／播报状态。Linux 桌面已接入 PipeWire `module-echo-cancel` 运行时路由，并在真实扬声器环境验证 AI 播放不会自触发；AEC 播放期间自动插话已接通。专用语音话轮协议、ASR 二进制通道、连续 20 轮稳定性与 Android 验收仍待完成。构建检查不能替代真实设备上的连续通话与延迟实测。
 > 关联文档：VOICE_CALLING.md（可行性与竞品参考）、architecture.md（系统边界）、MODEL_ROUTING.md（模型任务分工）。
 
 ## 1. 目标与产品定义
@@ -39,7 +39,7 @@ cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus�
 
 采集模块按音频样本数计时，在音频处理器完成一句后立即暂停收集；每次门控更新 epoch，丢弃已经排队的旧事件。固定缓冲保留 400 ms 前滚，100 ms 起音确认、120 ms 最小有声时长、850 ms 静音封段及 20 秒单段上限；界面动画不再负责 VAD。初始化、ASR 和 TTS 等待已增加阶段超时，细节及 PipeWire AEC 候选配置见 [VOICE_AUDIO_PIPELINE.md](VOICE_AUDIO_PIPELINE.md)。
 
-若 Qwen 模型另有受支持的实时音频 API，可替换 ASR adapter。下一步优先在 AEC 路由下验证播放期间的双讲和回声抑制，再建立专用 voice_session_id/turn_id，最后优化 ASR 传输及测量真实延迟。
+若 Qwen 模型另有受支持的实时音频 API，可替换 ASR adapter。下一步将自动插话扩展为可观测、可取消的完整语音话轮：建立专用 `voice_session_id`/`turn_id`，让插话同时作废旧 ASR/Agent/TTS 事件，并记录从 endpointing 到静音、ASR final、首个可听音频的分段延迟；随后再优化 ASR 传输及同一 CosyVoice 请求中的文本增量。
 
 ## 4. 逻辑架构与职责
 
@@ -67,7 +67,7 @@ Linux 桌面端使用 WebKitGTK。主窗口显式处理 WebKitGTK `permission-re
 3. utterance 完成后创建 ASR 请求，提交 WAV/PCM。每段有大小/时长上限；超长句按安全静音点切分或提示，不能无限缓存。
 4. 只有 final transcript 创建 Agent turn 并作为用户消息写入 session。空识别、低置信或服务错误不触发模型回复。
 5. Agent 正文增量按短句、标点、最大等待时间与最大字符数综合分段，禁止逐 token 请求 TTS。
-6. 手动点击打断或按 Esc，立即停止播放器、清空队列、过滤旧 run，并取消 Agent run 和 TTS task。确认 PipeWire AEC 路由后，播放期间的完整用户 utterance 也走同一条取消路径，先停止当前回复，再将 utterance 送 ASR；AEC 未启用时保持轮流收听／播报。
+6. 手动点击打断或按 Esc，立即停止播放器、清空队列、过滤旧 run，并取消 Agent run 和 TTS task。PipeWire AEC 路由确认后，播放期间的完整用户 utterance 已走同一条取消路径，先停止当前回复，再将 utterance 送 ASR；AEC 未启用时保持轮流收听／播报。
 7. 打断收尾后恢复采集；新 utterance endpointing 后识别并创建新 run。旧 run 的迟到事件不能恢复播报或重置新运行状态。专用 turn ID 及云端 ASR 请求取消尚待实现。
 8. 用户结束、切换 session、权限撤销或连接失败时，取消任务、关闭连接、释放 AudioContext/track。
 
@@ -188,8 +188,10 @@ Provider 端口应允许替换：transcribe(audio, config) → transcript；synt
 - [ ] 在 Arch Linux 扬声器与耳机环境实测首音频、句间停顿、恢复收听和快速打断；当前构建通过不代表设备验收通过。
 - [x] AudioWorklet 采集与按样本计时的 VAD；兼容回退、采集 epoch 和固定缓冲。
 - [x] 麦克风初始化、ASR UI 等待与 TTS 首音频/后续事件超时收尾，Provider 侧等待上限。
-- [ ] 稳定 AEC 与播放参考：本机已具备 PipeWire WebRTC AEC 组件，monitor-mode 配置模板待真实路由、回灌与双讲验收。
-- [ ] 自动语音插话及双讲检测、voice_session_id/turn_id 协议与 ASR 任务取消。
+- [x] 稳定 AEC 与播放参考：PipeWire 虚拟 source/sink 已接通；真实扬声器验证 AI 播放不会触发自识别。
+- [x] AEC 播放期间自动语音插话：完整 utterance 会先停止当前播放并取消旧回复，再进入 ASR；保留手动打断入口。
+- [ ] 自动插话的双讲阈值、专用 voice_session_id/turn_id 协议与 ASR 任务取消。
+- [ ] 连续 20 轮插话/恢复压力测试，覆盖快速重说、设备切换、重开通话和迟到音频。
 - [ ] 同一 CosyVoice 请求中的文本增量输入，进一步减少每句建连开销。
 - [ ] Agent 阶段超时、弱网重连、限流与恢复策略；重试不能重复创建 user 消息或重复播放已消费音频。
 
@@ -224,8 +226,9 @@ ASR 若为每 utterance HTTP 整段请求，endpointing 后 ASR 的实测延迟�
 | 格式、最大长度、地域、价格、配额 | 不写死假设 | 实测和控制台确认后固化 |
 | 首发音色 | 已使用 Voice Design 创建 Flash 专属音色，设置页支持设计、试听和保存 | 音色、模型、API Key 与 Workspace 必须一致 |
 | 中断消息存储语义 | 遵循现有 run/message 能力 | 协议实现前检查 schema 与取消路径 |
+| 自动插话的旧事件隔离 | 当前由 capture epoch、run ID 和本地播放 generation 过滤；语音层 turn_id 尚未独立 | Phase 2.1 协议化话轮时补齐 |
 | Android 交付范围 | Phase 3 | 桌面 MVP 验收后决定 |
 
 ## 14. 阶段完成定义
 
-Phase 0 完成后必须有真实账户上的接口记录和延迟表；Phase 1 完成后用户能在桌面端与当前 Agent 多轮语音对话；Phase 2 完成后插话可即时静音、旧 turn 完整取消且文本历史不串轮；Phase 3 完成后 Android 通过目标设备验收，密钥与音频数据边界也经发布态检查。每阶段结束时更新本文档状态与实测结论，再进入下一阶段。
+Phase 0 完成后必须有真实账户上的接口记录和延迟表；Phase 1 完成后用户能在桌面端与当前 Agent 多轮语音对话；Phase 2.0 已完成 AEC 下的自动插话和自识别验证，Phase 2.1 仍需完成专用 turn_id、ASR 取消、迟到事件隔离和连续压力测试；Phase 2 完成后插话可即时静音、旧 turn 完整取消且文本历史不串轮；Phase 3 完成后 Android 通过目标设备验收，密钥与音频数据边界也经发布态检查。每阶段结束时更新本文档状态与实测结论，再进入下一阶段。
