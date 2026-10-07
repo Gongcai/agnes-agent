@@ -466,7 +466,12 @@ pub fn run() {
             }
 
             let pdf_models = Arc::new(pdf_models::PdfModelPackageManager::new(&data_dir));
-            app.manage(voice_aec::VoiceAecManager::default());
+            // Recover the audio defaults and remove an AEC module left behind
+            // by an interrupted previous process before exposing devices to
+            // WebKitGTK. This keeps stale Agnes microphones from accumulating.
+            let voice_aec = voice_aec::VoiceAecManager::default();
+            tauri::async_runtime::block_on(voice_aec.cleanup_stale());
+            app.manage(voice_aec);
             app.manage(AppState {
                 app_handle: app.handle().clone(),
                 data_dir,

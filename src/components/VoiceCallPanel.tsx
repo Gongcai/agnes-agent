@@ -435,6 +435,12 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       }, { once: true });
       pipewireAecRef.current = microphone.pipewireAec;
       setPipewireAec(microphone.pipewireAec);
+      if (microphone.pipewireAec) {
+        // The AEC manager owns the default source. Do not keep an old Agnes
+        // device id in the selector for the next capture attempt.
+        selectedAudioInputRef.current = "";
+        setSelectedAudioInput("");
+      }
       contextRef.current = context;
       playbackContextRef.current = context;
       playbackAnalyserRef.current = playbackAnalyser;
@@ -449,6 +455,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
         backend: capture.backend,
         aec_backend: microphone.pipewireAec ? "pipewire" : "browser",
         sample_rate: context.sampleRate,
+        actual_device_id: microphone.actualDeviceId,
+        aec_source_label: microphone.aecSourceLabel,
         echo_cancellation_reported: settings?.echoCancellation ?? null,
         noise_suppression_reported: settings?.noiseSuppression ?? null,
         auto_gain_control_reported: settings?.autoGainControl ?? null,
@@ -1053,7 +1061,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
             <span className="sr-only">输入设备</span>
             <select
               value={selectedAudioInput}
-              disabled={visualState !== "idle" && visualState !== "listening" && visualState !== "error"}
+              disabled={pipewireAec || (visualState !== "idle" && visualState !== "listening" && visualState !== "error")}
               onChange={(event) => {
                 const deviceId = event.currentTarget.value;
                 selectedAudioInputRef.current = deviceId;
@@ -1067,7 +1075,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
               className="min-w-0 flex-1 cursor-pointer bg-transparent text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-[#d9a28f] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option value="" className="bg-[#1b1918] text-white">
-                {audioInputs.length ? "系统默认输入" : "未检测到输入设备"}
+                {pipewireAec ? "PipeWire AEC 输入" : audioInputs.length ? "系统默认输入" : "未检测到输入设备"}
               </option>
               {audioInputs.map((device, index) => (
                 <option key={device.deviceId || `audio-input-${index}`} value={device.deviceId} className="bg-[#1b1918] text-white">

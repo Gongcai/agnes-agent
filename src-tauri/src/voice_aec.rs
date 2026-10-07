@@ -143,6 +143,103 @@ mod linux {
         Ok(())
     }
 
+    struct StaleAecModule {
+        id: String,
+        source_name: Option<String>,
+        sink_name: Option<String>,
+        source_master: Option<String>,
+        sink_master: Option<String>,
+    }
+
+    fn module_argument(args: &str, name: &str) -> Option<String> {
+        let prefix = format!("{name}=");
+        args.split_whitespace()
+            .find_map(|field| field.strip_prefix(&prefix))
+            .map(|value| value.trim_matches(['\'', '"']).to_string())
+    }
+
+    fn is_aec_endpoint(name: Option<&str>, endpoint: &str) -> bool {
+        name.is_some_and(|name| {
+            name == endpoint
+                || name
+                    .strip_prefix(endpoint)
+                    .is_some_and(|suffix| suffix.starts_with('.'))
+        })
+    }
+
+    async fn stale_modules() -> Vec<StaleAecModule> {
+        let output = tokio::time::timeout(
+            Duration::from_secs(2),
+            Command::new("pactl").args(["list", "modules", "short"]).output(),
+        ).await;
+        let Ok(Ok(output)) = output else { return Vec::new() };
+        if !output.status.success() { return Vec::new(); }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.splitn(3, char::is_whitespace).filter(|field| !field.is_empty());
+                let id = fields.next()?.to_string();
+                let module = fields.next()?;
+                let args = fields.next().unwrap_or_default();
+                if module != "module-echo-cancel"
+                    || !(args.contains("source_name=agnes.aec.source")
+                        || args.contains("sink_name=agnes.aec.sink")
+                        || args.contains("Agnes Echo Cancelled Microphone"))
+                {
+                    return None;
+                }
+                Some(StaleAecModule {
+                    id,
+                    source_name: module_argument(args, "source_name"),
+                    sink_name: module_argument(args, "sink_name"),
+                    source_master: module_argument(args, "source_master"),
+                    sink_master: module_argument(args, "sink_master"),
+                })
+            })
+            .collect()
+    }
+
+    async fn cleanup_stale_modules() {
+        let modules = stale_modules().await;
+        if modules.is_empty() {
+            return;
+        }
+
+        // An interrupted process can leave the PulseAudio defaults pointing at
+        // a virtual endpoint. Restore the physical masters before removing it.
+        let current_source = pactl_value("get-default-source").await.ok();
+        let current_sink = pactl_value("get-default-sink").await.ok();
+        let source_master = current_source.as_deref().and_then(|current| {
+            modules.iter().find_map(|module| {
+                is_aec_endpoint(module.source_name.as_deref(), AEC_SOURCE_NAME)
+                    .then_some(module.source_master.as_deref())
+                    .flatten()
+                    .filter(|_| is_aec_endpoint(Some(current), AEC_SOURCE_NAME))
+            })
+        });
+        let sink_master = current_sink.as_deref().and_then(|current| {
+            modules.iter().find_map(|module| {
+                is_aec_endpoint(module.sink_name.as_deref(), AEC_SINK_NAME)
+                    .then_some(module.sink_master.as_deref())
+                    .flatten()
+                    .filter(|_| is_aec_endpoint(Some(current), AEC_SINK_NAME))
+            })
+        });
+        if let Some(name) = source_master {
+            let _ = set_default("source", name).await;
+        }
+        if let Some(name) = sink_master {
+            let _ = set_default("sink", name).await;
+        }
+
+        for module in modules {
+            let _ = Command::new("pactl")
+                .args(["unload-module", &module.id])
+                .output()
+                .await;
+        }
+    }
+
     fn connected(objects: &[Value], from: &str, to: &str) -> bool {
         let Some(from_id) = node(objects, from).and_then(|node| node["id"].as_u64()) else { return false };
         let Some(to_id) = node(objects, to).and_then(|node| node["id"].as_u64()) else { return false };
@@ -205,9 +302,17 @@ mod linux {
                 .output()
                 .await;
         }
+        // A previous Agnes process may have exited before its in-memory module
+        // handle was recorded. Fixed names let us clean those instances too.
+        cleanup_stale_modules().await;
     }
 
     impl VoiceAecManager {
+        pub async fn cleanup_stale(&self) {
+            let mut running = self.running.lock().await;
+            stop_child(&mut running).await;
+        }
+
         pub async fn status(&self) -> VoiceAecStatus {
             let running = self.running.lock().await;
             match snapshot().await {
@@ -328,6 +433,7 @@ pub struct VoiceAecManager;
 #[cfg(not(target_os = "linux"))]
 impl VoiceAecManager {
     pub async fn status(&self) -> VoiceAecStatus { VoiceAecStatus::default() }
+    pub async fn cleanup_stale(&self) {}
     pub async fn start(&self) -> AppResult<VoiceAecStatus> {
         Err(AppError::Other("PipeWire 回声消除仅支持 Linux 桌面端。".into()))
     }

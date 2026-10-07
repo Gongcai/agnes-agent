@@ -30,9 +30,13 @@ export async function getVoiceAecStatus(signal?: AbortSignal): Promise<VoiceAecS
 export async function openVoiceMicrophone(deviceId: string, signal: AbortSignal): Promise<{
   stream: MediaStream;
   pipewireAec: boolean;
+  actualDeviceId: string | null;
+  aecSourceLabel: string | null;
 }> {
   const aec = await getVoiceAecStatus(signal);
-  const wantsDefaultAec = !deviceId && !!aec?.running;
+  // The AEC manager owns the default source while it is running. A device id
+  // kept by the WebView may point to a stale Agnes source from an older run.
+  const wantsDefaultAec = !!aec?.running;
   const requireRoutes = () => {
     if (!aec?.routes_ready || !aec.source_label) {
       throw new Error(aec?.message || "回声消除尚未连接，请在语音设置中重新连接后重试。");
@@ -44,9 +48,14 @@ export async function openVoiceMicrophone(deviceId: string, signal: AbortSignal)
     message: "读取麦克风列表超时，请重新连接输入设备。",
     signal,
   });
-  const matchesSource = (device: MediaDeviceInfo) => device.kind === "audioinput"
-    && device.deviceId !== "default" && device.deviceId !== "communications"
-    && !!aec?.source_label && device.label.includes(aec.source_label);
+  const matchesSource = (device: MediaDeviceInfo) => {
+    if (device.kind !== "audioinput" || device.deviceId === "default" || device.deviceId === "communications" || !aec?.source_label) return false;
+    const label = device.label.trim().toLowerCase();
+    const sourceLabel = aec.source_label.trim().toLowerCase();
+    // WebKitGTK may expose only the friendly "Agnes" label instead of the
+    // complete PipeWire description, so accept the stable product prefix.
+    return label.includes(sourceLabel) || (sourceLabel.startsWith("agnes") && label.startsWith("agnes"));
+  };
   const open = (id: string, filtered: boolean) => withVoiceDeadline(navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: !filtered,
@@ -66,9 +75,11 @@ export async function openVoiceMicrophone(deviceId: string, signal: AbortSignal)
   try {
     const before = aec?.running ? await enumerate() : [];
     let selected = wantsDefaultAec ? before.find(matchesSource) : before.find((device) => device.deviceId === deviceId);
-    let filtered = !!aec?.running && !!selected && matchesSource(selected);
+    // The AEC manager makes the virtual source the PulseAudio default and
+    // verifies its routes. Do not require WebKitGTK to expose the same label.
+    let filtered = wantsDefaultAec || (!!aec?.running && !!selected && matchesSource(selected));
     if (filtered) requireRoutes();
-    stream = await open(filtered ? selected!.deviceId : deviceId, filtered);
+    stream = await open(wantsDefaultAec ? "" : filtered ? selected!.deviceId : deviceId, filtered);
     // First permission can reveal labels that were hidden before getUserMedia.
     if (aec?.running && !filtered) {
       const devices = await enumerate();
@@ -86,7 +97,13 @@ export async function openVoiceMicrophone(deviceId: string, signal: AbortSignal)
       }
     }
     if (signal.aborted) throw new DOMException("Microphone connection cancelled", "AbortError");
-    const result = { stream, pipewireAec: filtered };
+    const actualDeviceId = stream.getAudioTracks()[0]?.getSettings().deviceId || null;
+    const result = {
+      stream,
+      pipewireAec: filtered,
+      actualDeviceId,
+      aecSourceLabel: filtered ? aec?.source_label || null : null,
+    };
     stream = null;
     return result;
   } finally {

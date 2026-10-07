@@ -89,7 +89,7 @@ export function VoiceAecSettings() {
         <dt className="text-stone-600">播放参考</dt><dd className="break-words text-stone-700">{status.output?.description || "未找到输出设备"}</dd>
       </dl>}
       <p className="text-xs leading-5 text-stone-600">启用后，语音对话会优先使用过滤后的麦克风。切换系统输入或输出后请重新连接；关闭 Agnes 后自动释放，下次启动需再次启用。</p>
-      {status?.running && <p className="text-xs leading-5 text-stone-600">当前仍通过按钮或 Esc 打断回复。回声消除的试听检查通过后，再接入自动语音插话。</p>}
+      {status?.running && <p className="text-xs leading-5 text-stone-600">语音对话会在播放期间保持回声消除采集，允许直接插话；按钮或 Esc 仍可立即打断回复。</p>}
     </section>
   );
 }
