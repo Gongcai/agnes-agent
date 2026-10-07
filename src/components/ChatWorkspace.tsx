@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { readImage, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Warning, Brain, Check, CaretDown, Copy, Cpu, Books, FileText, ImageSquare, GitBranch, PencilSimple, Plus, PuzzlePiece, ArrowsClockwise, ArrowUp as PaperPlaneRight, ShieldCheck, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { Warning, Brain, Check, CaretDown, Copy, Cpu, Books, FileText, ImageSquare, GitBranch, PencilSimple, Plus, PuzzlePiece, ArrowsClockwise, ArrowUp as PaperPlaneRight, ShieldCheck, Square, Terminal, Trash, X, Microphone } from "@phosphor-icons/react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -30,6 +30,7 @@ import {
   subscribeUIPreferenceChanges,
 } from "../lib/uiPreferences";
 import { selectConversationGreeting } from "../lib/greetings";
+import { VoiceCallPanel } from "./VoiceCallPanel";
 
 // 思考模式/强度选项（与角色卡编辑器保持一致）
 const THINKING_OPTIONS: { value: string; label: string; desc: string }[] = [
@@ -504,6 +505,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [autoExpandThoughts, setAutoExpandThoughts] = useState(getCachedAutoExpandThoughts);
   const [autoFollowStreaming, setAutoFollowStreaming] = useState(getCachedAutoFollowStreaming);
   const [userName, setUserName] = useState("");
+  const [voiceCallOpen, setVoiceCallOpen] = useState(false);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -988,6 +990,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
   return (
     <main className="agnes-chat-workspace flex flex-1 flex-col bg-[#FAF9F5] relative h-full">
+      {voiceCallOpen && (
+        <VoiceCallPanel
+          agentName={activeAgent?.name || "Agnes"}
+          sessionName={activeSession?.title}
+          onClose={() => setVoiceCallOpen(false)}
+        />
+      )}
       <div ref={chatStageRef} className="agnes-chat-stage relative min-h-0 flex-1 overflow-hidden">
       {/* Message Panel list */}
       <div
@@ -1805,6 +1814,17 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               <span className="hidden sm:inline-block text-[10px] text-ink-muted/50 select-none mr-0.5">
                 Shift+Enter 换行
               </span>
+
+              <button
+                type="button"
+                onClick={() => setVoiceCallOpen(true)}
+                disabled={!hasSessionTarget || isPreparingSession || isStreaming}
+                className="agnes-chat-voice-button flex h-8 w-8 items-center justify-center rounded-lg border border-stone-200 bg-white text-stone-600 transition-colors hover:border-[#b78270] hover:bg-[#b78270]/10 hover:text-[#a46957] active:scale-95 disabled:cursor-not-allowed disabled:opacity-35"
+                title={hasSessionTarget ? "开始语音对话" : "请先选择或新建会话"}
+                aria-label="开始语音对话"
+              >
+                <Microphone className="h-4 w-4" aria-hidden="true" />
+              </button>
 
               {isStreaming ? (
                 <button

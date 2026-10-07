@@ -1,6 +1,6 @@
 # 全双工语音通话规划设计
 
-> 状态：规划设计；ASR/TTS Provider 已完成最小账户验证，CosyVoice Flash 回调流式输出与取消已落地，端到端语音会话和 UI 仍待接线。
+> 状态：Phase 0 Provider Spike 已完成；沉浸式 UI 首版已落地并支持本机麦克风预览。语音面板至 ASR/Agent/TTS 的端到端协议接线仍待实现。
 > 关联文档：VOICE_CALLING.md（可行性与竞品参考）、architecture.md（系统边界）、MODEL_ROUTING.md（模型任务分工）。
 
 ## 1. 目标与产品定义
@@ -142,7 +142,7 @@ Provider 端口应允许替换：transcribe(audio, config) → transcript；synt
 - 所有状态不能只依赖颜色；必须同时有文字或图标变化。动态体和状态标签使用 `aria-live="polite"`，错误使用 `role="alert"`。
 - 键盘支持开始/结束、静音和打断；动画和音量反馈不影响文本对话和系统级辅助功能。
 
-这部分 UI 设计对应 Phase 1 的 `VoiceCallPanel`、`audioCapture`、`audioPlayback` 和 voice protocol 模块；动态体本身不承担 VAD、ASR 或 turn 判断。
+这部分 UI 设计对应 `src/components/VoiceCallPanel.tsx` 的首版实现。当前动态体已用 Web Audio `AnalyserNode` 驱动真实麦克风输入，采集数据仅在本地分析、不上传和保存；云端 ASR、Agent 语音 turn 和播放队列尚未接入。动态体本身不承担 VAD、ASR 或 turn 判断。
 
 ## 11. 分阶段计划
 
@@ -157,7 +157,8 @@ Provider 端口应允许替换：transcribe(audio, config) → transcript；synt
 
 ### Phase 1：桌面端基本往返
 
-- 增加通话按钮、权限提示、聆听/处理/播报状态与结束控制。
+- [x] 增加通话入口、权限提示、麦克风预览、通话状态舞台与结束控制。
+- [ ] 完成 voice protocol、云端 ASR、Agent turn、CosyVoice 播放和字幕历史的端到端接线。
 - 连续采集、本地 VAD、ASR 整段识别、final transcript 注入现有 Agent、CosyVoice 播报。
 - 首版可整段 TTS；若 SDK 支持真正流式消费则启用。
 - 转写和 assistant 文本复用现有消息仓储，不保存音频。
