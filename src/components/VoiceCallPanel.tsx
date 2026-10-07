@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ArrowLeft, Microphone, MicrophoneSlash, PhoneDisconnect, SpeakerHigh, SpeakerSlash, Warning } from "@phosphor-icons/react";
+import { ArrowLeft, Microphone, MicrophoneSlash, PhoneDisconnect, SpeakerHigh, SpeakerSlash, Square, Warning } from "@phosphor-icons/react";
+import { splitSpeechText } from "../lib/voiceSpeech";
 
-type VoiceVisualState = "idle" | "listening" | "speaking" | "error";
+type VoiceVisualState = "idle" | "connecting" | "listening" | "recognizing" | "thinking" | "speaking" | "stopping" | "error";
 
 interface VoiceCallPanelProps {
   agentName: string;
   sessionName?: string;
   sessionId?: string | null;
   onClose: () => void;
-  onTranscript?: (text: string) => Promise<void> | void;
+  onTranscript: (text: string, signal: AbortSignal, runId: string) => Promise<void> | void;
+  onInterrupt: (sessionId: string, runId: string) => Promise<void>;
 }
+
+const PLAYBACK_BUFFER_SECONDS = 0.8;
+const MAX_QUEUED_SPEECH_CHARS = 12_000;
 
 async function toMonoWav16k(input: Float32Array<ArrayBuffer>, inputSampleRate: number): Promise<Blob> {
   const outputLength = Math.max(1, Math.ceil(input.length * 16000 / inputSampleRate));
@@ -72,7 +77,7 @@ function pcm16Base64ToFloat32(encoded: string): Float32Array<ArrayBuffer> {
   return samples;
 }
 
-export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onTranscript }: VoiceCallPanelProps) {
+export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onTranscript, onInterrupt }: VoiceCallPanelProps) {
   const sessionIdRef = useRef(sessionId ?? null);
   // Draft promotion changes the binding without restarting the call's listeners.
   sessionIdRef.current = sessionId ?? null;
@@ -80,6 +85,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const playbackAnalyserRef = useRef<AnalyserNode | null>(null);
   const captureProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const captureSilenceGainRef = useRef<GainNode | null>(null);
   const preRollFramesRef = useRef<Float32Array[]>([]);
@@ -99,16 +105,25 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const [error, setError] = useState<string | null>(null);
   const [utteranceCount, setUtteranceCount] = useState(0);
   const [lastUtteranceMs, setLastUtteranceMs] = useState<number | null>(null);
-  const [recognizing, setRecognizing] = useState(false);
+  const [canInterrupt, setCanInterrupt] = useState(false);
   const [transcript, setTranscript] = useState<string | null>(null);
   const [processingError, setProcessingError] = useState<string | null>(null);
   const onTranscriptRef = useRef(onTranscript);
+  const onInterruptRef = useRef(onInterrupt);
+  const submissionAbortRef = useRef<AbortController | null>(null);
+  const submissionCompletionRef = useRef<Promise<void> | null>(null);
   const mountedRef = useRef(true);
   const captureGenerationRef = useRef(0);
   const recognitionQueueRef = useRef(Promise.resolve());
   const speechBufferRef = useRef("");
   const speechQueueRef = useRef<string[]>([]);
-  const speechWorkerRef = useRef(false);
+  const speechWorkerRef = useRef<number | null>(null);
+  const speechFlushTimerRef = useRef<number | null>(null);
+  const replyPendingRef = useRef(false);
+  const acceptingReplyRef = useRef(false);
+  const activeRunIdRef = useRef<string | null>(null);
+  const recognitionPendingRef = useRef(false);
+  const interruptionPendingRef = useRef(false);
   const playbackGenerationRef = useRef(0);
   const playbackContextRef = useRef<AudioContext | null>(null);
   const scheduledUntilRef = useRef(0);
@@ -121,6 +136,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const nextAudioSequenceRef = useRef(0);
   const synthesisCompletionsRef = useRef(new Map<string, { resolve: () => void; reject: (error: Error) => void }>());
   onTranscriptRef.current = onTranscript;
+  onInterruptRef.current = onInterrupt;
   const reducedMotion = useRef(false);
 
   const clearCaptureBuffers = useCallback(() => {
@@ -144,10 +160,23 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     if (captureResumeTimerRef.current !== null) window.clearTimeout(captureResumeTimerRef.current);
     captureResumeTimerRef.current = window.setTimeout(() => {
       captureResumeTimerRef.current = null;
+      if (!mountedRef.current || replyPendingRef.current || recognitionPendingRef.current
+        || interruptionPendingRef.current || speechWorkerRef.current !== null) return;
       clearCaptureBuffers();
       captureSuppressedRef.current = false;
+      setVisualState(streamRef.current ? "listening" : "idle");
+      setCanInterrupt(false);
     }, delayMs);
   }, [clearCaptureBuffers]);
+
+  const finishReplyPlayback = useCallback(() => {
+    if (!mountedRef.current || interruptionPendingRef.current || speechWorkerRef.current !== null) return;
+    if (replyPendingRef.current) {
+      setVisualState("thinking");
+      return;
+    }
+    scheduleCaptureResume();
+  }, [scheduleCaptureResume]);
 
   const refreshAudioInputs = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -166,6 +195,9 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
 
   const cancelCurrentSpeech = useCallback(() => {
     playbackGenerationRef.current += 1;
+    speechWorkerRef.current = null;
+    if (speechFlushTimerRef.current !== null) window.clearTimeout(speechFlushTimerRef.current);
+    speechFlushTimerRef.current = null;
     speechQueueRef.current = [];
     speechBufferRef.current = "";
     const requestId = activeSynthesisRef.current;
@@ -179,11 +211,41 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       try { node.stop(); } catch { /* The source may already have ended. */ }
     }
     playbackNodesRef.current.clear();
+    for (const gain of playbackGainsRef.current) gain.disconnect();
+    playbackGainsRef.current.clear();
     const context = playbackContextRef.current;
     if (context && context.state !== "closed") {
       scheduledUntilRef.current = context.currentTime;
     }
   }, []);
+
+  const interruptReply = useCallback(async () => {
+    if (interruptionPendingRef.current) return;
+    const targetSessionId = sessionIdRef.current;
+    const targetRunId = activeRunIdRef.current;
+    const cancelAgent = replyPendingRef.current;
+    const pendingSubmission = submissionCompletionRef.current;
+    interruptionPendingRef.current = true;
+    acceptingReplyRef.current = false;
+    replyPendingRef.current = false;
+    submissionAbortRef.current?.abort();
+    recognitionPendingRef.current = false;
+    cancelCurrentSpeech();
+    suppressCapture();
+    setCanInterrupt(false);
+    setVisualState("stopping");
+    try {
+      if (cancelAgent && targetSessionId && targetRunId) await onInterruptRef.current(targetSessionId, targetRunId);
+    } catch (reason) {
+      if (mountedRef.current) setProcessingError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      // A pending native send cancels its own run after returning. Wait for
+      // that cleanup before allowing another transcript in this call.
+      if (pendingSubmission) await pendingSubmission.catch(() => undefined);
+      interruptionPendingRef.current = false;
+      if (mountedRef.current) scheduleCaptureResume();
+    }
+  }, [cancelCurrentSpeech, scheduleCaptureResume, suppressCapture]);
 
   const processUtterance = useCallback((samples: Float32Array<ArrayBuffer>, sampleRate: number, generation: number) => {
     if (samples.length === 0) {
@@ -192,35 +254,63 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     }
     setUtteranceCount((count) => count + 1);
     setLastUtteranceMs(samples.length / sampleRate * 1000);
+    const submission = new AbortController();
+    submissionAbortRef.current = submission;
+    acceptingReplyRef.current = false;
+    activeRunIdRef.current = null;
+    suppressCapture();
+    recognitionPendingRef.current = true;
+    setCanInterrupt(true);
+    setVisualState("recognizing");
+    setProcessingError(null);
     recognitionQueueRef.current = recognitionQueueRef.current.then(async () => {
-      if (!mountedRef.current || generation !== captureGenerationRef.current) return;
-      setRecognizing(true);
-      setProcessingError(null);
+      if (!mountedRef.current || submission.signal.aborted || generation !== captureGenerationRef.current) return;
       try {
         const wav = await toMonoWav16k(samples, sampleRate);
-        if (!mountedRef.current || generation !== captureGenerationRef.current) return;
+        if (!mountedRef.current || submission.signal.aborted || generation !== captureGenerationRef.current) return;
         const text = await invoke<string>("transcribe_voice", {
           sessionId: sessionIdRef.current,
           audioBase64: await blobToBase64(wav),
           mimeType: "audio/wav",
           sampleRate: 16000,
         });
-        if (!mountedRef.current || generation !== captureGenerationRef.current || !text.trim()) return;
+        if (!mountedRef.current || submission.signal.aborted || generation !== captureGenerationRef.current || !text.trim()) return;
         setTranscript(text.trim());
-        await onTranscriptRef.current?.(text.trim());
+        acceptingReplyRef.current = true;
+        const runId = crypto.randomUUID();
+        activeRunIdRef.current = runId;
+        replyPendingRef.current = true;
+        setVisualState("thinking");
+        const submitted = Promise.resolve(onTranscriptRef.current(text.trim(), submission.signal, runId));
+        submissionCompletionRef.current = submitted;
+        try {
+          await submitted;
+        } finally {
+          if (submissionCompletionRef.current === submitted) submissionCompletionRef.current = null;
+        }
       } catch (reason) {
-        if (mountedRef.current && generation === captureGenerationRef.current) {
+        if (mountedRef.current && !submission.signal.aborted && generation === captureGenerationRef.current) {
+          replyPendingRef.current = false;
           setProcessingError(reason instanceof Error ? reason.message : String(reason));
         }
       } finally {
-        if (mountedRef.current && generation === captureGenerationRef.current) setRecognizing(false);
+        if (mountedRef.current && !submission.signal.aborted && generation === captureGenerationRef.current) {
+          recognitionPendingRef.current = false;
+          finishReplyPlayback();
+        }
       }
     });
-  }, []);
+  }, [finishReplyPlayback, suppressCapture]);
 
   const stopCapture = useCallback(() => {
     captureGenerationRef.current += 1;
+    submissionAbortRef.current?.abort();
+    recognitionQueueRef.current = Promise.resolve();
     cancelCurrentSpeech();
+    acceptingReplyRef.current = false;
+    replyPendingRef.current = false;
+    recognitionPendingRef.current = false;
+    setCanInterrupt(false);
     if (captureResumeTimerRef.current !== null) window.clearTimeout(captureResumeTimerRef.current);
     captureResumeTimerRef.current = null;
     captureSuppressedRef.current = false;
@@ -237,6 +327,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     analyserRef.current = null;
+    playbackAnalyserRef.current = null;
     const context = contextRef.current;
     contextRef.current = null;
     playbackContextRef.current = null;
@@ -247,11 +338,15 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
 
   const startCapture = useCallback(async (deviceId?: string) => {
     setError(null);
+    setVisualState("connecting");
     if (!navigator.mediaDevices?.getUserMedia) {
       setError("此环境无法访问麦克风。请检查系统权限或使用桌面版。");
       setVisualState("error");
       return;
     }
+    const captureGeneration = captureGenerationRef.current;
+    let pendingStream: MediaStream | null = null;
+    let pendingContext: AudioContext | null = null;
     try {
       const requestedDeviceId = deviceId ?? selectedAudioInputRef.current;
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -262,9 +357,19 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           ...(requestedDeviceId ? { deviceId: { exact: requestedDeviceId } } : {}),
         },
       });
-      const captureGeneration = captureGenerationRef.current;
+      pendingStream = stream;
+      if (!mountedRef.current || captureGeneration !== captureGenerationRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       const context = new AudioContext();
+      pendingContext = context;
       if (context.state === "suspended") await context.resume();
+      if (!mountedRef.current || captureGeneration !== captureGenerationRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        void context.close();
+        return;
+      }
       preRollFramesRef.current = [];
       preRollSamplesRef.current = 0;
       utteranceFramesRef.current = [];
@@ -297,20 +402,30 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       source.connect(processor);
       processor.connect(silenceGain);
       silenceGain.connect(context.destination);
+      const playbackAnalyser = context.createAnalyser();
+      playbackAnalyser.fftSize = 512;
+      playbackAnalyser.connect(context.destination);
       streamRef.current = stream;
       contextRef.current = context;
       playbackContextRef.current = context;
+      playbackAnalyserRef.current = playbackAnalyser;
       scheduledUntilRef.current = context.currentTime;
       analyserRef.current = analyser;
       captureProcessorRef.current = processor;
       captureSilenceGainRef.current = silenceGain;
       stoppingRef.current = false;
+      acceptingReplyRef.current = false;
+      pendingStream = null;
+      pendingContext = null;
       setUtteranceCount(0);
       setLastUtteranceMs(null);
       setMuted(false);
       setVisualState("listening");
       void refreshAudioInputs();
     } catch (reason) {
+      pendingStream?.getTracks().forEach((track) => track.stop());
+      if (pendingContext && pendingContext.state !== "closed") void pendingContext.close().catch(() => undefined);
+      if (!mountedRef.current || captureGeneration !== captureGenerationRef.current) return;
       void refreshAudioInputs();
       const name = reason instanceof DOMException ? reason.name : "";
       const isLinux = navigator.platform.toLowerCase().includes("linux");
@@ -345,41 +460,66 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
 
   useEffect(() => {
     let disposed = false;
+    let unlistenStarted: (() => void) | undefined;
     let unlistenDelta: (() => void) | undefined;
     let unlistenFinished: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
     let unlistenAudioChunk: (() => void) | undefined;
     let unlistenTtsComplete: (() => void) | undefined;
     const enqueueSpeech = (text: string) => {
       const clean = text.trim();
-      if (clean) speechQueueRef.current.push(clean);
-      if (speechWorkerRef.current) return;
-      speechWorkerRef.current = true;
+      if (!clean) {
+        finishReplyPlayback();
+        return;
+      }
+      const queuedChars = speechQueueRef.current.reduce((total, segment) => total + segment.length, 0);
+      if (queuedChars + clean.length > MAX_QUEUED_SPEECH_CHARS) {
+        setProcessingError("回复过长，已停止播报。你可以继续说话，完整文本可在聊天中查看。");
+        void interruptReply();
+        return;
+      }
+      speechQueueRef.current.push(clean);
+      const generation = playbackGenerationRef.current;
+      if (speechWorkerRef.current === generation) return;
+      speechWorkerRef.current = generation;
+      setCanInterrupt(true);
       void (async () => {
         suppressCapture();
-        while (!disposed && speechQueueRef.current.length > 0) {
+        while (!disposed && generation === playbackGenerationRef.current) {
           const next = speechQueueRef.current.shift();
-          if (!next) continue;
-          const generation = playbackGenerationRef.current;
+          if (!next) {
+            const context = playbackContextRef.current;
+            if (context && context.currentTime < scheduledUntilRef.current) {
+              await new Promise((resolve) => window.setTimeout(resolve, 25));
+              continue;
+            }
+            break;
+          }
           const requestId = crypto.randomUUID();
           try {
-            setVisualState("speaking");
+            if (playbackNodesRef.current.size === 0) setVisualState("thinking");
             activeSynthesisRef.current = requestId;
             nextAudioSequenceRef.current = 0;
             const completed = new Promise<void>((resolve, reject) => {
               synthesisCompletionsRef.current.set(requestId, { resolve, reject });
             });
+            // Cancellation can arrive while the start command is still pending.
+            void completed.catch(() => undefined);
             await invoke<string>("start_voice_synthesis_stream", {
               sessionId: sessionIdRef.current,
               text: next,
               requestId,
             });
-            if (disposed || generation !== playbackGenerationRef.current) break;
+            if (disposed || generation !== playbackGenerationRef.current) {
+              // The earlier cancel may have arrived before native preparation
+              // queued this request. Cancel again after start is confirmed.
+              void invoke("cancel_voice_synthesis_stream", { requestId }).catch(() => undefined);
+              break;
+            }
             await completed;
             if (disposed || generation !== playbackGenerationRef.current) break;
-            const context = playbackContextRef.current;
-            while (context && context.currentTime < scheduledUntilRef.current && generation === playbackGenerationRef.current) {
-              await new Promise((resolve) => window.setTimeout(resolve, 25));
-            }
+            // Synthesize the next sentence while this sentence's buffered tail
+            // is still playing. Drain only after the text queue is empty.
           } catch (reason) {
             if (!disposed && generation === playbackGenerationRef.current) {
               setProcessingError(reason instanceof Error ? reason.message : String(reason));
@@ -389,34 +529,76 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
             synthesisCompletionsRef.current.delete(requestId);
           }
         }
-        speechWorkerRef.current = false;
-        if (!disposed) {
-          setVisualState(streamRef.current ? "listening" : "idle");
-          scheduleCaptureResume();
+        if (speechWorkerRef.current === generation) {
+          speechWorkerRef.current = null;
+          if (!disposed) finishReplyPlayback();
         }
       })();
     };
-    void listen<{ session_id: string; content: string; segments?: { kind: string; content: string }[] }>("agent://assistant_delta", (event) => {
-      if (disposed || !sessionIdRef.current || event.payload.session_id !== sessionIdRef.current) return;
+
+    const flushSpeechBuffer = (flush = false) => {
+      if (speechFlushTimerRef.current !== null) window.clearTimeout(speechFlushTimerRef.current);
+      speechFlushTimerRef.current = null;
+      const { segments, remainder } = splitSpeechText(speechBufferRef.current, flush);
+      speechBufferRef.current = remainder;
+      for (const segment of segments) {
+        if (!acceptingReplyRef.current) break;
+        enqueueSpeech(segment);
+      }
+      if (remainder && acceptingReplyRef.current) {
+        speechFlushTimerRef.current = window.setTimeout(() => {
+          speechFlushTimerRef.current = null;
+          if (!disposed && acceptingReplyRef.current) flushSpeechBuffer(true);
+        }, 900);
+      }
+    };
+    const isCurrentRun = (payload: { session_id: string; run_id: string }) => !disposed
+      && acceptingReplyRef.current && payload.session_id === sessionIdRef.current
+      && payload.run_id === activeRunIdRef.current;
+
+    void listen<{ session_id: string; run_id: string }>("agent://run_started", (event) => {
+      if (!isCurrentRun(event.payload)) return;
+      replyPendingRef.current = true;
+      suppressCapture();
+      setCanInterrupt(true);
+      setVisualState("thinking");
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else unlistenStarted = unlisten;
+    });
+    void listen<{ session_id: string; run_id: string; content: string; segments?: { kind: string; content: string }[] }>("agent://assistant_delta", (event) => {
+      if (!isCurrentRun(event.payload)) return;
       const text = event.payload.segments
         ? event.payload.segments.filter((segment) => segment.kind === "text").map((segment) => segment.content).join("")
         : event.payload.content;
       speechBufferRef.current += text;
-      const parts = speechBufferRef.current.split(/(?<=[。！？!?；;\n])/u);
-      speechBufferRef.current = parts.pop() ?? "";
-      for (const part of parts) enqueueSpeech(part);
+      if (speechFlushTimerRef.current === null || /[。！？!?；;\n]/u.test(text) || speechBufferRef.current.length >= 180) {
+        flushSpeechBuffer();
+      }
     }).then((unlisten) => {
       if (disposed) unlisten();
       else unlistenDelta = unlisten;
     });
-    void listen<{ session_id: string }>("agent://run_finished", (event) => {
-      if (disposed || !sessionIdRef.current || event.payload.session_id !== sessionIdRef.current) return;
-      const remainder = speechBufferRef.current;
-      speechBufferRef.current = "";
-      enqueueSpeech(remainder);
+    void listen<{ session_id: string; run_id: string }>("agent://run_finished", (event) => {
+      if (!isCurrentRun(event.payload)) return;
+      replyPendingRef.current = false;
+      flushSpeechBuffer(true);
+      acceptingReplyRef.current = false;
+      finishReplyPlayback();
     }).then((unlisten) => {
       if (disposed) unlisten();
       else unlistenFinished = unlisten;
+    });
+    void listen<{ session_id: string; run_id: string; message: string }>("agent://run_error", (event) => {
+      if (!isCurrentRun(event.payload)) return;
+      replyPendingRef.current = false;
+      acceptingReplyRef.current = false;
+      cancelCurrentSpeech();
+      if (event.payload.message !== "已取消") setProcessingError(event.payload.message);
+      finishReplyPlayback();
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else unlistenError = unlisten;
     });
     void listen<{
       session_id: string; id: string; sequence: number; audio_base64: string; sample_rate: number;
@@ -435,9 +617,13 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
             context = new AudioContext();
             playbackContextRef.current = context;
             scheduledUntilRef.current = context.currentTime;
+            const analyser = context.createAnalyser();
+            analyser.fftSize = 512;
+            analyser.connect(context.destination);
+            playbackAnalyserRef.current = analyser;
           }
           if (context.state === "suspended") await context.resume();
-          while (!speakerMutedRef.current && scheduledUntilRef.current - context.currentTime >= 0.35) {
+          while (!speakerMutedRef.current && scheduledUntilRef.current - context.currentTime >= PLAYBACK_BUFFER_SECONDS) {
             if (generation !== playbackGenerationRef.current || activeSynthesisRef.current !== requestId) return;
             await new Promise((resolve) => window.setTimeout(resolve, 20));
           }
@@ -452,8 +638,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
             source.buffer = buffer;
             gain.gain.value = speakerMutedRef.current ? 0 : 1;
             source.connect(gain);
-            gain.connect(context.destination);
-            const startAt = Math.max(context.currentTime + 0.015, scheduledUntilRef.current);
+            gain.connect(playbackAnalyserRef.current ?? context.destination);
+            const startAt = Math.max(context.currentTime + 0.08, scheduledUntilRef.current);
             scheduledUntilRef.current = startAt + buffer.duration;
             playbackNodesRef.current.add(source);
             playbackGainsRef.current.add(gain);
@@ -462,6 +648,10 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
               playbackGainsRef.current.delete(gain);
               source.disconnect();
               gain.disconnect();
+              if (!disposed && generation === playbackGenerationRef.current && playbackNodesRef.current.size === 0
+                && (replyPendingRef.current || activeSynthesisRef.current || speechQueueRef.current.length > 0)) {
+                setVisualState("thinking");
+              }
             };
             source.start(startAt);
             setVisualState("speaking");
@@ -497,8 +687,10 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     });
     return () => {
       disposed = true;
+      unlistenStarted?.();
       unlistenDelta?.();
       unlistenFinished?.();
+      unlistenError?.();
       unlistenAudioChunk?.();
       unlistenTtsComplete?.();
       speechQueueRef.current = [];
@@ -508,7 +700,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       captureResumeTimerRef.current = null;
       captureSuppressedRef.current = false;
     };
-  }, [cancelCurrentSpeech, scheduleCaptureResume, suppressCapture]);
+  }, [cancelCurrentSpeech, finishReplyPlayback, interruptReply, suppressCapture]);
 
   useEffect(() => {
     speakerMutedRef.current = speakerMuted;
@@ -585,19 +777,29 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
             silenceSinceRef.current = null;
             processUtterance(samples, sampleRate, captureGenerationRef.current);
           }
-          if (time - lastMeterUpdate > 45) {
-            lastMeterUpdate = time;
-            setLevel(rms);
+        }
+        const playbackAnalyser = playbackAnalyserRef.current;
+        if (visualState === "speaking" && playbackAnalyser && !speakerMutedRef.current) {
+          const samples = new Uint8Array(playbackAnalyser.fftSize);
+          playbackAnalyser.getByteTimeDomainData(samples);
+          let sum = 0;
+          for (const sample of samples) {
+            const value = (sample - 128) / 128;
+            sum += value * value;
           }
-        } else if (time - lastMeterUpdate > 45) {
+          rms = Math.min(1, Math.sqrt(sum / samples.length) * 3.4);
+        }
+        if (time - lastMeterUpdate > 45) {
           lastMeterUpdate = time;
-          setLevel(0);
+          setLevel(rms);
         }
         const cx = bounds.width / 2;
         const cy = bounds.height / 2;
         const base = Math.min(bounds.width, bounds.height) * 0.285;
-        const quietPulse = visualState === "listening" && !reducedMotion.current
-          ? Math.sin(time / 1050) * 0.014 : 0;
+        const pending = visualState === "recognizing" || visualState === "thinking" || visualState === "connecting";
+        const quietPulse = reducedMotion.current ? 0
+          : pending ? Math.sin(time / 640) * 0.025
+            : visualState === "listening" ? Math.sin(time / 1050) * 0.014 : 0;
         const radius = base * (1 + quietPulse + rms * 0.19);
 
         const glow = context.createRadialGradient(cx, cy, radius * 0.2, cx, cy, radius * 1.8);
@@ -624,7 +826,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
         }
         context.save();
         context.translate(cx, cy);
-        context.rotate(visualState === "listening" && !reducedMotion.current ? Math.sin(time / 4300) * 0.018 : 0);
+        context.rotate(reducedMotion.current ? 0 : pending ? time / 6500
+          : visualState === "listening" ? Math.sin(time / 4300) * 0.018 : 0);
         context.beginPath();
         const points = 96;
         for (let index = 0; index <= points; index += 1) {
@@ -648,17 +851,39 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     };
     frame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frame);
-  }, [cancelCurrentSpeech, muted, processUtterance, visualState]);
+  }, [muted, processUtterance, visualState]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (event.key !== "Escape" || event.repeat || event.defaultPrevented || !canInterrupt
+        || target instanceof HTMLElement && target.closest('dialog, [role="dialog"]')) return;
+      event.preventDefault();
+      void interruptReply();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [canInterrupt, interruptReply]);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      const targetSessionId = sessionIdRef.current;
+      const targetRunId = activeRunIdRef.current;
+      if (replyPendingRef.current && targetSessionId && targetRunId) {
+        void onInterruptRef.current(targetSessionId, targetRunId).catch((reason) => console.warn("Unable to cancel the voice reply", reason));
+      }
       stopCapture();
     };
   }, [stopCapture]);
 
   const close = () => {
+    const targetSessionId = sessionIdRef.current;
+    const targetRunId = activeRunIdRef.current;
+    if (replyPendingRef.current && targetSessionId && targetRunId) {
+      void onInterruptRef.current(targetSessionId, targetRunId).catch((reason) => console.warn("Unable to cancel the voice reply", reason));
+    }
     stopCapture();
     onClose();
   };
@@ -681,6 +906,10 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   };
 
   const status = visualState === "error" ? "麦克风不可用"
+    : visualState === "connecting" ? "正在连接麦克风"
+      : visualState === "recognizing" ? "正在识别语音"
+        : visualState === "thinking" ? "Agnes 正在思考"
+          : visualState === "stopping" ? "正在打断回复"
     : visualState === "speaking" ? "Agnes 正在回复"
       : !streamRef.current ? "准备开始"
       : muted ? "麦克风已静音"
@@ -711,8 +940,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           </div>
           <div className="mt-1 min-h-12 text-center">
             <div className="text-sm font-medium tracking-wide text-white/90" aria-live="polite">{status}</div>
-            {(visualState === "listening" || visualState === "speaking") && !muted && (
-              <div className="mt-1 text-[11px] text-white/45">麦克风音量 {Math.round(level * 100)}%</div>
+            {(visualState === "listening" && !muted || visualState === "speaking") && (
+              <div className="mt-1 text-xs text-white/65">{visualState === "speaking" ? "播放音量" : "麦克风音量"} {Math.round(level * 100)}%</div>
             )}
           </div>
         </div>
@@ -724,26 +953,32 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
               <span>{error || processingError}</span>
             </div>
           ) : (
-            <p className="text-xs leading-5 text-white/55">
-              {visualState === "listening"
-                ? recognizing
-                  ? "正在识别这段语音…"
-                  : transcript
-                    ? `“${transcript}”${utteranceCount > 1 && lastUtteranceMs ? ` · 最近一段 ${(lastUtteranceMs / 1000).toFixed(1)} 秒` : ""}`
-                    : utteranceCount > 0
-                      ? `已检测到 ${utteranceCount} 段语音，等待识别结果。`
-                      : "麦克风已连接。说完停顿约一秒，即可提交识别。"
-                : "允许 Agnes 使用麦克风，查看实时音量与通话动态效果。"}
-            </p>
+            <div className="space-y-1.5 text-xs leading-5 text-white/70">
+              {transcript && <p className="max-h-20 overflow-y-auto break-words">“{transcript}”</p>}
+              <p>{visualState === "recognizing" ? "正在识别这段语音，可以点击打断重新说。"
+                : visualState === "thinking" ? "正在准备回复，你可以点击打断。"
+                  : visualState === "speaking" ? "点击“打断回复”或按 Esc，即可继续说话。"
+                    : visualState === "stopping" ? "正在停止回复，随后恢复聆听。"
+                      : visualState === "listening"
+                        ? utteranceCount > 0 && lastUtteranceMs
+                          ? `我在听 · 最近一段 ${(lastUtteranceMs / 1000).toFixed(1)} 秒`
+                          : "说完停顿约一秒，即可提交识别。"
+                        : "开启麦克风，开始语音对话。"}</p>
+            </div>
           )}
         </div>
 
-        <footer className="relative z-10 flex items-center justify-center gap-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <footer className="relative z-10 flex w-full max-w-lg flex-wrap items-center justify-center gap-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+          <button type="button" onClick={() => void interruptReply()} disabled={!canInterrupt} aria-label="打断当前回复并继续说话" aria-keyshortcuts="Escape" title="打断回复（Esc）" className="flex min-h-12 items-center justify-center gap-2 rounded-full border border-[#d9a28f]/45 bg-[#d9a28f]/15 px-5 text-sm text-[#f5d7c8] transition-colors hover:bg-[#d9a28f]/25 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9a28f] disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/[0.03] disabled:text-white/35">
+            <Square size={17} weight="fill" aria-hidden="true" />
+            <span>{visualState === "stopping" ? "正在打断…" : "打断回复"}</span>
+          </button>
           <label className="flex min-h-12 max-w-[min(52vw,260px)] items-center gap-2 rounded-full border border-white/15 bg-white/[0.06] px-3 text-xs text-white/65">
             <Microphone size={16} className="shrink-0" aria-hidden="true" />
             <span className="sr-only">输入设备</span>
             <select
               value={selectedAudioInput}
+              disabled={visualState !== "idle" && visualState !== "listening" && visualState !== "error"}
               onChange={(event) => {
                 const deviceId = event.currentTarget.value;
                 selectedAudioInputRef.current = deviceId;
@@ -754,7 +989,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
                 }
               }}
               aria-label="麦克风输入设备"
-              className="min-w-0 flex-1 cursor-pointer bg-transparent text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-[#d9a28f]"
+              className="min-w-0 flex-1 cursor-pointer bg-transparent text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-[#d9a28f] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option value="" className="bg-[#1b1918] text-white">
                 {audioInputs.length ? "系统默认输入" : "未检测到输入设备"}
@@ -766,7 +1001,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
               ))}
             </select>
           </label>
-          <button type="button" onClick={toggleMic} className={`flex min-h-12 min-w-12 items-center justify-center gap-2 rounded-full border px-4 transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9a28f] ${muted ? "border-rose-300/30 bg-rose-400/15 text-rose-100" : "border-white/15 bg-white/[0.08] text-white hover:bg-white/[0.14]"}`} aria-label={streamRef.current ? muted ? "取消麦克风静音" : "静音麦克风" : "开启麦克风"} aria-pressed={muted}>
+          <button type="button" onClick={toggleMic} disabled={visualState === "connecting"} className={`flex min-h-12 min-w-12 items-center justify-center gap-2 rounded-full border px-4 transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9a28f] disabled:cursor-not-allowed disabled:opacity-50 ${muted ? "border-rose-300/30 bg-rose-400/15 text-rose-100" : "border-white/15 bg-white/[0.08] text-white hover:bg-white/[0.14]"}`} aria-label={streamRef.current ? muted ? "取消麦克风静音" : "静音麦克风" : "开启麦克风"} aria-pressed={muted}>
             {muted ? <MicrophoneSlash size={19} aria-hidden="true" /> : <Microphone size={19} aria-hidden="true" />}
             <span className="text-xs">{streamRef.current ? muted ? "取消静音" : "静音" : "开启麦克风"}</span>
           </button>

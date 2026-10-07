@@ -607,9 +607,24 @@ impl AgentManager {
             .insert(session_id, run_id);
     }
 
-    /// 移除并返回某会话当前活跃运行的 run_id。RUN_FINISHED/RUN_ERROR/cancel 时调用。
-    pub fn remove_session_run(&self, session_id: &str) -> Option<String> {
-        self.active_session_runs.lock().unwrap().remove(session_id)
+    /// Remove a session run only if it matches the requested cancellation.
+    pub fn remove_session_run(
+        &self,
+        session_id: &str,
+        expected_run_id: Option<&str>,
+    ) -> Option<String> {
+        let mut runs = self.active_session_runs.lock().unwrap();
+        if let Some(expected) = expected_run_id {
+            if !runs.get(session_id).is_some_and(|current| current == expected) {
+                return None;
+            }
+        }
+        runs.remove(session_id)
+    }
+
+    /// A late terminal event must not remove a newer run for the same session.
+    pub fn remove_session_run_if_matches(&self, session_id: &str, run_id: &str) {
+        let _ = self.remove_session_run(session_id, Some(run_id));
     }
 
     /// Drain session-to-run associations when the only sidecar disconnects.

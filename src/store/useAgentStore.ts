@@ -493,6 +493,7 @@ interface AgentState {
   draftSession: DraftSession | null;
   isStreaming: boolean;
   isPreparingSession: boolean;
+  activeRunIds: Record<string, string | null>;
   providers: ModelProvider[];
   modelRoles: ModelRoleAssignments;
   
@@ -500,7 +501,7 @@ interface AgentState {
   init: (persistNavigation?: boolean) => Promise<void>;
   loadAgents: () => Promise<void>;
   loadSessions: (agentId: string) => Promise<void>;
-  loadMessages: (sessionId: string, preserveRenderKeys?: boolean) => Promise<void>;
+  loadMessages: (sessionId: string, preserveRenderKeys?: boolean, expectedRunId?: string) => Promise<void>;
   createSession: (agentId: string, title: string, workspaceId?: string | null) => Promise<string>;
   startDraftSession: (agentId: string, workspaceId?: string | null) => void;
   discardDraftSession: () => void;
@@ -518,8 +519,10 @@ interface AgentState {
     text: string,
     readingBookId?: string,
     attachments?: ChatAttachment[],
+    signal?: AbortSignal,
+    requestedRunId?: string,
   ) => Promise<void>;
-  cancelRun: (sessionId: string) => Promise<void>;
+  cancelRun: (sessionId: string, expectedRunId?: string) => Promise<void>;
   approveTool: (toolCallId: string, approved: boolean) => Promise<void>;
   setActiveAgentId: (agentId: string) => Promise<void>;
   setActiveSessionId: (sessionId: string, persist?: boolean) => Promise<void>;
@@ -591,6 +594,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   draftSession: null,
   isStreaming: false,
   isPreparingSession: false,
+  activeRunIds: {},
   providers: [],
   modelRoles: EMPTY_MODEL_ROLES,
 
@@ -667,10 +671,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  loadMessages: async (sessionId: string, preserveRenderKeys = false) => {
+  loadMessages: async (sessionId: string, preserveRenderKeys = false, expectedRunId?: string) => {
     try {
       const messages = (await invoke<Message[]>("list_messages", { sessionId }))
         .map(normalizePersistedAssistantThoughtTags);
+      if (expectedRunId && (get().activeSessionId !== sessionId || get().activeRunIds[sessionId] !== expectedRunId)) return;
       set({
         messages: preserveRenderKeys
           ? preserveLatestRunRenderKeys(get().messages, messages, sessionId)
@@ -810,8 +815,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     text: string,
     readingBookId?: string,
     attachments: ChatAttachment[] = [],
+    signal?: AbortSignal,
+    requestedRunId?: string,
   ) => {
-    if (get().isStreaming || get().isPreparingSession) return;
+    if (signal?.aborted) return;
+    if (get().isStreaming || get().isPreparingSession) {
+      if (signal) throw new Error("上一条消息仍在处理，请稍后重新说一次。");
+      return;
+    }
 
     let sessionId = requestedSessionId;
     if (!sessionId) {
@@ -864,6 +875,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
     }
     
+    if (signal?.aborted) return;
     // 1. Instantly append a local user message and a pending assistant message for responsive UI
     const tempUserMsg: Message = {
       id: `temp_user_${Date.now()}`,
@@ -923,16 +935,22 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     set({
       isStreaming: true,
+      isPreparingSession: true,
+      activeRunIds: { ...get().activeRunIds, [sessionId]: requestedRunId ?? null },
       messages: [...get().messages, tempUserMsg, tempAssistantMsg],
     });
 
     try {
-      await invoke("send_message", {
+      const runId = await invoke<string>("send_message", {
         sessionId,
         text,
         readingBookId: readingBookId ?? null,
         attachments,
+        ...(requestedRunId ? { requestedRunId } : {}),
       });
+      // Native run preparation cannot be aborted from JavaScript. Cancel the
+      // resulting run if the voice call ended while that command was pending.
+      if (signal?.aborted) await get().cancelRun(sessionId, runId);
     } catch (e) {
       console.error("Failed to send message", e);
       // The backend may have persisted a failed assistant message with its
@@ -945,19 +963,26 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         await get().loadMessages(sessionId, true);
       }
       throw e;
+    } finally {
+      set({ isPreparingSession: false });
     }
   },
 
-  cancelRun: async (sessionId: string) => {
+  cancelRun: async (sessionId: string, expectedRunId?: string) => {
     // 乐观置为非生成中，再发取消；run_finished/run_error 也会兜底重载
-    set({ isStreaming: false });
+    const currentRunId = get().activeRunIds[sessionId];
+    const cancelledRunId = expectedRunId ?? currentRunId;
+    if (get().activeSessionId === sessionId && (!expectedRunId || currentRunId === expectedRunId)) {
+      set({ isStreaming: false });
+    }
     try {
-      await invoke("cancel_run", { sessionId });
-      if (get().activeSessionId) {
-        await get().loadMessages(get().activeSessionId!);
+      await invoke("cancel_run", { sessionId, expectedRunId: cancelledRunId ?? null });
+      if (get().activeSessionId === sessionId && cancelledRunId) {
+        await get().loadMessages(sessionId, true, cancelledRunId);
       }
     } catch (e) {
       console.error("取消运行失败", e);
+      throw e;
     }
   },
 
@@ -1071,6 +1096,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const optimisticMessages = buildOptimisticEditBranch(get().messages, messageId, text);
     set({
       isStreaming: true,
+      ...(sessionId ? { activeRunIds: { ...get().activeRunIds, [sessionId]: null } } : {}),
       ...(optimisticMessages ? { messages: optimisticMessages } : {}),
     });
     try {
@@ -1094,6 +1120,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const optimisticMessages = buildOptimisticRegenerationBranch(get().messages, messageId);
     set({
       isStreaming: true,
+      ...(sessionId ? { activeRunIds: { ...get().activeRunIds, [sessionId]: null } } : {}),
       ...(optimisticMessages ? { messages: optimisticMessages } : {}),
     });
     try {
@@ -1416,7 +1443,7 @@ export function setupTauriEventListeners() {
     if (!delta) return;
 
     const store = useAgentStore.getState();
-    if (store.activeSessionId === delta.sessionId) {
+    if (store.activeSessionId === delta.sessionId && store.activeRunIds[delta.sessionId] === delta.runId) {
       store.appendStreamingDelta(delta.content, delta.segments, delta.inThought);
     }
   };
@@ -1431,6 +1458,7 @@ export function setupTauriEventListeners() {
     if (
       (!content && segments === undefined)
       || useAgentStore.getState().activeSessionId !== sessionId
+      || useAgentStore.getState().activeRunIds[sessionId] !== runId
     ) return;
     if (bufferedDelta && (bufferedDelta.sessionId !== sessionId || bufferedDelta.runId !== runId)) {
       flushBufferedDelta();
@@ -1460,6 +1488,7 @@ export function setupTauriEventListeners() {
   };
 
   const showToolCall = (payload: ToolCallEventPayload, fallbackStatus: ToolCall["status"]) => {
+    if (useAgentStore.getState().activeRunIds[payload.session_id] !== payload.run_id) return;
     // Preserve the backend event order when text deltas are waiting in the UI batch.
     flushBufferedDelta();
     const args = typeof payload.arguments === "string"
@@ -1479,6 +1508,22 @@ export function setupTauriEventListeners() {
       sandboxEscalationScope: payload.sandbox_escalation_scope ?? undefined,
       diff: payload.diff,
       status: payload.status || fallbackStatus,
+    });
+  };
+
+  listeners.push(
+    listen<{ session_id: string; run_id: string }>("agent://run_started", (event) => {
+      const { session_id, run_id } = event.payload;
+      useAgentStore.setState((state) => ({ activeRunIds: { ...state.activeRunIds, [session_id]: run_id } }));
+    }),
+  );
+
+  const finishRunIfCurrent = (sessionId: string, runId: string) => {
+    useAgentStore.setState((state) => {
+      if (state.activeRunIds[sessionId] !== runId) return state;
+      const activeRunIds = { ...state.activeRunIds };
+      delete activeRunIds[sessionId];
+      return { activeRunIds, isStreaming: state.activeSessionId === sessionId ? false : state.isStreaming };
     });
   };
 
@@ -1509,7 +1554,8 @@ export function setupTauriEventListeners() {
       (event) => {
         flushBufferedDelta();
         const store = useAgentStore.getState();
-        if (store.activeSessionId === event.payload.session_id) {
+        if (store.activeSessionId === event.payload.session_id
+          && store.activeRunIds[event.payload.session_id] === event.payload.run_id) {
           store.addModelFallbackNotice(event.payload.session_id, event.payload.content);
         }
       }
@@ -1583,15 +1629,17 @@ export function setupTauriEventListeners() {
       async (event) => {
         flushBufferedDelta();
         const store = useAgentStore.getState();
+        const { session_id, run_id } = event.payload;
+        if (store.activeRunIds[session_id] !== run_id) return;
         // Reload from SQLite to ensure database-level consistency
         if (store.activeSessionId === event.payload.session_id) {
-          await store.loadMessages(event.payload.session_id, true);
+          await store.loadMessages(session_id, true, run_id);
           // Also refresh sessions list in case summary changed
           if (store.activeAgentId) {
             await store.loadSessions(store.activeAgentId);
           }
         }
-        store.setStreamingState(false);
+        finishRunIfCurrent(session_id, run_id);
       }
     )
   );
@@ -1602,10 +1650,12 @@ export function setupTauriEventListeners() {
       async (event) => {
         flushBufferedDelta();
         const store = useAgentStore.getState();
+        const { session_id, run_id } = event.payload;
+        if (store.activeRunIds[session_id] !== run_id) return;
         if (store.activeSessionId === event.payload.session_id) {
-          await store.loadMessages(event.payload.session_id, true);
+          await store.loadMessages(session_id, true, run_id);
         }
-        store.setStreamingState(false);
+        finishRunIfCurrent(session_id, run_id);
       }
     )
   );

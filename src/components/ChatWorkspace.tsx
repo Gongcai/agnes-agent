@@ -1006,18 +1006,28 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           agentName={activeAgent?.name || "Agnes"}
           sessionName={sessions.find((session) => session.id === voiceCallSessionId)?.title ?? activeSession?.title}
           sessionId={voiceCallSessionId ?? activeSessionId}
-          onTranscript={async (text) => {
-            if (useAgentStore.getState().isStreaming) {
+          onInterrupt={async (targetSessionId, runId) => {
+            await cancelRun(targetSessionId, runId);
+          }}
+          onTranscript={async (text, signal, runId) => {
+            if (signal.aborted) return;
+            if (useAgentStore.getState().isStreaming || useAgentStore.getState().isPreparingSession) {
               await new Promise<void>((resolve) => {
+                const release = () => {
+                  unsubscribe();
+                  signal.removeEventListener("abort", release);
+                  resolve();
+                };
                 const unsubscribe = useAgentStore.subscribe((state) => {
-                  if (!state.isStreaming) {
-                    unsubscribe();
-                    resolve();
-                  }
+                  if (!state.isStreaming && !state.isPreparingSession) release();
                 });
+                signal.addEventListener("abort", release, { once: true });
+                const state = useAgentStore.getState();
+                if (signal.aborted || (!state.isStreaming && !state.isPreparingSession)) release();
               });
             }
-            await sendMessage(activeSessionId, text);
+            if (signal.aborted) return;
+            await sendMessage(useAgentStore.getState().activeSessionId, text, undefined, [], signal, runId);
           }}
           onClose={() => {
             setVoiceCallOpen(false);

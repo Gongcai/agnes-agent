@@ -447,7 +447,7 @@ export const QuickWindow: React.FC = () => {
           {isStreaming ? (
             <button
               type="button"
-              onClick={() => activeSessionId && cancelRun(activeSessionId)}
+              onClick={() => activeSessionId && cancelRun(activeSessionId).catch(console.error)}
               className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-rose-600 text-white hover:bg-rose-700"
               title="停止生成"
               aria-label="停止生成"

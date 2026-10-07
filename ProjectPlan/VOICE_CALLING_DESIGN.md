@@ -1,6 +1,6 @@
 # 全双工语音通话规划设计
 
-> 状态：Phase 0 Provider Spike 已完成；Phase 1 已接通本机麦克风 VAD 分段、受控 sidecar ASR、文本 Agent 与 CosyVoice PCM callback 分块播放。TTS 块使用逐块 ACK 和有界缓冲；ASR 二进制通道、Agent run/话轮取消及完整全双工仍待实现。
+> 状态：Phase 1 基础链路已接通；Phase 2 已加入手动打断、Agent/TTS 联动取消、run ID 过滤、句尾播放期间合成下一句，以及识别／思考／播报状态。当前为防回声采用轮流收听与播报；可靠语音插话、专用语音话轮协议、ASR 二进制通道和 Android 验收仍待完成。构建检查不能替代真实设备上的连续通话与延迟实测。
 > 关联文档：VOICE_CALLING.md（可行性与竞品参考）、architecture.md（系统边界）、MODEL_ROUTING.md（模型任务分工）。
 
 ## 1. 目标与产品定义
@@ -27,19 +27,23 @@ cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus�
 
 ## 3. 首版链路与已知限制
 
-当前已落地链路：麦克风持续采集 → 本地 RMS endpointing 分段 → WAV 16 kHz 转换 → Rust 受控 Tauri 命令 → 已认证 sidecar ASR 请求 → Qwen 整段识别 → 复用现有文本 Agent → assistant 增量按标点分句 → CosyVoice PCM callback → sidecar/Rust 有序事件 → Web Audio PCM 播放。前端仅在播放缓冲低于约 350 ms 后 ACK 下一块；sidecar 同时等待 ACK，Provider 的 callback 队列最多 3 块，避免整句 MP3/base64 缓存。
+当前已落地链路：麦克风采集 → 本地 RMS endpointing 分段 → WAV 16 kHz 转换 → Rust 受控 Tauri 命令 → 已认证 sidecar ASR 请求 → Qwen 整段识别 → 复用现有文本 Agent → assistant 增量按标点分句 → CosyVoice PCM callback → sidecar/Rust 有序事件 → Web Audio PCM 播放。播放缓冲阈值为约 800 ms，单块调度可在此基础上增加一块音频时长；sidecar 等待逐块 ACK，Provider callback 队列最多 3 块。前端在发送 ACK 前推进序号，并串行调度音频块，避免快速回传导致下一块被误丢弃。
 
 新会话首轮发送时，Store 先取得新建会话及会话列表，再一次性发布列表、activeSessionId 和清空草稿，避免 App 在两步之间判定无可见会话而卸载 ChatWorkspace。VoiceCallPanel 的事件监听在通话期间保持注册，通过 ref 读取草稿升级后的正式 sessionId；标题更新只更新显示数据，不重建采集和播放链路。切换到另一个会话时结束当前通话。
 
-这条路线支持连续会话和抢话，但 ASR 不是持续流式识别：当前示例没有证明云端 partial transcript。ASR 请求、文本 Agent 与 TTS 会串联增加首音频延迟。AI 播放期间仍持续采集并使用本地 VAD 检测新语音；插话时先本地静音、清空待播队列并取消当前 TTS 请求，不等待 ASR final。当前没有取消 Agent run，因此已进入普通 Agent 的旧回复文本仍可能继续到达。
+这条路线支持连续会话和手动打断；ASR 仍为整段识别，没有云端 partial transcript。为防止 Arch Linux / WebKitGTK 扬声器回声被识别成用户输入，识别、思考和播报期间屏蔽 PCM 收集与 VAD；整轮 Agent 完成且播放队列排空后再等待 220 ms，清空残留缓冲并恢复聆听。浏览器 echoCancellation、noiseSuppression 和 autoGainControl 保留，但尚不足以证明可靠全双工。
 
-若 Qwen 模型另有受支持的实时音频 API，可替换 ASR adapter，不改变 Voice Session 状态机。CosyVoice 已使用 PCM callback 分块播放；下一步应聚焦 ASR 二进制通道、端到端 Agent turn 取消和真实延迟测量。
+手动打断通过按钮或 Esc 先停止本地播放、清空句子与音频队列，再取消当前 CosyVoice 请求与 Agent run。语音发送前分配唯一 run ID，Rust 校验并沿用该 ID；面板只接受本次发送对应的事件。Rust 在取消标记期间丢弃后续 assistant delta，结束旧 run 时只清除匹配的 session→run 映射。Store 的终态与消息重载也校验 run ID，避免旧结束事件影响新回复。识别期间可打断并丢弃迟到结果，但尚不能取消云端 ASR 请求。结束通话会撤销尚未发送的语音文本；若原生命令仍在准备 run，则命令返回后按返回的 run ID 精确取消，并在准备结束前阻止新消息发送。
+
+每个完整句子仍启动独立 CosyVoice 请求；下一句会在上一句的已缓冲尾音播放期间开始合成。若取消先于 Rust 完成 TTS 请求准备，启动命令返回后会再次按请求 ID 取消，避免遗留等待 ACK 的旧请求。无标点文本达到 180 字符或等待 900 ms 后分段，待播文本上限为 12,000 字符；超过上限停止当前回复并提示用户。当前改善了请求之间的空等，仍有每句建连成本，后续评估同一请求中的文本增量 streaming_call。
+
+若 Qwen 模型另有受支持的实时音频 API，可替换 ASR adapter。下一步优先验证播放参考信号与可靠 AEC，迁移 AudioWorklet 采集与 VAD、建立专用 voice_session_id/turn_id，再优化 ASR 传输及测量真实延迟。
 
 ## 4. 逻辑架构与职责
 
 | 层 | 职责 |
 |---|---|
-| React / Tauri WebView | 使用 Web Audio ScriptProcessor 捕获 PCM 帧、RMS endpointing，并保留 400 ms 前滚缓冲；封段后重采样为单声道 16 kHz WAV。监听普通 Agent 增量并分句。Web Audio 将 PCM16/22050 Hz 块调度至播放队列，最多预排约 350 ms；收到并调度后 ACK。插话时立即停止本地节点、清空待播语句并取消当前 TTS 请求。 |
+| React / Tauri WebView | ScriptProcessor 捕获 PCM 帧、RMS endpointing、400 ms 前滚缓冲和单声道 16 kHz WAV 转换；回复期间设置采集门控。普通 Agent 增量按 run ID 过滤并有界分句；Web Audio 串行调度 PCM16/22050 Hz 块，缓冲阈值约 800 ms，调度后 ACK。手动打断立即停止本地节点并联动取消 TTS/Agent。动态体在播报时读取播放 AnalyserNode。 |
 | Rust Core | 校验文本/会话并传递带 request_id、sequence 的 TTS 块与 ACK；API Key、voice_id、Workspace 只从 Rust 配置/密钥边界读取，原始音频不落库。TTS 传输仍使用本地认证 JSON WebSocket 和 base64 块，ASR 也仍是 base64 WAV 请求。 |
 | Python Voice Session（Agent sidecar 内） | 处理一次性 ASR 与 CosyVoice 合成请求；callback 线程桥接到最多 3 块的 asyncio 队列，sidecar 每次仅发送一个未确认 PCM 块，并等待 WebView ACK 后继续。取消消息会取消 TTS task 并调用 SDK streaming_cancel。 |
 | 阿里云 | Qwen ASR 与 CosyVoice TTS；HTTPS/WSS，由受控运行时使用密钥。 |
@@ -52,7 +56,7 @@ Linux 桌面端使用 WebKitGTK。主窗口显式处理 WebKitGTK `permission-re
 
 ### 会话状态
 
-idle → connecting → listening ↔ recognizing ↔ thinking ↔ speaking → stopping → ended。识别、思考和播报是 UI 状态；speaking 时依旧保持采集和本地 VAD 活跃。错误可进入 recovering，失败后返回 listening 或 ended。
+当前 UI 状态为 idle → connecting → listening → recognizing → thinking ↔ speaking → listening；打断经 stopping 后恢复 listening。关闭面板即结束通话。回复期间保留麦克风 track，但 PCM 收集与本地 VAD 暂停。识别／Agent／TTS 错误在面板内提示，收尾后恢复聆听；麦克风连接错误允许重新开启。
 
 ### Utterance 生命周期
 
@@ -61,15 +65,15 @@ idle → connecting → listening ↔ recognizing ↔ thinking ↔ speaking → 
 3. utterance 完成后创建 ASR 请求，提交 WAV/PCM。每段有大小/时长上限；超长句按安全静音点切分或提示，不能无限缓存。
 4. 只有 final transcript 创建 Agent turn 并作为用户消息写入 session。空识别、低置信或服务错误不触发模型回复。
 5. Agent 正文增量按短句、标点、最大等待时间与最大字符数综合分段，禁止逐 token 请求 TTS。
-6. speaking 期间 VAD 检出稳定新起音后，本地立即停止播放器、清空队列、使当前 turn 失效，并取消 Agent run 和 TTS task。不得等待云 ASR 才静音。
-7. 插话音频继续采集；新 utterance endpointing 后识别并创建新 turn。旧 turn 的迟到帧不能恢复播放或写入最终消息。
+6. 当前手动点击打断或按 Esc，立即停止播放器、清空队列、过滤旧 run，并取消 Agent run 和 TTS task。未来稳定 AEC 后才在播放期间恢复 VAD 自动插话。
+7. 打断收尾后恢复采集；新 utterance endpointing 后识别并创建新 run。旧 run 的迟到事件不能恢复播报或重置新运行状态。专用 turn ID 及云端 ASR 请求取消尚待实现。
 8. 用户结束、切换 session、权限撤销或连接失败时，取消任务、关闭连接、释放 AudioContext/track。
 
-首发允许语音插话；“嗯/对”等 backchannel 智能忽略暂不纳入 MVP。扬声器回声可能被 ASR 当成人声，先优先耳机并验证 WebView echoCancellation；VAD 单独不能解决回声。
+当前通过手动打断提供继续说话的入口；“嗯/对”等 backchannel 智能忽略暂不纳入 MVP。自动插话必须先验证扬声器播放参考、AEC 和双讲检测；VAD 或提高音量阈值不能替代回声消除。
 
 ## 6. 协议草案
 
-控制事件使用现有 JSON envelope 风格；音频采用二进制 WebSocket frame 或 Tauri 专用通道，不做 base64 JSON。voice_session_id 与 turn_id 由 Rust 创建/校验。协议以兼容方式扩展 Rust 真相源，并同步更新 shared/protocol.md 与 Python 镜像。
+以下为待落地的协议草案。控制事件使用现有 JSON envelope 风格；目标音频通道采用二进制 WebSocket frame 或 Tauri 专用通道，替换当前 base64 JSON。voice_session_id 与 turn_id 由 Rust 创建/校验。协议以兼容方式扩展 `src-tauri/src/agent/protocol.rs`，并同步更新 Python 镜像 `agent/app/protocol.py`。
 
 | 方向 | 事件 | 用途 |
 |---|---|---|
@@ -87,6 +91,8 @@ idle → connecting → listening ↔ recognizing ↔ thinking ↔ speaking → 
 | Python → Rust → UI | voice_error | 归一化错误、阶段与可恢复性 |
 
 帧需有最大长度、背压和有界队列；队列满时丢弃过期帧或取消 turn，禁止无界占内存。接收端先验证 session/turn 再播放。最终 DTO 由 Rust 结构体定义。
+
+当前额外实现 `agent://run_started`（Rust → WebView Tauri 事件）：在发送 sidecar `run_request` 前发布 session_id/run_id。语音面板发送前就绑定自己的 run ID，聊天 Store 从启动事件绑定运行；`send_message` 支持可选 `requestedRunId` 并返回实际 run ID，`cancel_run` 支持可选 `expectedRunId`，避免迟到取消操作误伤下一轮。它们不改变 Python Agent Protocol；专用语音会话/话轮 envelope 仍为规划内容。
 
 ## 7. Agent 与消息落库
 
@@ -132,7 +138,7 @@ Provider 端口应允许替换：transcribe(audio, config) → transcript；synt
 1. 顶部：会话标题、当前 Agent 名称、连接状态和结束按钮。结束是明确的挂断操作，不能与返回聊天混淆。
 2. 中央：`VoicePresence` 动态体及状态标签，例如“正在听”“正在思考”“Agnes 正在说”。状态标签与 `VoiceState` 一一对应。
 3. 下方：最近一轮的临时转写和最终转写。临时文本使用较低对比度，final transcript 与 assistant 文本只保留最近几轮，完整内容继续进入普通会话历史。
-4. 底部：麦克风静音/取消静音、扬声器静音和设备选择。主按钮使用熟悉图标并提供 tooltip；通话进行时点击麦克风按钮即触发本地打断或暂停采集。
+4. 底部：独立的“打断回复”按钮、麦克风静音/取消静音、扬声器静音和设备选择。打断支持 Esc；麦克风按钮暂停采集。识别或回复期间禁用设备切换，避免重启采集打断当前状态。
 5. 错误与权限：首次进入显示麦克风权限状态；设备断开、权限撤销、网络错误都在面板内提供恢复动作，不把密钥、Workspace 或 SDK 错误细节展示给用户。
 
 ### 10.3 音频与状态同步
@@ -149,7 +155,7 @@ Provider 端口应允许替换：transcribe(audio, config) → transcript；synt
 - 所有状态不能只依赖颜色；必须同时有文字或图标变化。动态体和状态标签使用 `aria-live="polite"`，错误使用 `role="alert"`。
 - 键盘支持开始/结束、静音和打断；动画和音量反馈不影响文本对话和系统级辅助功能。
 
-这部分 UI 设计对应 `src/components/VoiceCallPanel.tsx` 的首版实现。当前动态体已用 Web Audio `AnalyserNode` 驱动真实麦克风输入，采集数据仅在本地分析、不上传和保存；云端 ASR、Agent 语音 turn 和播放队列尚未接入。动态体本身不承担 VAD、ASR 或 turn 判断。
+这部分 UI 对应 `src/components/VoiceCallPanel.tsx`。当前已接入 ASR、Agent run 与 TTS 播放；聆听阶段显示输入音量，播报阶段读取播放音量并驱动形变，识别／思考阶段使用独立状态和等待动效。支持 reduced-motion，打断按钮有文字、焦点状态和 Esc 键入口；窄屏控制区可换行。VAD 仍在主线程，后续随 AudioWorklet 迁移。
 
 ## 11. 分阶段计划
 
@@ -166,7 +172,7 @@ Provider 端口应允许替换：transcribe(audio, config) → transcript；synt
 
 - [x] 增加通话入口、权限提示、麦克风预览、通话状态舞台与结束控制。
 - [x] 接通本地采集、本地 endpointing、整段 ASR 和识别文本进入现有 Agent。
-- [x] 完成 CosyVoice 分句合成、WebView 播放队列和本地插话静音。
+- [x] 完成 CosyVoice 分句合成、WebView 播放队列和手动打断静音。
 - [x] 完成 CosyVoice PCM callback 音频块的逐块回传、确认和 Web Audio 播放。
 - [ ] 将当前 JSON base64 一次性 ASR 请求升级为有界二进制音频通道，减少复制和编码开销。
 - 首版可整段 TTS；若 SDK 支持真正流式消费则启用。
@@ -174,10 +180,14 @@ Provider 端口应允许替换：transcribe(audio, config) → transcript；synt
 
 ### Phase 2：低延迟与可靠抢话
 
-- 增加句子缓冲、流式 TTS 和有界播放队列。
-- VAD 抢话立即静音、flush 队列、取消 Agent/TTS；迟到响应按 turn_id 丢弃。
-- 增加弱网、超时、限流、重试和关闭策略，重试不能重复创建 user 消息。
-- 验证扬声器回声、耳机、静音、长句与快速连续 turn。
+- [x] 有界句子缓冲、无标点超时分段、串行 PCM 调度与下一句合成重叠。
+- [x] 手动打断本地播放并取消 Agent/TTS；迟到事件按 run ID 过滤。
+- [x] 识别／思考／播报状态、播放音量动效、通话关闭后的待发送文本撤销。
+- [ ] 在 Arch Linux 扬声器与耳机环境实测首音频、句间停顿、恢复收听和快速打断；当前构建通过不代表设备验收通过。
+- [ ] AudioWorklet 采集/VAD 与稳定 AEC：先确认 WebKitGTK 能否取得可靠播放参考，必要时评估原生 WebRTC AEC 或 PipeWire 回声消除接入。
+- [ ] 自动语音插话及双讲检测、voice_session_id/turn_id 协议与 ASR 任务取消。
+- [ ] 同一 CosyVoice 请求中的文本增量输入，进一步减少每句建连开销。
+- [ ] 阶段超时、重连、限流与恢复策略；重试不能重复创建 user 消息或重复播放已消费音频。
 
 ### Phase 3：Android 与发布化
 
@@ -208,7 +218,7 @@ ASR 若为每 utterance HTTP 整段请求，endpointing 后 ASR 的实测延迟�
 | CosyVoice Flash 文本增量接入 | 每个完成的 Agent 句子独立启动一个 PCM 流；当前 Agent `assistant_delta` 未直接驱动同一 TTS 请求的 `streaming_call()` | Phase 2 评估文本缓冲和双向 `streaming_call()` |
 | ASR 音频提交方式 | 示例使用 input_audio.data URL | 确认受控上传/本地直传，避免公开 URL |
 | 格式、最大长度、地域、价格、配额 | 不写死假设 | 实测和控制台确认后固化 |
-| 首发音色 | 默认/预置音色；设计示例使用 Plus | Flash 兼容性验证后再纳入 |
+| 首发音色 | 已使用 Voice Design 创建 Flash 专属音色，设置页支持设计、试听和保存 | 音色、模型、API Key 与 Workspace 必须一致 |
 | 中断消息存储语义 | 遵循现有 run/message 能力 | 协议实现前检查 schema 与取消路径 |
 | Android 交付范围 | Phase 3 | 桌面 MVP 验收后决定 |
 

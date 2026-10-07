@@ -4,6 +4,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tauri::Emitter;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::agent::protocol::{msg_type, Envelope};
@@ -2240,8 +2241,10 @@ pub async fn edit_and_resend(
         false,
         false,
         None,
+        None,
     )
     .await
+    .map(|_| ())
 }
 
 /// 单条重新生成：为 AI 消息造一个同级新版本（共享父 user 消息），切换活动路径
@@ -2288,8 +2291,10 @@ pub async fn regenerate_message(
         true,
         false,
         None,
+        None,
     )
     .await
+    .map(|_| ())
 }
 
 /// 修改记忆：替换某条 AI 消息的全部片段（用户在弹窗里编辑/删除/新增片段）。
@@ -2344,8 +2349,15 @@ pub async fn replace_message_parts(
 /// 同时触发挂起审批的取消信号，解除 ws_server 在 approval oneshot 上的阻塞
 /// （否则 ws 循环卡死，RUN_ERROR 与后续消息都无法处理）。Python 收到后取消对应任务。
 #[tauri::command]
-pub async fn cancel_run(state: tauri::State<'_, AppState>, session_id: String) -> AppResult<()> {
-    if let Some(run_id) = state.agent.remove_session_run(&session_id) {
+pub async fn cancel_run(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    expected_run_id: Option<String>,
+) -> AppResult<()> {
+    if let Some(run_id) = state
+        .agent
+        .remove_session_run(&session_id, expected_run_id.as_deref())
+    {
         state.agent.mark_run_cancelled(&run_id);
         // 先触发审批取消信号，解除 ws_server 的 approval await 阻塞
         // （用 select! 分支，handler 不会发 TOOL_RESULT，避免 Python 任务被工具结果唤醒继续）
@@ -2805,7 +2817,8 @@ async fn start_agent_run(
     is_regeneration: bool,
     include_reading_context: bool,
     session_title_request: Option<serde_json::Value>,
-) -> AppResult<()> {
+    requested_run_id: Option<&str>,
+) -> AppResult<String> {
     ensure_agent_runtime(state).await?;
     eprintln!("[agent][run] Preparing run for session={session_id} assistant={assistant_msg_id}");
     let memory_filesystem =
@@ -2938,7 +2951,9 @@ async fn start_agent_run(
     let prompt_tool_policy = effective_tool_policy.redacted_for_prompt(workspace_cwd.as_deref());
     let tool_policy_json = serde_json::to_value(&prompt_tool_policy)?;
     let mcp_tools = state.mcp.dynamic_tools(&effective_tool_policy).await;
-    let run_id = uuid::Uuid::new_v4().to_string();
+    let run_id = requested_run_id
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let context_snapshot = json!({
         "input": "",
         "context": {
@@ -2994,6 +3009,12 @@ async fn start_agent_run(
         .agent
         .set_session_run(session_id.to_string(), run_id.clone());
 
+    // Publish the run identity before the sidecar can emit its first delta.
+    let _ = state.app_handle.emit(
+        "agent://run_started",
+        json!({ "session_id": session_id, "run_id": run_id }),
+    );
+
     let run_req = Envelope {
         protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
         id: uuid::Uuid::new_v4().to_string(),
@@ -3006,7 +3027,7 @@ async fn start_agent_run(
 
     if let Err(error) = state.agent.send_to_agent(run_req) {
         let _ = state.agent.remove_run(&run_id);
-        let _ = state.agent.remove_session_run(session_id);
+        state.agent.remove_session_run_if_matches(session_id, &run_id);
         let _ = state
             .db
             .fail_pending_assistant(
@@ -3017,7 +3038,7 @@ async fn start_agent_run(
         return Err(error);
     }
     eprintln!("[agent][run] RUN_REQUEST queued run={run_id}");
-    Ok(())
+    Ok(run_id)
 }
 
 async fn ensure_agent_runtime(state: &AppState) -> AppResult<()> {
@@ -3064,7 +3085,8 @@ async fn start_agent_run_or_mark_failed(
     is_regeneration: bool,
     include_reading_context: bool,
     session_title_request: Option<serde_json::Value>,
-) -> AppResult<()> {
+    requested_run_id: Option<&str>,
+) -> AppResult<String> {
     let result = start_agent_run(
         state,
         cfg,
@@ -3073,6 +3095,7 @@ async fn start_agent_run_or_mark_failed(
         is_regeneration,
         include_reading_context,
         session_title_request,
+        requested_run_id,
     )
     .await;
     if let Err(error) = &result {
@@ -3095,7 +3118,12 @@ pub async fn send_message(
     text: String,
     reading_book_id: Option<String>,
     attachments: Vec<ChatAttachmentInput>,
-) -> AppResult<()> {
+    requested_run_id: Option<String>,
+) -> AppResult<String> {
+    if let Some(run_id) = &requested_run_id {
+        uuid::Uuid::parse_str(run_id)
+            .map_err(|_| AppError::Other("无效的回复运行 ID".into()))?;
+    }
     let cfg = resolve_llm(&state, &session_id).await?;
     let workspace_root = crate::tools::workspace::resolve_workspace_cwd(
         &state.db,
@@ -3172,6 +3200,7 @@ pub async fn send_message(
         false,
         reading_book_id.is_some(),
         session_title_request,
+        requested_run_id.as_deref(),
     )
     .await
 }

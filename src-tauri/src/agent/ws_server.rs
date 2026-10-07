@@ -534,6 +534,9 @@ async fn handle_conn<R: tauri::Runtime>(
             }
 
             msg_type::ASSISTANT_DELTA => {
+                if manager.is_run_cancelled(&run_id) {
+                    continue;
+                }
                 let content = env
                     .payload
                     .get("content")
@@ -1175,7 +1178,7 @@ async fn handle_conn<R: tauri::Runtime>(
 
                 // 清除 run 与 session 映射（运行已结束）
                 let _ = manager.remove_run(&run_id);
-                let _ = manager.remove_session_run(&session_id);
+                manager.remove_session_run_if_matches(&session_id, &run_id);
 
                 if let Some(state) = app_handle.try_state::<AppState>() {
                     if let Err(error) = state
@@ -1255,7 +1258,7 @@ async fn handle_conn<R: tauri::Runtime>(
 
                 // 清除 run 与 session 映射（运行已结束）
                 let _ = manager.remove_run(&run_id);
-                let _ = manager.remove_session_run(&session_id);
+                manager.remove_session_run_if_matches(&session_id, &run_id);
 
                 let _ = app_handle.emit(
                     "agent://run_error",
