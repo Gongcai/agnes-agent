@@ -73,6 +73,9 @@ function pcm16Base64ToFloat32(encoded: string): Float32Array<ArrayBuffer> {
 }
 
 export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onTranscript }: VoiceCallPanelProps) {
+  const sessionIdRef = useRef(sessionId ?? null);
+  // Draft promotion changes the binding without restarting the call's listeners.
+  sessionIdRef.current = sessionId ?? null;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
@@ -197,7 +200,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
         const wav = await toMonoWav16k(samples, sampleRate);
         if (!mountedRef.current || generation !== captureGenerationRef.current) return;
         const text = await invoke<string>("transcribe_voice", {
-          sessionId: sessionId ?? null,
+          sessionId: sessionIdRef.current,
           audioBase64: await blobToBase64(wav),
           mimeType: "audio/wav",
           sampleRate: 16000,
@@ -213,7 +216,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
         if (mountedRef.current && generation === captureGenerationRef.current) setRecognizing(false);
       }
     });
-  }, [sessionId]);
+  }, []);
 
   const stopCapture = useCallback(() => {
     captureGenerationRef.current += 1;
@@ -366,7 +369,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
               synthesisCompletionsRef.current.set(requestId, { resolve, reject });
             });
             await invoke<string>("start_voice_synthesis_stream", {
-              sessionId: sessionId ?? null,
+              sessionId: sessionIdRef.current,
               text: next,
               requestId,
             });
@@ -394,7 +397,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       })();
     };
     void listen<{ session_id: string; content: string; segments?: { kind: string; content: string }[] }>("agent://assistant_delta", (event) => {
-      if (disposed || !sessionId || event.payload.session_id !== sessionId) return;
+      if (disposed || !sessionIdRef.current || event.payload.session_id !== sessionIdRef.current) return;
       const text = event.payload.segments
         ? event.payload.segments.filter((segment) => segment.kind === "text").map((segment) => segment.content).join("")
         : event.payload.content;
@@ -407,7 +410,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       else unlistenDelta = unlisten;
     });
     void listen<{ session_id: string }>("agent://run_finished", (event) => {
-      if (disposed || !sessionId || event.payload.session_id !== sessionId) return;
+      if (disposed || !sessionIdRef.current || event.payload.session_id !== sessionIdRef.current) return;
       const remainder = speechBufferRef.current;
       speechBufferRef.current = "";
       enqueueSpeech(remainder);
@@ -421,7 +424,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       const chunk = event.payload;
       const requestId = chunk.id;
       const generation = playbackGenerationRef.current;
-      if (disposed || !sessionId || chunk.session_id !== sessionId || activeSynthesisRef.current !== requestId || chunk.sequence !== nextAudioSequenceRef.current) return;
+      if (disposed || !sessionIdRef.current || chunk.session_id !== sessionIdRef.current || activeSynthesisRef.current !== requestId || chunk.sequence !== nextAudioSequenceRef.current) return;
       // Tauri event callbacks are not awaited by the event dispatcher. Keep
       // chunk rendering ordered so a fast ACK cannot race the next event.
       audioChunkChainRef.current = audioChunkChainRef.current.then(async () => {
@@ -483,7 +486,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     });
     void listen<{ session_id: string; id: string; error?: string | null; complete: boolean }>("voice://tts_complete", (event) => {
       const result = event.payload;
-      if (disposed || !sessionId || result.session_id !== sessionId || activeSynthesisRef.current !== result.id) return;
+      if (disposed || !sessionIdRef.current || result.session_id !== sessionIdRef.current || activeSynthesisRef.current !== result.id) return;
       const completion = synthesisCompletionsRef.current.get(result.id);
       if (!completion) return;
       if (result.error) completion.reject(new Error(result.error));
@@ -505,7 +508,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       captureResumeTimerRef.current = null;
       captureSuppressedRef.current = false;
     };
-  }, [cancelCurrentSpeech, scheduleCaptureResume, sessionId, suppressCapture]);
+  }, [cancelCurrentSpeech, scheduleCaptureResume, suppressCapture]);
 
   useEffect(() => {
     speakerMutedRef.current = speakerMuted;

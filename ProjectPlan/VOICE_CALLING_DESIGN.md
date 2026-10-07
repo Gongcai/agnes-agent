@@ -29,6 +29,8 @@ cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus�
 
 当前已落地链路：麦克风持续采集 → 本地 RMS endpointing 分段 → WAV 16 kHz 转换 → Rust 受控 Tauri 命令 → 已认证 sidecar ASR 请求 → Qwen 整段识别 → 复用现有文本 Agent → assistant 增量按标点分句 → CosyVoice PCM callback → sidecar/Rust 有序事件 → Web Audio PCM 播放。前端仅在播放缓冲低于约 350 ms 后 ACK 下一块；sidecar 同时等待 ACK，Provider 的 callback 队列最多 3 块，避免整句 MP3/base64 缓存。
 
+新会话首轮发送时，Store 先取得新建会话及会话列表，再一次性发布列表、activeSessionId 和清空草稿，避免 App 在两步之间判定无可见会话而卸载 ChatWorkspace。VoiceCallPanel 的事件监听在通话期间保持注册，通过 ref 读取草稿升级后的正式 sessionId；标题更新只更新显示数据，不重建采集和播放链路。切换到另一个会话时结束当前通话。
+
 这条路线支持连续会话和抢话，但 ASR 不是持续流式识别：当前示例没有证明云端 partial transcript。ASR 请求、文本 Agent 与 TTS 会串联增加首音频延迟。AI 播放期间仍持续采集并使用本地 VAD 检测新语音；插话时先本地静音、清空待播队列并取消当前 TTS 请求，不等待 ASR final。当前没有取消 Agent run，因此已进入普通 Agent 的旧回复文本仍可能继续到达。
 
 若 Qwen 模型另有受支持的实时音频 API，可替换 ASR adapter，不改变 Voice Session 状态机。CosyVoice 已使用 PCM callback 分块播放；下一步应聚焦 ASR 二进制通道、端到端 Agent turn 取消和真实延迟测量。

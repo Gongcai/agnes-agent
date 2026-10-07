@@ -519,12 +519,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   );
 
   useEffect(() => {
-    if (
-      voiceCallOpen
-      && activeSessionId
-      && (!voiceCallSessionId || voiceCallSessionId.startsWith("draft-"))
-    ) {
+    if (!voiceCallOpen) return;
+    if (!voiceCallSessionId && activeSessionId) {
       setVoiceCallSessionId(activeSessionId);
+    } else if (voiceCallSessionId && activeSessionId !== voiceCallSessionId) {
+      setVoiceCallOpen(false);
+      setVoiceCallSessionId(null);
     }
   }, [activeSessionId, voiceCallOpen, voiceCallSessionId]);
 
@@ -1005,7 +1005,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         <VoiceCallPanel
           agentName={activeAgent?.name || "Agnes"}
           sessionName={sessions.find((session) => session.id === voiceCallSessionId)?.title ?? activeSession?.title}
-          sessionId={voiceCallSessionId}
+          sessionId={voiceCallSessionId ?? activeSessionId}
           onTranscript={async (text) => {
             if (useAgentStore.getState().isStreaming) {
               await new Promise<void>((resolve) => {

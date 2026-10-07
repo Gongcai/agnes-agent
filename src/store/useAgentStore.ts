@@ -825,13 +825,19 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           title: "新会话",
           workspaceId: draftSession.workspaceId,
         });
+        const sessions = await invoke<Session[]>("list_sessions", {
+          agentId: draftSession.agentId,
+        });
+        if (get().draftSession?.id !== draftSession.id) return;
+        // Publish the session and its navigation target together. Clearing the
+        // draft first makes App unmount the workspace while the list loads.
         set({
+          sessions,
           activeSessionId: sessionId,
           draftSession: null,
           messages: [],
         });
         invoke("set_setting", { key: "ui:last_session_id", value: sessionId }).catch(() => {});
-        await get().loadSessions(draftSession.agentId);
 
         if (
           draftSession.model !== undefined
