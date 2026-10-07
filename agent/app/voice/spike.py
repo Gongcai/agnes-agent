@@ -1,6 +1,7 @@
 """Phase 0 provider smoke check.
 
 Usage: ``DASHSCOPE_API_KEY=... DASHSCOPE_TTS_VOICE=... uv run python -m app.voice.spike input.wav``.
+Set ``DASHSCOPE_TTS_WEBSOCKET_URL`` when the voice belongs to a workspace endpoint.
 It intentionally writes output only when an explicit output path is supplied.
 """
 

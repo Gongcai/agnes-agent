@@ -14,7 +14,7 @@
 | ASR | qwen-audio-3.1-asr-flash | ProjectPlan/qwen-audio-asr-example.txt：HTTP POST，input_audio.data 为音频 URL，format/sample_rate 指定音频格式，关闭 SSE | 目前只证明整段音频识别请求，不证明实时音频流或 partial transcript。首版按 VAD 切分 utterance 后逐段识别，由 endpointing 触发回复。 |
 | TTS | cosyvoice-v3.5-flash | ProjectPlan/cosyvoice-v3.5-flash-example.py：DashScope SDK、WebSocket endpoint、SpeechSynthesizer.call() | SDK 使用 WebSocket，但示例最终返回完整音频；不能据此认定 Python 可消费首帧或在生成中追加文本。Phase 0 须检查官方流式接口和取消语义。 |
 
-cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus，与首选 Flash 模型不同；音色设计能力及 voice_id 兼容性不能视为已验证。CosyVoice SDK 的 `SpeechSynthesizer` 要求 `voice` 参数，第一版必须配置目标 Flash 模型可用的 `voice_id`（`DASHSCOPE_TTS_VOICE` 或应用配置），不能省略。自定义音色另行验证。
+cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus；但官方 `voice-design.md` 的支持范围确认 CosyVoice Voice Design 可直接指定 `cosyvoice-v3.5-flash`。CosyVoice SDK 的 `SpeechSynthesizer` 要求 `voice` 参数，第一版使用 `agent/app/voice/design_voice.py` 生成并配置 Flash 专属 `voice_id`（`DASHSCOPE_TTS_VOICE` 或应用配置），不能复用 v3 内置音色。具体声音描述和创建步骤见 `ProjectPlan/AGNES_VOICE_DESIGN.md`。
 
 ## 2. 约束与原则
 

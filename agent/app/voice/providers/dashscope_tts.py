@@ -21,9 +21,17 @@ class CosyVoiceTtsProvider:
     model = "cosyvoice-v3.5-flash"
     streaming = False
 
-    def __init__(self, api_key: str | None = None, voice: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        voice: str | None = None,
+        websocket_url: str | None = None,
+        workspace: str | None = None,
+    ) -> None:
         self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY")
         self.voice = voice or os.environ.get("DASHSCOPE_TTS_VOICE")
+        self.websocket_url = websocket_url or os.environ.get("DASHSCOPE_TTS_WEBSOCKET_URL")
+        self.workspace = workspace or os.environ.get("DASHSCOPE_WORKSPACE_ID")
         self._active_task: asyncio.Task[bytes] | None = None
         if not self.api_key:
             raise ValueError("DASHSCOPE_API_KEY is required for CosyVoice")
@@ -71,10 +79,13 @@ class CosyVoiceTtsProvider:
                 "CosyVoice requires the dashscope Python package; run uv sync"
             ) from exc
         dashscope.api_key = self.api_key
+        if self.websocket_url:
+            dashscope.base_websocket_api_url = self.websocket_url
         synthesizer = SpeechSynthesizer(
             model=self.model,
             voice=self.voice,
             format=AudioFormat.MP3_22050HZ_MONO_256KBPS,
+            workspace=self.workspace,
         )
         audio = synthesizer.call(text)
         if not audio:
