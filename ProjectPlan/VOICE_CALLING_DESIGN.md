@@ -1,6 +1,6 @@
 # 全双工语音通话规划设计
 
-> 状态：Phase 0 Provider Spike 已完成；沉浸式 UI 首版已落地并支持本机麦克风预览。语音面板至 ASR/Agent/TTS 的端到端协议接线仍待实现。
+> 状态：Phase 0 Provider Spike 已完成；Phase 1 已接通本机麦克风 VAD 分段、受控 sidecar 整段 ASR 与文本 Agent。CosyVoice 音频回传、播放队列、语音话轮取消和完整全双工仍待实现。
 > 关联文档：VOICE_CALLING.md（可行性与竞品参考）、architecture.md（系统边界）、MODEL_ROUTING.md（模型任务分工）。
 
 ## 1. 目标与产品定义
@@ -27,7 +27,7 @@ cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus�
 
 ## 3. 首版链路与已知限制
 
-麦克风持续采集 → 本地 VAD 分段 → utterance 完成后提交 Qwen ASR 整段识别 → final transcript → 现有 Agent 文本流式推理 → 文本缓冲/分句 → CosyVoice 合成并播放。
+当前已落地链路：麦克风持续采集 → 本地 RMS endpointing 分段 → WAV 16 kHz 转换 → Rust 受控 Tauri 命令 → 已认证 sidecar ASR 请求 → Qwen 整段识别 → 复用现有文本 Agent。下一阶段再补 Agent 文本分句、CosyVoice 合成、音频回传与播放队列。
 
 这条路线支持连续会话和抢话，但 ASR 不是持续流式识别：当前示例没有证明云端 partial transcript。ASR 请求、文本 Agent 与 TTS 会串联增加首音频延迟。AI 播放期间仍持续采集并使用本地 VAD 检测新语音；插话时先本地静音和取消旧轮次，不等待 ASR final。
 
@@ -37,9 +37,9 @@ cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus�
 
 | 层 | 职责 |
 |---|---|
-| React / Tauri WebView | getUserMedia 与 AudioWorklet 采集、下采样、播放队列和立即 stop/flush；显示连接、聆听、识别、思考、播报及错误状态。 |
-| Rust Core | 绑定 agent/session/voice_session；凭据读取、协议校验、生命周期与取消协调；将 final transcript 和 assistant text 写入现有消息仓储；继续托管工具审批与审计。 |
-| Python Voice Session（Agent sidecar 内） | 麦克风帧缓冲、VAD/endpointing、ASR 请求调度；调用现有 Agent；文本分句、DashScope ASR/TTS adapter、turn/task cancellation；回传文本、音频和状态。 |
+| React / Tauri WebView | 当前用 MediaRecorder 分段并由 Web Audio RMS 做 endpointing；将段落转为单声道 16 kHz WAV。播放器和立即 stop/flush 待接入。 |
+| Rust Core | 当前校验音频大小与格式，通过请求关联表把数据交给 sidecar；未落库原始音频。后续仍需会话级取消与生命周期协调。 |
+| Python Voice Session（Agent sidecar 内） | 当前处理一次性 ASR 请求并返回 final 文本；现有 Agent 由 UI 复用普通文本通道。文本分句、TTS、turn/task cancellation 与音频回传待实现。 |
 | 阿里云 | Qwen ASR 与 CosyVoice TTS；HTTPS/WSS，由受控运行时使用密钥。 |
 
 声卡 I/O 在 renderer/WebView；turn 编排及云服务适配放 Python sidecar；Rust 持有会话与凭据边界、协议协调和落库。桌面端不新增独立语音守护进程。Android 若 WebView 采集/AEC 表现不足，再评估原生音频插件，但保持相同 Voice Session 协议。音频跨层使用二进制专用通道或受控分块，不用 JSON base64。Agent Protocol 保持现有 127.0.0.1 WebSocket 主从关系。
@@ -158,8 +158,9 @@ Provider 端口应允许替换：transcribe(audio, config) → transcript；synt
 ### Phase 1：桌面端基本往返
 
 - [x] 增加通话入口、权限提示、麦克风预览、通话状态舞台与结束控制。
-- [ ] 完成 voice protocol、云端 ASR、Agent turn、CosyVoice 播放和字幕历史的端到端接线。
-- 连续采集、本地 VAD、ASR 整段识别、final transcript 注入现有 Agent、CosyVoice 播报。
+- [x] 接通本地采集、本地 endpointing、整段 ASR 和识别文本进入现有 Agent。
+- [ ] 完成 CosyVoice 播报、播放队列和字幕历史的端到端接线。
+- [ ] 将当前 JSON base64 一次性 ASR 请求升级为有界二进制音频通道，减少复制和编码开销。
 - 首版可整段 TTS；若 SDK 支持真正流式消费则启用。
 - 转写和 assistant 文本复用现有消息仓储，不保存音频。
 

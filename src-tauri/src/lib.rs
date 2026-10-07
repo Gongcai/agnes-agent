@@ -559,6 +559,7 @@ pub fn run() {
             commands::delete_workspace,
             commands::rename_session,
             commands::get_debug_prompt,
+            commands::transcribe_voice,
             commands::list_messages,
             commands::get_token_usage_stats,
             commands::switch_version,

@@ -32,9 +32,10 @@ impl Envelope {
 }
 
 /// 消息类型（方向在架构文档 §3.2 已定死）：
-/// Rust→Python: run_request / tool_result / approval_result / run_cancel / user_message
+/// Rust→Python: run_request / tool_result / approval_result / run_cancel / user_message /
+/// voice_transcribe_request
 /// Python→Rust: assistant_delta / model_fallback / tool_call_request /
-/// session_title_update / run_finished / run_error
+/// session_title_update / run_finished / run_error / voice_transcribe_result
 /// 双向握手: hello / ready / ping / pong
 pub mod msg_type {
     pub const HELLO: &str = "hello";
@@ -53,6 +54,8 @@ pub mod msg_type {
     pub const DEBUG_PROMPT_RESULT: &str = "debug_prompt_result";
     pub const EMBEDDING_REQUEST: &str = "embedding_request";
     pub const EMBEDDING_RESULT: &str = "embedding_result";
+    pub const VOICE_TRANSCRIBE_REQUEST: &str = "voice_transcribe_request";
+    pub const VOICE_TRANSCRIBE_RESULT: &str = "voice_transcribe_result";
     pub const PING: &str = "ping";
     pub const PONG: &str = "pong";
 }

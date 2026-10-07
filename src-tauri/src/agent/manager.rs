@@ -234,6 +234,9 @@ pub struct AgentManager {
     // Pending embedding batches: request id -> result payload sender.
     pending_embeddings:
         Mutex<std::collections::HashMap<String, oneshot::Sender<serde_json::Value>>>,
+    // Pending voice transcription requests: request id -> result payload sender.
+    pending_voice_transcriptions:
+        Mutex<std::collections::HashMap<String, oneshot::Sender<serde_json::Value>>>,
     // 显式注册的运行：run_id -> assistant_message_id，供 ws_server 精确定位 pending 消息
     pending_runs: Mutex<std::collections::HashMap<String, String>>,
     // 当前活跃运行：session_id -> run_id，供 cancel_run 按会话取消
@@ -257,6 +260,7 @@ impl AgentManager {
             pending_approvals: Mutex::new(std::collections::HashMap::new()),
             pending_debug: Mutex::new(std::collections::HashMap::new()),
             pending_embeddings: Mutex::new(std::collections::HashMap::new()),
+            pending_voice_transcriptions: Mutex::new(std::collections::HashMap::new()),
             pending_runs: Mutex::new(std::collections::HashMap::new()),
             active_session_runs: Mutex::new(std::collections::HashMap::new()),
             run_approval_tc: Mutex::new(std::collections::HashMap::new()),
@@ -426,6 +430,7 @@ impl AgentManager {
         self.pending_approvals.lock().unwrap().clear();
         self.pending_debug.lock().unwrap().clear();
         self.pending_embeddings.lock().unwrap().clear();
+        self.pending_voice_transcriptions.lock().unwrap().clear();
         self.pending_runs.lock().unwrap().clear();
         self.active_session_runs.lock().unwrap().clear();
         self.run_approval_tc.lock().unwrap().clear();
@@ -515,6 +520,27 @@ impl AgentManager {
 
     pub fn resolve_embedding(&self, id: &str, payload: serde_json::Value) -> bool {
         let mut map = self.pending_embeddings.lock().unwrap();
+        if let Some(tx) = map.remove(id) {
+            let _ = tx.send(payload);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn register_voice_transcription(
+        &self,
+        id: String,
+        tx: oneshot::Sender<serde_json::Value>,
+    ) {
+        self.pending_voice_transcriptions
+            .lock()
+            .unwrap()
+            .insert(id, tx);
+    }
+
+    pub fn resolve_voice_transcription(&self, id: &str, payload: serde_json::Value) -> bool {
+        let mut map = self.pending_voice_transcriptions.lock().unwrap();
         if let Some(tx) = map.remove(id) {
             let _ = tx.send(payload);
             true

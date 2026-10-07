@@ -378,6 +378,17 @@ async fn handle_conn<R: tauri::Runtime>(
                 }
             }
 
+            msg_type::VOICE_TRANSCRIBE_RESULT => {
+                let req_id = env
+                    .payload
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                if !req_id.is_empty() {
+                    let _ = manager.resolve_voice_transcription(req_id, env.payload.clone());
+                }
+            }
+
             msg_type::MODEL_FALLBACK => {
                 let from_model: String = env
                     .payload

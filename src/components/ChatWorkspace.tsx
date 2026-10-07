@@ -994,6 +994,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         <VoiceCallPanel
           agentName={activeAgent?.name || "Agnes"}
           sessionName={activeSession?.title}
+          sessionId={activeSessionId}
+          onTranscript={async (text) => {
+            await sendMessage(activeSessionId, text);
+          }}
           onClose={() => setVoiceCallOpen(false)}
         />
       )}

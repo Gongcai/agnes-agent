@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -16,6 +17,7 @@ from .prompt import assemble_prompt, summarize_history
 from .graph import build_graph, get_available_tools
 from .models import LlmConfig, embed_texts
 from .title import generate_session_title
+from .voice.providers import AudioFormat, DashScopeAsrProvider
 
 EMBEDDING_REQUEST_TIMEOUT_SECONDS = 30
 
@@ -325,6 +327,52 @@ async def handle_embedding_request(
         return
 
 
+VOICE_AUDIO_MAX_BYTES = 4 * 1024 * 1024
+
+
+async def handle_voice_transcribe_request(
+    ws: websockets.WebSocketClientProtocol,
+    envelope: Dict[str, Any],
+) -> None:
+    """Recognize one VAD-completed WAV utterance through the sidecar boundary."""
+    request_id = envelope.get("id", "")
+    payload = envelope.get("payload", {})
+    try:
+        encoded = payload.get("audio_base64")
+        if not isinstance(encoded, str) or not encoded:
+            raise ValueError("voice audio is required")
+        audio = base64.b64decode(encoded, validate=True)
+        if not audio or len(audio) > VOICE_AUDIO_MAX_BYTES:
+            raise ValueError("voice audio is empty or exceeds the 4 MiB limit")
+        format_name = str(payload.get("format") or "wav").lower()
+        audio_format = AudioFormat(format_name)
+        sample_rate = int(payload.get("sample_rate") or 16000)
+        if sample_rate not in {8000, 16000, 22050, 24000, 44100, 48000}:
+            raise ValueError("unsupported voice sample rate")
+        provider = DashScopeAsrProvider()
+        result = await provider.transcribe(
+            audio,
+            audio_format=audio_format,
+            sample_rate=sample_rate,
+        )
+        result_payload = {
+            "id": request_id,
+            "text": result.text,
+            "request_id": result.request_id,
+        }
+    except Exception as error:
+        result_payload = {"id": request_id, "error": str(error)}
+    try:
+        result = make(
+            MsgType.VOICE_TRANSCRIBE_RESULT,
+            session_id=envelope.get("session_id", ""),
+            payload=result_payload,
+        )
+        await ws.send(result.model_dump_json())
+    except websockets.exceptions.ConnectionClosed:
+        return
+
+
 async def main() -> None:
     url = os.environ.get("AGENT_WS_URL")
     token = os.environ.get("AGENT_PROTOCOL_TOKEN")
@@ -383,6 +431,11 @@ async def main() -> None:
 
                 elif mtype == MsgType.EMBEDDING_REQUEST:
                     task = asyncio.create_task(handle_embedding_request(ws, msg))
+                    background_tasks.add(task)
+                    task.add_done_callback(background_tasks.discard)
+
+                elif mtype == MsgType.VOICE_TRANSCRIBE_REQUEST:
+                    task = asyncio.create_task(handle_voice_transcribe_request(ws, msg))
                     background_tasks.add(task)
                     task.add_done_callback(background_tasks.discard)
 

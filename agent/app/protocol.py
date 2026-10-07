@@ -30,6 +30,8 @@ class MsgType(str, Enum):
     DEBUG_PROMPT_RESULT = "debug_prompt_result"
     EMBEDDING_REQUEST = "embedding_request"
     EMBEDDING_RESULT = "embedding_result"
+    VOICE_TRANSCRIBE_REQUEST = "voice_transcribe_request"
+    VOICE_TRANSCRIBE_RESULT = "voice_transcribe_result"
 
 
 class Envelope(BaseModel):

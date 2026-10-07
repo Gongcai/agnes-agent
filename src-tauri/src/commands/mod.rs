@@ -1474,6 +1474,78 @@ pub async fn get_debug_prompt(
     })
 }
 
+/// Send one VAD-completed utterance through the authenticated sidecar ASR path.
+/// Raw audio is transient and is never written to SQLite or emitted to the UI.
+#[tauri::command]
+pub async fn transcribe_voice(
+    state: tauri::State<'_, AppState>,
+    session_id: Option<String>,
+    audio_base64: String,
+    mime_type: Option<String>,
+    sample_rate: Option<u32>,
+) -> AppResult<String> {
+    const MAX_AUDIO_BYTES: usize = 4 * 1024 * 1024;
+    let decoded = BASE64
+        .decode(audio_base64.as_bytes())
+        .map_err(|_| AppError::Other("语音数据不是有效的 base64".into()))?;
+    if decoded.is_empty() || decoded.len() > MAX_AUDIO_BYTES {
+        return Err(AppError::Other("语音数据为空或超过 4 MiB 限制".into()));
+    }
+    let format = match mime_type.as_deref().unwrap_or("audio/wav") {
+        "audio/wav" | "audio/wave" | "audio/x-wav" => "wav",
+        "audio/pcm" | "audio/L16" => "pcm",
+        value => {
+            return Err(AppError::Other(format!(
+                "不支持的语音格式：{value}，请使用 WAV"
+            )))
+        }
+    };
+    let session_id = session_id.unwrap_or_default();
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
+    state
+        .agent
+        .register_voice_transcription(request_id.clone(), tx);
+    let env = Envelope {
+        protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
+        id: request_id.clone(),
+        run_id: String::new(),
+        session_id: session_id.clone(),
+        msg_type: msg_type::VOICE_TRANSCRIBE_REQUEST.to_string(),
+        created_at: String::new(),
+        payload: json!({
+            "audio_base64": audio_base64,
+            "format": format,
+            "sample_rate": sample_rate.unwrap_or(16000),
+        }),
+    };
+    if let Err(error) = state.agent.send_to_agent(env) {
+        state
+            .agent
+            .resolve_voice_transcription(&request_id, json!({ "error": error.to_string() }));
+        return Err(error);
+    }
+    let payload = match tokio::time::timeout(std::time::Duration::from_secs(35), rx).await {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(_)) => return Err(AppError::Other("语音转写通道已断开".into())),
+        Err(_) => {
+            state
+                .agent
+                .resolve_voice_transcription(&request_id, json!({ "error": "timeout" }));
+            return Err(AppError::Other("语音转写超时".into()));
+        }
+    };
+    if let Some(error) = payload.get("error").and_then(|value| value.as_str()) {
+        return Err(AppError::Other(error.to_string()));
+    }
+    Ok(payload
+        .get("text")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string())
+}
+
 /// 获取某个会话中所有的消息与片段，并翻译成前端所用 Dto。
 #[tauri::command]
 pub async fn list_messages(

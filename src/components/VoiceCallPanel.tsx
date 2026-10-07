@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, Microphone, MicrophoneSlash, PhoneDisconnect, SpeakerHigh, SpeakerSlash, Warning } from "@phosphor-icons/react";
 
 type VoiceVisualState = "idle" | "listening" | "error";
@@ -6,22 +7,96 @@ type VoiceVisualState = "idle" | "listening" | "error";
 interface VoiceCallPanelProps {
   agentName: string;
   sessionName?: string;
+  sessionId?: string | null;
   onClose: () => void;
+  onTranscript?: (text: string) => Promise<void> | void;
 }
 
-export function VoiceCallPanel({ agentName, sessionName, onClose }: VoiceCallPanelProps) {
+async function toMonoWav16k(blob: Blob): Promise<Blob> {
+  const decodeContext = new AudioContext();
+  try {
+    const decoded = await decodeContext.decodeAudioData(await blob.arrayBuffer());
+    const length = Math.max(1, Math.ceil(decoded.duration * 16000));
+    const offline = new OfflineAudioContext(1, length, 16000);
+    const source = offline.createBufferSource();
+    source.buffer = decoded;
+    source.connect(offline.destination);
+    source.start();
+    const rendered = await offline.startRendering();
+    const samples = rendered.getChannelData(0);
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const writeText = (offset: number, value: string) => {
+      for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
+    };
+    writeText(0, "RIFF");
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeText(8, "WAVE");
+    writeText(12, "fmt " );
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 16000, true);
+    view.setUint32(28, 32000, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeText(36, "data");
+    view.setUint32(40, samples.length * 2, true);
+    for (let index = 0; index < samples.length; index += 1) {
+      const sample = Math.max(-1, Math.min(1, samples[index]));
+      view.setInt16(44 + index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    }
+    return new Blob([buffer], { type: "audio/wav" });
+  } finally {
+    await decodeContext.close();
+  }
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return blob.arrayBuffer().then((buffer) => {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    return btoa(binary);
+  });
+}
+
+export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onTranscript }: VoiceCallPanelProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const utteranceStartedAtRef = useRef<number | null>(null);
+  const silenceSinceRef = useRef<number | null>(null);
+  const utteranceChunksRef = useRef<Blob[]>([]);
+  const stoppingRef = useRef(false);
   const [visualState, setVisualState] = useState<VoiceVisualState>("idle");
   const [muted, setMuted] = useState(false);
   const [speakerMuted, setSpeakerMuted] = useState(false);
   const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [utteranceCount, setUtteranceCount] = useState(0);
+  const [lastUtteranceMs, setLastUtteranceMs] = useState<number | null>(null);
+  const [recognizing, setRecognizing] = useState(false);
+  const [transcript, setTranscript] = useState<string | null>(null);
+  const [processingError, setProcessingError] = useState<string | null>(null);
+  const onTranscriptRef = useRef(onTranscript);
+  const mountedRef = useRef(true);
+  const captureGenerationRef = useRef(0);
+  onTranscriptRef.current = onTranscript;
   const reducedMotion = useRef(false);
 
   const stopCapture = useCallback(() => {
+    captureGenerationRef.current += 1;
+    stoppingRef.current = true;
+    recorderRef.current?.stop();
+    recorderRef.current = null;
+    utteranceStartedAtRef.current = null;
+    silenceSinceRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     analyserRef.current = null;
@@ -48,9 +123,58 @@ export function VoiceCallPanel({ agentName, sessionName, onClose }: VoiceCallPan
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = 0.78;
       context.createMediaStreamSource(stream).connect(analyser);
+      if (typeof MediaRecorder === "undefined") {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error("当前环境不支持浏览器音频录制");
+      }
+      const recorder = new MediaRecorder(stream);
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0 && utteranceStartedAtRef.current !== null) {
+          utteranceChunksRef.current.push(event.data);
+        }
+      };
+      recorder.onstop = () => {
+        const startedAt = utteranceStartedAtRef.current;
+        if (!startedAt || utteranceChunksRef.current.length === 0) return;
+        const audio = new Blob(utteranceChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        const durationMs = performance.now() - startedAt;
+        setUtteranceCount((count) => count + 1);
+        setLastUtteranceMs(durationMs);
+        setRecognizing(true);
+        setProcessingError(null);
+        const generation = captureGenerationRef.current;
+        void (async () => {
+          try {
+            const wav = await toMonoWav16k(audio);
+            const text = await invoke<string>("transcribe_voice", {
+              sessionId: sessionId ?? null,
+              audioBase64: await blobToBase64(wav),
+              mimeType: "audio/wav",
+              sampleRate: 16000,
+            });
+            if (!mountedRef.current || generation !== captureGenerationRef.current || !text.trim()) return;
+            setTranscript(text.trim());
+            await onTranscriptRef.current?.(text.trim());
+          } catch (reason) {
+            if (mountedRef.current && generation === captureGenerationRef.current) {
+              setProcessingError(reason instanceof Error ? reason.message : String(reason));
+            }
+          } finally {
+            if (mountedRef.current && generation === captureGenerationRef.current) setRecognizing(false);
+          }
+        })();
+        utteranceChunksRef.current = [];
+        utteranceStartedAtRef.current = null;
+        if (!stoppingRef.current && streamRef.current === stream) recorder.start(100);
+      };
+      recorder.start(100);
+      recorderRef.current = recorder;
       streamRef.current = stream;
       contextRef.current = context;
       analyserRef.current = analyser;
+      stoppingRef.current = false;
+      setUtteranceCount(0);
+      setLastUtteranceMs(null);
       setMuted(false);
       setVisualState("listening");
     } catch (reason) {
@@ -62,7 +186,7 @@ export function VoiceCallPanel({ agentName, sessionName, onClose }: VoiceCallPan
           : `无法启动麦克风：${reason instanceof Error ? reason.message : String(reason)}`);
       setVisualState("error");
     }
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
     reducedMotion.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -100,6 +224,23 @@ export function VoiceCallPanel({ agentName, sessionName, onClose }: VoiceCallPan
             sum += value * value;
           }
           rms = Math.min(1, Math.sqrt(sum / samples.length) * 3.4);
+          const now = performance.now();
+          const speechThreshold = 0.045;
+          const endpointSilenceMs = 720;
+          if (rms >= speechThreshold) {
+            if (utteranceStartedAtRef.current === null) {
+              utteranceStartedAtRef.current = now;
+              utteranceChunksRef.current = [];
+            }
+            silenceSinceRef.current = null;
+          } else if (utteranceStartedAtRef.current !== null) {
+            silenceSinceRef.current ??= now;
+            if (now - silenceSinceRef.current >= endpointSilenceMs) {
+              const recorder = recorderRef.current;
+              if (recorder && recorder.state === "recording") recorder.stop();
+              silenceSinceRef.current = null;
+            }
+          }
           if (time - lastMeterUpdate > 45) {
             lastMeterUpdate = time;
             setLevel(rms);
@@ -165,7 +306,13 @@ export function VoiceCallPanel({ agentName, sessionName, onClose }: VoiceCallPan
     return () => cancelAnimationFrame(frame);
   }, [muted, visualState]);
 
-  useEffect(() => () => stopCapture(), [stopCapture]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      stopCapture();
+    };
+  }, [stopCapture]);
 
   const close = () => {
     stopCapture();
@@ -179,6 +326,11 @@ export function VoiceCallPanel({ agentName, sessionName, onClose }: VoiceCallPan
     }
     const nextMuted = !muted;
     streamRef.current.getAudioTracks().forEach((track) => { track.enabled = !nextMuted; });
+    if (nextMuted) {
+      utteranceStartedAtRef.current = null;
+      silenceSinceRef.current = null;
+      utteranceChunksRef.current = [];
+    }
     setMuted(nextMuted);
   };
 
@@ -219,15 +371,21 @@ export function VoiceCallPanel({ agentName, sessionName, onClose }: VoiceCallPan
         </div>
 
         <div className="relative z-10 mb-3 w-full max-w-lg rounded-2xl border border-white/[0.08] bg-black/20 px-4 py-3 text-center backdrop-blur-sm">
-          {error ? (
+          {error || processingError ? (
             <div role="alert" className="flex items-start justify-center gap-2 text-xs leading-5 text-rose-100">
               <Warning size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-              <span>{error}</span>
+              <span>{error || processingError}</span>
             </div>
           ) : (
             <p className="text-xs leading-5 text-white/55">
               {visualState === "listening"
-                ? "麦克风已连接。云端识别与语音回复接入后，即可开始实时对话。"
+                ? recognizing
+                  ? "正在识别这段语音…"
+                  : transcript
+                    ? `“${transcript}”${utteranceCount > 1 && lastUtteranceMs ? ` · 最近一段 ${(lastUtteranceMs / 1000).toFixed(1)} 秒` : ""}`
+                    : utteranceCount > 0
+                      ? `已检测到 ${utteranceCount} 段语音，等待识别结果。`
+                      : "麦克风已连接。说完停顿约一秒，即可提交识别。"
                 : "允许 Agnes 使用麦克风，查看实时音量与通话动态效果。"}
             </p>
           )}
