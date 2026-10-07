@@ -112,10 +112,38 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const playbackNodesRef = useRef(new Set<AudioBufferSourceNode>());
   const playbackGainsRef = useRef(new Set<GainNode>());
   const activeSynthesisRef = useRef<string | null>(null);
+  const captureSuppressedRef = useRef(false);
+  const captureResumeTimerRef = useRef<number | null>(null);
   const nextAudioSequenceRef = useRef(0);
   const synthesisCompletionsRef = useRef(new Map<string, { resolve: () => void; reject: (error: Error) => void }>());
   onTranscriptRef.current = onTranscript;
   const reducedMotion = useRef(false);
+
+  const clearCaptureBuffers = useCallback(() => {
+    utteranceStartedAtRef.current = null;
+    silenceSinceRef.current = null;
+    preRollFramesRef.current = [];
+    preRollSamplesRef.current = 0;
+    utteranceFramesRef.current = [];
+  }, []);
+
+  const suppressCapture = useCallback(() => {
+    captureSuppressedRef.current = true;
+    if (captureResumeTimerRef.current !== null) {
+      window.clearTimeout(captureResumeTimerRef.current);
+      captureResumeTimerRef.current = null;
+    }
+    clearCaptureBuffers();
+  }, [clearCaptureBuffers]);
+
+  const scheduleCaptureResume = useCallback((delayMs = 220) => {
+    if (captureResumeTimerRef.current !== null) window.clearTimeout(captureResumeTimerRef.current);
+    captureResumeTimerRef.current = window.setTimeout(() => {
+      captureResumeTimerRef.current = null;
+      clearCaptureBuffers();
+      captureSuppressedRef.current = false;
+    }, delayMs);
+  }, [clearCaptureBuffers]);
 
   const refreshAudioInputs = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -189,6 +217,9 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const stopCapture = useCallback(() => {
     captureGenerationRef.current += 1;
     cancelCurrentSpeech();
+    if (captureResumeTimerRef.current !== null) window.clearTimeout(captureResumeTimerRef.current);
+    captureResumeTimerRef.current = null;
+    captureSuppressedRef.current = false;
     stoppingRef.current = true;
     utteranceStartedAtRef.current = null;
     silenceSinceRef.current = null;
@@ -245,6 +276,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       silenceGain.gain.value = 0;
       processor.onaudioprocess = (event) => {
         if (captureGeneration !== captureGenerationRef.current) return;
+        if (captureSuppressedRef.current) return;
         const frame = new Float32Array(event.inputBuffer.getChannelData(0));
         if (utteranceStartedAtRef.current !== null) {
           utteranceFramesRef.current.push(frame);
@@ -319,6 +351,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       if (speechWorkerRef.current) return;
       speechWorkerRef.current = true;
       void (async () => {
+        suppressCapture();
         while (!disposed && speechQueueRef.current.length > 0) {
           const next = speechQueueRef.current.shift();
           if (!next) continue;
@@ -353,7 +386,10 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           }
         }
         speechWorkerRef.current = false;
-        if (!disposed) setVisualState(streamRef.current ? "listening" : "idle");
+        if (!disposed) {
+          setVisualState(streamRef.current ? "listening" : "idle");
+          scheduleCaptureResume();
+        }
       })();
     };
     void listen<{ session_id: string; content: string; segments?: { kind: string; content: string }[] }>("agent://assistant_delta", (event) => {
@@ -455,8 +491,11 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       speechQueueRef.current = [];
       speechBufferRef.current = "";
       cancelCurrentSpeech();
+      if (captureResumeTimerRef.current !== null) window.clearTimeout(captureResumeTimerRef.current);
+      captureResumeTimerRef.current = null;
+      captureSuppressedRef.current = false;
     };
-  }, [cancelCurrentSpeech, sessionId]);
+  }, [cancelCurrentSpeech, scheduleCaptureResume, sessionId, suppressCapture]);
 
   useEffect(() => {
     speakerMutedRef.current = speakerMuted;
@@ -487,7 +526,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
         context.clearRect(0, 0, bounds.width, bounds.height);
         const analyser = analyserRef.current;
         let rms = 0;
-        if (analyser && !muted) {
+        if (analyser && !muted && !captureSuppressedRef.current) {
           const samples = new Uint8Array(analyser.fftSize);
           analyser.getByteTimeDomainData(samples);
           let sum = 0;
@@ -503,10 +542,6 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           const maxUtteranceMs = 20_000;
           if (rms >= speechStartThreshold) {
             if (utteranceStartedAtRef.current === null) {
-              if (visualState === "speaking" || activeSynthesisRef.current) {
-                cancelCurrentSpeech();
-                setVisualState("listening");
-              }
               utteranceStartedAtRef.current = now;
               utteranceFramesRef.current = preRollFramesRef.current;
               preRollFramesRef.current = [];

@@ -506,6 +506,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [autoFollowStreaming, setAutoFollowStreaming] = useState(getCachedAutoFollowStreaming);
   const [userName, setUserName] = useState("");
   const [voiceCallOpen, setVoiceCallOpen] = useState(false);
+  const [voiceCallSessionId, setVoiceCallSessionId] = useState<string | null>(null);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -516,6 +517,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     new Date(),
     draftSession?.id ?? activeSessionId ?? "new-conversation",
   );
+
+  useEffect(() => {
+    if (voiceCallOpen && !voiceCallSessionId && activeSessionId) {
+      setVoiceCallSessionId(activeSessionId);
+    }
+  }, [activeSessionId, voiceCallOpen, voiceCallSessionId]);
 
   const resizeTextarea = (textarea: HTMLTextAreaElement, minH: number, maxH: number) => {
     // Reset first so deleting text can shrink the control as well as growing it.
@@ -993,8 +1000,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       {voiceCallOpen && (
         <VoiceCallPanel
           agentName={activeAgent?.name || "Agnes"}
-          sessionName={activeSession?.title}
-          sessionId={activeSessionId}
+          sessionName={sessions.find((session) => session.id === voiceCallSessionId)?.title ?? activeSession?.title}
+          sessionId={voiceCallSessionId}
           onTranscript={async (text) => {
             if (useAgentStore.getState().isStreaming) {
               await new Promise<void>((resolve) => {
@@ -1008,7 +1015,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             }
             await sendMessage(activeSessionId, text);
           }}
-          onClose={() => setVoiceCallOpen(false)}
+          onClose={() => {
+            setVoiceCallOpen(false);
+            setVoiceCallSessionId(null);
+          }}
         />
       )}
       <div ref={chatStageRef} className="agnes-chat-stage relative min-h-0 flex-1 overflow-hidden">
@@ -1831,7 +1841,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
               <button
                 type="button"
-                onClick={() => setVoiceCallOpen(true)}
+                onClick={() => {
+                  setVoiceCallSessionId(activeSessionId ?? draftSession?.id ?? null);
+                  setVoiceCallOpen(true);
+                }}
                 disabled={!hasSessionTarget || isPreparingSession || isStreaming}
                 className="agnes-chat-voice-button flex h-8 w-8 items-center justify-center rounded-lg border border-stone-200 bg-white text-stone-600 transition-colors hover:border-[#b78270] hover:bg-[#b78270]/10 hover:text-[#a46957] active:scale-95 disabled:cursor-not-allowed disabled:opacity-35"
                 title={hasSessionTarget ? "开始语音对话" : "请先选择或新建会话"}
