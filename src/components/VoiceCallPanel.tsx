@@ -90,6 +90,9 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const [muted, setMuted] = useState(false);
   const [speakerMuted, setSpeakerMuted] = useState(false);
   const speakerMutedRef = useRef(false);
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
+  const [selectedAudioInput, setSelectedAudioInput] = useState("");
+  const selectedAudioInputRef = useRef("");
   const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [utteranceCount, setUtteranceCount] = useState(0);
@@ -114,6 +117,21 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const synthesisCompletionsRef = useRef(new Map<string, { resolve: () => void; reject: (error: Error) => void }>());
   onTranscriptRef.current = onTranscript;
   const reducedMotion = useRef(false);
+
+  const refreshAudioInputs = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const devices = (await navigator.mediaDevices.enumerateDevices())
+        .filter((device) => device.kind === "audioinput");
+      setAudioInputs(devices);
+      if (selectedAudioInputRef.current && !devices.some((device) => device.deviceId === selectedAudioInputRef.current)) {
+        selectedAudioInputRef.current = "";
+        setSelectedAudioInput("");
+      }
+    } catch (reason) {
+      console.warn("Unable to enumerate audio input devices", reason);
+    }
+  }, []);
 
   const cancelCurrentSpeech = useCallback(() => {
     playbackGenerationRef.current += 1;
@@ -155,7 +173,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     setLevel(0);
   }, [cancelCurrentSpeech]);
 
-  const startCapture = useCallback(async () => {
+  const startCapture = useCallback(async (deviceId?: string) => {
     setError(null);
     if (!navigator.mediaDevices?.getUserMedia) {
       setError("此环境无法访问麦克风。请检查系统权限或使用桌面版。");
@@ -163,9 +181,16 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       return;
     }
     try {
+      const requestedDeviceId = deviceId ?? selectedAudioInputRef.current;
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          ...(requestedDeviceId ? { deviceId: { exact: requestedDeviceId } } : {}),
+        },
       });
+      const captureGeneration = captureGenerationRef.current;
       const context = new AudioContext();
       const analyser = context.createAnalyser();
       analyser.fftSize = 512;
@@ -182,6 +207,11 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
         }
       };
       recorder.onstop = () => {
+        if (captureGeneration !== captureGenerationRef.current) {
+          utteranceChunksRef.current = [];
+          utteranceStartedAtRef.current = null;
+          return;
+        }
         const startedAt = utteranceStartedAtRef.current;
         if (!startedAt || utteranceChunksRef.current.length === 0) return;
         const audio = new Blob(utteranceChunksRef.current, { type: recorder.mimeType || "audio/webm" });
@@ -229,16 +259,31 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       setLastUtteranceMs(null);
       setMuted(false);
       setVisualState("listening");
+      void refreshAudioInputs();
     } catch (reason) {
+      void refreshAudioInputs();
       const name = reason instanceof DOMException ? reason.name : "";
+      const isLinux = navigator.platform.toLowerCase().includes("linux");
       setError(name === "NotAllowedError"
-        ? "麦克风权限未开启。请在系统设置中允许 Agnes 访问麦克风。"
+        ? isLinux
+          ? "WebKitGTK 未能打开麦克风。请检查 PipeWire/PulseAudio 音频服务和系统麦克风开关，然后重启 Agnes。"
+          : "麦克风权限未开启。请在系统设置中允许 Agnes 访问麦克风。"
         : name === "NotFoundError"
-          ? "没有找到可用的麦克风。连接设备后重试。"
+          ? "没有找到可用的麦克风。连接设备或在输入设备菜单中重新选择后重试。"
+          : name === "NotReadableError"
+            ? "麦克风被其他程序占用，或音频服务不可用。请关闭占用麦克风的程序并检查系统音频服务。"
           : `无法启动麦克风：${reason instanceof Error ? reason.message : String(reason)}`);
       setVisualState("error");
     }
-  }, [sessionId]);
+  }, [refreshAudioInputs, sessionId]);
+
+  useEffect(() => {
+    void refreshAudioInputs();
+    const devices = navigator.mediaDevices;
+    if (!devices?.addEventListener) return;
+    devices.addEventListener("devicechange", refreshAudioInputs);
+    return () => devices.removeEventListener("devicechange", refreshAudioInputs);
+  }, [refreshAudioInputs]);
 
   useEffect(() => {
     reducedMotion.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -610,6 +655,33 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
         </div>
 
         <footer className="relative z-10 flex items-center justify-center gap-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+          <label className="flex min-h-12 max-w-[min(52vw,260px)] items-center gap-2 rounded-full border border-white/15 bg-white/[0.06] px-3 text-xs text-white/65">
+            <Microphone size={16} className="shrink-0" aria-hidden="true" />
+            <span className="sr-only">输入设备</span>
+            <select
+              value={selectedAudioInput}
+              onChange={(event) => {
+                const deviceId = event.currentTarget.value;
+                selectedAudioInputRef.current = deviceId;
+                setSelectedAudioInput(deviceId);
+                if (streamRef.current) {
+                  stopCapture();
+                  void startCapture(deviceId);
+                }
+              }}
+              aria-label="麦克风输入设备"
+              className="min-w-0 flex-1 cursor-pointer bg-transparent text-xs text-white outline-none focus-visible:ring-2 focus-visible:ring-[#d9a28f]"
+            >
+              <option value="" className="bg-[#1b1918] text-white">
+                {audioInputs.length ? "系统默认输入" : "未检测到输入设备"}
+              </option>
+              {audioInputs.map((device, index) => (
+                <option key={device.deviceId || `audio-input-${index}`} value={device.deviceId} className="bg-[#1b1918] text-white">
+                  {device.label || `麦克风 ${index + 1}`}
+                </option>
+              ))}
+            </select>
+          </label>
           <button type="button" onClick={toggleMic} className={`flex min-h-12 min-w-12 items-center justify-center gap-2 rounded-full border px-4 transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9a28f] ${muted ? "border-rose-300/30 bg-rose-400/15 text-rose-100" : "border-white/15 bg-white/[0.08] text-white hover:bg-white/[0.14]"}`} aria-label={streamRef.current ? muted ? "取消麦克风静音" : "静音麦克风" : "开启麦克风"} aria-pressed={muted}>
             {muted ? <MicrophoneSlash size={19} aria-hidden="true" /> : <Microphone size={19} aria-hidden="true" />}
             <span className="text-xs">{streamRef.current ? muted ? "取消静音" : "静音" : "开启麦克风"}</span>

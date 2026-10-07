@@ -29,9 +29,9 @@ cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus�
 
 当前已落地链路：麦克风持续采集 → 本地 RMS endpointing 分段 → WAV 16 kHz 转换 → Rust 受控 Tauri 命令 → 已认证 sidecar ASR 请求 → Qwen 整段识别 → 复用现有文本 Agent → assistant 增量按标点分句 → CosyVoice PCM callback → sidecar/Rust 有序事件 → Web Audio PCM 播放。前端仅在播放缓冲低于约 350 ms 后 ACK 下一块；sidecar 同时等待 ACK，Provider 的 callback 队列最多 3 块，避免整句 MP3/base64 缓存。
 
-这条路线支持连续会话和抢话，但 ASR 不是持续流式识别：当前示例没有证明云端 partial transcript。ASR 请求、文本 Agent 与 TTS 会串联增加首音频延迟。AI 播放期间仍持续采集并使用本地 VAD 检测新语音；插话时先本地静音和取消旧轮次，不等待 ASR final。
+这条路线支持连续会话和抢话，但 ASR 不是持续流式识别：当前示例没有证明云端 partial transcript。ASR 请求、文本 Agent 与 TTS 会串联增加首音频延迟。AI 播放期间仍持续采集并使用本地 VAD 检测新语音；插话时先本地静音、清空待播队列并取消当前 TTS 请求，不等待 ASR final。当前没有取消 Agent run，因此已进入普通 Agent 的旧回复文本仍可能继续到达。
 
-若 Qwen 模型另有受支持的实时音频 API，可替换 ASR adapter，不改变 Voice Session 状态机。若 CosyVoice SDK 无流式消费接口，Phase 1 可先整段合成后播放；仍能打断，但首音频延迟更高，由 Phase 0 数据决定是否接受。
+若 Qwen 模型另有受支持的实时音频 API，可替换 ASR adapter，不改变 Voice Session 状态机。CosyVoice 已使用 PCM callback 分块播放；下一步应聚焦 ASR 二进制通道、端到端 Agent turn 取消和真实延迟测量。
 
 ## 4. 逻辑架构与职责
 
@@ -42,7 +42,9 @@ cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus�
 | Python Voice Session（Agent sidecar 内） | 处理一次性 ASR 与 CosyVoice 合成请求；callback 线程桥接到最多 3 块的 asyncio 队列，sidecar 每次仅发送一个未确认 PCM 块，并等待 WebView ACK 后继续。取消消息会取消 TTS task 并调用 SDK streaming_cancel。 |
 | 阿里云 | Qwen ASR 与 CosyVoice TTS；HTTPS/WSS，由受控运行时使用密钥。 |
 
-声卡 I/O 在 renderer/WebView；turn 编排及云服务适配放 Python sidecar；Rust 持有会话与凭据边界、协议协调和落库。桌面端不新增独立语音守护进程。Android 若 WebView 采集/AEC 表现不足，再评估原生音频插件，但保持相同 Voice Session 协议。音频跨层使用二进制专用通道或受控分块，不用 JSON base64。Agent Protocol 保持现有 127.0.0.1 WebSocket 主从关系。
+Linux 桌面端使用 WebKitGTK。主窗口显式处理 WebKitGTK `permission-request`：通话面板发起的纯音频采集请求自动放行，视频请求拒绝；输入设备列表由 `enumerateDevices()` 提供，权限通过后可读取系统设备名称。若仍打不开麦克风，检查 PipeWire/PulseAudio 服务和系统输入静音状态。
+
+声卡 I/O 在 renderer/WebView；turn 编排及云服务适配放 Python sidecar；Rust 持有会话与凭据边界、协议协调和落库。桌面端不新增独立语音守护进程。Android 若 WebView 采集/AEC 表现不足，再评估原生音频插件，但保持相同 Voice Session 协议。当前 TTS PCM 跨层使用有界 base64 JSON 块和逐块 ACK；ASR 音频仍是 base64 WAV 请求。后续可将 ASR 改为二进制专用通道。Agent Protocol 保持现有 127.0.0.1 WebSocket 主从关系。
 
 ## 5. 语音状态机与抢话
 

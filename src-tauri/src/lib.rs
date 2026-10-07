@@ -458,6 +458,7 @@ pub fn run() {
 
             #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
+                install_linux_media_permissions(&window);
                 if let Err(error) = reading_context_menu::install(&window, app.handle().clone()) {
                     eprintln!("[reading] 无法安装原生右键菜单拦截：{error}");
                 }
@@ -720,4 +721,39 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux_media_permissions<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    use webkit2gtk::glib::prelude::Cast;
+    use webkit2gtk::{
+        DeviceInfoPermissionRequest, PermissionRequestExt, UserMediaPermissionRequest,
+        UserMediaPermissionRequestExt, WebViewExt,
+    };
+
+    if let Err(error) = window.with_webview(|webview| {
+        webview.inner().connect_permission_request(|_, request| {
+            if let Ok(media) = request.clone().downcast::<UserMediaPermissionRequest>() {
+                if media.is_for_audio_device() && !media.is_for_video_device() {
+                    request.allow();
+                    eprintln!("[media] Allowed WebKitGTK audio capture request");
+                } else {
+                    request.deny();
+                    eprintln!("[media] Denied non-audio WebKitGTK capture request");
+                }
+                return true;
+            }
+            if request
+                .clone()
+                .downcast::<DeviceInfoPermissionRequest>()
+                .is_ok()
+            {
+                request.allow();
+                return true;
+            }
+            false
+        });
+    }) {
+        eprintln!("[media] Failed to install WebKitGTK media permission handler: {error}");
+    }
 }
