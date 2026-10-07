@@ -58,7 +58,7 @@ Linux 桌面端使用 WebKitGTK。主窗口显式处理 WebKitGTK `permission-re
 
 ### 会话状态
 
-当前 UI 状态为 idle → connecting → listening → recognizing → thinking ↔ speaking → listening；打断经 stopping 后恢复 listening。关闭面板即结束通话。回复期间保留麦克风 track，但 PCM 收集与本地 VAD 暂停。识别／Agent／TTS 错误在面板内提示，收尾后恢复聆听；麦克风连接错误允许重新开启。
+当前 UI 状态为 idle → connecting → listening → recognizing → thinking ↔ speaking → listening；打断经 stopping 后恢复 listening。关闭面板即结束通话。回复期间保留麦克风 track；确认 PipeWire AEC 路由后，PCM 收集与本地 VAD 在播放期间保持开启，允许用户直接插话，完整 utterance 会先停止当前 TTS/Agent 再提交 ASR。未启用 AEC 时仍暂停 PCM 收集与 VAD，避免浏览器采集到扬声器回声。识别／Agent／TTS 错误在面板内提示，收尾后恢复聆听；麦克风连接错误允许重新开启。
 
 ### Utterance 生命周期
 
@@ -67,11 +67,11 @@ Linux 桌面端使用 WebKitGTK。主窗口显式处理 WebKitGTK `permission-re
 3. utterance 完成后创建 ASR 请求，提交 WAV/PCM。每段有大小/时长上限；超长句按安全静音点切分或提示，不能无限缓存。
 4. 只有 final transcript 创建 Agent turn 并作为用户消息写入 session。空识别、低置信或服务错误不触发模型回复。
 5. Agent 正文增量按短句、标点、最大等待时间与最大字符数综合分段，禁止逐 token 请求 TTS。
-6. 当前手动点击打断或按 Esc，立即停止播放器、清空队列、过滤旧 run，并取消 Agent run 和 TTS task。未来稳定 AEC 后才在播放期间恢复 VAD 自动插话。
+6. 手动点击打断或按 Esc，立即停止播放器、清空队列、过滤旧 run，并取消 Agent run 和 TTS task。确认 PipeWire AEC 路由后，播放期间的完整用户 utterance 也走同一条取消路径，先停止当前回复，再将 utterance 送 ASR；AEC 未启用时保持轮流收听／播报。
 7. 打断收尾后恢复采集；新 utterance endpointing 后识别并创建新 run。旧 run 的迟到事件不能恢复播报或重置新运行状态。专用 turn ID 及云端 ASR 请求取消尚待实现。
 8. 用户结束、切换 session、权限撤销或连接失败时，取消任务、关闭连接、释放 AudioContext/track。
 
-当前通过手动打断提供继续说话的入口；“嗯/对”等 backchannel 智能忽略暂不纳入 MVP。自动插话必须先验证扬声器播放参考、AEC 和双讲检测；VAD 或提高音量阈值不能替代回声消除。
+PipeWire AEC 开启时，播放期间保持 VAD 并将完整 utterance 作为自动插话；AI 音频本身应由 AEC 从采集信号中消除。未启用 AEC 时通过暂停 VAD 和手动打断避免自识别。“嗯/对”等 backchannel 智能忽略暂不纳入 MVP；VAD 或提高音量阈值不能替代回声消除。
 
 ## 6. 协议草案
 

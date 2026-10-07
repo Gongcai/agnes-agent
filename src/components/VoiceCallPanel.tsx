@@ -383,7 +383,19 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
         },
         onUtterance: (samples, sampleRate) => {
           if (mountedRef.current && captureGeneration === captureGenerationRef.current && !captureSuppressedRef.current && !mutedRef.current) {
-            processUtterance(samples, sampleRate, captureGeneration);
+            const bargeIn = pipewireAecRef.current
+              && (replyPendingRef.current || speechWorkerRef.current !== null || activeSynthesisRef.current !== null);
+            if (bargeIn) {
+              // AEC keeps the speaker reference out of this utterance. Stop the
+              // current reply before sending the user's interruption to ASR.
+              void interruptReply().finally(() => {
+                if (mountedRef.current && captureGeneration === captureGenerationRef.current) {
+                  processUtterance(samples, sampleRate, captureGeneration);
+                }
+              });
+            } else {
+              processUtterance(samples, sampleRate, captureGeneration);
+            }
           }
         },
         onError: () => {
@@ -466,7 +478,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     } finally {
       lifetime.signal.removeEventListener("abort", releasePending);
     }
-  }, [processUtterance, refreshAudioInputs, stopCapture]);
+  }, [interruptReply, processUtterance, refreshAudioInputs, stopCapture]);
 
   useEffect(() => {
     let disposed = false;
@@ -747,6 +759,13 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
             };
             source.start(startAt);
             setVisualState("speaking");
+            if (pipewireAecRef.current && !mutedRef.current) {
+              // Keep VAD active during playback only when the system AEC route
+              // is confirmed. This enables a real barge-in test without
+              // re-enabling the unsafe browser-only path.
+              captureSuppressedRef.current = false;
+              updateCaptureGate();
+            }
           }
           // Advance before ACK: the sidecar may send the next chunk as soon
           // as it receives the ACK.
@@ -794,7 +813,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       captureResumeTimerRef.current = null;
       captureSuppressedRef.current = false;
     };
-  }, [cancelCurrentSpeech, finishReplyPlayback, interruptReply, suppressCapture]);
+  }, [cancelCurrentSpeech, finishReplyPlayback, interruptReply, suppressCapture, updateCaptureGate]);
 
   useEffect(() => {
     speakerMutedRef.current = speakerMuted;
@@ -999,7 +1018,9 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
               {transcript && <p className="max-h-20 overflow-y-auto break-words">“{transcript}”</p>}
               <p>{visualState === "recognizing" ? "正在识别这段语音，可以点击打断重新说。"
                 : visualState === "thinking" ? "正在准备回复，你可以点击打断。"
-                  : visualState === "speaking" ? "点击“打断回复”或按 Esc，即可继续说话。"
+                  : visualState === "speaking" ? (pipewireAecRef.current
+                    ? "回声消除已开启，可以直接插话。"
+                    : "点击“打断回复”或按 Esc，即可继续说话。")
                     : visualState === "stopping" ? "正在停止回复，随后恢复聆听。"
                       : visualState === "listening"
                         ? utteranceCount > 0 && lastUtteranceMs
