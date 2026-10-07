@@ -10,6 +10,31 @@ from typing import AsyncIterator
 from .base import AudioChunk
 
 
+def resolve_websocket_url(websocket_url: str | None, workspace: str | None) -> str | None:
+    """Resolve a DashScope Beijing WebSocket endpoint from safe inputs."""
+    if websocket_url:
+        value = websocket_url.strip().rstrip("/")
+        if (
+            value.count(".cn-beijing.maas.aliyuncs.com") > 1
+            or ".maas.aliyuncs.com.cn-beijing." in value
+        ):
+            raise ValueError(
+                "DASHSCOPE_TTS_WEBSOCKET_URL contains a duplicated Beijing domain; "
+                "use wss://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"
+            )
+        if not value.startswith(("ws://", "wss://")):
+            raise ValueError("DASHSCOPE_TTS_WEBSOCKET_URL must start with ws:// or wss://")
+        return value
+    if not workspace:
+        return None
+    workspace_id = workspace.strip()
+    if ".cn-beijing.maas.aliyuncs.com" in workspace_id or "/" in workspace_id:
+        raise ValueError(
+            "DASHSCOPE_WORKSPACE_ID must be the Workspace ID only, not a hostname or URL"
+        )
+    return f"wss://{workspace_id}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"
+
+
 class CosyVoiceTtsProvider:
     """CosyVoice v3.5 Flash adapter.
 
@@ -30,8 +55,11 @@ class CosyVoiceTtsProvider:
     ) -> None:
         self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY")
         self.voice = voice or os.environ.get("DASHSCOPE_TTS_VOICE")
-        self.websocket_url = websocket_url or os.environ.get("DASHSCOPE_TTS_WEBSOCKET_URL")
         self.workspace = workspace or os.environ.get("DASHSCOPE_WORKSPACE_ID")
+        self.websocket_url = resolve_websocket_url(
+            websocket_url or os.environ.get("DASHSCOPE_TTS_WEBSOCKET_URL"),
+            self.workspace,
+        )
         self._active_task: asyncio.Task[bytes] | None = None
         if not self.api_key:
             raise ValueError("DASHSCOPE_API_KEY is required for CosyVoice")

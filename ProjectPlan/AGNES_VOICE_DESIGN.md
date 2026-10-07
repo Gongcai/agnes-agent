@@ -53,7 +53,6 @@ export DASHSCOPE_TTS_VOICE=<generated voice id>
 ```bash
 export DASHSCOPE_API_KEY='你的北京地域百炼 API Key'
 export DASHSCOPE_TTS_VOICE='<generated voice id>'
-export DASHSCOPE_TTS_WEBSOCKET_URL='wss://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference'
 export DASHSCOPE_WORKSPACE_ID='<WorkspaceId>'
 
 cd agent
@@ -62,7 +61,7 @@ uv run python -m app.voice.spike \
   --output /tmp/agnes-voice-test.mp3
 ```
 
-Voice Design 与语音合成必须使用同一个模型、地域和可访问的 Workspace。若返回 `InvalidParameter` 或 `418`，优先检查四项：`voice_id` 是否是刚为 Flash 创建的音色、TTS model 是否仍为 `cosyvoice-v3.5-flash`、API Key 是否为北京地域、WebSocket endpoint 是否属于同一 Workspace。
+Voice Design 与语音合成必须使用同一个模型、地域和可访问的 Workspace。Provider 会根据 `DASHSCOPE_WORKSPACE_ID` 自动生成 `wss://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference`，因此 Workspace 变量只能填写 ID，例如 `llm-srukcv1xajun2e5g`，不能填写 `beijing.maas.aliyuncs.com` 或完整域名。若需要手工设置 endpoint，必须完整填写一次域名，不能拼接两次。若返回 `InvalidParameter` 或 `418`，优先检查四项：`voice_id` 是否是刚为 Flash 创建的音色、TTS model 是否仍为 `cosyvoice-v3.5-flash`、API Key 是否为北京地域、WebSocket endpoint 是否属于同一 Workspace。
 
 ## 当前状态
 
