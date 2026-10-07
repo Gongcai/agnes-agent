@@ -384,7 +384,10 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
         onUtterance: (samples, sampleRate) => {
           if (mountedRef.current && captureGeneration === captureGenerationRef.current && !captureSuppressedRef.current && !mutedRef.current) {
             const bargeIn = pipewireAecRef.current
-              && (replyPendingRef.current || speechWorkerRef.current !== null || activeSynthesisRef.current !== null);
+              && (replyPendingRef.current
+                || speechWorkerRef.current !== null
+                || activeSynthesisRef.current !== null
+                || playbackNodesRef.current.size > 0);
             if (bargeIn) {
               // AEC keeps the speaker reference out of this utterance. Stop the
               // current reply before sending the user's interruption to ASR.
@@ -824,6 +827,15 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       }
     }
   }, [speakerMuted]);
+
+  useEffect(() => {
+    // Keep the AEC capture gate open for the whole audible playback window.
+    // TTS completion can arrive before the last scheduled PCM node ends.
+    if (visualState === "speaking" && pipewireAecRef.current && !mutedRef.current) {
+      captureSuppressedRef.current = false;
+      updateCaptureGate();
+    }
+  }, [updateCaptureGate, visualState]);
 
   useEffect(() => {
     let frame = 0;
