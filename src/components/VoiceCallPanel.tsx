@@ -114,6 +114,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const activeSynthesisRef = useRef<string | null>(null);
   const captureSuppressedRef = useRef(false);
   const captureResumeTimerRef = useRef<number | null>(null);
+  const audioChunkChainRef = useRef(Promise.resolve());
   const nextAudioSequenceRef = useRef(0);
   const synthesisCompletionsRef = useRef(new Map<string, { resolve: () => void; reject: (error: Error) => void }>());
   onTranscriptRef.current = onTranscript;
@@ -421,8 +422,11 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       const requestId = chunk.id;
       const generation = playbackGenerationRef.current;
       if (disposed || !sessionId || chunk.session_id !== sessionId || activeSynthesisRef.current !== requestId || chunk.sequence !== nextAudioSequenceRef.current) return;
-      void (async () => {
+      // Tauri event callbacks are not awaited by the event dispatcher. Keep
+      // chunk rendering ordered so a fast ACK cannot race the next event.
+      audioChunkChainRef.current = audioChunkChainRef.current.then(async () => {
         try {
+          if (disposed || generation !== playbackGenerationRef.current || activeSynthesisRef.current !== requestId || chunk.sequence !== nextAudioSequenceRef.current) return;
           let context = playbackContextRef.current;
           if (!context) {
             context = new AudioContext();
@@ -459,14 +463,20 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
             source.start(startAt);
             setVisualState("speaking");
           }
-          await invoke("acknowledge_voice_synthesis_chunk", { requestId, sequence: chunk.sequence });
+          // Advance before ACK: the sidecar may send the next chunk as soon
+          // as it receives the ACK.
           nextAudioSequenceRef.current += 1;
+          await invoke("acknowledge_voice_synthesis_chunk", { requestId, sequence: chunk.sequence });
         } catch (reason) {
           const message = reason instanceof Error ? reason.message : String(reason);
           synthesisCompletionsRef.current.get(requestId)?.reject(new Error(message));
           void invoke("cancel_voice_synthesis_stream", { requestId }).catch(() => undefined);
         }
-      })();
+      }).catch((reason) => {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        synthesisCompletionsRef.current.get(requestId)?.reject(new Error(message));
+        void invoke("cancel_voice_synthesis_stream", { requestId }).catch(() => undefined);
+      });
     }).then((unlisten) => {
       if (disposed) unlisten();
       else unlistenAudioChunk = unlisten;
