@@ -396,7 +396,33 @@ async fn handle_conn<R: tauri::Runtime>(
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
                 if !req_id.is_empty() {
+                    let _ = app_handle.emit(
+                        "voice://tts_complete",
+                        json!({
+                            "session_id": env.session_id,
+                            "id": req_id,
+                            "error": env.payload.get("error"),
+                            "complete": env.payload.get("complete").and_then(|value| value.as_bool()).unwrap_or(false),
+                        }),
+                    );
                     let _ = manager.resolve_voice_synthesis(req_id, env.payload.clone());
+                }
+            }
+
+            msg_type::VOICE_SYNTHESIZE_AUDIO_CHUNK => {
+                let req_id = env.payload.get("id").and_then(|value| value.as_str()).unwrap_or("");
+                if !req_id.is_empty() {
+                    let _ = app_handle.emit(
+                        "voice://tts_audio_chunk",
+                        json!({
+                            "session_id": env.session_id,
+                            "id": req_id,
+                            "sequence": env.payload.get("sequence"),
+                            "audio_base64": env.payload.get("audio_base64"),
+                            "sample_rate": env.payload.get("sample_rate"),
+                            "content_type": env.payload.get("content_type"),
+                        }),
+                    );
                 }
             }
 

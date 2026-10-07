@@ -65,6 +65,17 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+function pcm16Base64ToFloat32(encoded: string): Float32Array<ArrayBuffer> {
+  const binary = atob(encoded);
+  const sampleCount = Math.floor(binary.length / 2);
+  const samples = new Float32Array(sampleCount);
+  for (let index = 0; index < sampleCount; index += 1) {
+    const value = (binary.charCodeAt(index * 2) | (binary.charCodeAt(index * 2 + 1) << 8));
+    samples[index] = (value & 0x8000 ? value - 0x10000 : value) / 32768;
+  }
+  return samples;
+}
+
 export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onTranscript }: VoiceCallPanelProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -78,6 +89,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const [visualState, setVisualState] = useState<VoiceVisualState>("idle");
   const [muted, setMuted] = useState(false);
   const [speakerMuted, setSpeakerMuted] = useState(false);
+  const speakerMutedRef = useRef(false);
   const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [utteranceCount, setUtteranceCount] = useState(0);
@@ -93,12 +105,40 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const speechQueueRef = useRef<string[]>([]);
   const speechWorkerRef = useRef(false);
   const playbackGenerationRef = useRef(0);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const playbackContextRef = useRef<AudioContext | null>(null);
+  const scheduledUntilRef = useRef(0);
+  const playbackNodesRef = useRef(new Set<AudioBufferSourceNode>());
+  const playbackGainsRef = useRef(new Set<GainNode>());
+  const activeSynthesisRef = useRef<string | null>(null);
+  const nextAudioSequenceRef = useRef(0);
+  const synthesisCompletionsRef = useRef(new Map<string, { resolve: () => void; reject: (error: Error) => void }>());
   onTranscriptRef.current = onTranscript;
   const reducedMotion = useRef(false);
 
+  const cancelCurrentSpeech = useCallback(() => {
+    playbackGenerationRef.current += 1;
+    speechQueueRef.current = [];
+    speechBufferRef.current = "";
+    const requestId = activeSynthesisRef.current;
+    activeSynthesisRef.current = null;
+    if (requestId) {
+      void invoke("cancel_voice_synthesis_stream", { requestId }).catch(() => undefined);
+      synthesisCompletionsRef.current.get(requestId)?.reject(new Error("voice synthesis cancelled"));
+      synthesisCompletionsRef.current.delete(requestId);
+    }
+    for (const node of playbackNodesRef.current) {
+      try { node.stop(); } catch { /* The source may already have ended. */ }
+    }
+    playbackNodesRef.current.clear();
+    const context = playbackContextRef.current;
+    if (context && context.state !== "closed") {
+      scheduledUntilRef.current = context.currentTime;
+    }
+  }, []);
+
   const stopCapture = useCallback(() => {
     captureGenerationRef.current += 1;
+    cancelCurrentSpeech();
     stoppingRef.current = true;
     recorderRef.current?.stop();
     recorderRef.current = null;
@@ -109,10 +149,11 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     analyserRef.current = null;
     const context = contextRef.current;
     contextRef.current = null;
+    playbackContextRef.current = null;
     if (context && context.state !== "closed") void context.close();
     setVisualState("idle");
     setLevel(0);
-  }, []);
+  }, [cancelCurrentSpeech]);
 
   const startCapture = useCallback(async () => {
     setError(null);
@@ -180,6 +221,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       recorderRef.current = recorder;
       streamRef.current = stream;
       contextRef.current = context;
+      playbackContextRef.current = context;
+      scheduledUntilRef.current = context.currentTime;
       analyserRef.current = analyser;
       stoppingRef.current = false;
       setUtteranceCount(0);
@@ -209,6 +252,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     let disposed = false;
     let unlistenDelta: (() => void) | undefined;
     let unlistenFinished: (() => void) | undefined;
+    let unlistenAudioChunk: (() => void) | undefined;
+    let unlistenTtsComplete: (() => void) | undefined;
     const enqueueSpeech = (text: string) => {
       const clean = text.trim();
       if (clean) speechQueueRef.current.push(clean);
@@ -219,28 +264,33 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           const next = speechQueueRef.current.shift();
           if (!next) continue;
           const generation = playbackGenerationRef.current;
+          const requestId = crypto.randomUUID();
           try {
             setVisualState("speaking");
-            const encoded = await invoke<string>("synthesize_voice", {
+            activeSynthesisRef.current = requestId;
+            nextAudioSequenceRef.current = 0;
+            const completed = new Promise<void>((resolve, reject) => {
+              synthesisCompletionsRef.current.set(requestId, { resolve, reject });
+            });
+            await invoke<string>("start_voice_synthesis_stream", {
               sessionId: sessionId ?? null,
               text: next,
+              requestId,
             });
             if (disposed || generation !== playbackGenerationRef.current) break;
-            const audio = new Audio(`data:audio/mpeg;base64,${encoded}`);
-            audio.muted = speakerMuted;
-            audioRef.current = audio;
-            const playbackEnded = new Promise<void>((resolve) => {
-              audio.onended = () => resolve();
-              audio.onerror = () => resolve();
-              audio.onpause = () => resolve();
-            });
-            await audio.play();
-            await playbackEnded;
-            if (audioRef.current === audio) audioRef.current = null;
+            await completed;
+            if (disposed || generation !== playbackGenerationRef.current) break;
+            const context = playbackContextRef.current;
+            while (context && context.currentTime < scheduledUntilRef.current && generation === playbackGenerationRef.current) {
+              await new Promise((resolve) => window.setTimeout(resolve, 25));
+            }
           } catch (reason) {
             if (!disposed && generation === playbackGenerationRef.current) {
               setProcessingError(reason instanceof Error ? reason.message : String(reason));
             }
+          } finally {
+            if (activeSynthesisRef.current === requestId) activeSynthesisRef.current = null;
+            synthesisCompletionsRef.current.delete(requestId);
           }
         }
         speechWorkerRef.current = false;
@@ -269,20 +319,94 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
       if (disposed) unlisten();
       else unlistenFinished = unlisten;
     });
+    void listen<{
+      session_id: string; id: string; sequence: number; audio_base64: string; sample_rate: number;
+    }>("voice://tts_audio_chunk", (event) => {
+      const chunk = event.payload;
+      const requestId = chunk.id;
+      const generation = playbackGenerationRef.current;
+      if (disposed || !sessionId || chunk.session_id !== sessionId || activeSynthesisRef.current !== requestId || chunk.sequence !== nextAudioSequenceRef.current) return;
+      void (async () => {
+        try {
+          let context = playbackContextRef.current;
+          if (!context) {
+            context = new AudioContext();
+            playbackContextRef.current = context;
+            scheduledUntilRef.current = context.currentTime;
+          }
+          if (context.state === "suspended") await context.resume();
+          while (!speakerMutedRef.current && scheduledUntilRef.current - context.currentTime >= 0.35) {
+            if (generation !== playbackGenerationRef.current || activeSynthesisRef.current !== requestId) return;
+            await new Promise((resolve) => window.setTimeout(resolve, 20));
+          }
+          if (generation !== playbackGenerationRef.current || activeSynthesisRef.current !== requestId) return;
+          if (!speakerMutedRef.current) {
+            const samples = pcm16Base64ToFloat32(chunk.audio_base64);
+            if (samples.length === 0 || chunk.sample_rate !== 22050) throw new Error("收到无效的 CosyVoice PCM 音频块");
+            const buffer = context.createBuffer(1, samples.length, chunk.sample_rate);
+            buffer.copyToChannel(samples, 0);
+            const source = context.createBufferSource();
+            const gain = context.createGain();
+            source.buffer = buffer;
+            gain.gain.value = speakerMutedRef.current ? 0 : 1;
+            source.connect(gain);
+            gain.connect(context.destination);
+            const startAt = Math.max(context.currentTime + 0.015, scheduledUntilRef.current);
+            scheduledUntilRef.current = startAt + buffer.duration;
+            playbackNodesRef.current.add(source);
+            playbackGainsRef.current.add(gain);
+            source.onended = () => {
+              playbackNodesRef.current.delete(source);
+              playbackGainsRef.current.delete(gain);
+              source.disconnect();
+              gain.disconnect();
+            };
+            source.start(startAt);
+            setVisualState("speaking");
+          }
+          await invoke("acknowledge_voice_synthesis_chunk", { requestId, sequence: chunk.sequence });
+          nextAudioSequenceRef.current += 1;
+        } catch (reason) {
+          const message = reason instanceof Error ? reason.message : String(reason);
+          synthesisCompletionsRef.current.get(requestId)?.reject(new Error(message));
+          void invoke("cancel_voice_synthesis_stream", { requestId }).catch(() => undefined);
+        }
+      })();
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else unlistenAudioChunk = unlisten;
+    });
+    void listen<{ session_id: string; id: string; error?: string | null; complete: boolean }>("voice://tts_complete", (event) => {
+      const result = event.payload;
+      if (disposed || !sessionId || result.session_id !== sessionId || activeSynthesisRef.current !== result.id) return;
+      const completion = synthesisCompletionsRef.current.get(result.id);
+      if (!completion) return;
+      if (result.error) completion.reject(new Error(result.error));
+      else completion.resolve();
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else unlistenTtsComplete = unlisten;
+    });
     return () => {
       disposed = true;
       unlistenDelta?.();
       unlistenFinished?.();
+      unlistenAudioChunk?.();
+      unlistenTtsComplete?.();
       speechQueueRef.current = [];
       speechBufferRef.current = "";
-      playbackGenerationRef.current += 1;
-      audioRef.current?.pause();
-      audioRef.current = null;
+      cancelCurrentSpeech();
     };
-  }, [sessionId]);
+  }, [cancelCurrentSpeech, sessionId]);
 
   useEffect(() => {
-    if (audioRef.current) audioRef.current.muted = speakerMuted;
+    speakerMutedRef.current = speakerMuted;
+    for (const gain of playbackGainsRef.current) {
+      const context = playbackContextRef.current;
+      if (context && context.state !== "closed") {
+        gain.gain.setTargetAtTime(speakerMuted ? 0 : 1, context.currentTime, 0.012);
+      }
+    }
   }, [speakerMuted]);
 
   useEffect(() => {
@@ -318,12 +442,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           const endpointSilenceMs = 720;
           if (rms >= speechThreshold) {
             if (utteranceStartedAtRef.current === null) {
-              if (visualState === "speaking" || audioRef.current) {
-                playbackGenerationRef.current += 1;
-                speechQueueRef.current = [];
-                speechBufferRef.current = "";
-                audioRef.current?.pause();
-                audioRef.current = null;
+              if (visualState === "speaking" || activeSynthesisRef.current) {
+                cancelCurrentSpeech();
                 setVisualState("listening");
               }
               utteranceStartedAtRef.current = now;
@@ -401,7 +521,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
     };
     frame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frame);
-  }, [muted, visualState]);
+  }, [cancelCurrentSpeech, muted, visualState]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -494,7 +614,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
             {muted ? <MicrophoneSlash size={19} aria-hidden="true" /> : <Microphone size={19} aria-hidden="true" />}
             <span className="text-xs">{streamRef.current ? muted ? "取消静音" : "静音" : "开启麦克风"}</span>
           </button>
-          <button type="button" onClick={() => setSpeakerMuted((value) => !value)} className={`flex min-h-12 min-w-12 items-center justify-center gap-2 rounded-full border px-4 transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9a28f] ${speakerMuted ? "border-white/10 bg-white/[0.04] text-white/40" : "border-white/15 bg-white/[0.08] text-white hover:bg-white/[0.14]"}`} aria-label={speakerMuted ? "取消扬声器静音" : "静音扬声器"} aria-pressed={speakerMuted} disabled title="语音播放接入后可用">
+          <button type="button" onClick={() => setSpeakerMuted((value) => !value)} className={`flex min-h-12 min-w-12 items-center justify-center gap-2 rounded-full border px-4 transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9a28f] ${speakerMuted ? "border-white/10 bg-white/[0.04] text-white/40" : "border-white/15 bg-white/[0.08] text-white hover:bg-white/[0.14]"}`} aria-label={speakerMuted ? "取消扬声器静音" : "静音扬声器"} aria-pressed={speakerMuted}>
             {speakerMuted ? <SpeakerSlash size={19} aria-hidden="true" /> : <SpeakerHigh size={19} aria-hidden="true" />}
             <span className="text-xs">扬声器</span>
           </button>

@@ -416,6 +416,68 @@ async def handle_voice_synthesize_request(
         return
 
 
+async def handle_voice_synthesize_stream_request(
+    ws: websockets.WebSocketClientProtocol,
+    envelope: Dict[str, Any],
+    pending_voice_acks: Dict[tuple[str, int], asyncio.Future],
+) -> None:
+    """Forward bounded PCM chunks and wait for renderer playback credit."""
+    request_id = envelope.get("id", "")
+    payload = envelope.get("payload", {})
+    sequence = 0
+    try:
+        text = payload.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("voice synthesis text is required")
+        if len(text) > VOICE_SYNTHESIS_MAX_TEXT_CHARS:
+            raise ValueError("voice synthesis text exceeds the 4000 character limit")
+        provider = CosyVoiceTtsProvider(
+            api_key=payload.get("api_key"),
+            voice=payload.get("voice_id"),
+            workspace=payload.get("workspace_id"),
+        )
+        async for chunk in provider.synthesize_stream(text.strip()):
+            if len(chunk.data) > 256 * 1024:
+                raise ValueError("CosyVoice audio chunk exceeds the 256 KiB limit")
+            if not chunk.data or len(chunk.data) % 2 != 0:
+                raise ValueError("CosyVoice returned an invalid PCM16 chunk")
+            ack = asyncio.get_running_loop().create_future()
+            pending_voice_acks[(request_id, sequence)] = ack
+            await ws.send(make(
+                MsgType.VOICE_SYNTHESIZE_AUDIO_CHUNK,
+                session_id=envelope.get("session_id", ""),
+                payload={
+                    "id": request_id,
+                    "sequence": sequence,
+                    "audio_base64": base64.b64encode(chunk.data).decode("ascii"),
+                    "sample_rate": 22050,
+                    "content_type": "audio/pcm;rate=22050;channels=1;format=s16le",
+                },
+            ).model_dump_json())
+            await asyncio.wait_for(ack, timeout=8)
+            pending_voice_acks.pop((request_id, sequence), None)
+            sequence += 1
+        result_payload = {"id": request_id, "complete": True, "chunks": sequence}
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        result_payload = {"id": request_id, "error": str(error)}
+    finally:
+        for key in [key for key in pending_voice_acks if key[0] == request_id]:
+            future = pending_voice_acks.pop(key)
+            if not future.done():
+                future.cancel()
+    try:
+        result = make(
+            MsgType.VOICE_SYNTHESIZE_RESULT,
+            session_id=envelope.get("session_id", ""),
+            payload=result_payload,
+        )
+        await ws.send(result.model_dump_json())
+    except websockets.exceptions.ConnectionClosed:
+        return
+
+
 async def main() -> None:
     url = os.environ.get("AGENT_WS_URL")
     token = os.environ.get("AGENT_PROTOCOL_TOKEN")
@@ -427,6 +489,8 @@ async def main() -> None:
     print(f"[sidecar] 连接 Rust WS: {url}", flush=True)
 
     pending_futures: Dict[str, asyncio.Future] = {}
+    pending_voice_acks: Dict[tuple[str, int], asyncio.Future] = {}
+    voice_synthesis_tasks: Dict[str, asyncio.Task] = {}
     run_tasks: Dict[str, asyncio.Task] = {}
     background_tasks: set[asyncio.Task] = set()
 
@@ -486,6 +550,29 @@ async def main() -> None:
                     task = asyncio.create_task(handle_voice_synthesize_request(ws, msg))
                     background_tasks.add(task)
                     task.add_done_callback(background_tasks.discard)
+
+                elif mtype == MsgType.VOICE_SYNTHESIZE_STREAM_REQUEST:
+                    request_id = msg.get("id", "")
+                    task = asyncio.create_task(
+                        handle_voice_synthesize_stream_request(ws, msg, pending_voice_acks)
+                    )
+                    voice_synthesis_tasks[request_id] = task
+                    background_tasks.add(task)
+                    task.add_done_callback(background_tasks.discard)
+                    task.add_done_callback(lambda _task, rid=request_id: voice_synthesis_tasks.pop(rid, None))
+
+                elif mtype == MsgType.VOICE_SYNTHESIZE_ACK:
+                    payload = msg.get("payload", {})
+                    key = (payload.get("id", ""), payload.get("sequence", -1))
+                    ack = pending_voice_acks.get(key)
+                    if ack and not ack.done():
+                        ack.set_result(True)
+
+                elif mtype == MsgType.VOICE_SYNTHESIZE_CANCEL:
+                    request_id = msg.get("payload", {}).get("id", "")
+                    task = voice_synthesis_tasks.get(request_id)
+                    if task and not task.done():
+                        task.cancel()
 
                 elif mtype == MsgType.DEBUG_PROMPT:
                     # 仅拼装提示词并返回，不调用 LLM，用于前端调试面板

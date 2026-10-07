@@ -34,6 +34,10 @@ class MsgType(str, Enum):
     VOICE_TRANSCRIBE_RESULT = "voice_transcribe_result"
     VOICE_SYNTHESIZE_REQUEST = "voice_synthesize_request"
     VOICE_SYNTHESIZE_RESULT = "voice_synthesize_result"
+    VOICE_SYNTHESIZE_STREAM_REQUEST = "voice_synthesize_stream_request"
+    VOICE_SYNTHESIZE_AUDIO_CHUNK = "voice_synthesize_audio_chunk"
+    VOICE_SYNTHESIZE_ACK = "voice_synthesize_ack"
+    VOICE_SYNTHESIZE_CANCEL = "voice_synthesize_cancel"
 
 
 class Envelope(BaseModel):

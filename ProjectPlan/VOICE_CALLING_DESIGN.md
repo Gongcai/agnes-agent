@@ -1,6 +1,6 @@
 # 全双工语音通话规划设计
 
-> 状态：Phase 0 Provider Spike 已完成；Phase 1 已接通本机麦克风 VAD 分段、受控 sidecar ASR、文本 Agent 与 CosyVoice 分句播放。CosyVoice 真流式回传、会话级话轮取消和完整全双工仍待实现。
+> 状态：Phase 0 Provider Spike 已完成；Phase 1 已接通本机麦克风 VAD 分段、受控 sidecar ASR、文本 Agent 与 CosyVoice PCM callback 分块播放。TTS 块使用逐块 ACK 和有界缓冲；ASR 二进制通道、Agent run/话轮取消及完整全双工仍待实现。
 > 关联文档：VOICE_CALLING.md（可行性与竞品参考）、architecture.md（系统边界）、MODEL_ROUTING.md（模型任务分工）。
 
 ## 1. 目标与产品定义
@@ -12,7 +12,7 @@
 | 角色 | 模型 | 示例所示接口 | 规划判断 |
 |---|---|---|---|
 | ASR | qwen-audio-3.1-asr-flash | ProjectPlan/qwen-audio-asr-example.txt：HTTP POST，input_audio.data 为音频 URL，format/sample_rate 指定音频格式，关闭 SSE | 目前只证明整段音频识别请求，不证明实时音频流或 partial transcript。首版按 VAD 切分 utterance 后逐段识别，由 endpointing 触发回复。 |
-| TTS | cosyvoice-v3.5-flash | DashScope Python SDK `SpeechSynthesizer` callback / `streaming_call()` | 已确认北京 Workspace 支持 `on_data()` 音频回调、`streaming_complete()` 和 `streaming_cancel()`；Provider 已将同步 SDK 包装为异步音频块迭代器。文本增量接入 Agent 仍待完成。 |
+| TTS | cosyvoice-v3.5-flash | DashScope Python SDK `SpeechSynthesizer` callback / `streaming_call()` | 官方示例使用 PCM_22050HZ_MONO_16BIT callback；当前以 PCM 块经 sidecar、Rust 事件传至 WebView，前端 Web Audio 逐块调度。ACK 限制最多一个跨层未确认块，Provider callback 桥接队列上限为 3 块。Agent 文本仍按标点分句请求独立流，不是同一 CosyVoice 请求的文本增量输入。 |
 
 cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus；但官方 `voice-design.md` 的支持范围确认 CosyVoice Voice Design 可直接指定 `cosyvoice-v3.5-flash`。CosyVoice SDK 的 `SpeechSynthesizer` 要求 `voice` 参数，第一版使用 `agent/app/voice/design_voice.py` 生成并配置 Flash 专属 `voice_id`（`DASHSCOPE_TTS_VOICE` 或应用配置），不能复用 v3 内置音色。具体声音描述和创建步骤见 `ProjectPlan/AGNES_VOICE_DESIGN.md`。
 
@@ -27,7 +27,7 @@ cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus�
 
 ## 3. 首版链路与已知限制
 
-当前已落地链路：麦克风持续采集 → 本地 RMS endpointing 分段 → WAV 16 kHz 转换 → Rust 受控 Tauri 命令 → 已认证 sidecar ASR 请求 → Qwen 整段识别 → 复用现有文本 Agent → assistant 增量按标点分句 → Rust 受控 CosyVoice 请求 → WebView MP3 顺序播放。下一阶段再把完整音频块改为 sidecar 真流式回传。
+当前已落地链路：麦克风持续采集 → 本地 RMS endpointing 分段 → WAV 16 kHz 转换 → Rust 受控 Tauri 命令 → 已认证 sidecar ASR 请求 → Qwen 整段识别 → 复用现有文本 Agent → assistant 增量按标点分句 → CosyVoice PCM callback → sidecar/Rust 有序事件 → Web Audio PCM 播放。前端仅在播放缓冲低于约 350 ms 后 ACK 下一块；sidecar 同时等待 ACK，Provider 的 callback 队列最多 3 块，避免整句 MP3/base64 缓存。
 
 这条路线支持连续会话和抢话，但 ASR 不是持续流式识别：当前示例没有证明云端 partial transcript。ASR 请求、文本 Agent 与 TTS 会串联增加首音频延迟。AI 播放期间仍持续采集并使用本地 VAD 检测新语音；插话时先本地静音和取消旧轮次，不等待 ASR final。
 
@@ -37,9 +37,9 @@ cosyvoice-v3.5-flash-voice-design-example.txt 使用的是 cosyvoice-v3.5-plus�
 
 | 层 | 职责 |
 |---|---|
-| React / Tauri WebView | 当前用 MediaRecorder 分段、Web Audio RMS endpointing，并转为单声道 16 kHz WAV；监听普通 Agent 增量，分句后顺序播放 MP3。插话时立即暂停并清空本地播放队列。 |
-| Rust Core | 校验音频/文本大小与会话，使用请求关联表把 ASR/TTS 请求交给 sidecar；API Key、voice_id、Workspace 只从 Rust 配置/密钥边界读取，原始音频不落库。 |
-| Python Voice Session（Agent sidecar 内） | 处理一次性 ASR 与 CosyVoice 合成请求；当前 TTS 返回完整 MP3，尚未把 callback 音频块转成独立协议帧。 |
+| React / Tauri WebView | 当前用 MediaRecorder 分段、Web Audio RMS endpointing，并转为单声道 16 kHz WAV；监听普通 Agent 增量并分句。Web Audio 将 PCM16/22050 Hz 块调度至播放队列，最多预排约 350 ms；收到并调度后 ACK。插话时立即停止本地节点、清空待播语句并取消当前 TTS 请求。 |
+| Rust Core | 校验文本/会话并传递带 request_id、sequence 的 TTS 块与 ACK；API Key、voice_id、Workspace 只从 Rust 配置/密钥边界读取，原始音频不落库。TTS 传输仍使用本地认证 JSON WebSocket 和 base64 块，ASR 也仍是 base64 WAV 请求。 |
+| Python Voice Session（Agent sidecar 内） | 处理一次性 ASR 与 CosyVoice 合成请求；callback 线程桥接到最多 3 块的 asyncio 队列，sidecar 每次仅发送一个未确认 PCM 块，并等待 WebView ACK 后继续。取消消息会取消 TTS task 并调用 SDK streaming_cancel。 |
 | 阿里云 | Qwen ASR 与 CosyVoice TTS；HTTPS/WSS，由受控运行时使用密钥。 |
 
 声卡 I/O 在 renderer/WebView；turn 编排及云服务适配放 Python sidecar；Rust 持有会话与凭据边界、协议协调和落库。桌面端不新增独立语音守护进程。Android 若 WebView 采集/AEC 表现不足，再评估原生音频插件，但保持相同 Voice Session 协议。音频跨层使用二进制专用通道或受控分块，不用 JSON base64。Agent Protocol 保持现有 127.0.0.1 WebSocket 主从关系。
@@ -75,9 +75,10 @@ idle → connecting → listening ↔ recognizing ↔ thinking ↔ speaking → 
 | Python → Rust → UI | voice_transcript_partial | 临时识别展示；首选 API 暂无证明，协议预留 |
 | Python → Rust → UI | voice_transcript_final | 最终识别；Rust 落用户消息 |
 | Python → Rust → UI | voice_assistant_delta | 当前 turn 可播报文本；避免与普通 assistant delta 重复落库 |
-| Python → Rust → UI | voice_audio_chunk | 编码、序号、turn_id 与音频二进制 |
+| Python → Rust → UI | voice_audio_chunk | 规划中的编码、序号、turn_id 与音频二进制；当前 TTS PCM 块经 base64 JSON 传输 |
 | UI → Rust → Python | voice_interrupt | 本地 VAD/用户打断；立即清播放队列 |
-| Rust → Python/UI | voice_cancel_turn / voice_turn_cancelled | 取消 Agent/TTS 并确认 turn 失效 |
+| Rust → Python/UI | voice_synthesize_stream_request / voice_synthesize_audio_chunk / voice_synthesize_ack / voice_synthesize_cancel | 当前已实现的 TTS 请求、PCM 块、播放 ACK 和请求取消；每块含 request_id 与 sequence |
+| Rust → Python/UI | voice_cancel_turn / voice_turn_cancelled | 规划中的 Agent/TTS 话轮级取消并确认 turn 失效；当前只有单个 TTS 请求取消 |
 | UI → Rust → Python | voice_stop | 结束会话并清理资源 |
 | Python → Rust → UI | voice_error | 归一化错误、阶段与可恢复性 |
 
@@ -160,7 +161,7 @@ Provider 端口应允许替换：transcribe(audio, config) → transcript；synt
 - [x] 增加通话入口、权限提示、麦克风预览、通话状态舞台与结束控制。
 - [x] 接通本地采集、本地 endpointing、整段 ASR 和识别文本进入现有 Agent。
 - [x] 完成 CosyVoice 分句合成、WebView 播放队列和本地插话静音。
-- [ ] 完成 CosyVoice callback 音频块的真流式回传和播放。
+- [x] 完成 CosyVoice PCM callback 音频块的逐块回传、确认和 Web Audio 播放。
 - [ ] 将当前 JSON base64 一次性 ASR 请求升级为有界二进制音频通道，减少复制和编码开销。
 - 首版可整段 TTS；若 SDK 支持真正流式消费则启用。
 - 转写和 assistant 文本复用现有消息仓储，不保存音频。
@@ -198,7 +199,7 @@ ASR 若为每 utterance HTTP 整段请求，endpointing 后 ASR 的实测延迟�
 | 事项 | 当前处理 | 决策时点 |
 |---|---|---|
 | ASR 是否支持该模型实时输入 | 示例只证明 HTTP 整段请求，按非流式设计 | Phase 0 查正式 API 与 Workspace 权限 |
-| CosyVoice Flash 文本增量接入 | 音频 callback、完成和取消已验证；Agent `assistant_delta` 尚未直接驱动同一 TTS 任务 | Phase 2 接入文本缓冲和双向 `streaming_call()` |
+| CosyVoice Flash 文本增量接入 | 每个完成的 Agent 句子独立启动一个 PCM 流；当前 Agent `assistant_delta` 未直接驱动同一 TTS 请求的 `streaming_call()` | Phase 2 评估文本缓冲和双向 `streaming_call()` |
 | ASR 音频提交方式 | 示例使用 input_audio.data URL | 确认受控上传/本地直传，避免公开 URL |
 | 格式、最大长度、地域、价格、配额 | 不写死假设 | 实测和控制台确认后固化 |
 | 首发音色 | 默认/预置音色；设计示例使用 Plus | Flash 兼容性验证后再纳入 |

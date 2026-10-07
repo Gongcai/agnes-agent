@@ -59,6 +59,10 @@ pub mod msg_type {
     pub const VOICE_TRANSCRIBE_RESULT: &str = "voice_transcribe_result";
     pub const VOICE_SYNTHESIZE_REQUEST: &str = "voice_synthesize_request";
     pub const VOICE_SYNTHESIZE_RESULT: &str = "voice_synthesize_result";
+    pub const VOICE_SYNTHESIZE_STREAM_REQUEST: &str = "voice_synthesize_stream_request";
+    pub const VOICE_SYNTHESIZE_AUDIO_CHUNK: &str = "voice_synthesize_audio_chunk";
+    pub const VOICE_SYNTHESIZE_ACK: &str = "voice_synthesize_ack";
+    pub const VOICE_SYNTHESIZE_CANCEL: &str = "voice_synthesize_cancel";
     pub const PING: &str = "ping";
     pub const PONG: &str = "pong";
 }

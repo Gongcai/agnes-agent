@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import os
 import threading
@@ -41,14 +42,15 @@ def resolve_websocket_url(websocket_url: str | None, workspace: str | None) -> s
 class CosyVoiceTtsProvider:
     """CosyVoice v3.5 Flash adapter.
 
-    The SDK is synchronous and delivers streaming audio through callbacks. The
-    adapter runs that SDK call in a worker thread and bridges callback events to
-    the asyncio loop, while retaining ``synthesize`` for callers that need one
-    complete byte string.
+    The SDK is synchronous and delivers streaming PCM through callbacks. The
+    adapter runs that SDK call in a worker thread and bridges bounded callback
+    events to the asyncio loop, while retaining ``synthesize`` for callers that
+    need one complete MP3 byte string.
     """
 
     model = "cosyvoice-v3.5-flash"
     streaming = True
+    MAX_PENDING_CHUNKS = 3
 
     def __init__(
         self,
@@ -93,36 +95,28 @@ class CosyVoiceTtsProvider:
             if not text.strip():
                 return
             await self._cancel_stream()
-            state = _StreamState(loop=asyncio.get_running_loop())
+            state = _StreamState(
+                loop=asyncio.get_running_loop(),
+                events=asyncio.Queue(maxsize=self.MAX_PENDING_CHUNKS),
+            )
             self._active_stream = state
             state.worker = asyncio.create_task(self._run_stream(text, state))
             sequence = 0
-            pending: _AudioEvent | None = None
             try:
                 while True:
                     event = await state.events.get()
                     if isinstance(event, _AudioEvent):
                         if state.cancelled:
                             continue
-                        if pending is not None:
-                            yield AudioChunk(
-                                data=pending.data,
-                                content_type="audio/mpeg",
-                                sequence=sequence,
-                                is_final=False,
-                            )
-                            sequence += 1
-                        pending = event
+                        yield AudioChunk(
+                            data=event.data,
+                            content_type="audio/pcm;rate=22050;channels=1;format=s16le",
+                            sequence=sequence,
+                        )
+                        sequence += 1
                     elif isinstance(event, _StreamError):
                         raise event.error
                     elif isinstance(event, _StreamComplete):
-                        if pending is not None and not state.cancelled:
-                            yield AudioChunk(
-                                data=pending.data,
-                                content_type="audio/mpeg",
-                                sequence=sequence,
-                                is_final=True,
-                            )
                         break
             finally:
                 if self._active_stream is state:
@@ -262,7 +256,7 @@ class CosyVoiceTtsProvider:
         synthesizer = SpeechSynthesizer(
             model=provider.model,
             voice=provider.voice,
-            format=AudioFormat.MP3_22050HZ_MONO_256KBPS,
+            format=AudioFormat.PCM_22050HZ_MONO_16BIT,
             workspace=provider.workspace,
             callback=Callback(),
         )
@@ -297,7 +291,9 @@ class _StreamComplete:
 @dataclass
 class _StreamState:
     loop: asyncio.AbstractEventLoop
-    events: asyncio.Queue[object] = field(default_factory=asyncio.Queue)
+    events: asyncio.Queue[object] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=3)
+    )
     done: asyncio.Event = field(default_factory=asyncio.Event)
     worker: asyncio.Task[None] | None = None
     cancelled: bool = False
@@ -321,8 +317,17 @@ class _StreamState:
         if self.cancelled and isinstance(event, (_AudioEvent, _StreamError)):
             return
         try:
-            self.loop.call_soon_threadsafe(self.events.put_nowait, event)
-        except RuntimeError:
+            future = asyncio.run_coroutine_threadsafe(self.events.put(event), self.loop)
+            while not self.cancelled:
+                try:
+                    future.result(timeout=0.1)
+                    return
+                except concurrent.futures.TimeoutError:
+                    continue
+                except RuntimeError:
+                    return
+            future.cancel()
+        except (RuntimeError, concurrent.futures.CancelledError):
             return
 
     def emit_audio(self, data: bytes) -> None:

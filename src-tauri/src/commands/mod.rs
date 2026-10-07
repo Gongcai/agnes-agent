@@ -1644,6 +1644,113 @@ pub async fn synthesize_voice(
     Ok(BASE64.encode(audio))
 }
 
+/// Start a callback based CosyVoice stream and return its correlation id.
+#[tauri::command]
+pub async fn start_voice_synthesis_stream(
+    state: tauri::State<'_, AppState>,
+    session_id: Option<String>,
+    text: String,
+    request_id: String,
+) -> AppResult<String> {
+    const MAX_TEXT_CHARS: usize = 4000;
+    let text = text.trim();
+    if text.is_empty() || text.chars().count() > MAX_TEXT_CHARS {
+        return Err(AppError::Other("语音合成文本为空或超过 4000 字符限制".into()));
+    }
+    let session_id = session_id.unwrap_or_default();
+    if !session_id.is_empty()
+        && state.db.get_session(session_id.clone()).await?.is_none()
+    {
+        return Err(AppError::Other("语音合成关联的会话不存在".into()));
+    }
+    let providers = state.db.list_model_providers().await?;
+    let provider = providers
+        .iter()
+        .find(|provider| provider.kind == "dashscope" && provider.is_default != 0)
+        .or_else(|| providers.iter().find(|provider| provider.kind == "dashscope"));
+    let api_key = match provider {
+        Some(provider) => state
+            .secrets
+            .get(&provider_api_key_secret_id(&provider.id))
+            .await?
+            .filter(|value| !value.trim().is_empty()),
+        None => None,
+    }
+    .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok().filter(|value| !value.trim().is_empty()))
+    .ok_or_else(|| AppError::Other("DashScope API Key 未配置".into()))?;
+    let voice_id = state
+        .db
+        .get_setting("voice:dashscope:cosyvoice_voice_id".into())
+        .await?
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("DASHSCOPE_TTS_VOICE").ok())
+        .ok_or_else(|| AppError::Other("请配置 cosyvoice-v3.5-flash 的 voice_id".into()))?;
+    let workspace_id = state
+        .db
+        .get_setting("voice:dashscope:workspace_id".into())
+        .await?
+        .or_else(|| std::env::var("DASHSCOPE_WORKSPACE_ID").ok())
+        .unwrap_or_default();
+    let request_id = uuid::Uuid::parse_str(&request_id)
+        .map_err(|_| AppError::Other("语音合成请求 ID 无效".into()))?
+        .to_string();
+    let env = Envelope {
+        protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
+        id: request_id.clone(),
+        run_id: String::new(),
+        session_id,
+        msg_type: msg_type::VOICE_SYNTHESIZE_STREAM_REQUEST.to_string(),
+        created_at: String::new(),
+        payload: json!({
+            "text": text,
+            "api_key": api_key,
+            "voice_id": voice_id,
+            "workspace_id": workspace_id,
+        }),
+    };
+    state.agent.send_to_agent(env)?;
+    Ok(request_id)
+}
+
+#[tauri::command]
+pub fn cancel_voice_synthesis_stream(
+    state: tauri::State<'_, AppState>,
+    request_id: String,
+) -> AppResult<()> {
+    if request_id.is_empty() || request_id.len() > 64 {
+        return Err(AppError::Other("语音合成请求 ID 无效".into()));
+    }
+    state.agent.send_to_agent(Envelope {
+        protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
+        id: uuid::Uuid::new_v4().to_string(),
+        run_id: String::new(),
+        session_id: String::new(),
+        msg_type: msg_type::VOICE_SYNTHESIZE_CANCEL.to_string(),
+        created_at: String::new(),
+        payload: json!({ "id": request_id }),
+    })
+}
+
+#[tauri::command]
+pub fn acknowledge_voice_synthesis_chunk(
+    state: tauri::State<'_, AppState>,
+    request_id: String,
+    sequence: u64,
+) -> AppResult<()> {
+    if request_id.is_empty() || request_id.len() > 64 {
+        return Err(AppError::Other("语音合成请求 ID 无效".into()));
+    }
+    state.agent.send_to_agent(Envelope {
+        protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
+        id: uuid::Uuid::new_v4().to_string(),
+        run_id: String::new(),
+        session_id: String::new(),
+        msg_type: msg_type::VOICE_SYNTHESIZE_ACK.to_string(),
+        created_at: String::new(),
+        payload: json!({ "id": request_id, "sequence": sequence }),
+    })
+}
+
 /// 获取某个会话中所有的消息与片段，并翻译成前端所用 Dto。
 #[tauri::command]
 pub async fn list_messages(
