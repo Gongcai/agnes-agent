@@ -17,7 +17,7 @@ from .prompt import assemble_prompt, summarize_history
 from .graph import build_graph, get_available_tools
 from .models import LlmConfig, embed_texts
 from .title import generate_session_title
-from .voice.providers import AudioFormat, DashScopeAsrProvider
+from .voice.providers import AudioFormat, CosyVoiceTtsProvider, DashScopeAsrProvider
 
 EMBEDDING_REQUEST_TIMEOUT_SECONDS = 30
 
@@ -373,6 +373,49 @@ async def handle_voice_transcribe_request(
         return
 
 
+VOICE_SYNTHESIS_MAX_TEXT_CHARS = 4000
+VOICE_SYNTHESIS_MAX_BYTES = 12 * 1024 * 1024
+
+
+async def handle_voice_synthesize_request(
+    ws: websockets.WebSocketClientProtocol,
+    envelope: Dict[str, Any],
+) -> None:
+    """Synthesize one assistant sentence and return its bounded audio payload."""
+    request_id = envelope.get("id", "")
+    payload = envelope.get("payload", {})
+    try:
+        text = payload.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("voice synthesis text is required")
+        if len(text) > VOICE_SYNTHESIS_MAX_TEXT_CHARS:
+            raise ValueError("voice synthesis text exceeds the 4000 character limit")
+        provider = CosyVoiceTtsProvider(
+            api_key=payload.get("api_key"),
+            voice=payload.get("voice_id"),
+            workspace=payload.get("workspace_id"),
+        )
+        audio = await provider.synthesize(text.strip())
+        if not audio or len(audio) > VOICE_SYNTHESIS_MAX_BYTES:
+            raise ValueError("voice synthesis audio is empty or exceeds the 12 MiB limit")
+        result_payload = {
+            "id": request_id,
+            "audio_base64": base64.b64encode(audio).decode("ascii"),
+            "content_type": "audio/mpeg",
+        }
+    except Exception as error:
+        result_payload = {"id": request_id, "error": str(error)}
+    try:
+        result = make(
+            MsgType.VOICE_SYNTHESIZE_RESULT,
+            session_id=envelope.get("session_id", ""),
+            payload=result_payload,
+        )
+        await ws.send(result.model_dump_json())
+    except websockets.exceptions.ConnectionClosed:
+        return
+
+
 async def main() -> None:
     url = os.environ.get("AGENT_WS_URL")
     token = os.environ.get("AGENT_PROTOCOL_TOKEN")
@@ -436,6 +479,11 @@ async def main() -> None:
 
                 elif mtype == MsgType.VOICE_TRANSCRIBE_REQUEST:
                     task = asyncio.create_task(handle_voice_transcribe_request(ws, msg))
+                    background_tasks.add(task)
+                    task.add_done_callback(background_tasks.discard)
+
+                elif mtype == MsgType.VOICE_SYNTHESIZE_REQUEST:
+                    task = asyncio.create_task(handle_voice_synthesize_request(ws, msg))
                     background_tasks.add(task)
                     task.add_done_callback(background_tasks.discard)
 

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, Microphone, MicrophoneSlash, PhoneDisconnect, SpeakerHigh, SpeakerSlash, Warning } from "@phosphor-icons/react";
 
-type VoiceVisualState = "idle" | "listening" | "error";
+type VoiceVisualState = "idle" | "listening" | "speaking" | "error";
 
 interface VoiceCallPanelProps {
   agentName: string;
@@ -87,6 +88,12 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   const onTranscriptRef = useRef(onTranscript);
   const mountedRef = useRef(true);
   const captureGenerationRef = useRef(0);
+  const recognitionQueueRef = useRef(Promise.resolve());
+  const speechBufferRef = useRef("");
+  const speechQueueRef = useRef<string[]>([]);
+  const speechWorkerRef = useRef(false);
+  const playbackGenerationRef = useRef(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   onTranscriptRef.current = onTranscript;
   const reducedMotion = useRef(false);
 
@@ -140,12 +147,14 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
         const durationMs = performance.now() - startedAt;
         setUtteranceCount((count) => count + 1);
         setLastUtteranceMs(durationMs);
-        setRecognizing(true);
-        setProcessingError(null);
         const generation = captureGenerationRef.current;
-        void (async () => {
+        recognitionQueueRef.current = recognitionQueueRef.current.then(async () => {
+          if (!mountedRef.current || generation !== captureGenerationRef.current) return;
+          setRecognizing(true);
+          setProcessingError(null);
           try {
             const wav = await toMonoWav16k(audio);
+            if (!mountedRef.current || generation !== captureGenerationRef.current) return;
             const text = await invoke<string>("transcribe_voice", {
               sessionId: sessionId ?? null,
               audioBase64: await blobToBase64(wav),
@@ -162,7 +171,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           } finally {
             if (mountedRef.current && generation === captureGenerationRef.current) setRecognizing(false);
           }
-        })();
+        });
         utteranceChunksRef.current = [];
         utteranceStartedAtRef.current = null;
         if (!stoppingRef.current && streamRef.current === stream) recorder.start(100);
@@ -197,6 +206,86 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    let unlistenDelta: (() => void) | undefined;
+    let unlistenFinished: (() => void) | undefined;
+    const enqueueSpeech = (text: string) => {
+      const clean = text.trim();
+      if (clean) speechQueueRef.current.push(clean);
+      if (speechWorkerRef.current) return;
+      speechWorkerRef.current = true;
+      void (async () => {
+        while (!disposed && speechQueueRef.current.length > 0) {
+          const next = speechQueueRef.current.shift();
+          if (!next) continue;
+          const generation = playbackGenerationRef.current;
+          try {
+            setVisualState("speaking");
+            const encoded = await invoke<string>("synthesize_voice", {
+              sessionId: sessionId ?? null,
+              text: next,
+            });
+            if (disposed || generation !== playbackGenerationRef.current) break;
+            const audio = new Audio(`data:audio/mpeg;base64,${encoded}`);
+            audio.muted = speakerMuted;
+            audioRef.current = audio;
+            const playbackEnded = new Promise<void>((resolve) => {
+              audio.onended = () => resolve();
+              audio.onerror = () => resolve();
+              audio.onpause = () => resolve();
+            });
+            await audio.play();
+            await playbackEnded;
+            if (audioRef.current === audio) audioRef.current = null;
+          } catch (reason) {
+            if (!disposed && generation === playbackGenerationRef.current) {
+              setProcessingError(reason instanceof Error ? reason.message : String(reason));
+            }
+          }
+        }
+        speechWorkerRef.current = false;
+        if (!disposed) setVisualState(streamRef.current ? "listening" : "idle");
+      })();
+    };
+    void listen<{ session_id: string; content: string; segments?: { kind: string; content: string }[] }>("agent://assistant_delta", (event) => {
+      if (disposed || !sessionId || event.payload.session_id !== sessionId) return;
+      const text = event.payload.segments
+        ? event.payload.segments.filter((segment) => segment.kind === "text").map((segment) => segment.content).join("")
+        : event.payload.content;
+      speechBufferRef.current += text;
+      const parts = speechBufferRef.current.split(/(?<=[。！？!?；;\n])/u);
+      speechBufferRef.current = parts.pop() ?? "";
+      for (const part of parts) enqueueSpeech(part);
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else unlistenDelta = unlisten;
+    });
+    void listen<{ session_id: string }>("agent://run_finished", (event) => {
+      if (disposed || !sessionId || event.payload.session_id !== sessionId) return;
+      const remainder = speechBufferRef.current;
+      speechBufferRef.current = "";
+      enqueueSpeech(remainder);
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else unlistenFinished = unlisten;
+    });
+    return () => {
+      disposed = true;
+      unlistenDelta?.();
+      unlistenFinished?.();
+      speechQueueRef.current = [];
+      speechBufferRef.current = "";
+      playbackGenerationRef.current += 1;
+      audioRef.current?.pause();
+      audioRef.current = null;
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.muted = speakerMuted;
+  }, [speakerMuted]);
+
+  useEffect(() => {
     let frame = 0;
     let lastMeterUpdate = 0;
     const draw = (time: number) => {
@@ -229,6 +318,14 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           const endpointSilenceMs = 720;
           if (rms >= speechThreshold) {
             if (utteranceStartedAtRef.current === null) {
+              if (visualState === "speaking" || audioRef.current) {
+                playbackGenerationRef.current += 1;
+                speechQueueRef.current = [];
+                speechBufferRef.current = "";
+                audioRef.current?.pause();
+                audioRef.current = null;
+                setVisualState("listening");
+              }
               utteranceStartedAtRef.current = now;
               utteranceChunksRef.current = [];
             }
@@ -335,7 +432,8 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
   };
 
   const status = visualState === "error" ? "麦克风不可用"
-    : !streamRef.current ? "准备开始"
+    : visualState === "speaking" ? "Agnes 正在回复"
+      : !streamRef.current ? "准备开始"
       : muted ? "麦克风已静音"
         : level > 0.035 ? "正在聆听" : "我在听";
 
@@ -364,7 +462,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           </div>
           <div className="mt-1 min-h-12 text-center">
             <div className="text-sm font-medium tracking-wide text-white/90" aria-live="polite">{status}</div>
-            {visualState === "listening" && !muted && (
+            {(visualState === "listening" || visualState === "speaking") && !muted && (
               <div className="mt-1 text-[11px] text-white/45">麦克风音量 {Math.round(level * 100)}%</div>
             )}
           </div>

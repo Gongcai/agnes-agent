@@ -32,6 +32,8 @@ class MsgType(str, Enum):
     EMBEDDING_RESULT = "embedding_result"
     VOICE_TRANSCRIBE_REQUEST = "voice_transcribe_request"
     VOICE_TRANSCRIBE_RESULT = "voice_transcribe_result"
+    VOICE_SYNTHESIZE_REQUEST = "voice_synthesize_request"
+    VOICE_SYNTHESIZE_RESULT = "voice_synthesize_result"
 
 
 class Envelope(BaseModel):

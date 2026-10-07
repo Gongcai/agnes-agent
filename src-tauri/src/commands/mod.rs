@@ -1546,6 +1546,104 @@ pub async fn transcribe_voice(
         .to_string())
 }
 
+/// Synthesize one assistant text segment through the authenticated sidecar path.
+#[tauri::command]
+pub async fn synthesize_voice(
+    state: tauri::State<'_, AppState>,
+    session_id: Option<String>,
+    text: String,
+) -> AppResult<String> {
+    const MAX_TEXT_CHARS: usize = 4000;
+    const MAX_AUDIO_BYTES: usize = 12 * 1024 * 1024;
+    let text = text.trim();
+    if text.is_empty() || text.chars().count() > MAX_TEXT_CHARS {
+        return Err(AppError::Other("语音合成文本为空或超过 4000 字符限制".into()));
+    }
+    let session_id = session_id.unwrap_or_default();
+    if !session_id.is_empty()
+        && state.db.get_session(session_id.clone()).await?.is_none()
+    {
+        return Err(AppError::Other("语音合成关联的会话不存在".into()));
+    }
+    let providers = state.db.list_model_providers().await?;
+    let provider = providers
+        .iter()
+        .find(|provider| provider.kind == "dashscope" && provider.is_default != 0)
+        .or_else(|| providers.iter().find(|provider| provider.kind == "dashscope"));
+    let api_key = match provider {
+        Some(provider) => state
+            .secrets
+            .get(&provider_api_key_secret_id(&provider.id))
+            .await?
+            .filter(|value| !value.trim().is_empty()),
+        None => None,
+    }
+    .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok().filter(|value| !value.trim().is_empty()))
+    .ok_or_else(|| AppError::Other("DashScope API Key 未配置".into()))?;
+    let voice_id = state
+        .db
+        .get_setting("voice:dashscope:cosyvoice_voice_id".into())
+        .await?
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("DASHSCOPE_TTS_VOICE").ok())
+        .ok_or_else(|| AppError::Other("请配置 cosyvoice-v3.5-flash 的 voice_id".into()))?;
+    let workspace_id = state
+        .db
+        .get_setting("voice:dashscope:workspace_id".into())
+        .await?
+        .or_else(|| std::env::var("DASHSCOPE_WORKSPACE_ID").ok())
+        .unwrap_or_default();
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
+    state
+        .agent
+        .register_voice_synthesis(request_id.clone(), tx);
+    let env = Envelope {
+        protocol_version: crate::agent::protocol::PROTOCOL_VERSION,
+        id: request_id.clone(),
+        run_id: String::new(),
+        session_id,
+        msg_type: msg_type::VOICE_SYNTHESIZE_REQUEST.to_string(),
+        created_at: String::new(),
+        payload: json!({
+            "text": text,
+            "api_key": api_key,
+            "voice_id": voice_id,
+            "workspace_id": workspace_id,
+        }),
+    };
+    if let Err(error) = state.agent.send_to_agent(env) {
+        state
+            .agent
+            .resolve_voice_synthesis(&request_id, json!({ "error": error.to_string() }));
+        return Err(error);
+    }
+    let payload = match tokio::time::timeout(std::time::Duration::from_secs(75), rx).await {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(_)) => return Err(AppError::Other("语音合成通道已断开".into())),
+        Err(_) => {
+            state
+                .agent
+                .resolve_voice_synthesis(&request_id, json!({ "error": "timeout" }));
+            return Err(AppError::Other("语音合成超时".into()));
+        }
+    };
+    if let Some(error) = payload.get("error").and_then(|value| value.as_str()) {
+        return Err(AppError::Other(error.to_string()));
+    }
+    let encoded = payload
+        .get("audio_base64")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| AppError::Other("语音合成未返回音频".into()))?;
+    let audio = BASE64
+        .decode(encoded.as_bytes())
+        .map_err(|_| AppError::Other("语音合成返回了无效音频编码".into()))?;
+    if audio.is_empty() || audio.len() > MAX_AUDIO_BYTES {
+        return Err(AppError::Other("语音合成音频为空或超过 12 MiB 限制".into()));
+    }
+    Ok(BASE64.encode(audio))
+}
+
 /// 获取某个会话中所有的消息与片段，并翻译成前端所用 Dto。
 #[tauri::command]
 pub async fn list_messages(

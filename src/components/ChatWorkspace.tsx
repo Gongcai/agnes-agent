@@ -996,6 +996,16 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           sessionName={activeSession?.title}
           sessionId={activeSessionId}
           onTranscript={async (text) => {
+            if (useAgentStore.getState().isStreaming) {
+              await new Promise<void>((resolve) => {
+                const unsubscribe = useAgentStore.subscribe((state) => {
+                  if (!state.isStreaming) {
+                    unsubscribe();
+                    resolve();
+                  }
+                });
+              });
+            }
             await sendMessage(activeSessionId, text);
           }}
           onClose={() => setVoiceCallOpen(false)}
