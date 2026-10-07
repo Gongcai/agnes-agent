@@ -213,7 +213,19 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           return;
         }
         const startedAt = utteranceStartedAtRef.current;
-        if (!startedAt || utteranceChunksRef.current.length === 0) return;
+        const restartRecorder = () => {
+          utteranceChunksRef.current = [];
+          utteranceStartedAtRef.current = null;
+          silenceSinceRef.current = null;
+          if (!stoppingRef.current && streamRef.current === stream && recorder.state === "inactive") {
+            recorder.start(100);
+          }
+        };
+        if (!startedAt || utteranceChunksRef.current.length === 0) {
+          if (startedAt) setProcessingError("未采集到这段语音的音频数据，请重新说一次。");
+          restartRecorder();
+          return;
+        }
         const audio = new Blob(utteranceChunksRef.current, { type: recorder.mimeType || "audio/webm" });
         const durationMs = performance.now() - startedAt;
         setUtteranceCount((count) => count + 1);
@@ -243,9 +255,7 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
             if (mountedRef.current && generation === captureGenerationRef.current) setRecognizing(false);
           }
         });
-        utteranceChunksRef.current = [];
-        utteranceStartedAtRef.current = null;
-        if (!stoppingRef.current && streamRef.current === stream) recorder.start(100);
+        restartRecorder();
       };
       recorder.start(100);
       recorderRef.current = recorder;
@@ -483,9 +493,11 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
           }
           rms = Math.min(1, Math.sqrt(sum / samples.length) * 3.4);
           const now = performance.now();
-          const speechThreshold = 0.045;
-          const endpointSilenceMs = 720;
-          if (rms >= speechThreshold) {
+          const speechStartThreshold = 0.055;
+          const speechEndThreshold = 0.05;
+          const endpointSilenceMs = 850;
+          const maxUtteranceMs = 20_000;
+          if (rms >= speechStartThreshold) {
             if (utteranceStartedAtRef.current === null) {
               if (visualState === "speaking" || activeSynthesisRef.current) {
                 cancelCurrentSpeech();
@@ -496,12 +508,18 @@ export function VoiceCallPanel({ agentName, sessionName, sessionId, onClose, onT
             }
             silenceSinceRef.current = null;
           } else if (utteranceStartedAtRef.current !== null) {
-            silenceSinceRef.current ??= now;
-            if (now - silenceSinceRef.current >= endpointSilenceMs) {
-              const recorder = recorderRef.current;
-              if (recorder && recorder.state === "recording") recorder.stop();
-              silenceSinceRef.current = null;
-            }
+            if (rms >= speechEndThreshold) silenceSinceRef.current = null;
+            else silenceSinceRef.current ??= now;
+          }
+          const utteranceStartedAt = utteranceStartedAtRef.current;
+          const reachedSilenceEndpoint = silenceSinceRef.current !== null
+            && now - silenceSinceRef.current >= endpointSilenceMs;
+          const reachedMaximumDuration = utteranceStartedAt !== null
+            && now - utteranceStartedAt >= maxUtteranceMs;
+          if (reachedSilenceEndpoint || reachedMaximumDuration) {
+            const recorder = recorderRef.current;
+            if (recorder && recorder.state === "recording") recorder.stop();
+            silenceSinceRef.current = null;
           }
           if (time - lastMeterUpdate > 45) {
             lastMeterUpdate = time;
