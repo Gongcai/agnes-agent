@@ -7,6 +7,7 @@ import concurrent.futures
 import contextlib
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 from typing import AsyncIterator
@@ -255,24 +256,39 @@ class CosyVoiceTtsProvider:
                     error = RuntimeError(str(message))
                 state.emit_error(error)
 
-        synthesizer = SpeechSynthesizer(
-            model=provider.model,
-            voice=provider.voice,
-            format=AudioFormat.PCM_22050HZ_MONO_16BIT,
-            workspace=provider.workspace,
-            callback=Callback(),
-        )
-        state.set_synthesizer(synthesizer)
-        if state.cancelled:
-            with contextlib.suppress(Exception):
-                synthesizer.streaming_cancel()
-            return
-        synthesizer.streaming_call(text)
-        if state.cancelled:
-            with contextlib.suppress(Exception):
-                synthesizer.streaming_cancel()
-            return
-        synthesizer.streaming_complete()
+        last_timeout: TimeoutError | None = None
+        for attempt in range(2):
+            synthesizer = SpeechSynthesizer(
+                model=provider.model,
+                voice=provider.voice,
+                format=AudioFormat.PCM_22050HZ_MONO_16BIT,
+                workspace=provider.workspace,
+                callback=Callback(),
+            )
+            state.set_synthesizer(synthesizer)
+            if state.cancelled:
+                with contextlib.suppress(Exception):
+                    synthesizer.streaming_cancel()
+                return
+            try:
+                synthesizer.streaming_call(text)
+                if state.cancelled:
+                    with contextlib.suppress(Exception):
+                        synthesizer.streaming_cancel()
+                    return
+                synthesizer.streaming_complete()
+                return
+            except TimeoutError as exc:
+                last_timeout = exc
+                with contextlib.suppress(Exception):
+                    synthesizer.streaming_cancel()
+                if attempt == 0 and not state.cancelled:
+                    time.sleep(0.6)
+        endpoint = provider.websocket_url or "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+        raise RuntimeError(
+            f"CosyVoice WebSocket 建连超时（endpoint={endpoint}）。"
+            "请检查网络、Workspace ID 与北京地域 endpoint。"
+        ) from last_timeout
 
 
 @dataclass(frozen=True)
