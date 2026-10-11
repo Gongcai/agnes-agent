@@ -256,10 +256,7 @@ impl ArtifactReplicationCoordinator {
                             key_version: remote.key_version,
                             updated_at: remote.updated_at,
                         },
-                        RemoteObjectLocator {
-                            opaque_id: remote.artifact_id.clone(),
-                            revision: replica.provider_revision.clone(),
-                        },
+                        r2_object_locator(&remote.artifact_id, replica),
                         master_key,
                         self.install_root.clone(),
                     )
@@ -400,10 +397,7 @@ impl ArtifactReplicationCoordinator {
                     key_version: remote.key_version,
                     updated_at: remote.updated_at,
                 },
-                RemoteObjectLocator {
-                    opaque_id: remote.artifact_id.clone(),
-                    revision: replica.provider_revision.clone(),
-                },
+                r2_object_locator(&remote.artifact_id, replica),
                 master_key,
                 self.install_root.clone(),
             )
@@ -529,6 +523,18 @@ impl ArtifactReplicationCoordinator {
             })
             .await
             .map_err(transport_error)
+    }
+}
+
+fn r2_object_locator(
+    artifact_id: &str,
+    replica: &super::protocol::RemoteObjectReplica,
+) -> RemoteObjectLocator {
+    // The R2 provider compares HTTP ETags, not R2's internal version IDs.
+    // Without an ETag, the transfer still verifies the full ciphertext hash.
+    RemoteObjectLocator {
+        opaque_id: artifact_id.into(),
+        revision: replica.etag.clone(),
     }
 }
 
@@ -676,12 +682,14 @@ mod tests {
         async fn download_and_install_remote_artifact(
             &self,
             _account_id: String,
-            _descriptor: RemoteArtifactDescriptor,
-            _locator: RemoteObjectLocator,
+            descriptor: RemoteArtifactDescriptor,
+            locator: RemoteObjectLocator,
             _master_key: &SyncMasterKey,
             _install_root: PathBuf,
         ) -> AppResult<(PathBuf, ArtifactManifest)> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(locator.opaque_id, descriptor.artifact_id);
+            assert_eq!(locator.revision.as_deref(), Some("\"abc123-2\""));
             if self.fail {
                 return Err(AppError::Other("fake download failure".into()));
             }
@@ -689,7 +697,7 @@ mod tests {
                 PathBuf::from("/tmp/artifact-1"),
                 ArtifactManifest {
                     id: "artifact-1".into(),
-                    artifact_type: "knowledge_vectors".into(),
+                    artifact_type: descriptor.artifact_type,
                     source_version_id: "version-1".into(),
                     build_fingerprint: "b".repeat(64),
                     format_version: ARTIFACT_FORMAT_VERSION,
@@ -746,13 +754,22 @@ mod tests {
         RemoteObjectReplica {
             provider_kind: "r2".into(),
             provider_account_id: "r2-managed".into(),
-            provider_revision: Some("etag-1".into()),
-            etag: Some("etag-1".into()),
+            provider_revision: Some("r2-internal-version-id".into()),
+            etag: Some("\"abc123-2\"".into()),
             ciphertext_hash: "a".repeat(64),
             size: 1,
             status: "ready".into(),
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn r2_locator_without_etag_does_not_use_internal_version() {
+        let mut replica = ready_replica();
+        replica.etag = None;
+        let locator = r2_object_locator("artifact-1", &replica);
+        assert_eq!(locator.opaque_id, "artifact-1");
+        assert_eq!(locator.revision, None);
     }
 
     fn test_coordinator(
@@ -890,6 +907,39 @@ mod tests {
         assert_eq!(db.get_sync_status().await.unwrap().last_object_cursor, 1);
         assert_eq!(installer_ref.calls.load(Ordering::SeqCst), 0);
         assert!(transport.states.lock().unwrap().is_empty());
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn manual_epub_download_uses_etag_and_preserves_cursor() {
+        let mut reading_manifest = manifest("artifact-1", 1, 1, vec![ready_replica()]);
+        reading_manifest.manifest.object_id = "reading:book-1".into();
+        reading_manifest.manifest.object_kind = READING_EPUB_ARTIFACT_TYPE.into();
+        let transport = transport(Vec::new(), reading_manifest);
+        let installer = Arc::new(FakeInstaller {
+            fail: false,
+            calls: AtomicUsize::new(0),
+        });
+        let installer_ref = installer.clone();
+        let (db, coordinator, path) = test_coordinator(transport.clone(), installer);
+        coordinator
+            .download_object("reading:book-1", &SyncKeyset::generate_initial())
+            .await
+            .unwrap();
+        assert_eq!(installer_ref.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(db.get_sync_status().await.unwrap().last_object_cursor, 0);
+        let local = db
+            .get_artifact_manifest("artifact-1".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(local.artifact_type, READING_EPUB_ARTIFACT_TYPE);
+        assert_eq!(local.local_status, "installed");
+        let states = transport.states.lock().unwrap();
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[0].local_status, ObjectLocalStatus::Downloading);
+        assert_eq!(states[1].local_status, ObjectLocalStatus::Installed);
         drop(db);
         let _ = std::fs::remove_file(path);
     }

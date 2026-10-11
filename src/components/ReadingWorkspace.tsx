@@ -1125,6 +1125,12 @@ export const ReadingWorkspace: React.FC = () => {
   };
 
   useEffect(() => {
+    if (!error) return;
+    const timer = window.setTimeout(() => setError(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [error]);
+
+  useEffect(() => {
     void loadProviders().catch((reason) => setError(String(reason)));
     void loadBooks().catch((reason) => setError(String(reason)));
     void invoke<string | null>("get_setting", { key: TRANSLATION_LANGUAGE_SETTING })
@@ -1992,7 +1998,14 @@ export const ReadingWorkspace: React.FC = () => {
           </div>
         </div>
       )}
-      {error && <div className="fixed bottom-4 left-1/2 z-[60] max-w-xl -translate-x-1/2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 shadow">{error}</div>}
+      {error && (
+        <div role="status" aria-live="polite" className="fixed bottom-4 left-1/2 z-[60] flex w-[calc(100%_-_2rem)] max-w-xl -translate-x-1/2 items-center gap-2 rounded-md border border-rose-200 bg-rose-50 py-1 pl-3 pr-1 text-xs text-rose-700 shadow">
+          <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{error}</span>
+          <button type="button" onClick={() => setError(null)} aria-label="关闭错误提示" className="grid h-11 w-11 shrink-0 place-items-center rounded-md transition-colors hover:bg-rose-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-rose-700">
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+      )}
     </main>
   );
 };
