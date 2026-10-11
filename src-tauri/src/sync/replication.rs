@@ -10,6 +10,7 @@ use crate::error::{AppError, AppResult};
 use crate::storage::artifact_transfer::RemoteArtifactDescriptor;
 use crate::storage::domain::RemoteObjectLocator;
 use crate::storage::StorageService;
+use crate::sync::reading_artifact::READING_EPUB_ARTIFACT_TYPE;
 
 use super::client::{ObjectSyncTransport, TransportFailure};
 use super::crypto::{SyncKeyset, SyncMasterKey};
@@ -194,6 +195,13 @@ impl ArtifactReplicationCoordinator {
                     continue;
                 }
 
+                // Reading EPUB files can be large and are downloaded only after
+                // the user explicitly requests them from the bookshelf.
+                if remote.object_kind == READING_EPUB_ARTIFACT_TYPE {
+                    report.skipped += 1;
+                    continue;
+                }
+
                 let Some(master_key) = keyset.key(remote.key_version) else {
                     self.report_state(
                         &device_id,
@@ -321,6 +329,142 @@ impl ArtifactReplicationCoordinator {
             }
         }
         Ok(report)
+    }
+
+    /// Downloads one remote object immediately without advancing the background
+    /// replication cursor. This is used for explicit user-triggered downloads.
+    pub async fn download_object(&self, object_id: &str, keyset: &SyncKeyset) -> AppResult<()> {
+        let status = self.db.get_sync_status().await?;
+        let device_id = status.device_id;
+        let manifest = self
+            .transport
+            .get_object_manifest(object_id)
+            .await
+            .map_err(transport_error)?;
+        let remote = &manifest.manifest;
+        if remote.object_id != object_id || remote.deleted_at.is_some() {
+            return Err(AppError::Other("远端 EPUB 制品不可用".into()));
+        }
+        if remote.object_kind != READING_EPUB_ARTIFACT_TYPE {
+            return Err(AppError::Other("远端对象不是 EPUB 制品".into()));
+        }
+        let Some(master_key) = keyset.key(remote.key_version) else {
+            self.report_state(
+                &device_id,
+                object_id,
+                remote.logical_version,
+                None,
+                ObjectLocalStatus::Incompatible,
+                None,
+                Some("KEY_VERSION_UNAVAILABLE"),
+            )
+            .await?;
+            return Err(AppError::Other("本机缺少该 EPUB 所需的同步密钥".into()));
+        };
+        let Some(replica) = manifest
+            .replicas
+            .iter()
+            .find(|replica| replica.provider_kind == "r2" && replica.status == "ready")
+        else {
+            self.report_state(
+                &device_id,
+                object_id,
+                remote.logical_version,
+                None,
+                ObjectLocalStatus::Missing,
+                None,
+                Some("NO_READY_REPLICA"),
+            )
+            .await?;
+            return Err(AppError::Other("云端尚未准备好 EPUB 副本".into()));
+        };
+        self.report_state(
+            &device_id,
+            object_id,
+            remote.logical_version,
+            None,
+            ObjectLocalStatus::Downloading,
+            None,
+            None,
+        )
+        .await?;
+        let install_result = self
+            .installer
+            .download_and_install_remote_artifact(
+                self.provider_account_id.clone(),
+                RemoteArtifactDescriptor {
+                    artifact_id: remote.artifact_id.clone(),
+                    artifact_type: remote.object_kind.clone(),
+                    ciphertext_hash: remote.ciphertext_hash.clone(),
+                    size: remote.size,
+                    key_version: remote.key_version,
+                    updated_at: remote.updated_at,
+                },
+                RemoteObjectLocator {
+                    opaque_id: remote.artifact_id.clone(),
+                    revision: replica.provider_revision.clone(),
+                },
+                master_key,
+                self.install_root.clone(),
+            )
+            .await;
+        let (installed, installed_manifest) = match install_result {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = self
+                    .report_state(
+                        &device_id,
+                        object_id,
+                        remote.logical_version,
+                        None,
+                        ObjectLocalStatus::Failed,
+                        None,
+                        Some("DOWNLOAD_FAILED"),
+                    )
+                    .await;
+                return Err(error);
+            }
+        };
+        if !local_matches_remote_manifest(&installed_manifest, remote) {
+            let _ = self
+                .report_state(
+                    &device_id,
+                    object_id,
+                    remote.logical_version,
+                    None,
+                    ObjectLocalStatus::Failed,
+                    None,
+                    Some("MANIFEST_MISMATCH"),
+                )
+                .await;
+            return Err(AppError::Other("下载的 EPUB 制品与云端清单不匹配".into()));
+        }
+        self.db
+            .upsert_artifact_manifest(crate::db::repo::artifacts::UpsertArtifactManifest {
+                manifest: installed_manifest,
+                local_path: Some(installed.to_string_lossy().to_string()),
+                local_status: "installed".into(),
+                installed_at: Some(now_string()),
+            })
+            .await?;
+        let local = self
+            .db
+            .get_artifact_manifest(remote.artifact_id.clone())
+            .await?
+            .ok_or_else(|| AppError::Other("下载的 EPUB 制品清单未保存".into()))?;
+        self.persist_local_state(&device_id, &local, remote.logical_version)
+            .await?;
+        self.report_state(
+            &device_id,
+            object_id,
+            remote.logical_version,
+            Some(remote.artifact_id.clone()),
+            ObjectLocalStatus::Installed,
+            Some(remote.ciphertext_hash.clone()),
+            None,
+        )
+        .await?;
+        Ok(())
     }
 
     async fn persist_local_state(
@@ -721,6 +865,31 @@ mod tests {
         let states = transport.states.lock().unwrap();
         assert_eq!(states[0].local_status, ObjectLocalStatus::Missing);
         assert_eq!(states[0].error_code.as_deref(), Some("NO_READY_REPLICA"));
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn reading_epub_changes_advance_cursor_without_downloading() {
+        let mut reading_manifest = manifest("artifact-1", 1, 1, vec![ready_replica()]);
+        reading_manifest.manifest.object_kind = READING_EPUB_ARTIFACT_TYPE.into();
+        let transport = transport(vec![change(1, "artifact-1", 1)], reading_manifest);
+        let installer = Arc::new(FakeInstaller {
+            fail: false,
+            calls: AtomicUsize::new(0),
+        });
+        let installer_ref = installer.clone();
+        let (db, coordinator, path) = test_coordinator(transport.clone(), installer);
+        let report = coordinator
+            .run_once(&SyncKeyset::generate_initial())
+            .await
+            .unwrap();
+        assert_eq!(report.processed, 1);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(report.downloaded, 0);
+        assert_eq!(db.get_sync_status().await.unwrap().last_object_cursor, 1);
+        assert_eq!(installer_ref.calls.load(Ordering::SeqCst), 0);
+        assert!(transport.states.lock().unwrap().is_empty());
         drop(db);
         let _ = std::fs::remove_file(path);
     }

@@ -600,6 +600,7 @@ pub fn run() {
             commands::delete_memory_file,
             commands::list_reading_books,
             commands::publish_reading_epub,
+            commands::download_reading_epub,
             commands::import_reading_book,
             commands::open_reading_book_conversation,
             commands::list_reading_book_conversations,

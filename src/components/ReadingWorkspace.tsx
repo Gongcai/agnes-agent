@@ -4,7 +4,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import ePub, { type Book, type Contents, type Location, type NavItem, type Rendition } from "epubjs";
-import { ArrowLeft, BookmarkSimple, BookOpen, Check, CaretDown, CaretLeft, CaretRight, Copy, Cpu, CloudArrowUp, FileArrowUp, HardDrives, HighlighterCircle, ClockCounterClockwise, Translate, CircleNotch, ChatCircleDots, Notepad, SidebarSimple, PencilSimple, Plus, Quotes, ArrowsClockwise, ArrowCounterClockwise, PaperPlaneRight, Faders, ShieldWarning, SlidersHorizontal, Sparkle, Trash, TextT, X } from "@phosphor-icons/react";
+import { ArrowLeft, BookmarkSimple, BookOpen, Check, CaretDown, CaretLeft, CaretRight, Copy, Cpu, CloudArrowDown, CloudArrowUp, FileArrowUp, HardDrives, HighlighterCircle, ClockCounterClockwise, Translate, CircleNotch, ChatCircleDots, Notepad, SidebarSimple, PencilSimple, Plus, Quotes, ArrowsClockwise, ArrowCounterClockwise, PaperPlaneRight, Faders, ShieldWarning, SlidersHorizontal, Sparkle, Trash, TextT, X } from "@phosphor-icons/react";
 import { AnimatedDisclosure } from "./AnimatedDisclosure";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { useAgentStore } from "../store/useAgentStore";
@@ -1054,6 +1054,7 @@ export const ReadingWorkspace: React.FC = () => {
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenu | null>(null);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
+  const [downloadingBookId, setDownloadingBookId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showConsent, setShowConsent] = useState(false);
   const [readingSessionId, setReadingSessionId] = useState<string | null>(null);
@@ -1238,6 +1239,19 @@ export const ReadingWorkspace: React.FC = () => {
       setError(String(reason));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const downloadBook = async (bookId: string) => {
+    setDownloadingBookId(bookId);
+    setError(null);
+    try {
+      const book = await invoke<ReadingBook>("download_reading_epub", { bookId });
+      setBooks((current) => current.map((item) => item.id === book.id ? book : item));
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setDownloadingBookId((current) => current === bookId ? null : current);
     }
   };
 
@@ -1898,21 +1912,34 @@ export const ReadingWorkspace: React.FC = () => {
                     <BookOpen className="mb-5 h-5 w-5 text-clay" />
                     <span className="block truncate text-sm font-semibold text-ink-body">{book.title}</span>
                     <span className="mt-1 block truncate text-[11px] text-ink-muted-soft">{book.author || "未知作者"}</span>
-                    {!book.local_path && <span className="mt-2 block text-[10px] text-theme-warning">等待 EPUB 下载</span>}
+                    {!book.local_path && <span className="mt-2 block text-[10px] text-theme-warning">尚未下载 EPUB</span>}
                   </button>
                   <div className="mt-3 flex items-center justify-between gap-2 border-t border-hairline pt-2">
                     <span className="truncate text-[10px] text-ink-muted-soft">
-                      {book.ready_replica_count > 0 ? `已发布 · ${book.ready_replica_count} 个副本` : "仅本机"}
+                      {!book.local_path ? "可手动下载" : book.ready_replica_count > 0 ? `已发布 · ${book.ready_replica_count} 个副本` : "仅本机"}
                     </span>
-                    <button
-                      onClick={() => void publishBook(book.id)}
-                      disabled={!book.local_path || loading}
-                      title={book.ready_replica_count > 0 ? "重新确认 EPUB 云端副本" : "发布加密 EPUB"}
-                      className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium text-clay hover:bg-clay-soft disabled:cursor-not-allowed disabled:text-ink-muted-soft"
-                    >
-                      {loading ? <CircleNotch className="h-3 w-3 animate-spin" /> : <CloudArrowUp className="h-3 w-3" />}
-                      {book.ready_replica_count > 0 ? "已发布" : "发布"}
-                    </button>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {!book.local_path && (
+                        <button
+                          onClick={() => void downloadBook(book.id)}
+                          disabled={downloadingBookId !== null || loading}
+                          title="下载 EPUB 到本机"
+                          className="flex items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium text-clay hover:bg-clay-soft disabled:cursor-not-allowed disabled:text-ink-muted-soft"
+                        >
+                          {downloadingBookId === book.id ? <CircleNotch className="h-3 w-3 animate-spin" /> : <CloudArrowDown className="h-3 w-3" />}
+                          下载
+                        </button>
+                      )}
+                      <button
+                        onClick={() => void publishBook(book.id)}
+                        disabled={!book.local_path || loading || downloadingBookId !== null}
+                        title={book.ready_replica_count > 0 ? "重新确认 EPUB 云端副本" : "发布加密 EPUB"}
+                        className="flex items-center gap-1 rounded px-1.5 py-1 text-[10px] font-medium text-clay hover:bg-clay-soft disabled:cursor-not-allowed disabled:text-ink-muted-soft"
+                      >
+                        {loading ? <CircleNotch className="h-3 w-3 animate-spin" /> : <CloudArrowUp className="h-3 w-3" />}
+                        {book.ready_replica_count > 0 ? "已发布" : "发布"}
+                      </button>
+                    </div>
                   </div>
                 </article>
               ))}

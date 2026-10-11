@@ -4213,6 +4213,26 @@ pub async fn publish_reading_epub(
 }
 
 #[tauri::command]
+pub async fn download_reading_epub(
+    state: tauri::State<'_, AppState>,
+    book_id: String,
+) -> AppResult<crate::db::repo::reading::ReadingBookRow> {
+    state
+        .sync
+        .download_reading_epub(
+            state.storage.clone(),
+            book_id.clone(),
+            state.data_dir.join("artifacts"),
+        )
+        .await?;
+    state
+        .db
+        .get_reading_book(book_id)
+        .await?
+        .ok_or_else(|| AppError::Other("书籍不存在".into()))
+}
+
+#[tauri::command]
 pub async fn import_reading_book(
     state: tauri::State<'_, AppState>,
     agent_id: String,

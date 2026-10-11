@@ -298,6 +298,52 @@ impl SyncService {
         self.run_until_idle(&transport, Some(&keyset)).await
     }
 
+    pub async fn download_reading_epub(
+        &self,
+        storage: Arc<StorageService>,
+        book_id: String,
+        install_root: std::path::PathBuf,
+    ) -> AppResult<()> {
+        let status = self.status().await?;
+        if !status.credential_configured {
+            return Err(AppError::Other("同步凭证尚未配置".into()));
+        }
+        if !status.e2ee.confirmed || !status.e2ee.transport_ready {
+            return Err(AppError::Other("同步端到端加密尚未就绪".into()));
+        }
+        let book = self
+            .db
+            .get_reading_book(book_id.clone())
+            .await?
+            .ok_or_else(|| AppError::Other("书籍不存在".into()))?;
+        if book
+            .local_path
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path).is_file())
+        {
+            return Ok(());
+        }
+        let keyset = self
+            .load_keyset()
+            .await?
+            .ok_or_else(|| AppError::Other("同步加密密钥尚未配置".into()))?;
+        let transport = self
+            .http_transport()
+            .await?
+            .ok_or_else(|| AppError::Other("同步凭证尚未配置".into()))?;
+        let installer: Arc<dyn ArtifactInstaller> = storage;
+        let coordinator = ArtifactReplicationCoordinator::new(
+            self.db.clone(),
+            Arc::new(transport),
+            installer,
+            crate::storage::MANAGED_R2_ACCOUNT_ID,
+            install_root,
+        )?;
+        coordinator
+            .download_object(&format!("reading:{book_id}"), &keyset)
+            .await
+    }
+
     pub async fn reset_gateway_state(&self) -> AppResult<SyncStatus> {
         let _guard = self.run_gate.lock().await;
         self.db.reset_sync_for_gateway_change().await?;
