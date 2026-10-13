@@ -180,6 +180,66 @@ function nextThoughtTag(value: string): { index: number; open: boolean; length: 
   return matches[0] ?? null;
 }
 
+const TOOL_CALLING_MARKER = /Calling \S+ with params:/g;
+
+function toolCallJsonEnd(value: string, start: number): number | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < value.length; index += 1) {
+    const character = value[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "{" || character === "[") depth += 1;
+    else if (character === "}" || character === "]") {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+    }
+  }
+  return null;
+}
+
+function stripPersistedToolCallNarration(value: string): string {
+  let result = "";
+  let cursor = 0;
+  TOOL_CALLING_MARKER.lastIndex = 0;
+  while (true) {
+    const marker = TOOL_CALLING_MARKER.exec(value);
+    if (!marker) {
+      result += value.slice(cursor);
+      break;
+    }
+    const argumentStart = value.slice(marker.index + marker[0].length).search(/\S/);
+    if (argumentStart < 0) {
+      result += value.slice(cursor, marker.index);
+      break;
+    }
+    const jsonStart = marker.index + marker[0].length + argumentStart;
+    if (value[jsonStart] !== "{") {
+      result += value.slice(cursor, marker.index + marker[0].length);
+      cursor = marker.index + marker[0].length;
+      continue;
+    }
+    const jsonEnd = toolCallJsonEnd(value, jsonStart);
+    if (jsonEnd === null) {
+      result += value.slice(cursor);
+      break;
+    }
+    result += value.slice(cursor, marker.index);
+    cursor = jsonEnd;
+  }
+  TOOL_CALLING_MARKER.lastIndex = 0;
+  return result;
+}
+
 function parseCompleteThoughtTaggedContent(
   content: string,
   initialDepth: number,
@@ -218,15 +278,20 @@ export function normalizePersistedAssistantThoughtTags(message: Message): Messag
   if (message.role !== "assistant") return message;
   let changed = false;
   const parts = message.parts.flatMap((part) => {
+    const content = part.kind === "text"
+      ? stripPersistedToolCallNarration(part.content)
+      : part.content;
+    if (content !== part.content) changed = true;
+    if (!content && part.kind === "text") return [];
     if (
       (part.kind !== "text" && part.kind !== "thought")
-      || (![...THOUGHT_OPEN_TAGS, ...THOUGHT_CLOSE_TAGS].some((tag) => part.content.includes(tag)))
+      || (![...THOUGHT_OPEN_TAGS, ...THOUGHT_CLOSE_TAGS].some((tag) => content.includes(tag)))
     ) {
-      return [part];
+      return content === part.content ? [part] : [{ ...part, content }];
     }
     changed = true;
     return parseCompleteThoughtTaggedContent(
-      part.content,
+      content,
       part.kind === "thought" ? 1 : 0,
     ).map((segment, index) => ({
       ...part,

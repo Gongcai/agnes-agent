@@ -18,8 +18,8 @@ from .models import get_max_context_tokens, completion
 
 
 MEMORY_PROMPT_FILENAME = "MEMORY_FILESYSTEM_PROMPT.md"
-MEMORY_PROMPT_VERSION = "memory-filesystem-v2"
-MEMORY_PROMPT_SHA256 = "10df351663400dbc61848e3723a1c27b2f6aaa6f4320296fc69058d2f9734506"
+MEMORY_PROMPT_VERSION = "memory-filesystem-v3"
+MEMORY_PROMPT_SHA256 = "0b00147cbec47abf3d7f67b61f05cd36da76794071ab4f9f18bf61d346ad04eb"
 
 
 @lru_cache(maxsize=1)

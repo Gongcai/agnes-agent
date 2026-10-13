@@ -969,13 +969,19 @@ pub fn mutate(
             }
             let addition = content.replace("\r\n", "\n").replace('\r', "\n");
             let addition = addition.trim();
-            if addition.is_empty() || addition.contains("---") {
+            if addition.is_empty()
+                || addition.lines().any(|line| {
+                    !(line.starts_with("- [stated] ")
+                        || line.starts_with("- [observed] ")
+                        || line.starts_with("- [inferred] "))
+                })
+            {
                 return current_or_failure(
                     conn,
                     agent_id,
                     path,
                     "INVALID_FACT_TAG",
-                    "Append content must contain tagged fact lines only",
+                    "Append only new tagged fact bullets such as '- [stated] ...'; do not include frontmatter or the complete file. Use memory_write for a full rewrite or memory_str_replace for an edit.",
                 );
             }
             if addition
@@ -1262,6 +1268,43 @@ mod tests {
         .unwrap();
         assert_eq!(conflict.code.as_deref(), Some("VERSION_CONFLICT"));
         assert!(conflict.current_content.unwrap().contains("spicy broth"));
+    }
+
+    #[test]
+    fn append_rejects_a_complete_document_with_recovery_guidance() {
+        let mut conn = setup();
+        let created = mutate(
+            &mut conn,
+            "agnes",
+            "/topics/food.md",
+            MemoryMutation::Write {
+                content: topic("likes noodles"),
+                if_version: "new".into(),
+            },
+            "chat",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let rejected = mutate(
+            &mut conn,
+            "agnes",
+            "/topics/food.md",
+            MemoryMutation::Append {
+                content: topic("likes dumplings"),
+                if_version: created.version.unwrap(),
+            },
+            "chat",
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(rejected.code.as_deref(), Some("INVALID_FACT_TAG"));
+        assert!(rejected.message.contains("memory_write"));
+        assert!(rejected.current_content.unwrap().contains("likes noodles"));
+        assert!(rejected.current_version.is_some());
     }
 
     #[test]

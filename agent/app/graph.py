@@ -1,6 +1,7 @@
 """LangGraph Agent State Machine."""
 from __future__ import annotations
 import json
+import re
 from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
@@ -15,13 +16,15 @@ from .models import (
 from .prompt import count_tokens
 
 
-_SHELL_CALLING_MARKER = "Calling shell with params:"
+_TOOL_CALLING_MARKER = re.compile(r"Calling \S+ with params:")
+_TOOL_CALLING_PREFIX = "Calling "
+_TOOL_CALLING_SUFFIX = " with params:"
 
 
-class _ShellToolNarrationFilter:
-    """Remove provider text that repeats the shell tool call in the answer stream.
+class _ToolCallNarrationFilter:
+    """Remove provider text that repeats a tool call in the answer stream.
 
-    Some OpenAI-compatible providers send a human-readable ``Calling shell ...``
+    Some OpenAI-compatible providers send a human-readable ``Calling <tool> ...``
     line in ``delta.content`` together with the native tool call. Keep that
     protocol narration out of the assistant answer while preserving surrounding
     text and supporting chunks split at arbitrary boundaries.
@@ -33,9 +36,25 @@ class _ShellToolNarrationFilter:
 
     @staticmethod
     def _trailing_marker_prefix_length(value: str) -> int:
-        for length in range(min(len(value), len(_SHELL_CALLING_MARKER) - 1), 0, -1):
-            if _SHELL_CALLING_MARKER.startswith(value[-length:]):
-                return length
+        # A provider may split both the tool name and marker across chunks.
+        # Retain only a suffix that could still become a complete marker.
+        for start in range(len(value)):
+            candidate = value[start:]
+            if len(candidate) <= len(_TOOL_CALLING_PREFIX):
+                if _TOOL_CALLING_PREFIX.startswith(candidate):
+                    return len(candidate)
+                continue
+            if not candidate.startswith(_TOOL_CALLING_PREFIX):
+                continue
+
+            remainder = candidate[len(_TOOL_CALLING_PREFIX) :]
+            for split in range(len(remainder) + 1):
+                tool_name = remainder[:split]
+                marker_suffix = remainder[split:]
+                if tool_name and any(character.isspace() for character in tool_name):
+                    continue
+                if _TOOL_CALLING_SUFFIX.startswith(marker_suffix):
+                    return len(candidate)
         return 0
 
     def feed(self, content: str) -> str:
@@ -68,10 +87,10 @@ class _ShellToolNarrationFilter:
                 self._discarding = False
                 continue
 
-            marker_index = remaining.find(_SHELL_CALLING_MARKER)
-            if marker_index >= 0:
-                output.append(remaining[:marker_index])
-                remaining = remaining[marker_index + len(_SHELL_CALLING_MARKER) :]
+            marker_match = _TOOL_CALLING_MARKER.search(remaining)
+            if marker_match:
+                output.append(remaining[: marker_match.start()])
+                remaining = remaining[marker_match.end() :]
                 self._discarding = True
                 continue
 
@@ -588,12 +607,16 @@ def get_available_tools(
                 "type": "function",
                 "function": {
                     "name": "memory_append",
-                    "description": "Append new tagged fact lines to an existing virtual memory file.",
+                    "description": "Append only new tagged fact bullet lines (for example, '- [stated] ...') to an existing memory file. Never pass frontmatter or the complete file; use memory_write for a full rewrite or memory_str_replace for a small edit.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "path": {"type": "string"},
-                            "content": {"type": "string", "minLength": 1},
+                            "content": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "One or more new '- [stated] ...' fact lines only; no frontmatter or complete document.",
+                            },
                             "if_version": {"type": "string"},
                         },
                         "required": ["path", "content", "if_version"],
@@ -1142,7 +1165,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
         full_text = ""
         full_reasoning = ""
         tool_calls_accumulator: Dict[int, Dict[str, Any]] = {}
-        shell_narration_filter = _ShellToolNarrationFilter()
+        tool_narration_filter = _ToolCallNarrationFilter()
         reasoning_started = False
         reasoning_closed = False
         attempt_had_activity = False
@@ -1183,7 +1206,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
                     if reasoning_started and not reasoning_closed:
                         reasoning_closed = True
                         await emit("</thought>")
-                    clean_content = shell_narration_filter.feed(delta.content)
+                    clean_content = tool_narration_filter.feed(delta.content)
                     full_text += clean_content
                     if clean_content:
                         await emit(clean_content)
@@ -1227,7 +1250,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
                 reasoning_closed = True
                 await emit("</thought>")
 
-            trailing_text = shell_narration_filter.finish()
+            trailing_text = tool_narration_filter.finish()
             if trailing_text:
                 full_text += trailing_text
                 await emit(trailing_text)

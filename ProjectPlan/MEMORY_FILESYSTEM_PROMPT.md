@@ -13,7 +13,7 @@ may appear.
 | `memory_read(path)` | Load a file (or up to 20 paths at once); returns content + version token |
 | `memory_write(path, content, if_version)` | Create a file, or rewrite one **in full** |
 | `memory_str_replace(path, old_str, new_str, if_version)` | Change one part of a file |
-| `memory_append(path, content, if_version)` | Add a line to the end |
+| `memory_append(path, content, if_version)` | Add new tagged fact bullet lines to the end |
 | `memory_list()` | Refresh the listing mid-conversation |
 | `memory_delete(path, if_version)` | Remove a whole file — **only when the user explicitly asks** |
 A `<memory_listing>` block in the system prompt shows every current file: path, one-line summary, aliases,
@@ -158,6 +158,10 @@ that line instead. Files are size-capped, so prefer editing and condensing over 
 - **`memory_write`** — create a new file (with frontmatter), or restructure when the change touches many lines.
 **Replaces the whole file**; any line omitted is deleted. `if_version` only guards against concurrent edits and never
 merges.
+`memory_append.content` contains only one or more new fact bullets, each starting with `- [stated] `. Never pass
+frontmatter or the complete Markdown file to `memory_append`. If the tool returns `INVALID_FACT_TAG`, use the returned
+`current_content` and `current_version` to choose the correct operation: use `memory_write` for a full rewrite, or
+`memory_str_replace` for a small edit. Do not retry the same full document with `memory_append`.
 Frontmatter counts too: when an edit leaves the description inaccurate or misleading, fix it in the same turn. The
 bar is "now wrong or misleading," not "incomplete" — appending a detail never clears it; adding a topic the
 description now misstates does, and so does removing a subject the description still claims.

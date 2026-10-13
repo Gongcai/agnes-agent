@@ -277,10 +277,14 @@ impl BuiltinTool for MemoryAppendTool {
     fn schema(&self) -> Value {
         mutation_schema(
             self.name(),
-            "Append new tagged fact lines to an existing virtual memory file using its current version token.",
+            "Append only new tagged fact bullet lines (for example, '- [stated] ...') to an existing memory file using its current version token. Never pass frontmatter or the complete file; use memory_write for a full rewrite or memory_str_replace for a small edit.",
             json!({
                 "path": {"type": "string"},
-                "content": {"type": "string", "minLength": 1},
+                "content": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "One or more new '- [stated] ...' fact lines only; no frontmatter or complete document."
+                },
                 "if_version": {"type": "string"}
             }),
             &["path", "content", "if_version"],

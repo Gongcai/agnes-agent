@@ -469,6 +469,36 @@ def test_shell_tool_narration_filter_handles_split_arguments_and_followup_text(m
     assert result["messages"][-1]["content"] == "已完成检查。\n接下来继续。"
 
 
+def test_memory_tool_narration_is_removed_when_marker_is_split(monkeypatch):
+    monkeypatch.setattr(
+        graph_module,
+        "completion",
+        lambda **_kwargs: iter([
+            _text_chunk('已记录事实。\nCalling memory_append with pa'),
+            _text_chunk('rams: {"path":"/topics/reading.md","content":"- [stated] likes novels","if_version":"v1"}'),
+            _tool_call_chunk(
+                tool="memory_append",
+                arguments='{"path":"/topics/reading.md","content":"- [stated] likes novels","if_version":"v1"}',
+            ),
+        ]),
+    )
+    emitted = []
+
+    async def emit(value):
+        emitted.append(value)
+
+    result = asyncio.run(
+        graph_module.call_llm_node(
+            _tool_stream_state(),
+            {"configurable": {"send_delta_fn": emit}},
+        )
+    )
+
+    assert emitted == ["已记录事实。\n"]
+    assert result["messages"][-1]["content"] == "已记录事实。\n"
+    assert result["pending_tool_calls"][0]["function"]["name"] == "memory_append"
+
+
 def test_tool_call_arguments_accept_dict_shaped_chunks(monkeypatch):
     tool_chunk = SimpleNamespace(
         choices=[SimpleNamespace(
@@ -1144,7 +1174,7 @@ def test_memory_prompt_resource_matches_versioned_hash():
     import hashlib
 
     content = memory_filesystem_instructions()
-    assert MEMORY_PROMPT_VERSION == "memory-filesystem-v2"
+    assert MEMORY_PROMPT_VERSION == "memory-filesystem-v3"
     assert hashlib.sha256(content.encode("utf-8")).hexdigest() == MEMORY_PROMPT_SHA256
 
 

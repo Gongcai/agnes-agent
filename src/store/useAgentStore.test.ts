@@ -249,6 +249,21 @@ describe("assistant delta routing", () => {
     expect(normalized.parts.some((part) => part.content.includes("</thought>"))).toBe(false);
   });
 
+  it("removes persisted provider tool-call narration while keeping the answer", () => {
+    const normalized = normalizePersistedAssistantThoughtTags({
+      ...assistant,
+      parts: [{
+        id: "persisted-tool-narration",
+        kind: "text",
+        content: '答案。Calling memory_append with params: {"path":"/topics/reading.md","content":"- [stated] likes novels","if_version":"v1"}继续。',
+      }],
+    });
+
+    expect(normalized.parts).toMatchObject([
+      { kind: "text", content: "答案。继续。" },
+    ]);
+  });
+
   it("keeps reasoning out of text after an in-flight message is reloaded", () => {
     const reloadedAssistant: Message = {
       ...assistant,
