@@ -1911,7 +1911,7 @@ export const ReadingWorkspace: React.FC = () => {
             </button>
           </header>
           {books.length ? (
-            <div className="grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 overflow-y-auto p-5">
+            <div className="min-h-0 flex-1 touch-pan-y grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 overflow-y-auto overscroll-contain p-5">
               {books.map((book) => (
                 <article key={book.id} className="group min-h-28 rounded-md border border-hairline bg-canvas-surface-card p-4 text-left text-ink-body transition-colors hover:border-clay-soft hover:bg-clay-soft">
                   <button onClick={() => book.local_path && openBook(book.id)} disabled={!book.local_path} className="block w-full text-left disabled:cursor-not-allowed disabled:opacity-55">

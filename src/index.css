@@ -2424,6 +2424,20 @@ pre,
 }
 
 @media (max-width: 640px) {
+  .agnes-reading-workspace {
+    min-height: 0;
+  }
+
+  .agnes-reading-workspace > section,
+  .agnes-reading-workspace > section > section {
+    min-height: 0;
+  }
+
+  .agnes-reading-workspace [class*="overflow-y-auto"] {
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+  }
+
   .agnes-calendar-workspace,
   .agnes-todo-workspace,
   .agnes-knowledge-workspace > div {

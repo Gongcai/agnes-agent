@@ -4480,6 +4480,9 @@ pub async fn open_reading_book_conversation(
     {
         return Ok(session_id);
     }
+    // A book downloaded from another device may not have a local knowledge
+    // index yet. Build it before granting collection access for the session.
+    ensure_local_reading_index(&state, &book_id, &agent_id).await?;
     state
         .db
         .grant_reading_book_agent_access(book_id.clone(), agent_id.clone())
