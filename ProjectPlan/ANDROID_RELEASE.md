@@ -61,3 +61,17 @@ sha256sum <release.apk>
 覆盖安装 APK 会保留已安装的 Runtime。现有安装若要更新 Python Agent，请先停止 Runtime，再在设置的 Runtime 页面选择“从 ZIP 安装新版本”，导入上述新版 ZIP，然后启动。首次安装则使用 APK 内置的新版 Runtime。
 
 APK 旁的 `SHA256SUMS`、`verification.json`、`signature-verification.txt`、`alignment-verification.txt`、`package-badging.txt` 与 `build.log` 保存产物校验信息和构建日志。`SHA256SUMS` 同时记录 APK 与 Runtime ZIP 的摘要，可在仓库根目录运行 `sha256sum -c src-tauri/target/android-release/SHA256SUMS` 验证。安装包、Runtime ZIP 与本机签名文件均不纳入 Git。
+
+## 2026-10-19 构建记录
+
+- 源码提交：`2adf1c265d5dee37057648bdf899753aad0d40e4`。
+- 版本：`0.1.0`，`versionCode=1000`，最低 Android API 24，目标 API 36。
+- 交付路径：`src-tauri/target/android-release/agnes-agent_0.1.0_arm64-v8a-release.apk`。
+- 大小：250,369,878 字节，约 238.77 MiB。
+- SHA-256：`85632399e2786fefbdd09daf1df0957b3d2ac8c82d2faa3126ff597c603f25b1`。
+- 本机 Release 证书 SHA-256：`4d7fae2f06b3065c4df6aa6a9272375eaba1e0d4352f1621afa28a58f6923f6a`。
+- Runtime：`ubuntu-24.04.1-agnes-20261019-2adf1c2`，以 2026-10-11 版 Runtime ZIP 的 rootfs 为基底重新打包，刷新了当前 `agent/app` 与记忆提示词；`agent/uv.lock` 未变化（SHA-256 `9d7263023d6eb84708732a86ca726a74a73f21a83ff06c73df8e0c6284c76767`），因此未重新执行 apt/pip 依赖安装。
+- Runtime ZIP 交付路径：`src-tauri/target/android-release/agnes-runtime_20261019-2adf1c2_arm64-v8a.zip`。
+- Runtime ZIP SHA-256：`127ea8129c8a39b86bef696420e95752a3718dbfad0e78dd1412f5463dd8669d`；rootfs SHA-256 为 `d0df3ac9609ea43f76b4f1b0f2f3ded7f30d6bc010343c8f761392ec8f3757cc`。
+- 验收通过：APK v2 签名、本机证书匹配、ZIP 对齐、仅 ARM64 原生库、内置 Runtime ZIP 摘要、Runtime manifest 的 rootfs 摘要，以及 16 个 Agent Python 源文件和记忆提示词与当前源码一致。
+- 构建环境：使用本机 `src-tauri/gen/android/keystore.properties` 与 `agnes-release.jks` 签名，未修改版本号。
