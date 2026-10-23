@@ -12,6 +12,8 @@ Read With AI 的 EPUB、划线与讨论上下文边界详见 `ProjectPlan/READ_W
 
 联网搜索、网页读取与 MCP 分阶段设计详见 `ProjectPlan/WEB_AND_MCP.md`。
 
+云端 AI 核心、自托管执行环境、客户端上下文协议与现有 E2EE 同步边界的可行性调研详见 `ProjectPlan/CLOUD_AI.md`。
+
 Skills 的目录格式、安装、运行时加载与安全边界详见 `ProjectPlan/SKILLS.md`。
 
 DOCX、PPTX、XLSX、PDF 的结构化解析、独立 sidecar 与 PDF 可选模型包详见 `ProjectPlan/DOCUMENT_PARSING.md`。
