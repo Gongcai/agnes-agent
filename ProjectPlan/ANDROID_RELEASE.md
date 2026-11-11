@@ -75,3 +75,20 @@ APK 旁的 `SHA256SUMS`、`verification.json`、`signature-verification.txt`、`
 - Runtime ZIP SHA-256：`127ea8129c8a39b86bef696420e95752a3718dbfad0e78dd1412f5463dd8669d`；rootfs SHA-256 为 `d0df3ac9609ea43f76b4f1b0f2f3ded7f30d6bc010343c8f761392ec8f3757cc`。
 - 验收通过：APK v2 签名、本机证书匹配、ZIP 对齐、仅 ARM64 原生库、内置 Runtime ZIP 摘要、Runtime manifest 的 rootfs 摘要，以及 16 个 Agent Python 源文件和记忆提示词与当前源码一致。
 - 构建环境：使用本机 `src-tauri/gen/android/keystore.properties` 与 `agnes-release.jks` 签名，未修改版本号。
+
+## 2026-11-12 构建记录
+
+- 源码提交：`4580b328d058817c36cc433a621c85ede2fd1d44`。
+- 版本：`0.1.0`，`versionCode=1000`，最低 Android API 24，目标 API 36。
+- 交付路径：`src-tauri/target/android-release/agnes-agent_0.1.0_arm64-v8a-release.apk`。
+- 大小：250,434,942 字节，约 238.83 MiB。
+- SHA-256：`d676a1414a9009752c308d2331254747f84a141241d4f556de7d8c82bd62583e`。
+- 本机 Release 证书 SHA-256：`4d7fae2f06b3065c4df6aa6a9272375eaba1e0d4352f1621afa28a58f6923f6a`。
+- Runtime：`ubuntu-24.04.1-agnes-20261112-4580b32`，以 2026-10-19 版 Runtime ZIP 的 rootfs 为基底重新打包，刷新当前 Agent 源码和记忆提示词，包含流式并行工具调用参数解析修复。`agent/uv.lock` 与 `agent/pyproject.toml` 未变化，沿用原有 ARM64 依赖。
+- Runtime ZIP 交付路径：`src-tauri/target/android-release/agnes-runtime_20261112-4580b32_arm64-v8a.zip`。
+- Runtime ZIP SHA-256：`3ca77791511df2d916a698ba0ba66f3077f1d1a22f01649481e5a62ced7adc39`；rootfs SHA-256 为 `27f193402a06da45797f906306bbe67644ca0cd709fbebab35d5a6625fca82f8`，总内容大小为 747,147,005 字节。
+- 验收通过：APK v2 签名、本机证书匹配、ZIP 对齐、包名与版本、仅 ARM64 原生库、内置 Runtime ZIP 摘要、Runtime manifest 的 rootfs 摘要与大小，以及 16 个 Agent Python 源文件和记忆提示词与当前源码一致。交付目录的 `SHA256SUMS` 校验通过，`verification.json` 与构建、签名、对齐日志已刷新。
+- 验证通过：前端类型检查与生产构建；Agent 推理与 Responses adapter 共 102 项回归测试；QEMU ARM64 Python 成功导入打包后的 Agent、语音提供方和原生依赖。QEMU 验证期间 LiteLLM 的远端价格表请求因网络不可用回退至内置数据，导入成功。
+- 构建环境：JDK 21、NDK 27.0.12077973，使用本机 `keystore.properties` 与 `app/agnes-release.jks` 签名；未修改版本号。本轮未执行真机安装测试。
+
+已有安装更新 Agent 时，覆盖安装 APK 后，还需停止 Runtime，在设置的 Runtime 页面选择“从 ZIP 安装新版本”，导入本轮 Runtime ZIP，再启动。首次安装使用 APK 内置 Runtime。
