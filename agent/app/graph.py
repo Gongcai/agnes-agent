@@ -222,6 +222,194 @@ def _merge_tool_name(existing: str, incoming: Any) -> str:
     return existing + incoming_text
 
 
+def _is_complete_json_object(text: str) -> bool:
+    """Return whether ``text`` is a single complete top-level JSON object."""
+    stripped = text.strip()
+    if not stripped or not stripped.startswith("{") or not stripped.endswith("}"):
+        return False
+    try:
+        return isinstance(json.loads(stripped), dict)
+    except ValueError:
+        return False
+
+
+def _split_concatenated_json_objects(argument_text: str) -> Optional[List[str]]:
+    """Split adjacent top-level JSON objects (e.g. ``{"a":1}{"b":2}``) when valid."""
+    stripped = argument_text.strip()
+    if not stripped.startswith("{") or _is_complete_json_object(stripped):
+        return None
+    decoder = json.JSONDecoder()
+    objects: List[str] = []
+    pos = 0
+    length = len(stripped)
+    while pos < length:
+        while pos < length and stripped[pos].isspace():
+            pos += 1
+        if pos >= length:
+            break
+        if stripped[pos] != "{":
+            return None
+        try:
+            parsed, end = decoder.raw_decode(stripped, pos)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        objects.append(stripped[pos:end])
+        pos = end
+    return objects if len(objects) >= 2 else None
+
+
+class _ToolCallStreamAccumulator:
+    """Accumulate streamed tool-call deltas while isolating parallel calls.
+
+    Standard OpenAI streams assign distinct ``index`` values (0, 1, ...) to
+    parallel tool calls in one assistant turn. Several OpenAI-compatible
+    proxies emit ``index=0`` (or omit ``index``) for every chunk even when
+    starting a second tool call, or concatenate adjacent JSON argument objects
+    into one chunk. Isolating those boundaries prevents valid parallel calls
+    from corrupting each other's ``id``, ``name``, and ``arguments``.
+    """
+
+    def __init__(self, known_tool_names: Optional[set[str]] = None) -> None:
+        self._known_tool_names = known_tool_names or set()
+        self._calls: List[Dict[str, Any]] = []
+        self._slot_by_id: Dict[str, int] = {}
+        self._slot_by_index: Dict[int, int] = {}
+
+    def _new_slot(self, call_id: str, name: str, argument_text: str) -> int:
+        slot_id = call_id if call_id and call_id not in self._slot_by_id else ""
+        slot = len(self._calls)
+        self._calls.append({
+            "id": slot_id,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": argument_text,
+            },
+        })
+        if slot_id:
+            self._slot_by_id[slot_id] = slot
+        return slot
+
+    def _is_distinct_tool_name(
+        self,
+        existing_name: str,
+        existing_args: str,
+        incoming_name: str,
+    ) -> bool:
+        if not incoming_name or not existing_name or incoming_name == existing_name:
+            return False
+        if existing_args:
+            return True
+        if (
+            existing_name in self._known_tool_names
+            and (existing_name + incoming_name) not in self._known_tool_names
+        ):
+            return True
+        return False
+
+    def _starts_new_call_after(
+        self,
+        existing: Dict[str, Any],
+        incoming_name: str,
+        argument_text: str,
+        arguments_complete: bool,
+    ) -> bool:
+        existing_fn = existing["function"]
+        existing_name = existing_fn["name"]
+        existing_args = existing_fn["arguments"]
+        if self._is_distinct_tool_name(existing_name, existing_args, incoming_name):
+            return True
+        if (
+            not arguments_complete
+            and _is_complete_json_object(existing_args)
+            and argument_text.lstrip().startswith("{")
+        ):
+            return True
+        return False
+
+    def add(self, tc: Any, fallback_index: int) -> None:
+        raw_index = _tool_call_index(tc, fallback_index)
+        function = _tool_call_field(tc, "function") or {}
+        call_id = _tool_argument_text(_tool_call_field(tc, "id"))
+        name = _tool_argument_text(_tool_call_field(function, "name"))
+        argument_text = _tool_argument_text(_tool_call_field(function, "arguments"))
+        arguments_complete = bool(_tool_call_field(function, "arguments_complete"))
+
+        slot: Optional[int] = None
+        if call_id and call_id in self._slot_by_id:
+            candidate_slot = self._slot_by_id[call_id]
+            candidate = self._calls[candidate_slot]
+            if self._starts_new_call_after(
+                candidate, name, argument_text, arguments_complete
+            ):
+                inherited_name = name or candidate["function"]["name"]
+                slot = self._new_slot("", inherited_name, argument_text)
+                self._slot_by_index[raw_index] = slot
+                return
+            slot = candidate_slot
+            self._slot_by_index[raw_index] = slot
+        elif call_id:
+            if raw_index in self._slot_by_index:
+                candidate_slot = self._slot_by_index[raw_index]
+                candidate = self._calls[candidate_slot]
+                if not candidate["id"] and not self._starts_new_call_after(
+                    candidate, name, argument_text, arguments_complete
+                ):
+                    candidate["id"] = call_id
+                    self._slot_by_id[call_id] = candidate_slot
+                    slot = candidate_slot
+            if slot is None:
+                slot = self._new_slot(call_id, name, argument_text)
+                self._slot_by_index[raw_index] = slot
+                return
+        else:
+            if raw_index not in self._slot_by_index:
+                slot = self._new_slot("", name, argument_text)
+                self._slot_by_index[raw_index] = slot
+                return
+            candidate_slot = self._slot_by_index[raw_index]
+            candidate = self._calls[candidate_slot]
+            if self._starts_new_call_after(
+                candidate, name, argument_text, arguments_complete
+            ):
+                inherited_name = name or candidate["function"]["name"]
+                slot = self._new_slot("", inherited_name, argument_text)
+                self._slot_by_index[raw_index] = slot
+                return
+            slot = candidate_slot
+
+        accumulated_function = self._calls[slot]["function"]
+        accumulated_function["name"] = _merge_tool_name(
+            accumulated_function["name"], name
+        )
+        if argument_text:
+            if arguments_complete:
+                accumulated_function["arguments"] = argument_text
+            else:
+                accumulated_function["arguments"] += argument_text
+
+    def values(self) -> List[Dict[str, Any]]:
+        expanded: List[Dict[str, Any]] = []
+        for call in self._calls:
+            function = call["function"]
+            split_args = _split_concatenated_json_objects(function["arguments"])
+            if split_args and function["name"]:
+                for idx, single_arg in enumerate(split_args):
+                    expanded.append({
+                        "id": call["id"] if idx == 0 else "",
+                        "type": "function",
+                        "function": {
+                            "name": function["name"],
+                            "arguments": single_arg,
+                        },
+                    })
+            else:
+                expanded.append(call)
+        return expanded
+
+
 def _parse_tool_arguments(value: Any) -> Dict[str, Any]:
     """Parse JSON arguments while preserving already-structured provider data."""
     if isinstance(value, dict):
@@ -472,15 +660,16 @@ def get_available_tools(
             "type": "function",
             "function": {
                 "name": "grep",
-                "description": "Search UTF-8 files recursively with a regular expression.",
+                "description": "Search UTF-8 text files recursively with a regular expression. Respects .gitignore and skips dependency/build directories and lockfiles by default.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "pattern": {"type": "string", "description": "Rust-compatible regular expression."},
                         "path": {"type": "string", "description": "File or directory to search; defaults to the workspace."},
-                        "glob": {"type": "string", "description": "Optional file glob relative to path."},
+                        "glob": {"type": "string", "description": "Optional file glob (e.g. '*.rs' or 'src/**/*.ts')."},
                         "case_sensitive": {"type": "boolean", "description": "Defaults to true."},
-                        "max_results": {"type": "integer", "minimum": 1, "maximum": 1000}
+                        "include_ignored": {"type": "boolean", "description": "Search gitignored files, build/dependency directories, and lockfiles. Defaults to false."},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Maximum matching lines to return; defaults to 100."}
                     },
                     "required": ["pattern"]
                 }
@@ -1127,6 +1316,12 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
         state.get("tool_policy", {}),
         state.get("dynamic_tools", []),
     )
+    known_tool_names = {
+        tool["function"]["name"]
+        for tool in available_tools
+        if isinstance(tool.get("function"), dict)
+        and isinstance(tool["function"].get("name"), str)
+    }
     tools_arg = available_tools if available_tools else None
     tools_disabled_for_request = False
     
@@ -1164,7 +1359,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
         llm_config = LlmConfig.from_dict(selected_raw) if selected_raw else None
         full_text = ""
         full_reasoning = ""
-        tool_calls_accumulator: Dict[int, Dict[str, Any]] = {}
+        tool_calls_accumulator = _ToolCallStreamAccumulator(known_tool_names)
         tool_narration_filter = _ToolCallNarrationFilter()
         reasoning_started = False
         reasoning_closed = False
@@ -1214,37 +1409,7 @@ async def call_llm_node(state: AgentState, config: RunnableConfig) -> Dict[str, 
                 if delta.tool_calls:
                     attempt_had_activity = True
                     for fallback_index, tc in enumerate(delta.tool_calls):
-                        index = _tool_call_index(tc, fallback_index)
-                        function = _tool_call_field(tc, "function") or {}
-                        call_id = _tool_call_field(tc, "id")
-                        name = _tool_call_field(function, "name")
-                        argument_text = _tool_argument_text(
-                            _tool_call_field(function, "arguments")
-                        )
-                        arguments_complete = bool(
-                            _tool_call_field(function, "arguments_complete")
-                        )
-                        if index not in tool_calls_accumulator:
-                            tool_calls_accumulator[index] = {
-                                "id": call_id or "",
-                                "type": "function",
-                                "function": {
-                                    "name": _tool_argument_text(name),
-                                    "arguments": argument_text,
-                                },
-                            }
-                        else:
-                            if call_id:
-                                tool_calls_accumulator[index]["id"] = call_id
-                            accumulated_function = tool_calls_accumulator[index]["function"]
-                            accumulated_function["name"] = _merge_tool_name(
-                                accumulated_function["name"], name
-                            )
-                            if argument_text:
-                                if arguments_complete:
-                                    accumulated_function["arguments"] = argument_text
-                                else:
-                                    accumulated_function["arguments"] += argument_text
+                        tool_calls_accumulator.add(tc, fallback_index)
 
             if reasoning_started and not reasoning_closed:
                 reasoning_closed = True

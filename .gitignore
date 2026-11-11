@@ -38,6 +38,7 @@ agent/__pycache__
 # tauri
 src-tauri/binaries
 src-tauri/target/*
+.agnes/
 
 # env / secrets
 .env

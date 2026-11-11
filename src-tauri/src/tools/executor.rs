@@ -148,6 +148,21 @@ impl ToolExecutor {
         };
         self.db.insert_tool_call(new_tc).await?;
 
+        if let Some(parse_error) = malformed_tool_arguments_error(arguments) {
+            let err_msg = format!("Invalid tool arguments JSON: {parse_error}");
+            self.db
+                .update_tool_call_complete(
+                    tool_call_id.to_string(),
+                    "failed".into(),
+                    Some(err_msg.clone()),
+                    None,
+                    None,
+                    Some(err_msg.clone()),
+                )
+                .await?;
+            return Err(AppError::Other(err_msg));
+        }
+
         let sandbox = crate::tools::sandbox::PolicySandbox::new_with_process_runtime(
             &effective_policy,
             workspace_cwd.as_deref(),
@@ -220,6 +235,15 @@ impl ToolExecutor {
 
     pub fn stop_run(&self, run_id: &str) {
         self.terminals.stop_run(run_id);
+    }
+}
+
+fn malformed_tool_arguments_error(arguments: &serde_json::Value) -> Option<&str> {
+    let obj = arguments.as_object()?;
+    if obj.len() == 2 && obj.get("raw_args").and_then(serde_json::Value::as_str).is_some() {
+        obj.get("parse_error").and_then(serde_json::Value::as_str)
+    } else {
+        None
     }
 }
 
@@ -344,6 +368,66 @@ mod tests {
             .allowed_cwd
             .contains(&skill_root.to_string_lossy().to_string()));
     }
+
+    #[tokio::test]
+    async fn malformed_tool_arguments_are_rejected_before_dispatch() {
+        let db_path = PathBuf::from(format!(
+            "target/test_malformed_args_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = spawn_db_actor(db_path.clone());
+        let secrets = std::sync::Arc::new(crate::secrets::InMemorySecretStore::default());
+        let mcp = std::sync::Arc::new(crate::mcp::McpManager::new(db.clone(), secrets.clone()));
+        let executor = ToolExecutor::new(
+            db.clone(),
+            mcp,
+            secrets,
+            PathBuf::from("target/test_home_workspace"),
+            test_storage_service(),
+        );
+
+        db.insert_agent(new_agent("test-agent", "Test Agent"))
+            .await
+            .unwrap();
+        db.insert_session(crate::db::repo::sessions::NewSession {
+            id: "sess-malformed".into(),
+            agent_id: "test-agent".into(),
+            title: "Malformed Args".into(),
+            context_limit: None,
+            compress_threshold: Some(0.8),
+            recency_window: Some(15),
+            reserved_output_tokens: None,
+            summarizer_model: None,
+            model: None,
+            thinking_mode: None,
+            thinking_budget: None,
+            streaming: None,
+            permission_mode: "auto".into(),
+            workspace_id: None,
+            origin_device_id: None,
+        })
+        .await
+        .unwrap();
+
+        let malformed_args = json!({
+            "raw_args": "{\"url\":\"https://a.test\"}{\"url\":\"https://b.test\"}",
+            "parse_error": "Extra data: line 1 column 25 (char 24)"
+        });
+        let err = executor
+            .execute(
+                "sess-malformed",
+                None,
+                "tc-malformed-only",
+                "list_files",
+                &malformed_args,
+                &ToolPolicy::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Invalid tool arguments JSON:"));
+        let _ = fs::remove_file(&db_path);
+    }
+
     fn new_agent(id: &str, name: &str) -> crate::db::repo::agents::NewAgent {
         crate::db::repo::agents::NewAgent {
             id: id.into(),
@@ -518,6 +602,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(list_res["files"][0]["path"], "test_write.txt");
+
+        let malformed_args = json!({
+            "raw_args": "{\"path\":\"unterminated",
+            "parse_error": "Unterminated string starting at: line 1 column 9 (char 8)"
+        });
+        let malformed_err = executor
+            .execute(
+                "sess-1",
+                None,
+                "tc-malformed-1",
+                "list_files",
+                &malformed_args,
+                &policy,
+            )
+            .await
+            .unwrap_err();
+        assert!(malformed_err
+            .to_string()
+            .contains("Invalid tool arguments JSON:"));
 
         let grep_args = json!({"pattern": "Edited", "glob": "*.txt"});
         let grep_res = executor

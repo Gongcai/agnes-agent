@@ -324,6 +324,48 @@ def test_stream_recovers_complete_tool_call_from_output_item_done():
     assert tool_call.function.arguments_complete
 
 
+def test_stream_isolates_parallel_function_calls_when_output_index_collides():
+    events = [
+        {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {"type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "web_fetch"},
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "output_index": 0,
+            "item_id": "fc-1",
+            "delta": '{"url":"https://one.example.test"}',
+        },
+        {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {"type": "function_call", "id": "fc-2", "call_id": "call-2", "name": "web_fetch"},
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "output_index": 0,
+            "item_id": "fc-2",
+            "delta": '{"url":"https://two.example.test"}',
+        },
+    ]
+
+    chunks = list(_iter_responses_events_as_chat_chunks(_event_stream(*events)))
+    tool_deltas = [
+        delta
+        for chunk in chunks
+        if chunk.choices[0].delta.tool_calls
+        for delta in chunk.choices[0].delta.tool_calls
+    ]
+
+    assert [(d.index, d.id, d.function.arguments) for d in tool_deltas] == [
+        (0, "call-1", None),
+        (0, None, '{"url":"https://one.example.test"}'),
+        (1, "call-2", None),
+        (1, None, '{"url":"https://two.example.test"}'),
+    ]
+
+
 def test_stream_completion_event_carries_normalized_usage():
     response = SimpleNamespace(usage=SimpleNamespace(
         input_tokens=120,

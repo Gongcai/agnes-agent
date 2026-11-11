@@ -542,6 +542,152 @@ def test_tool_call_arguments_accept_dict_shaped_chunks(monkeypatch):
     assert calls == [("tc-dict", "web_search", {"query": "Tavily"})]
 
 
+def test_parallel_tool_calls_with_colliding_index_and_distinct_ids_stay_isolated(monkeypatch):
+    chunks = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=None,
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=[SimpleNamespace(
+                        index=0,
+                        id="tc-fetch-1",
+                        function=SimpleNamespace(
+                            name="web_fetch",
+                            arguments='{"url":"https://a.example.test',
+                        ),
+                    )],
+                )
+            )]
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=None,
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=[SimpleNamespace(
+                        index=0,
+                        id=None,
+                        function=SimpleNamespace(name=None, arguments='"}'),
+                    )],
+                )
+            )]
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=None,
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=[SimpleNamespace(
+                        index=0,
+                        id="tc-fetch-2",
+                        function=SimpleNamespace(
+                            name="web_fetch",
+                            arguments='{"url":"https://b.example.test',
+                        ),
+                    )],
+                )
+            )]
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=None,
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=[SimpleNamespace(
+                        index=0,
+                        id=None,
+                        function=SimpleNamespace(name=None, arguments='"}'),
+                    )],
+                )
+            )]
+        ),
+    ]
+    monkeypatch.setattr(graph_module, "completion", lambda **_kwargs: iter(chunks))
+    state = {
+        **_tool_stream_state(),
+        "tool_policy": {"web": {"enabled": True}, "network": {"allow": True}},
+    }
+    result = asyncio.run(graph_module.call_llm_node(state, {"configurable": {}}))
+
+    assert result["pending_tool_calls"] == [
+        {
+            "id": "tc-fetch-1",
+            "type": "function",
+            "function": {
+                "name": "web_fetch",
+                "arguments": '{"url":"https://a.example.test"}',
+            },
+        },
+        {
+            "id": "tc-fetch-2",
+            "type": "function",
+            "function": {
+                "name": "web_fetch",
+                "arguments": '{"url":"https://b.example.test"}',
+            },
+        },
+    ]
+
+
+def test_parallel_tool_calls_without_distinct_ids_or_with_concatenated_json_are_split(monkeypatch):
+    chunks = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=None,
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=[SimpleNamespace(
+                        index=0,
+                        id="tc-shared",
+                        function=SimpleNamespace(
+                            name="file_read",
+                            arguments='{"path":"agent/app/graph.py"}{"path":"agent/app/models.py"}',
+                        ),
+                    )],
+                )
+            )]
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=None,
+                    reasoning_content=None,
+                    reasoning=None,
+                    tool_calls=[SimpleNamespace(
+                        index=0,
+                        id="tc-shared",
+                        function=SimpleNamespace(
+                            name="grep",
+                            arguments='{"pattern":"parse_error"}',
+                        ),
+                    )],
+                )
+            )]
+        ),
+    ]
+    monkeypatch.setattr(graph_module, "completion", lambda **_kwargs: iter(chunks))
+    state = {
+        **_tool_stream_state(),
+        "tool_policy": {"file": {"enabled": True}},
+    }
+    result = asyncio.run(graph_module.call_llm_node(state, {"configurable": {}}))
+    calls = result["pending_tool_calls"]
+
+    assert len(calls) == 3
+    assert len({call["id"] for call in calls}) == 3
+    assert [(call["function"]["name"], json.loads(call["function"]["arguments"])) for call in calls] == [
+        ("file_read", {"path": "agent/app/graph.py"}),
+        ("file_read", {"path": "agent/app/models.py"}),
+        ("grep", {"pattern": "parse_error"}),
+    ]
+
+
 def test_usage_normalization_supports_openai_and_anthropic_cache_fields():
     openai_usage = SimpleNamespace(
         prompt_tokens=120,
@@ -1444,6 +1590,14 @@ def test_get_available_tools():
     max_depth = list_files["function"]["parameters"]["properties"]["max_depth"]
     assert max_depth["minimum"] == 0
     assert "direct children" in max_depth["description"]
+
+    grep_tool = next(
+        tool for tool in get_available_tools({})
+        if tool["function"]["name"] == "grep"
+    )
+    grep_props = grep_tool["function"]["parameters"]["properties"]
+    assert "include_ignored" in grep_props
+    assert ".gitignore" in grep_tool["function"]["description"]
 
     all_tool_names = [
         tool["function"]["name"] for tool in get_available_tools({})

@@ -617,6 +617,33 @@ def _iter_responses_events_as_chat_chunks(
     streamed_reasoning_items: set = set()
     streamed_any_reasoning = False
     tool_arguments: Dict[int, str] = {}
+    slot_by_item_id: Dict[str, int] = {}
+    item_id_by_slot: Dict[int, str] = {}
+
+    def resolve_tool_slot(
+        event_or_item: Any,
+        item: Any = None,
+        fallback: int = 0,
+    ) -> int:
+        item_key = (
+            _responses_field(event_or_item, "item_id")
+            or _responses_field(item, "id")
+            or _responses_field(item, "call_id")
+        )
+        if isinstance(item_key, str) and item_key:
+            if item_key in slot_by_item_id:
+                return slot_by_item_id[item_key]
+            candidate = _responses_output_index(event_or_item, fallback)
+            existing_owner = item_id_by_slot.get(candidate)
+            if existing_owner is not None and existing_owner != item_key:
+                candidate = max(
+                    max(item_id_by_slot.keys(), default=-1),
+                    max(tool_arguments.keys(), default=-1),
+                ) + 1
+            slot_by_item_id[item_key] = candidate
+            item_id_by_slot[candidate] = item_key
+            return candidate
+        return _responses_output_index(event_or_item, fallback)
 
     for event in event_stream:
         event_type = _responses_field(event, "type")
@@ -639,7 +666,7 @@ def _iter_responses_events_as_chat_chunks(
             item = _responses_field(event, "item")
             item_type = _responses_field(item, "type")
             if item_type == "function_call":
-                index = _responses_output_index(event)
+                index = resolve_tool_slot(event, item)
                 call_id = _responses_field(item, "call_id") or _responses_field(item, "id")
                 name = _responses_field(item, "name")
                 complete = _tool_arguments_text(_responses_field(item, "arguments"))
@@ -680,7 +707,7 @@ def _iter_responses_events_as_chat_chunks(
                         yield _chat_stream_chunk(reasoning=text)
 
         elif event_type == "response.function_call_arguments.delta":
-            index = _responses_output_index(event)
+            index = resolve_tool_slot(event)
             text = _tool_arguments_text(_responses_field(event, "delta"))
             if text:
                 yield _chat_stream_chunk(tool_calls=[SimpleNamespace(
@@ -695,7 +722,7 @@ def _iter_responses_events_as_chat_chunks(
                 tool_arguments[index] = tool_arguments.get(index, "") + text
 
         elif event_type == "response.function_call_arguments.done":
-            index = _responses_output_index(event)
+            index = resolve_tool_slot(event)
             complete = _tool_arguments_text(_responses_field(event, "arguments"))
             argument_text, arguments_complete = _tool_argument_update(
                 tool_arguments.get(index, ""), complete
@@ -722,7 +749,7 @@ def _iter_responses_events_as_chat_chunks(
             for output_index, item in enumerate(_responses_field(response, "output") or []):
                 if _responses_field(item, "type") != "function_call":
                     continue
-                index = _responses_output_index(item, output_index)
+                index = resolve_tool_slot(item, item, output_index)
                 complete = _tool_arguments_text(_responses_field(item, "arguments"))
                 argument_text, arguments_complete = _tool_argument_update(
                     tool_arguments.get(index, ""), complete
@@ -811,7 +838,7 @@ def _chat_response_to_chunks(response: Any) -> Any:
     for index, tc in enumerate(_responses_field(message, "tool_calls") or []):
         function = _responses_field(tc, "function")
         tool_calls.append(SimpleNamespace(
-            index=_responses_field(tc, "index") or index,
+            index=index,
             id=_responses_field(tc, "id"),
             function=SimpleNamespace(
                 name=_responses_field(function, "name"),
