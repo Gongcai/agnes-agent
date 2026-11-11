@@ -39,6 +39,7 @@ async-trait = "0.1"
 chrono = "0.4"
 chrono-tz = "0.10"
 globset = "0.4"
+ignore = "0.4"
 nix = { version = "0.31", features = ["process", "resource", "signal"] }
 regex = "1"
 walkdir = "2"
