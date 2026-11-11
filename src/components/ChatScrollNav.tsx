@@ -6,8 +6,19 @@ export interface ThumbLayout {
   top: number;
 }
 
+interface OverflowSnapshot {
+  clientHeight: number;
+  scrollHeight: number;
+}
+
+// Overflow state is derived from the latest snapshot instead of being latched
+// into component state, so the nav can never get stuck "not overflowing".
+export function isOverflowing(snapshot: OverflowSnapshot | null): boolean {
+  if (!snapshot) return false;
+  return snapshot.scrollHeight > snapshot.clientHeight + 1;
+}
+
 const MIN_THUMB_HEIGHT = 44;
-const IDLE_HIDE_DELAY = 1200;
 const FLASH_DURATION = 1200;
 const PREVIEW_LENGTH = 30;
 
@@ -66,13 +77,14 @@ function messageLabel(message: Message): string {
 export function ChatScrollNav({ containerRef, messages, visible }: ChatScrollNavProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [metrics, setMetrics] = useState<ScrollMetrics | null>(null);
+  // Latest scroll geometry read from the container. Kept in a ref so overflow
+  // can be re-evaluated when the track resizes without waiting for a sync that
+  // needs the track to be mounted.
+  const scrollMetricsRef = useRef<OverflowSnapshot | null>(null);
   const [markers, setMarkers] = useState<AnchorMarker[]>([]);
-  const [active, setActive] = useState(false);
-  const [hovered, setHovered] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const rafRef = useRef(0);
-  const hideTimerRef = useRef(0);
   const dragStateRef = useRef({ startY: 0, startScrollTop: 0 });
 
   const messageMeta = useMemo(() => {
@@ -83,18 +95,27 @@ export function ChatScrollNav({ containerRef, messages, visible }: ChatScrollNav
     return map;
   }, [messages]);
 
-  const pulseActive = useCallback(() => {
-    setActive(true);
-    window.clearTimeout(hideTimerRef.current);
-    hideTimerRef.current = window.setTimeout(() => setActive(false), IDLE_HIDE_DELAY);
-  }, []);
-
   const syncFromContainer = useCallback(() => {
     const container = containerRef.current;
-    const track = trackRef.current;
-    if (!container || !track) return;
+    if (!container) return;
     const { clientHeight, scrollHeight, scrollTop } = container;
-    setMetrics({ clientHeight, scrollHeight, scrollTop, trackHeight: track.clientHeight });
+    scrollMetricsRef.current = { clientHeight, scrollHeight };
+    // A missing track only means "we cannot render a thumb this frame"; it must
+    // never abort the sync, otherwise the nav can latch onto a stale snapshot.
+    const nextTrackHeight = trackRef.current?.clientHeight ?? 0;
+    if (nextTrackHeight <= 0) return;
+    setMetrics((previous) => {
+      if (
+        previous
+        && previous.clientHeight === clientHeight
+        && previous.scrollHeight === scrollHeight
+        && previous.scrollTop === scrollTop
+        && previous.trackHeight === nextTrackHeight
+      ) {
+        return previous;
+      }
+      return { clientHeight, scrollHeight, scrollTop, trackHeight: nextTrackHeight };
+    });
     if (scrollHeight <= 0) {
       setMarkers([]);
       return;
@@ -116,31 +137,55 @@ export function ChatScrollNav({ containerRef, messages, visible }: ChatScrollNav
     rafRef.current = requestAnimationFrame(syncFromContainer);
   }, [syncFromContainer]);
 
-  // Scroll + resize keep thumb/markers in sync; scroll also pulses visibility.
+  // Scroll keeps the thumb/markers in sync.
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !visible) return;
-    const handleScroll = () => {
-      pulseActive();
-      scheduleSync();
-    };
-    container.addEventListener("scroll", handleScroll, { passive: true });
-    const observer = new ResizeObserver(scheduleSync);
-    observer.observe(container);
+    container.addEventListener("scroll", scheduleSync, { passive: true });
     scheduleSync();
     return () => {
-      container.removeEventListener("scroll", handleScroll);
-      observer.disconnect();
+      container.removeEventListener("scroll", scheduleSync);
       cancelAnimationFrame(rafRef.current);
     };
-  }, [containerRef, visible, pulseActive, scheduleSync]);
+  }, [containerRef, visible, scheduleSync]);
+
+  // The track is always mounted now, so its own height can be observed directly.
+  // It changes when the composer grows/shrinks (--agnes-composer-h) or on window
+  // resize, and every change must feed a fresh scroll-geometry read.
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track) return;
+    scheduleSync();
+    const observer = new ResizeObserver(scheduleSync);
+    observer.observe(track);
+    return () => observer.disconnect();
+  }, [scheduleSync]);
+
+  // The container can change size (sidebar toggle, composer growth, window
+  // resize) without any scroll event. Re-read geometry so overflow is re-judged
+  // as soon as the viewport changes.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(() => scheduleSync());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [containerRef, scheduleSync]);
 
   // Content growth (streaming, new messages) changes scrollHeight without resizing the container.
   useEffect(() => {
     if (visible) scheduleSync();
   }, [messages, visible, scheduleSync]);
 
-  useEffect(() => () => window.clearTimeout(hideTimerRef.current), []);
+  // Drop the cached geometry when the nav is hidden so a remount can never
+  // start from a stale "fits in viewport" snapshot.
+  useEffect(() => {
+    if (visible) return;
+    scrollMetricsRef.current = null;
+    setMetrics(null);
+    setMarkers([]);
+    setTooltip(null);
+  }, [visible]);
 
   const jumpToRatio = useCallback(
     (ratio: number) => {
@@ -170,7 +215,6 @@ export function ChatScrollNav({ containerRef, messages, visible }: ChatScrollNav
     dragStateRef.current = { startY: event.clientY, startScrollTop: container.scrollTop };
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragging(true);
-    setActive(true);
   };
 
   const handleThumbPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -189,7 +233,6 @@ export function ChatScrollNav({ containerRef, messages, visible }: ChatScrollNav
     event.currentTarget.releasePointerCapture(event.pointerId);
     setDragging(false);
     setTooltip(null);
-    pulseActive();
   };
 
   // Drag preview: nearest anchor at/above the current viewport top.
@@ -221,25 +264,27 @@ export function ChatScrollNav({ containerRef, messages, visible }: ChatScrollNav
   );
 
   if (!visible) return null;
-  const overflowing = metrics ? metrics.scrollHeight > metrics.clientHeight + 1 : false;
-  if (metrics && !overflowing) return null;
-
-  const thumb = metrics
-    ? computeThumbLayout(metrics.trackHeight, metrics.clientHeight, metrics.scrollHeight, metrics.scrollTop)
+  // Overflow decides whether the nav is offered at all; the mount itself is
+  // kept stable so the track can always be measured.
+  const overflowing = isOverflowing(metrics ?? scrollMetricsRef.current);
+  const laidOut = metrics && metrics.trackHeight > 0 ? metrics : null;
+  const thumb = laidOut
+    ? computeThumbLayout(laidOut.trackHeight, laidOut.clientHeight, laidOut.scrollHeight, laidOut.scrollTop)
     : { height: MIN_THUMB_HEIGHT, top: 0 };
 
-  const shown = active || hovered || dragging;
+  // A long chat should be discoverable without hovering: the nav is visible
+  // whenever the content overflows, and stays visible while being dragged.
+  const shown = overflowing || dragging;
   const rootClass = [
     "agnes-scroll-nav",
     shown ? "agnes-scroll-nav--shown" : "",
     dragging ? "agnes-scroll-nav--dragging" : "",
+    shown ? "" : "agnes-scroll-nav--hidden",
   ].filter(Boolean).join(" ");
 
   return (
     <div
       className={rootClass}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       aria-hidden={!shown}
     >
       <div ref={trackRef} className="agnes-scroll-nav-track" onPointerDown={handleTrackPointerDown}>

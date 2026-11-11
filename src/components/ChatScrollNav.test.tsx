@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
 
-import { computeThumbLayout } from "./ChatScrollNav";
+import { computeThumbLayout, isOverflowing } from "./ChatScrollNav";
+
+describe("isOverflowing", () => {
+  it("treats an unknown snapshot as non-overflowing", () => {
+    expect(isOverflowing(null)).toBe(false);
+  });
+
+  it("ignores sub-pixel rounding when content fits", () => {
+    expect(isOverflowing({ clientHeight: 500, scrollHeight: 500 })).toBe(false);
+    expect(isOverflowing({ clientHeight: 500, scrollHeight: 501 })).toBe(false);
+  });
+
+  it("detects overflow once content exceeds the viewport", () => {
+    expect(isOverflowing({ clientHeight: 500, scrollHeight: 502 })).toBe(true);
+  });
+});
 
 describe("computeThumbLayout", () => {
   it("fills the track when content does not overflow", () => {

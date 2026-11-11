@@ -1080,6 +1080,20 @@ pre,
   opacity: 1;
 }
 
+/* Content fits in the viewport: keep the track mounted (so it stays
+   measurable) but take it out of sight and out of the hit area. */
+.agnes-scroll-nav--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Children opt back into pointer events individually, so the collapsed state
+   has to disable them explicitly or the invisible track would swallow clicks. */
+.agnes-scroll-nav--hidden .agnes-scroll-nav-track,
+.agnes-scroll-nav--hidden .agnes-scroll-nav-marker {
+  pointer-events: none;
+}
+
 .agnes-scroll-nav-track {
   position: relative;
   width: 8px;
