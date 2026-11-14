@@ -410,8 +410,8 @@ body.quick-window-body #root {
 .agnes-code-pre {
   background: var(--claude-code-bg);
   color: #e5dfd5;
-  font-size: 0.8125rem;
-  line-height: 1.62;
+  font-size: 0.875rem;
+  line-height: 1.65;
   border-radius: 0 0 7px 7px;
   scrollbar-width: thin;
   scrollbar-color: rgba(245, 243, 237, 0.18) transparent;
@@ -511,8 +511,8 @@ body.quick-window-body #root {
   --claude-header: #faf9f5;
   --claude-header-soft: #f5f0e8;
   --claude-overlay: rgba(31, 30, 27, 0.34);
-  --claude-ui-font: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
-  --claude-display-font: "Newsreader", "Iowan Old Style", "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
+  --claude-ui-font: "Newsreader", "Iowan Old Style", "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "PingFang SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
+  --claude-display-font: "Newsreader", "Iowan Old Style", "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "PingFang SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
   --claude-mono-font: "JetBrains Mono", "Fira Code", "Cascadia Code", "SFMono-Regular", Menlo, Monaco, Consolas, "Source Code Pro", "Noto Sans Mono", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono CJK SC", monospace;
 }
 
@@ -601,7 +601,7 @@ pre,
 }
 
 .agnes-app {
-  --agnes-sidebar-expanded-width: 260px;
+  --agnes-sidebar-expanded-width: 272px;
   background: var(--claude-canvas) !important;
   color: var(--claude-ink) !important;
   font-family: var(--claude-ui-font);
@@ -860,19 +860,19 @@ pre,
 
 .agnes-sidebar .agnes-session-list section > div:first-child {
   color: var(--claude-muted) !important;
-  font-size: 10px;
+  font-size: 0.75rem;
   font-weight: 500;
   letter-spacing: 0;
 }
 
 .agnes-sidebar-primary-action {
-  min-height: 2.25rem;
+  min-height: 2.375rem;
   border: 0 !important;
   border-radius: 8px !important;
   background: transparent !important;
   color: var(--claude-ink) !important;
   /* rem-based so sidebar entries follow the font-scale preference (root font-size). */
-  font-size: 0.75rem;
+  font-size: 0.875rem;
   font-weight: 500;
   transition: background-color 120ms ease, transform 120ms ease;
 }
@@ -903,7 +903,7 @@ pre,
 .agnes-sidebar-label {
   display: block;
   min-width: 0;
-  max-width: 190px;
+  max-width: 204px;
   overflow: hidden;
   opacity: 1;
   transform: translateX(0);
@@ -1368,9 +1368,9 @@ pre,
   background: var(--claude-surface-soft) !important;
   color: var(--claude-ink) !important;
   box-shadow: none !important;
-  padding: 11px 17px !important;
-  font-size: 0.875rem;
-  line-height: 1.7;
+  padding: 12px 18px !important;
+  font-size: 0.96875rem;
+  line-height: 1.75;
 }
 
 .agnes-chat-messages .agnes-message-column--editing {
@@ -1428,13 +1428,13 @@ pre,
 
 .agnes-chat-messages .agnes-assistant-body {
   color: var(--claude-body);
-  font-size: 0.875rem;
-  line-height: 1.78;
+  font-size: 0.96875rem;
+  line-height: 1.82;
 }
 
 .agnes-assistant-waiting {
   color: var(--claude-muted);
-  font-size: 0.75rem;
+  font-size: 0.84375rem;
   line-height: 1.667;
 }
 
@@ -1523,7 +1523,7 @@ pre,
   background: transparent;
   padding: 0;
   color: var(--claude-muted);
-  font-size: 0.75rem;
+  font-size: 0.84375rem;
   font-weight: 400;
   line-height: 1.667;
   transition: color 140ms ease;
@@ -1540,9 +1540,9 @@ pre,
   border-left: 1px solid var(--claude-border-strong);
   padding: 0 0 2px 24px;
   color: var(--claude-muted);
-  font-size: 0.75rem;
+  font-size: 0.84375rem;
   font-weight: 400;
-  line-height: 1.7;
+  line-height: 1.75;
 }
 
 .agnes-thought-content > p {
@@ -1581,7 +1581,7 @@ pre,
   background: transparent;
   padding: 0;
   color: var(--claude-muted);
-  font-size: 0.6875rem;
+  font-size: 0.78125rem;
   font-weight: 400;
   line-height: 1.818;
   transition: color 140ms ease;
@@ -1599,12 +1599,12 @@ pre,
 }
 
 .agnes-tool-title {
-  font-size: 0.75rem;
+  font-size: 0.84375rem;
 }
 
 .agnes-tool-name {
   color: var(--claude-body);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
 }
 
 .agnes-tool-preview {
@@ -1612,7 +1612,7 @@ pre,
   max-width: min(240px, 30vw);
   overflow: hidden;
   color: var(--claude-muted-soft);
-  font-size: 0.625rem;
+  font-size: 0.71875rem;
   font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1623,7 +1623,7 @@ pre,
   align-items: center;
   gap: 4px;
   color: var(--claude-muted);
-  font-size: 0.625rem;
+  font-size: 0.71875rem;
 }
 
 .agnes-tool-status-dot {
@@ -1730,7 +1730,7 @@ pre,
 
 .agnes-chat-empty-welcome h1 {
   font-family: var(--claude-display-font);
-  font-size: clamp(28px, 3.2vw, 36px);
+  font-size: clamp(32px, 3.8vw, 44px);
   line-height: 1.22;
   letter-spacing: -0.015em;
   text-wrap: balance;
@@ -1799,12 +1799,12 @@ pre,
 }
 
 .agnes-chat-composer-box > textarea {
-  min-height: 38px;
+  min-height: 42px;
   max-height: 220px;
   padding: 6px 8px 4px !important;
   color: var(--claude-ink) !important;
-  font-size: 14.5px;
-  line-height: 1.55;
+  font-size: 0.96875rem;
+  line-height: 1.62;
   resize: none;
   overflow-y: auto;
 }
@@ -1816,9 +1816,9 @@ pre,
 }
 
 .agnes-chat-composer-box--empty > textarea {
-  min-height: 48px;
+  min-height: 52px;
   padding: 8px 10px 6px !important;
-  font-size: 15px;
+  font-size: 1.03125rem;
 }
 
 .agnes-chat-composer-box > .agnes-composer-toolbar {
@@ -1870,8 +1870,8 @@ pre,
 .agnes-app .markdown-body {
   color: var(--claude-body);
   font-family: var(--claude-ui-font);
-  font-size: 0.875rem;
-  line-height: 1.78;
+  font-size: 0.96875rem;
+  line-height: 1.82;
 }
 
 .agnes-app .markdown-body h1,

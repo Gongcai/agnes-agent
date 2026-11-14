@@ -60,11 +60,11 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
           <SidebarSimple className="h-4 w-4" />
         </button>
         <AppLogo size={18} className="ml-1 pointer-events-none opacity-95" />
-        <span className="truncate text-[12px] font-medium tracking-tight text-ink" data-tauri-drag-region>
+        <span className="truncate text-[0.84375rem] font-medium tracking-tight text-ink" data-tauri-drag-region>
           Agnes
         </span>
-        <span className="text-[11px] text-ink-muted/35" aria-hidden="true">/</span>
-        <span className="truncate text-[12px] text-ink-muted" data-tauri-drag-region>
+        <span className="text-xs text-ink-muted/35" aria-hidden="true">/</span>
+        <span className="truncate text-[0.84375rem] text-ink-muted" data-tauri-drag-region>
           {title}
         </span>
       </div>
@@ -73,14 +73,14 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
         <button
           type="button"
           onClick={onOpenCommandPalette}
-          className="agnes-command-trigger hidden sm:flex w-52 lg:w-64 shrink-0 items-center justify-between gap-2 rounded-lg border border-hairline px-2.5 py-1 text-[11.5px] text-ink-muted transition-all"
+          className="agnes-command-trigger hidden sm:flex w-56 lg:w-64 shrink-0 items-center justify-between gap-2 rounded-lg border border-hairline px-3 py-1 text-[0.8125rem] text-ink-muted transition-all"
           title="打开全局指令搜索 (Cmd+K)"
         >
           <span className="flex items-center gap-1.5 truncate">
             <MagnifyingGlass className="h-3.5 w-3.5 shrink-0 opacity-70" />
             <span className="truncate">快速指令…</span>
           </span>
-          <kbd className="agnes-command-kbd shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] leading-none text-ink-muted/80">
+          <kbd className="agnes-command-kbd shrink-0 rounded px-1.5 py-0.5 font-mono text-[0.6875rem] leading-none text-ink-muted/80">
             ⌘K
           </kbd>
         </button>

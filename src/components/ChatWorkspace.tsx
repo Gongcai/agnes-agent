@@ -579,7 +579,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     const textarea = desktopTextareaRef.current;
     if (!textarea) return;
     const isMobile = window.matchMedia("(max-width: 640px)").matches;
-    resizeTextarea(textarea, isEmptyConversation ? 48 : 38, isMobile ? 136 : 220);
+    resizeTextarea(textarea, isEmptyConversation ? 52 : 42, isMobile ? 136 : 220);
   };
 
   useEffect(() => {
@@ -1399,15 +1399,15 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             </h1>
             {activeWorkspace && (
               <div
-                className="agnes-workspace-pill inline-flex max-w-md items-center gap-1.5 rounded-full px-3 py-1 text-[11.5px] text-ink-muted"
+                className="agnes-workspace-pill inline-flex max-w-md items-center gap-1.5 rounded-full px-3.5 py-1 text-[0.8125rem] text-ink-muted"
                 title={activeWorkspace.folder_path}
               >
-                <FolderOpen className="h-3.5 w-3.5 shrink-0 text-clay" />
+                <FolderOpen className="h-4 w-4 shrink-0 text-clay" />
                 <span className="font-medium text-ink-body">{activeWorkspace.name}</span>
                 {activeWorkspace.folder_path && (
                   <>
                     <span className="opacity-35" aria-hidden="true">·</span>
-                    <span className="max-w-[220px] truncate font-mono text-[10.5px] opacity-75">
+                    <span className="max-w-[240px] truncate font-mono text-[0.75rem] opacity-75">
                       {activeWorkspace.folder_path}
                     </span>
                   </>
@@ -1478,14 +1478,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 ? `向 ${activeAgent.name} 发送消息... (Enter 发送)`
                 : "选择一个会话以开始..."
             }
-            className="w-full resize-none bg-transparent px-3 py-1.5 text-[14.5px] leading-relaxed text-ink placeholder:text-ink-muted/50 focus:outline-none"
+            className="w-full resize-none bg-transparent px-3 py-1.5 text-[0.96875rem] leading-relaxed text-ink placeholder:text-ink-muted/55 focus:outline-none"
           />
           {attachmentError && (
             <div className="mx-2 mb-2 rounded-md bg-rose-50 px-2 py-1.5 text-[10px] text-rose-700">
               {attachmentError}
             </div>
           )}
-          <div className="agnes-composer-toolbar flex items-center justify-between px-1 pt-1.5 text-[11px] text-ink-muted">
+          <div className="agnes-composer-toolbar flex items-center justify-between px-1 pt-1.5 text-[0.8125rem] text-ink-muted">
             <div className="flex min-w-0 items-center gap-1">
               <div className="relative shrink-0">
                 <button
@@ -1496,7 +1496,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     setAttachmentError(null);
                   }}
                   disabled={!hasSessionTarget || isStreaming || isPreparingSession}
-                  className={`agnes-composer-ghost-btn flex h-[30px] w-[30px] items-center justify-center rounded-lg transition-all disabled:opacity-40 ${
+                  className={`agnes-composer-ghost-btn flex h-8 w-8 items-center justify-center rounded-lg transition-all disabled:opacity-40 ${
                     attachmentPicker
                       ? "rotate-45 bg-canvas-surface-card text-ink"
                       : "text-ink-muted hover:text-ink"
@@ -1686,7 +1686,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   </>
                 )}
               </div>
-              <div className="flex items-center gap-1 text-[11.5px] text-ink-muted">
+              <div className="flex items-center gap-1 text-[0.8125rem] text-ink-muted">
                 <button
                   type="button"
                   onClick={() => {
@@ -1694,18 +1694,18 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     setModelPickerOpen(true);
                     setAttachmentPicker(null);
                   }}
-                  className={`inline-flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-lg px-2 transition-colors ${
+                  className={`inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 transition-colors ${
                     currentPermissionMode === "full_access"
                       ? "border border-rose-500/25 bg-rose-500/10 font-medium text-rose-600 hover:bg-rose-500/15 dark:text-rose-300"
                       : "agnes-composer-ghost-btn text-ink-muted hover:text-ink"
                   }`}
                   title={currentPermissionOption.desc}
                 >
-                  <ShieldCheck className="h-3.5 w-3.5 opacity-80" />
+                  <ShieldCheck className="h-4 w-4 opacity-80" />
                   <span>{currentPermissionOption.label}</span>
                 </button>
                 {attachments.length > 0 && (
-                  <span className="inline-flex items-center gap-1 rounded-md bg-coral/10 px-1.5 py-0.5 text-coral font-medium text-[10px]">
+                  <span className="inline-flex items-center gap-1 rounded-md bg-coral/10 px-2 py-0.5 text-coral font-medium text-xs">
                     {attachments.length} 个附件
                   </span>
                 )}
@@ -1720,18 +1720,18 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     setModelPickerOpen((v) => !v);
                     setAttachmentPicker(null);
                   }}
-                  className="agnes-composer-ghost-btn agnes-model-trigger flex h-[30px] items-center gap-1.5 rounded-lg px-2.5 text-[11.5px] text-ink-muted hover:text-ink transition-colors"
+                  className="agnes-composer-ghost-btn agnes-model-trigger flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[0.8125rem] text-ink-muted hover:text-ink transition-colors"
                   type="button"
                   aria-haspopup="dialog"
                   aria-expanded={modelPickerOpen}
                   aria-controls={modelPickerOpen ? "chat-model-picker" : undefined}
                   title="模型与会话设置"
                 >
-                  <Cpu className="h-3.5 w-3.5 shrink-0 text-clay/90" />
-                  <span className="max-w-[104px] truncate font-mono text-[11px] text-ink-body sm:max-w-[180px]">
+                  <Cpu className="h-4 w-4 shrink-0 text-clay/90" />
+                  <span className="max-w-[112px] truncate font-mono text-[0.78125rem] text-ink-body sm:max-w-[200px]">
                     {currentModel ? currentModel.name : "选择模型"}
                     {currentThinkingMode !== "off" && (
-                      <span className="ml-1 font-sans text-[10.5px] font-medium not-italic text-clay">
+                      <span className="ml-1 font-serif text-[0.78125rem] font-medium not-italic text-clay">
                         · {THINKING_LABEL[currentThinkingMode] ?? currentThinkingMode}思考
                       </span>
                     )}
@@ -1915,7 +1915,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   setVoiceCallOpen(true);
                 }}
                 disabled={!hasSessionTarget || isPreparingSession || isStreaming}
-                className="agnes-composer-ghost-btn agnes-chat-voice-button flex h-[30px] w-[30px] items-center justify-center rounded-lg text-ink-muted transition-colors hover:text-ink active:scale-95 disabled:cursor-not-allowed disabled:opacity-35"
+                className="agnes-composer-ghost-btn agnes-chat-voice-button flex h-8 w-8 items-center justify-center rounded-lg text-ink-muted transition-colors hover:text-ink active:scale-95 disabled:cursor-not-allowed disabled:opacity-35"
                 title={hasSessionTarget ? "开始语音对话" : "请先选择或新建会话"}
                 aria-label="开始语音对话"
               >
@@ -1926,7 +1926,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 <button
                   type="button"
                   onClick={() => activeSessionId && cancelRun(activeSessionId).catch(console.error)}
-                  className="agnes-chat-stop-button flex h-[30px] w-[30px] items-center justify-center rounded-[9px] bg-red-600 text-white shadow-sm transition-all hover:bg-red-700 active:scale-95"
+                  className="agnes-chat-stop-button flex h-8 w-8 items-center justify-center rounded-[9px] bg-red-600 text-white shadow-sm transition-all hover:bg-red-700 active:scale-95"
                   title="停止生成"
                   aria-label="停止生成"
                 >
@@ -1941,7 +1941,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     || !hasSessionTarget
                     || isPreparingSession
                   }
-                  className="agnes-chat-send-button flex h-[30px] w-[30px] items-center justify-center rounded-[9px] bg-coral text-white shadow-sm transition-all hover:bg-coral/90 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100"
+                  className="agnes-chat-send-button flex h-8 w-8 items-center justify-center rounded-[9px] bg-coral text-white shadow-sm transition-all hover:bg-coral/90 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100"
                   title={hasSessionTarget ? "发送 (Enter)" : "请先选择或新建会话"}
                   aria-label="发送"
                 >
@@ -1967,9 +1967,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     el.setSelectionRange(item.prompt.length, item.prompt.length);
                   });
                 }}
-                className="agnes-quick-prompt-chip inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11.5px] transition-all"
+                className="agnes-quick-prompt-chip inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[0.8125rem] transition-all"
               >
-                <Sparkle className="h-3 w-3 text-clay/80" />
+                <Sparkle className="h-3.5 w-3.5 text-clay/80" />
                 <span>{item.label}</span>
               </button>
             ))}

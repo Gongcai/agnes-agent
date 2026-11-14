@@ -497,13 +497,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
           setWsCtxMenu(null);
           setCtxMenu({ sessionId: sess.id, x: e.clientX, y: e.clientY, isPinned: !!sess.pinned, title: sess.title });
         }}
-        className={`agnes-session-item group/sess flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition-colors duration-150 ${
+        className={`agnes-session-item group/sess flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[0.875rem] transition-colors duration-150 ${
           isActive
             ? "agnes-session-item--active font-medium text-ink"
             : "text-ink-body/85 hover:text-ink"
         }`}
       >
-        <Chat className={`h-3.5 w-3.5 shrink-0 transition-colors ${isActive ? "text-clay" : "text-ink-muted/70 group-hover/sess:text-ink-muted"}`} />
+        <Chat className={`h-4 w-4 shrink-0 transition-colors ${isActive ? "text-clay" : "text-ink-muted/70 group-hover/sess:text-ink-muted"}`} />
         <span className="agnes-fade-truncate flex-1">{sess.title}</span>
         {sess.pinned && <PushPin className="h-3 w-3 shrink-0 text-clay/85" />}
       </button>
@@ -541,10 +541,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
             role="tab"
             aria-selected={chatMode === "home"}
             onClick={() => onSelectChatMode("home")}
-            className={`agnes-mode-tab flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs transition-colors ${chatMode === "home" ? "font-medium text-stone-800" : "text-stone-500 hover:text-stone-800"}`}
+            className={`agnes-mode-tab flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-[0.84375rem] transition-colors ${chatMode === "home" ? "font-medium text-stone-800" : "text-stone-500 hover:text-stone-800"}`}
             title="日常会话"
           >
-            <House className="h-3.5 w-3.5 shrink-0" />
+            <House className="h-4 w-4 shrink-0" />
             <span className="agnes-sidebar-label">Home</span>
           </button>
           <button
@@ -552,10 +552,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
             role="tab"
             aria-selected={chatMode === "code"}
             onClick={() => onSelectChatMode("code")}
-            className={`agnes-mode-tab flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs transition-colors ${chatMode === "code" ? "font-medium text-stone-800" : "text-stone-500 hover:text-stone-800"}`}
+            className={`agnes-mode-tab flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-[0.84375rem] transition-colors ${chatMode === "code" ? "font-medium text-stone-800" : "text-stone-500 hover:text-stone-800"}`}
             title="编程会话"
           >
-            <Code className="h-3.5 w-3.5 shrink-0" />
+            <Code className="h-4 w-4 shrink-0" />
             <span className="agnes-sidebar-label">Code</span>
           </button>
         </div>
@@ -596,7 +596,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
             <MagnifyingGlass className="h-4 w-4" />
           </span>
-          <span className="agnes-sidebar-label truncate text-xs">搜索</span>
+          <span className="agnes-sidebar-label truncate">搜索</span>
         </button>
         {ENABLED_APP_FEATURES.filter((feature) => (
           feature.id !== "chat"
@@ -617,7 +617,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-stone-500">
                 <Icon className="h-4 w-4" />
               </span>
-              <span className="agnes-sidebar-label truncate text-xs">{feature.label}</span>
+              <span className="agnes-sidebar-label truncate">{feature.label}</span>
             </button>
           );
         })}
@@ -676,7 +676,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <div className="group/ws flex items-center gap-1">
                       <button
                         type="button"
-                        className={`agnes-workspace-toggle flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2 text-left text-[12.5px] transition-colors sm:min-h-8 ${
+                        className={`agnes-workspace-toggle flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2 text-left text-[0.875rem] transition-colors sm:min-h-8 ${
                           hasActiveSession ? "text-ink font-medium" : "text-ink-body hover:text-ink"
                         }`}
                         onClick={() => toggleWs(ws.id)}
@@ -684,8 +684,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         aria-controls={`workspace-sessions-${ws.id}`}
                         title={ws.folder_path}
                       >
-                        {expanded ? <CaretDown className="h-3 w-3 shrink-0 text-ink-muted/70" /> : <CaretRight className="h-3 w-3 shrink-0 text-ink-muted/70" />}
-                        <FolderIcon className={`h-3.5 w-3.5 shrink-0 transition-colors ${hasActiveSession || expanded ? "text-clay" : "text-ink-muted"}`} />
+                        {expanded ? <CaretDown className="h-3.5 w-3.5 shrink-0 text-ink-muted/70" /> : <CaretRight className="h-3.5 w-3.5 shrink-0 text-ink-muted/70" />}
+                        <FolderIcon className={`h-4 w-4 shrink-0 transition-colors ${hasActiveSession || expanded ? "text-clay" : "text-ink-muted"}`} />
                         <span className="agnes-fade-truncate flex-1 font-medium">{ws.name}</span>
                       </button>
                       <button
@@ -735,7 +735,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 setAccountMenuOpen(false);
                 onOpenSettings("profile");
               }}
-              className="agnes-account-action flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-xs text-stone-600 transition-colors"
+              className="agnes-account-action flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.84375rem] text-stone-600 transition-colors"
             >
               <span className="agnes-account-action-icon grid h-7 w-7 shrink-0 place-items-center">
                 <Gear className="h-4 w-4" />
@@ -751,12 +751,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
           aria-expanded={accountMenuOpen}
           aria-label="打开账户菜单"
         >
-          <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-stone-300 text-[11px] font-semibold text-stone-700">
+          <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-stone-300 text-xs font-semibold text-stone-700">
             {userProfile.avatar
               ? <img src={userProfile.avatar} alt="" className="h-full w-full object-cover" />
               : userProfile.name.trim().slice(0, 1).toUpperCase() || "A"}
           </span>
-          <span className="agnes-sidebar-label min-w-0 flex-1 truncate text-xs font-medium text-stone-700">
+          <span className="agnes-sidebar-label min-w-0 flex-1 truncate text-[0.875rem] font-medium text-stone-700">
             {userProfile.name.trim() || "AGENS"}
           </span>
           {accountMenuOpen
