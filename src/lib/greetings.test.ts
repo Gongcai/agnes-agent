@@ -47,4 +47,13 @@ describe("conversation greetings", () => {
     expect(greetings.some((greeting) => greeting === "Good morning.")).toBe(true);
     expect(greetings.every((greeting) => !greeting.includes("{{user}}"))).toBe(true);
   });
+
+  it("uses cohesive Chinese greetings when the user name contains CJK characters", () => {
+    const greetings = Array.from({ length: 30 }, (_, index) => (
+      selectConversationGreeting("龚采文", localDate(20), `session-${index}`)
+    ));
+
+    expect(greetings.some((greeting) => greeting === "晚上好，龚采文")).toBe(true);
+    expect(greetings.every((greeting) => !greeting.includes("{{user}}"))).toBe(true);
+  });
 });

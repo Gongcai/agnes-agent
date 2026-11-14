@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { readImage, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Warning, Brain, Check, CaretDown, Copy, Cpu, Books, FileText, ImageSquare, GitBranch, PencilSimple, Plus, PuzzlePiece, ArrowsClockwise, ArrowUp as PaperPlaneRight, ShieldCheck, Square, Terminal, Trash, X, Microphone } from "@phosphor-icons/react";
+import { Warning, Brain, Check, CaretDown, Copy, Cpu, Books, FileText, FolderOpen, ImageSquare, GitBranch, PencilSimple, Plus, PuzzlePiece, ArrowsClockwise, ArrowUp as PaperPlaneRight, ShieldCheck, Sparkle, Square, Terminal, Trash, X, Microphone } from "@phosphor-icons/react";
 import { Button } from "./ui/button";
 import { useAgentStore } from "../store/useAgentStore";
 import type {
@@ -144,6 +144,18 @@ function fileUriToPath(value: string) {
 const PERMISSION_LABEL: Record<PermissionMode, string> = Object.fromEntries(
   PERMISSION_OPTIONS.map((option) => [option.value, option.label]),
 ) as Record<PermissionMode, string>;
+
+const CODE_QUICK_PROMPTS = [
+  { label: "梳理项目架构", prompt: "请帮我梳理一下当前项目的目录结构与核心模块职责。" },
+  { label: "排查报错或异常", prompt: "我遇到了一个问题，帮我结合代码定位原因：" },
+  { label: "审查未提交改动", prompt: "请用 git 查看当前工作区的未提交改动，并做一次代码审查。" },
+] as const;
+
+const HOME_QUICK_PROMPTS = [
+  { label: "拆解一个技术概念", prompt: "请深入浅出地帮我讲清楚这个概念：" },
+  { label: "头脑风暴新点子", prompt: "我想讨论一个新想法，帮我一起推演一下可行性：" },
+  { label: "整理今日待办与思路", prompt: "帮我梳理一下接下来的重点任务和优先级：" },
+] as const;
 
 const TOOL_STATUS_LABEL: Record<string, string> = {
   pending_approval: "等待批准",
@@ -478,6 +490,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const {
     agents,
     sessions,
+    workspaces,
     messages,
     activeAgentId,
     activeSessionId,
@@ -530,8 +543,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
+  const activeWorkspaceId = draftSession?.workspaceId ?? activeSession?.workspace_id ?? null;
+  const activeWorkspace = activeWorkspaceId
+    ? workspaces.find((w) => w.id === activeWorkspaceId) ?? null
+    : null;
   const hasSessionTarget = Boolean(activeSessionId || draftSession);
   const isEmptyConversation = messages.length === 0;
+  const quickPrompts = activeWorkspace ? CODE_QUICK_PROMPTS : HOME_QUICK_PROMPTS;
   const welcomeGreeting = selectConversationGreeting(
     userName,
     new Date(),
@@ -1365,18 +1383,37 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         }`}
       >
         <div
-          className={`agnes-chat-empty-welcome pointer-events-none absolute inset-x-5 bottom-full mb-7 text-center transition-[opacity,transform] duration-300 ease-out motion-reduce:delay-0 motion-reduce:transition-none ${
+          className={`agnes-chat-empty-welcome pointer-events-none absolute inset-x-4 bottom-full mb-6 text-center transition-[opacity,transform] duration-300 ease-out motion-reduce:delay-0 motion-reduce:transition-none ${
             isEmptyConversation
               ? "translate-y-0 opacity-100 delay-150"
               : "translate-y-4 opacity-0"
           }`}
           aria-hidden={!isEmptyConversation}
         >
-          <div className="flex items-center justify-center gap-3">
-            <AppLogo />
-            <h1 className="text-3xl font-serif font-normal text-ink">
+          <div className="mx-auto flex max-w-2xl flex-col items-center gap-3.5">
+            <div className="agnes-welcome-emblem grid h-11 w-11 place-items-center rounded-2xl">
+              <AppLogo size={24} />
+            </div>
+            <h1 className="agnes-welcome-heading font-serif font-normal text-ink">
               {welcomeGreeting}
             </h1>
+            {activeWorkspace && (
+              <div
+                className="agnes-workspace-pill inline-flex max-w-md items-center gap-1.5 rounded-full px-3 py-1 text-[11.5px] text-ink-muted"
+                title={activeWorkspace.folder_path}
+              >
+                <FolderOpen className="h-3.5 w-3.5 shrink-0 text-clay" />
+                <span className="font-medium text-ink-body">{activeWorkspace.name}</span>
+                {activeWorkspace.folder_path && (
+                  <>
+                    <span className="opacity-35" aria-hidden="true">·</span>
+                    <span className="max-w-[220px] truncate font-mono text-[10.5px] opacity-75">
+                      {activeWorkspace.folder_path}
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
         <div
@@ -1434,7 +1471,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             }}
             placeholder={
               isEmptyConversation
-                ? "输入一个问题、想法或任务… (Shift+Enter 换行)"
+                ? activeWorkspace
+                  ? `在 ${activeWorkspace.name} 中提问、编写或调试…`
+                  : "输入一个问题、想法或任务…"
                 : activeAgent
                 ? `向 ${activeAgent.name} 发送消息... (Enter 发送)`
                 : "选择一个会话以开始..."
@@ -1446,8 +1485,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               {attachmentError}
             </div>
           )}
-          <div className="flex items-center justify-between pt-2 px-1 text-[10px] text-stone-400">
-            <div className="flex min-w-0 items-center gap-2">
+          <div className="agnes-composer-toolbar flex items-center justify-between px-1 pt-1.5 text-[11px] text-ink-muted">
+            <div className="flex min-w-0 items-center gap-1">
               <div className="relative shrink-0">
                 <button
                   type="button"
@@ -1457,21 +1496,21 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     setAttachmentError(null);
                   }}
                   disabled={!hasSessionTarget || isStreaming || isPreparingSession}
-                  className={`flex h-7 w-7 items-center justify-center rounded-lg border transition-all disabled:opacity-40 ${
+                  className={`agnes-composer-ghost-btn flex h-[30px] w-[30px] items-center justify-center rounded-lg transition-all disabled:opacity-40 ${
                     attachmentPicker
-                      ? "rotate-45 border-stone-300 bg-stone-100 text-stone-800"
-                      : "border-stone-200 bg-white text-stone-500 hover:border-stone-300 hover:bg-stone-50 hover:text-stone-900"
+                      ? "rotate-45 bg-canvas-surface-card text-ink"
+                      : "text-ink-muted hover:text-ink"
                   }`}
                   title="添加附件"
                   aria-label="添加附件"
                 >
-                  <Plus className="h-3.5 w-3.5" />
+                  <Plus className="h-4 w-4" />
                 </button>
 
                 {attachmentPicker && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setAttachmentPicker(null)} />
-                    <div className="absolute bottom-full left-0 z-50 mb-2 w-80 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-2xl">
+                    <div className="claude-popover absolute bottom-full left-0 z-50 mb-2 w-80 overflow-hidden rounded-xl border border-stone-200 bg-white shadow-2xl">
                       {attachmentPicker === "menu" ? (
                         <div className="p-2">
                           <div className="px-2 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-stone-400">
@@ -1647,7 +1686,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   </>
                 )}
               </div>
-              <div className="flex items-center gap-1.5 text-[11px] text-ink-muted">
+              <div className="flex items-center gap-1 text-[11.5px] text-ink-muted">
                 <button
                   type="button"
                   onClick={() => {
@@ -1655,14 +1694,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     setModelPickerOpen(true);
                     setAttachmentPicker(null);
                   }}
-                  className={`inline-flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5 transition-colors hover:bg-canvas-surface-card ${
+                  className={`inline-flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-lg px-2 transition-colors ${
                     currentPermissionMode === "full_access"
-                      ? "text-rose-600 font-medium bg-rose-50/80 dark:bg-rose-950/30"
-                      : "text-ink-muted hover:text-ink"
+                      ? "border border-rose-500/25 bg-rose-500/10 font-medium text-rose-600 hover:bg-rose-500/15 dark:text-rose-300"
+                      : "agnes-composer-ghost-btn text-ink-muted hover:text-ink"
                   }`}
                   title={currentPermissionOption.desc}
                 >
-                  <ShieldCheck className="h-3 w-3" />
+                  <ShieldCheck className="h-3.5 w-3.5 opacity-80" />
                   <span>{currentPermissionOption.label}</span>
                 </button>
                 {attachments.length > 0 && (
@@ -1672,7 +1711,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 )}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               {/* Model, thinking, and permission switcher */}
               <div ref={modelPickerRef} className="relative">
                 <button
@@ -1681,18 +1720,18 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     setModelPickerOpen((v) => !v);
                     setAttachmentPicker(null);
                   }}
-                  className="flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1 text-[10px] text-stone-600 hover:text-stone-900 hover:bg-stone-50 transition-colors"
+                  className="agnes-composer-ghost-btn agnes-model-trigger flex h-[30px] items-center gap-1.5 rounded-lg px-2.5 text-[11.5px] text-ink-muted hover:text-ink transition-colors"
                   type="button"
                   aria-haspopup="dialog"
                   aria-expanded={modelPickerOpen}
                   aria-controls={modelPickerOpen ? "chat-model-picker" : undefined}
                   title="模型与会话设置"
                 >
-                  <Cpu className="h-3 w-3 text-[#8CA38A]" />
-                  <span className="max-w-[96px] truncate font-mono sm:max-w-[160px]">
+                  <Cpu className="h-3.5 w-3.5 shrink-0 text-clay/90" />
+                  <span className="max-w-[104px] truncate font-mono text-[11px] text-ink-body sm:max-w-[180px]">
                     {currentModel ? currentModel.name : "选择模型"}
                     {currentThinkingMode !== "off" && (
-                      <span className="ml-1 text-[9px] text-violet-500 not-italic font-sans">
+                      <span className="ml-1 font-sans text-[10.5px] font-medium not-italic text-clay">
                         · {THINKING_LABEL[currentThinkingMode] ?? currentThinkingMode}思考
                       </span>
                     )}
@@ -1702,7 +1741,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     limitTokens={contextLimit}
                     warningThreshold={currentCompressThreshold}
                   />
-                  <CaretDown className="h-3 w-3" />
+                  <CaretDown className="h-3 w-3 opacity-65" />
                 </button>
 
                 {modelPickerOpen && (
@@ -1869,10 +1908,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 )}
               </div>
 
-              <span className="hidden sm:inline-block text-[10px] text-ink-muted/50 select-none mr-0.5">
-                Shift+Enter 换行
-              </span>
-
               <button
                 type="button"
                 onClick={() => {
@@ -1880,7 +1915,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   setVoiceCallOpen(true);
                 }}
                 disabled={!hasSessionTarget || isPreparingSession || isStreaming}
-                className="agnes-chat-voice-button flex h-8 w-8 items-center justify-center rounded-lg border border-stone-200 bg-white text-stone-600 transition-colors hover:border-[#b78270] hover:bg-[#b78270]/10 hover:text-[#a46957] active:scale-95 disabled:cursor-not-allowed disabled:opacity-35"
+                className="agnes-composer-ghost-btn agnes-chat-voice-button flex h-[30px] w-[30px] items-center justify-center rounded-lg text-ink-muted transition-colors hover:text-ink active:scale-95 disabled:cursor-not-allowed disabled:opacity-35"
                 title={hasSessionTarget ? "开始语音对话" : "请先选择或新建会话"}
                 aria-label="开始语音对话"
               >
@@ -1891,7 +1926,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 <button
                   type="button"
                   onClick={() => activeSessionId && cancelRun(activeSessionId).catch(console.error)}
-                  className="agnes-chat-stop-button flex h-7 w-7 sm:h-8 sm:w-8 items-center justify-center rounded-lg bg-red-600 text-white shadow-sm transition-all hover:bg-red-700 active:scale-95"
+                  className="agnes-chat-stop-button flex h-[30px] w-[30px] items-center justify-center rounded-[9px] bg-red-600 text-white shadow-sm transition-all hover:bg-red-700 active:scale-95"
                   title="停止生成"
                   aria-label="停止生成"
                 >
@@ -1906,7 +1941,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                     || !hasSessionTarget
                     || isPreparingSession
                   }
-                  className="agnes-chat-send-button flex h-7 w-7 sm:h-8 sm:w-8 items-center justify-center rounded-lg bg-coral text-white shadow-sm transition-all hover:bg-coral/90 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100"
+                  className="agnes-chat-send-button flex h-[30px] w-[30px] items-center justify-center rounded-[9px] bg-coral text-white shadow-sm transition-all hover:bg-coral/90 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100"
                   title={hasSessionTarget ? "发送 (Enter)" : "请先选择或新建会话"}
                   aria-label="发送"
                 >
@@ -1916,6 +1951,30 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             </div>
           </div>
         </div>
+
+        {isEmptyConversation && hasSessionTarget && !inputVal.trim() && (
+          <div className="agnes-quick-prompts pointer-events-auto mt-3.5 hidden sm:flex flex-wrap items-center justify-center gap-2">
+            {quickPrompts.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                onClick={() => {
+                  setInputVal(item.prompt);
+                  requestAnimationFrame(() => {
+                    const el = desktopTextareaRef.current;
+                    if (!el) return;
+                    el.focus();
+                    el.setSelectionRange(item.prompt.length, item.prompt.length);
+                  });
+                }}
+                className="agnes-quick-prompt-chip inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11.5px] transition-all"
+              >
+                <Sparkle className="h-3 w-3 text-clay/80" />
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <ChatScrollNav

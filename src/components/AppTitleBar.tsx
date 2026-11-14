@@ -45,11 +45,11 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
 
   return (
     <header
-      className="agnes-titlebar flex h-10 shrink-0 items-center justify-between bg-canvas-sidebar px-2.5 text-ink-secondary select-none transition-colors"
+      className="agnes-titlebar relative flex h-10 shrink-0 items-center justify-between px-2.5 text-ink-secondary select-none transition-colors"
       data-sidebar-open={isSidebarOpen}
       data-tauri-drag-region
     >
-      <div className="flex min-w-0 flex-1 items-center gap-1.5" data-tauri-drag-region>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 pr-3" data-tauri-drag-region>
         <button
           type="button"
           onClick={onToggleSidebar}
@@ -59,12 +59,12 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
         >
           <SidebarSimple className="h-4 w-4" />
         </button>
-        <AppLogo size={20} className="ml-1 pointer-events-none" />
-        <span className="truncate text-xs font-semibold text-ink" data-tauri-drag-region>
+        <AppLogo size={18} className="ml-1 pointer-events-none opacity-95" />
+        <span className="truncate text-[12px] font-medium tracking-tight text-ink" data-tauri-drag-region>
           Agnes
         </span>
-        <span className="opacity-40" aria-hidden="true">/</span>
-        <span className="truncate text-xs text-ink-muted" data-tauri-drag-region>
+        <span className="text-[11px] text-ink-muted/35" aria-hidden="true">/</span>
+        <span className="truncate text-[12px] text-ink-muted" data-tauri-drag-region>
           {title}
         </span>
       </div>
@@ -73,18 +73,20 @@ export const AppTitleBar: React.FC<AppTitleBarProps> = ({
         <button
           type="button"
           onClick={onOpenCommandPalette}
-          className="hidden sm:flex items-center gap-2 px-2.5 py-1 text-[11px] text-ink-muted bg-canvas-surface-card hover:bg-canvas-surface-strong hover:text-ink border border-hairline rounded-md transition-all shadow-subtle mx-2"
+          className="agnes-command-trigger hidden sm:flex w-52 lg:w-64 shrink-0 items-center justify-between gap-2 rounded-lg border border-hairline px-2.5 py-1 text-[11.5px] text-ink-muted transition-all"
           title="打开全局指令搜索 (Cmd+K)"
         >
-          <MagnifyingGlass className="h-3 w-3" />
-          <span>快速指令</span>
-          <kbd className="font-mono text-[9px] px-1 py-0.5 bg-canvas-surface border border-hairline rounded text-ink-muted">
+          <span className="flex items-center gap-1.5 truncate">
+            <MagnifyingGlass className="h-3.5 w-3.5 shrink-0 opacity-70" />
+            <span className="truncate">快速指令…</span>
+          </span>
+          <kbd className="agnes-command-kbd shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] leading-none text-ink-muted/80">
             ⌘K
           </kbd>
         </button>
       )}
 
-      <div className="agnes-window-controls flex shrink-0 items-center gap-0.5">
+      <div className="agnes-window-controls flex flex-1 items-center justify-end gap-1 pl-3" data-tauri-drag-region>
         <button
           type="button"
           onClick={minimize}

@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Brain, BookOpen, Code, CalendarBlank, CheckSquare, Check, CaretDown, CaretRight, CaretUp, Database, Folder, FolderPlus, HardDrive, House, MagnifyingGlass, Chat, PencilSimple, PushPin, PushPinSlash, Plus, Gear, TerminalWindow, Trash, X, type Icon } from "@phosphor-icons/react";
+import { Brain, BookOpen, Code, CalendarBlank, CheckSquare, Check, CaretDown, CaretRight, CaretUp, Database, Folder, FolderOpen, FolderPlus, HardDrive, House, MagnifyingGlass, Chat, PencilSimple, PushPin, PushPinSlash, Plus, Gear, TerminalWindow, Trash, X, type Icon } from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { ENABLED_APP_FEATURES, type AppFeatureId, type ChatMode } from "../lib/features";
@@ -497,15 +497,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
           setWsCtxMenu(null);
           setCtxMenu({ sessionId: sess.id, x: e.clientX, y: e.clientY, isPinned: !!sess.pinned, title: sess.title });
         }}
-        className={`agnes-session-item flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition-all duration-150 ${
+        className={`agnes-session-item group/sess flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] transition-colors duration-150 ${
           isActive
-            ? "bg-white text-emerald-700 font-semibold border border-stone-200 shadow-[0_1px_2px_0_rgba(0,0,0,0.03)]"
-            : "text-stone-600 hover:bg-stone-200/40 hover:text-stone-900"
+            ? "agnes-session-item--active font-medium text-ink"
+            : "text-ink-body/85 hover:text-ink"
         }`}
       >
-        <Chat className="h-3.5 w-3.5 shrink-0 text-stone-400" />
-        <span className="flex-1 truncate">{sess.title}</span>
-        {sess.pinned && <PushPin className="h-3 w-3 shrink-0 text-amber-500" />}
+        <Chat className={`h-3.5 w-3.5 shrink-0 transition-colors ${isActive ? "text-clay" : "text-ink-muted/70 group-hover/sess:text-ink-muted"}`} />
+        <span className="agnes-fade-truncate flex-1">{sess.title}</span>
+        {sess.pinned && <PushPin className="h-3 w-3 shrink-0 text-clay/85" />}
       </button>
     );
   };
@@ -661,6 +661,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               {agentWorkspaces.map((ws) => {
                 const expanded = expandedWs.has(ws.id);
                 const wsSessions = sessions.filter((s) => s.workspace_id === ws.id);
+                const hasActiveSession = wsSessions.some((s) => s.id === activeSessionId);
+                const FolderIcon = expanded ? FolderOpen : Folder;
                 return (
                   <div
                     key={ws.id}
@@ -671,39 +673,41 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       setWsCtxMenu({ workspaceId: ws.id, name: ws.name, x: e.clientX, y: e.clientY });
                     }}
                   >
-                    <div className="flex items-center gap-1.5">
+                    <div className="group/ws flex items-center gap-1">
                       <button
                         type="button"
-                        className="agnes-workspace-toggle flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-left text-xs text-stone-700 transition-colors hover:bg-stone-200/40 sm:min-h-8"
+                        className={`agnes-workspace-toggle flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2 text-left text-[12.5px] transition-colors sm:min-h-8 ${
+                          hasActiveSession ? "text-ink font-medium" : "text-ink-body hover:text-ink"
+                        }`}
                         onClick={() => toggleWs(ws.id)}
                         aria-expanded={expanded}
                         aria-controls={`workspace-sessions-${ws.id}`}
                         title={ws.folder_path}
                       >
-                        {expanded ? <CaretDown className="h-3.5 w-3.5 shrink-0 text-stone-400" /> : <CaretRight className="h-3.5 w-3.5 shrink-0 text-stone-400" />}
-                        <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-                        <span className="flex-1 truncate font-medium">{ws.name}</span>
+                        {expanded ? <CaretDown className="h-3 w-3 shrink-0 text-ink-muted/70" /> : <CaretRight className="h-3 w-3 shrink-0 text-ink-muted/70" />}
+                        <FolderIcon className={`h-3.5 w-3.5 shrink-0 transition-colors ${hasActiveSession || expanded ? "text-clay" : "text-ink-muted"}`} />
+                        <span className="agnes-fade-truncate flex-1 font-medium">{ws.name}</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => handleAddWorkspaceSession(ws.id)}
-                        className="agnes-workspace-add-session grid h-11 w-11 shrink-0 place-items-center rounded-md text-stone-400 transition-colors hover:bg-stone-200/60 hover:text-stone-900 sm:h-8 sm:w-8"
+                        className="agnes-workspace-add-session grid h-11 w-11 shrink-0 place-items-center rounded-lg text-ink-muted/70 opacity-75 transition-all hover:text-ink group-hover/ws:opacity-100 sm:h-7 sm:w-7"
                         title="在工作区中新建会话"
                         aria-label={`在工作区 ${ws.name} 中新建会话`}
                       >
-                        <Plus className="h-4 w-4" />
+                        <Plus className="h-3.5 w-3.5" />
                       </button>
                     </div>
                     <div
                       id={`workspace-sessions-${ws.id}`}
                       hidden={!expanded}
-                      className="ml-3 mt-0.5 space-y-1 border-l border-stone-200/60 pl-2"
+                      className="agnes-workspace-tree ml-3.5 mt-0.5 space-y-0.5 border-l border-hairline pl-2.5"
                     >
                       {expanded && (
                         <>
                           {wsSessions.map(renderSessionBtn)}
                           {wsSessions.length === 0 && (
-                            <div className="py-2 text-center text-[10px] text-stone-400">无会话</div>
+                            <div className="py-1.5 pl-2 text-[11px] text-ink-muted/60">暂无会话</div>
                           )}
                         </>
                       )}
@@ -717,7 +721,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Account entry */}
-      <div className="agnes-sidebar-account relative mt-auto shrink-0 bg-stone-200/20 px-2 py-1">
+      <div className="agnes-sidebar-account relative mt-auto shrink-0 border-t border-hairline px-2.5 py-2">
         <div className="agnes-account-actions" data-open={accountMenuOpen}>
           <div className="agnes-account-actions-inner space-y-1">
             <NotificationCenter
