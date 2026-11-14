@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Message } from "../store/useAgentStore";
+import { subscribeUIPreferenceChanges } from "../lib/uiPreferences";
 
 export interface ThumbLayout {
   height: number;
@@ -176,6 +177,13 @@ export function ChatScrollNav({ containerRef, messages, visible }: ChatScrollNav
   useEffect(() => {
     if (visible) scheduleSync();
   }, [messages, visible, scheduleSync]);
+
+  // Re-measure scrollHeight and anchor positions when column width or font scale changes.
+  useEffect(() => subscribeUIPreferenceChanges((change) => {
+    if (visible && (change.chatMaxWidth !== undefined || change.fontScale !== undefined)) {
+      scheduleSync();
+    }
+  }), [visible, scheduleSync]);
 
   // Drop the cached geometry when the nav is hidden so a remount can never
   // start from a stale "fits in viewport" snapshot.

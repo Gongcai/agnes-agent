@@ -17,15 +17,19 @@ import { useAgentStore, setupTauriEventListeners } from "./store/useAgentStore";
 import { invoke } from "@tauri-apps/api/core";
 import {
   announceUIPreferenceChange,
+  applyChatMaxWidth,
   applyColorScheme,
   applyFontScale,
+  getCachedChatMaxWidth,
   normalizeBooleanPreference,
+  normalizeChatMaxWidth,
   normalizeColorScheme,
   normalizeFontScale,
   setAutoFollowStreaming,
   setAutoExpandThoughts,
   UI_AUTO_FOLLOW_STREAMING_KEY,
   UI_AUTO_EXPAND_THOUGHTS_KEY,
+  UI_CHAT_MAX_WIDTH_KEY,
   UI_COLOR_SCHEME_KEY,
   UI_FONT_SCALE_KEY,
 } from "./lib/uiPreferences";
@@ -131,23 +135,27 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    applyChatMaxWidth(getCachedChatMaxWidth());
     Promise.all([
       invoke<string | null>("get_setting", { key: UI_COLOR_SCHEME_KEY }),
       invoke<string | null>("get_setting", { key: UI_AUTO_EXPAND_THOUGHTS_KEY }),
       invoke<string | null>("get_setting", { key: UI_AUTO_FOLLOW_STREAMING_KEY }),
       invoke<string | null>("get_setting", { key: UI_FONT_SCALE_KEY }),
+      invoke<string | null>("get_setting", { key: UI_CHAT_MAX_WIDTH_KEY }),
     ])
-      .then(([colorSchemeValue, autoExpandThoughtsValue, autoFollowStreamingValue, fontScaleValue]) => {
+      .then(([colorSchemeValue, autoExpandThoughtsValue, autoFollowStreamingValue, fontScaleValue, chatMaxWidthValue]) => {
         if (!active) return;
         const colorScheme = normalizeColorScheme(colorSchemeValue);
         const autoExpandThoughts = normalizeBooleanPreference(autoExpandThoughtsValue, true);
         const autoFollowStreaming = normalizeBooleanPreference(autoFollowStreamingValue, true);
         const fontScale = normalizeFontScale(fontScaleValue);
+        const chatMaxWidth = normalizeChatMaxWidth(chatMaxWidthValue);
         applyColorScheme(colorScheme);
         applyFontScale(fontScale);
+        applyChatMaxWidth(chatMaxWidth);
         setAutoExpandThoughts(autoExpandThoughts);
         setAutoFollowStreaming(autoFollowStreaming);
-        announceUIPreferenceChange({ colorScheme, fontScale, autoExpandThoughts, autoFollowStreaming });
+        announceUIPreferenceChange({ colorScheme, fontScale, chatMaxWidth, autoExpandThoughts, autoFollowStreaming });
       })
       .catch((error) => console.error("加载界面偏好失败", error));
     return () => { active = false; };

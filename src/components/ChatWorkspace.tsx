@@ -23,11 +23,17 @@ import { ModifyMemoryModal } from "./ModifyMemoryModal";
 import { useConfirmDialog } from "./ConfirmDialog";
 import { listInstalledSkills, type InstalledSkill } from "../lib/skills";
 import {
+  applyChatMaxWidth,
+  DEFAULT_CHAT_MAX_WIDTH,
   DEFAULT_CONTEXT_LIMIT,
   DEFAULT_MAX_OUTPUT_TOKENS,
   getCachedAutoFollowStreaming,
   getCachedAutoExpandThoughts,
+  getCachedChatMaxWidth,
+  MIN_CHAT_MAX_WIDTH,
+  normalizeChatMaxWidth,
   subscribeUIPreferenceChanges,
+  UI_CHAT_MAX_WIDTH_KEY,
 } from "../lib/uiPreferences";
 import { selectConversationGreeting } from "../lib/greetings";
 import { VoiceCallPanel } from "./VoiceCallPanel";
@@ -537,6 +543,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [memoryEditMsgId, setMemoryEditMsgId] = useState<string | null>(null);
   const [autoExpandThoughts, setAutoExpandThoughts] = useState(getCachedAutoExpandThoughts);
   const [autoFollowStreaming, setAutoFollowStreaming] = useState(getCachedAutoFollowStreaming);
+  const [chatMaxWidth, setChatMaxWidth] = useState(getCachedChatMaxWidth);
+  const [isResizingWidth, setIsResizingWidth] = useState(false);
   const [userName, setUserName] = useState("");
   const [voiceCallOpen, setVoiceCallOpen] = useState(false);
   const [voiceCallSessionId, setVoiceCallSessionId] = useState<string | null>(null);
@@ -649,7 +657,54 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     if (change.autoFollowStreaming !== undefined) {
       setAutoFollowStreaming(change.autoFollowStreaming);
     }
+    if (change.chatMaxWidth !== undefined) {
+      setChatMaxWidth(change.chatMaxWidth);
+    }
   }), []);
+
+  const persistChatMaxWidth = (width: number) => {
+    const normalized = applyChatMaxWidth(width);
+    setChatMaxWidth(normalized);
+    invoke("set_setting", { key: UI_CHAT_MAX_WIDTH_KEY, value: String(normalized) }).catch(console.error);
+  };
+
+  const handleStartWidthResize = (side: "left" | "right", event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const stageWidth = chatStageRef.current?.clientWidth ?? window.innerWidth;
+    const effectiveStartWidth = Math.min(
+      chatMaxWidth,
+      Math.max(MIN_CHAT_MAX_WIDTH, stageWidth - 64),
+    );
+    const startX = event.clientX;
+    let latestWidth = effectiveStartWidth;
+    setIsResizingWidth(true);
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const delta = side === "right" ? moveEvent.clientX - startX : startX - moveEvent.clientX;
+      const upperBound = Math.max(MIN_CHAT_MAX_WIDTH, stageWidth - 48);
+      const rawNext = Math.min(upperBound, effectiveStartWidth + delta * 2);
+      latestWidth = normalizeChatMaxWidth(rawNext);
+      applyChatMaxWidth(latestWidth);
+      setChatMaxWidth(latestWidth);
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setIsResizingWidth(false);
+      invoke("set_setting", { key: UI_CHAT_MAX_WIDTH_KEY, value: String(latestWidth) }).catch(console.error);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+  };
 
   useEffect(() => {
     setAttachments([]);
@@ -1074,10 +1129,39 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         />
       )}
       <div ref={chatStageRef} className="agnes-chat-stage relative min-h-0 flex-1 overflow-hidden">
+      {isResizingWidth && (
+        <div className="pointer-events-none absolute left-1/2 top-3 z-40 -translate-x-1/2 rounded-full border border-hairline-strong bg-canvas-surface/95 px-3 py-1 font-mono text-xs text-ink shadow-elevated backdrop-blur-sm">
+          对话区宽度 {chatMaxWidth}px · 双击边缘恢复默认
+        </div>
+      )}
+      {/* Symmetric drag rails along the left and right edges of the reading column */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="拖拽调节对话区宽度（双击恢复默认）"
+        title="左右拖拽调节对话宽度 · 双击恢复默认"
+        onPointerDown={(e) => handleStartWidthResize("left", e)}
+        onDoubleClick={() => persistChatMaxWidth(DEFAULT_CHAT_MAX_WIDTH)}
+        className={`agnes-chat-resize-rail agnes-chat-resize-rail--left ${isResizingWidth ? "agnes-chat-resize-rail--active" : ""}`}
+      >
+        <span className="agnes-chat-resize-grip" aria-hidden="true" />
+      </div>
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="拖拽调节对话区宽度（双击恢复默认）"
+        title="左右拖拽调节对话宽度 · 双击恢复默认"
+        onPointerDown={(e) => handleStartWidthResize("right", e)}
+        onDoubleClick={() => persistChatMaxWidth(DEFAULT_CHAT_MAX_WIDTH)}
+        className={`agnes-chat-resize-rail agnes-chat-resize-rail--right ${isResizingWidth ? "agnes-chat-resize-rail--active" : ""}`}
+      >
+        <span className="agnes-chat-resize-grip" aria-hidden="true" />
+      </div>
+
       {/* Message Panel list */}
       <div
         ref={messagesContainerRef}
-        className={`agnes-chat-messages absolute inset-0 -translate-x-1/2 mx-auto w-full max-w-4xl space-y-6 overflow-y-auto p-6 ${
+        className={`agnes-chat-messages absolute inset-0 w-full space-y-6 overflow-y-auto p-6 ${
           isEmptyConversation
             ? "pointer-events-none transition-[opacity,transform] duration-500 ease-out motion-reduce:transition-none translate-y-4 opacity-0"
             : "opacity-100"
@@ -1114,7 +1198,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               <div
                 className={`agnes-message-column space-y-1.5 ${
                   isUser && editingMsgId === message.id
-                    ? "agnes-message-column--editing w-full max-w-[620px]"
+                    ? "agnes-message-column--editing w-full"
                     : "max-w-[85%] min-w-0"
                 } ${isUser ? "order-1" : "order-2"}`}
               >
@@ -1420,7 +1504,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={(e) => void handleDrop(e)}
-          className={`agnes-chat-composer-box relative mx-auto max-w-4xl rounded-2xl border border-stone-300/80 bg-white p-2.5 shadow-sm transition-[max-width,border-radius,box-shadow] duration-500 focus-within:border-stone-400 ${isEmptyConversation ? "agnes-chat-composer-box--empty" : ""}`}
+          className={`agnes-chat-composer-box relative mx-auto rounded-2xl border border-stone-300/80 bg-white p-2.5 shadow-sm transition-[border-radius,box-shadow] duration-500 focus-within:border-stone-400 ${isEmptyConversation ? "agnes-chat-composer-box--empty" : ""}`}
         >
           {isDragOver && (
             <div className="absolute inset-0 z-30 flex items-center justify-center rounded-2xl border-2 border-dashed border-coral/60 bg-canvas/90 backdrop-blur-sm pointer-events-none transition-all">

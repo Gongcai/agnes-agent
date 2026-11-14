@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_CHAT_MAX_WIDTH,
   DEFAULT_MAX_OUTPUT_TOKENS,
   fontScaleFactor,
   normalizeBooleanPreference,
+  normalizeChatMaxWidth,
   normalizeColorScheme,
   normalizeFontScale,
   normalizeMaxOutputTokens,
@@ -49,5 +51,14 @@ describe("UI preference normalization", () => {
     expect(fontScaleFactor("small")).toBeLessThan(1);
     expect(fontScaleFactor("large")).toBeGreaterThan(1);
     expect(fontScaleFactor("xlarge")).toBeGreaterThan(fontScaleFactor("large"));
+  });
+
+  it("defaults chat max width to 960px and clamps custom values", () => {
+    expect(normalizeChatMaxWidth(null)).toBe(DEFAULT_CHAT_MAX_WIDTH);
+    expect(normalizeChatMaxWidth("")).toBe(DEFAULT_CHAT_MAX_WIDTH);
+    expect(normalizeChatMaxWidth("bogus")).toBe(DEFAULT_CHAT_MAX_WIDTH);
+    expect(normalizeChatMaxWidth("1200")).toBe(1200);
+    expect(normalizeChatMaxWidth(420)).toBe(680);
+    expect(normalizeChatMaxWidth(3000)).toBe(1800);
   });
 });

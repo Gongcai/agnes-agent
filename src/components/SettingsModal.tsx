@@ -59,19 +59,27 @@ import {
   applyFontScale,
   getCachedAutoFollowStreaming,
   getCachedAutoExpandThoughts,
+  getCachedChatMaxWidth,
   getCachedColorScheme,
   getCachedFontScale,
+  applyChatMaxWidth,
+  DEFAULT_CHAT_MAX_WIDTH,
   DEFAULT_MAX_OUTPUT_TOKENS,
+  MAX_CHAT_MAX_WIDTH,
   MAX_MAX_OUTPUT_TOKENS,
+  MIN_CHAT_MAX_WIDTH,
   MIN_MAX_OUTPUT_TOKENS,
   normalizeBooleanPreference,
+  normalizeChatMaxWidth,
   normalizeColorScheme,
   normalizeFontScale,
   normalizeMaxOutputTokens,
   setAutoFollowStreaming,
   setAutoExpandThoughts,
+  subscribeUIPreferenceChanges,
   UI_AUTO_FOLLOW_STREAMING_KEY,
   UI_AUTO_EXPAND_THOUGHTS_KEY,
+  UI_CHAT_MAX_WIDTH_KEY,
   UI_COLOR_SCHEME_KEY,
   UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY,
   UI_FONT_SCALE_KEY,
@@ -5846,6 +5854,7 @@ const GeneralTab: React.FC = () => {
   const [translationLanguage, setTranslationLanguage] = useState<"中文" | "English">("中文");
   const [colorScheme, setColorScheme] = useState<ColorScheme>(getCachedColorScheme);
   const [fontScale, setFontScale] = useState<FontScale>(getCachedFontScale);
+  const [chatMaxWidth, setChatMaxWidthState] = useState<number>(getCachedChatMaxWidth);
   const [autoExpandThoughts, setAutoExpandThoughtsState] = useState(getCachedAutoExpandThoughts);
   const [autoFollowStreaming, setAutoFollowStreamingState] = useState(getCachedAutoFollowStreaming);
   const [defaultMaxOutputTokens, setDefaultMaxOutputTokens] = useState(String(DEFAULT_MAX_OUTPUT_TOKENS));
@@ -5860,26 +5869,31 @@ const GeneralTab: React.FC = () => {
       invoke<string | null>("get_setting", { key: UI_AUTO_FOLLOW_STREAMING_KEY }),
       invoke<string | null>("get_setting", { key: UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY }),
       invoke<string | null>("get_setting", { key: UI_FONT_SCALE_KEY }),
+      invoke<string | null>("get_setting", { key: UI_CHAT_MAX_WIDTH_KEY }),
     ])
-      .then(([openModeValue, languageValue, colorSchemeValue, autoExpandThoughtsValue, autoFollowStreamingValue, maxOutputTokensValue, fontScaleValue]) => {
+      .then(([openModeValue, languageValue, colorSchemeValue, autoExpandThoughtsValue, autoFollowStreamingValue, maxOutputTokensValue, fontScaleValue, chatMaxWidthValue]) => {
         const nextColorScheme = normalizeColorScheme(colorSchemeValue);
         const nextAutoExpandThoughts = normalizeBooleanPreference(autoExpandThoughtsValue, true);
         const nextAutoFollowStreaming = normalizeBooleanPreference(autoFollowStreamingValue, true);
         const nextFontScale = normalizeFontScale(fontScaleValue);
+        const nextChatMaxWidth = normalizeChatMaxWidth(chatMaxWidthValue);
         setOpenMode(openModeValue ?? "last");
         if (languageValue === "中文" || languageValue === "English") setTranslationLanguage(languageValue);
         setColorScheme(nextColorScheme);
         setFontScale(nextFontScale);
+        setChatMaxWidthState(nextChatMaxWidth);
         setAutoExpandThoughtsState(nextAutoExpandThoughts);
         setAutoFollowStreamingState(nextAutoFollowStreaming);
         setDefaultMaxOutputTokens(String(normalizeMaxOutputTokens(maxOutputTokensValue)));
         applyColorScheme(nextColorScheme);
         applyFontScale(nextFontScale);
+        applyChatMaxWidth(nextChatMaxWidth);
         setAutoExpandThoughts(nextAutoExpandThoughts);
         setAutoFollowStreaming(nextAutoFollowStreaming);
         announceUIPreferenceChange({
           colorScheme: nextColorScheme,
           fontScale: nextFontScale,
+          chatMaxWidth: nextChatMaxWidth,
           autoExpandThoughts: nextAutoExpandThoughts,
           autoFollowStreaming: nextAutoFollowStreaming,
         });
@@ -5887,6 +5901,12 @@ const GeneralTab: React.FC = () => {
       .catch(console.error)
       .finally(() => setLoaded(true));
   }, []);
+
+  useEffect(() => subscribeUIPreferenceChanges((change) => {
+    if (change.chatMaxWidth !== undefined) {
+      setChatMaxWidthState(change.chatMaxWidth);
+    }
+  }), []);
 
   const updateMode = async (mode: string) => {
     setOpenMode(mode);
@@ -5938,6 +5958,19 @@ const GeneralTab: React.FC = () => {
       applyFontScale(previous);
       announceUIPreferenceChange({ fontScale: previous });
       console.error("保存界面缩放失败", e);
+    }
+  };
+
+  const updateChatMaxWidth = async (width: number) => {
+    const previous = chatMaxWidth;
+    const normalized = applyChatMaxWidth(width);
+    setChatMaxWidthState(normalized);
+    try {
+      await invoke("set_setting", { key: UI_CHAT_MAX_WIDTH_KEY, value: String(normalized) });
+    } catch (e) {
+      setChatMaxWidthState(previous);
+      applyChatMaxWidth(previous);
+      console.error("保存对话区域宽度失败", e);
     }
   };
 
@@ -6052,6 +6085,66 @@ const GeneralTab: React.FC = () => {
             );
           })}
         </div>
+      </div>
+
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <label htmlFor="chat-max-width-slider" className="font-semibold text-stone-500">
+            对话区域宽度
+          </label>
+          <span className="font-mono text-xs text-stone-500">{chatMaxWidth}px</span>
+        </div>
+        <div className="grid grid-cols-4 gap-1 rounded-lg border border-stone-200 bg-stone-100 p-1">
+          {([
+            { value: 760, label: "紧凑" },
+            { value: DEFAULT_CHAT_MAX_WIDTH, label: "标准" },
+            { value: 1200, label: "宽敞" },
+            { value: 1560, label: "超宽" },
+          ]).map((preset) => {
+            const active = Math.abs(chatMaxWidth - preset.value) <= 10;
+            return (
+              <button
+                key={preset.value}
+                type="button"
+                disabled={!loaded}
+                onClick={() => void updateChatMaxWidth(preset.value)}
+                className={`flex items-center justify-center rounded-md px-3 py-2 text-xs font-semibold transition-colors disabled:opacity-50 ${
+                  active
+                    ? "border border-stone-200 bg-white text-stone-800 shadow-sm"
+                    : "border border-transparent text-stone-500 hover:text-stone-800"
+                }`}
+                aria-pressed={active}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-2.5 flex items-center gap-3 px-0.5">
+          <span className="font-mono text-[11px] text-stone-400">{MIN_CHAT_MAX_WIDTH}</span>
+          <input
+            id="chat-max-width-slider"
+            type="range"
+            min={MIN_CHAT_MAX_WIDTH}
+            max={MAX_CHAT_MAX_WIDTH}
+            step={20}
+            disabled={!loaded}
+            value={chatMaxWidth}
+            onChange={(event) => {
+              const next = normalizeChatMaxWidth(event.target.value);
+              setChatMaxWidthState(next);
+              applyChatMaxWidth(next);
+            }}
+            onMouseUp={(event) => void updateChatMaxWidth(Number(event.currentTarget.value))}
+            onTouchEnd={(event) => void updateChatMaxWidth(Number(event.currentTarget.value))}
+            onKeyUp={(event) => void updateChatMaxWidth(Number(event.currentTarget.value))}
+            className="h-1.5 flex-1 cursor-pointer accent-indigo-600 disabled:opacity-50"
+          />
+          <span className="font-mono text-[11px] text-stone-400">{MAX_CHAT_MAX_WIDTH}</span>
+        </div>
+        <p className="mt-1.5 text-[11px] text-stone-400">
+          也可将鼠标移至对话内容左右两侧边缘直接拖拽无级调节，双击边缘恢复默认。
+        </p>
       </div>
 
       <div>

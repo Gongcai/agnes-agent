@@ -2,11 +2,15 @@ export const UI_COLOR_SCHEME_KEY = "ui:color_scheme";
 export const UI_AUTO_EXPAND_THOUGHTS_KEY = "ui:auto_expand_thoughts";
 export const UI_AUTO_FOLLOW_STREAMING_KEY = "ui:auto_follow_streaming";
 export const UI_FONT_SCALE_KEY = "ui:font_scale";
+export const UI_CHAT_MAX_WIDTH_KEY = "ui:chat_max_width";
 export const UI_DEFAULT_MAX_OUTPUT_TOKENS_KEY = "ui:default_max_output_tokens";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 131_072;
 export const DEFAULT_CONTEXT_LIMIT = 128_000;
 export const MIN_MAX_OUTPUT_TOKENS = 128;
 export const MAX_MAX_OUTPUT_TOKENS = 1_048_576;
+export const DEFAULT_CHAT_MAX_WIDTH = 960;
+export const MIN_CHAT_MAX_WIDTH = 680;
+export const MAX_CHAT_MAX_WIDTH = 1_800;
 
 export type ColorScheme = "light" | "dark" | "system";
 export type ResolvedColorScheme = Exclude<ColorScheme, "system">;
@@ -16,12 +20,14 @@ export interface UIPreferenceChange {
   colorScheme?: ColorScheme;
   resolvedColorScheme?: ResolvedColorScheme;
   fontScale?: FontScale;
+  chatMaxWidth?: number;
   autoExpandThoughts?: boolean;
   autoFollowStreaming?: boolean;
 }
 
 const COLOR_SCHEME_CACHE_KEY = "agnes.ui.color_scheme";
 const FONT_SCALE_CACHE_KEY = "agnes.ui.font_scale";
+const CHAT_MAX_WIDTH_CACHE_KEY = "agnes.ui.chat_max_width";
 const AUTO_EXPAND_THOUGHTS_CACHE_KEY = "agnes.ui.auto_expand_thoughts";
 const AUTO_FOLLOW_STREAMING_CACHE_KEY = "agnes.ui.auto_follow_streaming";
 const UI_PREFERENCE_EVENT = "agnes-ui-preference-change";
@@ -63,6 +69,17 @@ export function normalizeMaxOutputTokens(value: string | number | null | undefin
   return Math.min(
     MAX_MAX_OUTPUT_TOKENS,
     Math.max(MIN_MAX_OUTPUT_TOKENS, Math.round(parsed)),
+  );
+}
+
+export function normalizeChatMaxWidth(value: string | number | null | undefined): number {
+  if (value === null || value === undefined) return DEFAULT_CHAT_MAX_WIDTH;
+  if (typeof value === "string" && value.trim() === "") return DEFAULT_CHAT_MAX_WIDTH;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_CHAT_MAX_WIDTH;
+  return Math.min(
+    MAX_CHAT_MAX_WIDTH,
+    Math.max(MIN_CHAT_MAX_WIDTH, Math.round(parsed)),
   );
 }
 
@@ -168,6 +185,10 @@ export function getCachedFontScale(): FontScale {
   return normalizeFontScale(readCache(FONT_SCALE_CACHE_KEY));
 }
 
+export function getCachedChatMaxWidth(): number {
+  return normalizeChatMaxWidth(readCache(CHAT_MAX_WIDTH_CACHE_KEY));
+}
+
 export function applyFontScale(scale: FontScale): FontScale {
   const normalized = normalizeFontScale(scale);
   writeCache(FONT_SCALE_CACHE_KEY, normalized);
@@ -177,6 +198,16 @@ export function applyFontScale(scale: FontScale): FontScale {
     document.documentElement.style.fontSize = `${FONT_SCALE_FACTORS[normalized] * 100}%`;
   }
   announceUIPreferenceChange({ fontScale: normalized });
+  return normalized;
+}
+
+export function applyChatMaxWidth(width: number | string): number {
+  const normalized = normalizeChatMaxWidth(width);
+  writeCache(CHAT_MAX_WIDTH_CACHE_KEY, String(normalized));
+  if (typeof document !== "undefined") {
+    document.documentElement.style.setProperty("--agnes-chat-max-width", `${normalized}px`);
+  }
+  announceUIPreferenceChange({ chatMaxWidth: normalized });
   return normalized;
 }
 
