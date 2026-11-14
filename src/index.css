@@ -511,8 +511,8 @@ body.quick-window-body #root {
   --claude-header: #faf9f5;
   --claude-header-soft: #f5f0e8;
   --claude-overlay: rgba(31, 30, 27, 0.34);
-  --claude-ui-font: "Newsreader", "Iowan Old Style", "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "PingFang SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
-  --claude-display-font: "Newsreader", "Iowan Old Style", "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "PingFang SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
+  --claude-ui-font: "Noto Serif", Georgia, "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "Songti SC", "Times New Roman", serif;
+  --claude-display-font: "Noto Serif", Georgia, "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "Songti SC", "Times New Roman", serif;
   --claude-mono-font: "JetBrains Mono", "Fira Code", "Cascadia Code", "SFMono-Regular", Menlo, Monaco, Consolas, "Source Code Pro", "Noto Sans Mono", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono CJK SC", monospace;
 }
 
