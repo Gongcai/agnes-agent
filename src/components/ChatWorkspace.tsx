@@ -375,8 +375,28 @@ const ToolCallCard: React.FC<{
         {tc.diff && (
           <div>
             <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-ink-muted">变更对比 (Diff)</div>
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#181715] border border-white/10 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-[#e6dfd8] shadow-elevated">
-              {tc.diff}
+            <pre className="agnes-tool-diff max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#141412] border border-white/10 py-2 font-mono text-[11.5px] leading-[1.6] text-[#e5dfd5] shadow-elevated">
+              {tc.diff.split("\n").map((line, idx, lines) => {
+                const isAdd = line.startsWith("+") && !line.startsWith("+++");
+                const isDel = line.startsWith("-") && !line.startsWith("---");
+                const isHunk = line.startsWith("@@");
+                const isMeta = line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ");
+                const cls = isAdd
+                  ? "agnes-code-line-add text-[#98ca89]"
+                  : isDel
+                    ? "agnes-code-line-del text-[#e67e7e]"
+                    : isHunk
+                      ? "bg-[#8cb8cb]/10 text-[#8cb8cb]"
+                      : isMeta
+                        ? "text-[#9d968c]"
+                        : "";
+                return (
+                  <React.Fragment key={idx}>
+                    <span className={`inline-block min-w-full px-3 ${cls}`}>{line}</span>
+                    {idx < lines.length - 1 ? "\n" : null}
+                  </React.Fragment>
+                );
+              })}
             </pre>
           </div>
         )}

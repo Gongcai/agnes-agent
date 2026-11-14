@@ -366,12 +366,84 @@ body.quick-window-body #root {
   line-break: auto;
   -webkit-line-break: auto;
   text-rendering: auto;
+  font-variant-ligatures: none;
+  tab-size: 4;
 }
 
 .markdown-code-block pre {
   margin: 0;
   overscroll-behavior-x: contain;
   white-space: pre;
+}
+
+.agnes-code-card {
+  background: var(--claude-code-bg);
+  border: 1px solid var(--claude-code-border);
+  box-shadow: var(--claude-code-shadow);
+}
+
+.agnes-code-header {
+  background: var(--claude-code-header);
+  border-bottom: 1px solid var(--claude-code-divider);
+  color: var(--claude-code-muted);
+}
+
+.agnes-code-lang-dot {
+  background: var(--claude-clay);
+  opacity: 0.85;
+}
+
+.agnes-code-lang {
+  color: #c8c1b6;
+}
+
+.agnes-code-copy-btn {
+  color: #a49d92;
+  background: transparent;
+}
+
+.agnes-code-copy-btn:hover {
+  background: rgba(245, 243, 237, 0.08);
+  color: #f0ece3;
+}
+
+.agnes-code-pre {
+  background: var(--claude-code-bg);
+  color: #e5dfd5;
+  font-size: 0.8125rem;
+  line-height: 1.62;
+  border-radius: 0 0 7px 7px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(245, 243, 237, 0.18) transparent;
+}
+
+.agnes-code-pre::-webkit-scrollbar {
+  height: 6px;
+}
+
+.agnes-code-pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.agnes-code-pre::-webkit-scrollbar-thumb {
+  background: rgba(245, 243, 237, 0.16);
+  border-radius: 9999px;
+}
+
+.agnes-code-pre::-webkit-scrollbar-thumb:hover {
+  background: rgba(245, 243, 237, 0.28);
+}
+
+.agnes-code-line-add {
+  display: inline-block;
+  min-width: 100%;
+  background: rgba(117, 174, 132, 0.14);
+}
+
+.agnes-code-line-del {
+  display: inline-block;
+  min-width: 100%;
+  background: rgba(223, 123, 121, 0.14);
 }
 
 /* 表格 */
@@ -426,6 +498,12 @@ body.quick-window-body #root {
   --claude-clay-dark: #a9583e;
   --claude-clay-soft: #f3e2dc;
   --claude-dark: #262624;
+  --claude-code-bg: #181715;
+  --claude-code-header: #21201d;
+  --claude-code-border: rgba(31, 30, 27, 0.22);
+  --claude-code-divider: rgba(245, 243, 237, 0.08);
+  --claude-code-muted: #9e988e;
+  --claude-code-shadow: 0 2px 8px rgba(20, 20, 19, 0.06);
   --claude-success: #3f7d53;
   --claude-warning: #a96919;
   --claude-danger: #b84343;
@@ -435,7 +513,7 @@ body.quick-window-body #root {
   --claude-overlay: rgba(31, 30, 27, 0.34);
   --claude-ui-font: "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "PingFang SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
   --claude-display-font: "Noto Serif CJK SC", "Source Han Serif SC", "Noto Serif SC", "PingFang SC", "Songti SC", "Noto Serif", Georgia, "Times New Roman", serif;
-  --claude-mono-font: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  --claude-mono-font: "JetBrains Mono", "Fira Code", "Cascadia Code", "SFMono-Regular", Menlo, Monaco, Consolas, "Source Code Pro", "Noto Sans Mono", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono CJK SC", monospace;
 }
 
 :root[data-agnes-theme="dark"] {
@@ -478,6 +556,12 @@ body.quick-window-body #root {
   --claude-clay-dark: #ea9679;
   --claude-clay-soft: rgba(217, 119, 87, 0.18);
   --claude-dark: #171613;
+  --claude-code-bg: #141412;
+  --claude-code-header: #242320;
+  --claude-code-border: rgba(245, 243, 237, 0.14);
+  --claude-code-divider: rgba(245, 243, 237, 0.09);
+  --claude-code-muted: #a8a298;
+  --claude-code-shadow: 0 4px 16px rgba(0, 0, 0, 0.24);
   --claude-success: #75ae84;
   --claude-warning: #d9a557;
   --claude-danger: #df7b79;
@@ -1560,16 +1644,17 @@ pre,
   color: var(--claude-danger);
 }
 
-.agnes-chat-messages .agnes-assistant-body pre {
+.agnes-chat-messages .agnes-assistant-body pre:not(.agnes-code-pre):not(.agnes-tool-diff) {
   border-radius: 8px !important;
   background: var(--claude-dark) !important;
 }
 
 .agnes-chat-messages .agnes-assistant-body .markdown-code-block pre {
   border-radius: 0 0 7px 7px !important;
+  background: var(--claude-code-bg) !important;
 }
 
-.agnes-chat-messages button:hover {
+.agnes-chat-messages button:not(.agnes-code-copy-btn):hover {
   background: var(--claude-surface-soft) !important;
   color: var(--claude-ink) !important;
 }

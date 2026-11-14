@@ -11,6 +11,11 @@ import {
   normalizeLatexDelimiters,
   parseStandaloneFencedCodeBlock,
 } from "./MarkdownMessage";
+import {
+  ensureCodeLanguageLoaded,
+  formatCodeLanguageLabel,
+  resolveShikiLanguage,
+} from "../lib/codeHighlight";
 
 describe("MarkdownMessage fenced code", () => {
   it("parses a standalone fenced block without the Markdown plugin pipeline", () => {
@@ -44,6 +49,39 @@ describe("MarkdownMessage fenced code", () => {
     expect(html).toContain("set -g mouse on");
     expect(html).toContain("overflow-y-hidden");
     expect(html).not.toContain("overflow-hidden rounded-lg");
+  });
+
+  it("normalizes common language labels and grammar aliases", () => {
+    expect(formatCodeLanguageLabel("cpp")).toBe("C++");
+    expect(formatCodeLanguageLabel("c++")).toBe("C++");
+    expect(formatCodeLanguageLabel("rs")).toBe("Rust");
+    expect(formatCodeLanguageLabel("")).toBe("Text");
+    expect(resolveShikiLanguage("c++")).toBe("cpp");
+    expect(resolveShikiLanguage("sh")).toBe("shellscript");
+    expect(resolveShikiLanguage("plaintext")).toBeNull();
+  });
+
+  it("renders Shiki syntax tokens synchronously once the grammar is loaded", async () => {
+    const loaded = await ensureCodeLanguageLoaded("cpp");
+    expect(loaded).toBe(true);
+
+    const html = renderToStaticMarkup(
+      <MarkdownMessage
+        content={[
+          "```c++",
+          "#include <type_traits>",
+          "class Node {",
+          "  Kind GetKind() const noexcept { return kind_; }",
+          "};",
+          "```",
+        ].join("\n")}
+      />,
+    );
+
+    expect(html).toContain(">C++<");
+    expect(html).toContain("color:#E38368");
+    expect(html).toContain("color:#75C0B7");
+    expect(html).toContain("color:#A6C77B");
   });
 });
 

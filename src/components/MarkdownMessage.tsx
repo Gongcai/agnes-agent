@@ -235,7 +235,7 @@ function splitMarkdownBlocks(content: string): string[] {
 const MarkdownBlock = React.memo<{ content: string }>(({ content }) => {
   const standaloneCode = parseStandaloneFencedCodeBlock(content);
   if (standaloneCode) {
-    if (standaloneCode.lang === "mermaid") {
+    if (standaloneCode.lang.toLowerCase() === "mermaid") {
       return <MermaidDiagram code={standaloneCode.text} />;
     }
     return (
@@ -250,14 +250,14 @@ const MarkdownBlock = React.memo<{ content: string }>(({ content }) => {
       remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
       components={{
-        // 去除 react-markdown 默认的 <pre> 包裹，改由 code 自行渲染代码块
+        // Strip react-markdown's default <pre> wrapper so CodeBlock owns block framing
         pre: ({ children }) => <>{children}</>,
         code({ node, className, children, ...props }) {
           const text = String(children ?? "");
-          const match = /language-(\w+)/.exec(className || "");
+          const match = /language-([^\s]+)/.exec(className || "");
           const isBlock = !!match || text.includes("\n");
           if (isBlock) {
-            if (match && match[1] === "mermaid") {
+            if (match && match[1].toLowerCase() === "mermaid") {
               return <MermaidDiagram code={text} />;
             }
             return (
